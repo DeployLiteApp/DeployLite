@@ -29,7 +29,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm runtime:contract
       - run: pnpm ci:vitest:forbid-only
-      - run: pnpm --filter @deploylite/contracts --filter @deploylite/config build
+      - run: pnpm --filter @deploylite/contracts --filter @deploylite/config --filter @deploylite/domain build
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
