@@ -29,7 +29,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm runtime:contract
       - run: pnpm ci:vitest:forbid-only
-      - run: pnpm --filter @deploylite/contracts --filter @deploylite/config --filter @deploylite/domain build
+      - run: pnpm --filter @deploylite/contracts --filter @deploylite/config --filter @deploylite/domain --filter @deploylite/agent --filter @deploylite/db build
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
@@ -75,7 +75,7 @@ jobs:
       - run: corepack enable && pnpm install --frozen-lockfile
       - run: pnpm ci:evidence:check && bash scripts/compose.test.sh
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
-        with: { scan-type: fs, scan-ref: ., severity: HIGH,CRITICAL, exit-code: "1", ignore-unfixed: "false" }
+        with: { scan-type: fs, scan-ref: ., severity: "HIGH,CRITICAL", exit-code: "1", ignore-unfixed: "false" }
       - run: docker build --file apps/api/Dockerfile --tag deploylite-api:ci . && docker build --file apps/web/Dockerfile --tag deploylite-web:ci .
       - id: images
         run: |
@@ -84,9 +84,9 @@ jobs:
           docker sbom --format cyclonedx-json --output api.sbom.json deploylite-api:ci
           docker sbom --format cyclonedx-json --output web.sbom.json deploylite-web:ci
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
-        with: { image-ref: deploylite-api:ci, format: json, output: api.trivy.json, severity: HIGH,CRITICAL, exit-code: "1", ignore-unfixed: "false" }
+        with: { image-ref: deploylite-api:ci, format: json, output: api.trivy.json, severity: "HIGH,CRITICAL", exit-code: "1", ignore-unfixed: "false" }
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
-        with: { image-ref: deploylite-web:ci, format: json, output: web.trivy.json, severity: HIGH,CRITICAL, exit-code: "1", ignore-unfixed: "false" }
+        with: { image-ref: deploylite-web:ci, format: json, output: web.trivy.json, severity: "HIGH,CRITICAL", exit-code: "1", ignore-unfixed: "false" }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with: { name: supply-chain-reports, path: "*.{sbom,trivy}.json", if-no-files-found: warn, retention-days: 30 }
