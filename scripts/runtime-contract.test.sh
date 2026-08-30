@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly EXPECTED_NODE_VERSION="24.12.0"
+readonly EXPECTED_NODE_VERSION="24.20.0"
 readonly EXPECTED_PNPM_VERSION="9.15.4"
-readonly EXPECTED_LOCK_SHA256="962df749945edd3b03fd5f65f878d57ca0d2b6cbd325c02b2d4ab8c43eff6c60"
-readonly NODE_IMAGE="node:24.12.0-alpine@sha256:c921b97d4b74f51744057454b306b418cf693865e73b8100559189605f6955b8"
+readonly EXPECTED_LOCK_SHA256="a3f1e60e58e356becb061ee8d527e86de2b8b0efc0e56c941c23b4fad676ea8d"
+readonly NODE_IMAGE="node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf"
 
 fail() {
   printf 'runtime contract failed: %s\n' "$*" >&2
