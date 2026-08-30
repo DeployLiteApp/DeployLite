@@ -29,7 +29,9 @@ export function createDeploymentSnapshot(input: DeploymentSnapshotInputV1, hashe
   const data = { schemaVersion: 1 as const, deploymentId: text(input.deploymentId), projectId: text(input.projectId), source: clone(input.source), configRevision: text(input.configRevision), runtimeRevision: text(input.runtimeRevision), runtimePort: input.runtimePort, secretRefs: refs(input.secretRefs), policyVersion: text(input.policyVersion), sourceSchemaVersion: input.schemaVersion, resolvedDigest: digest(input.resolvedDigest) };
   const canonicalJson = JSON.stringify(canonical(data)); const canonicalBytes = new TextEncoder().encode(canonicalJson); const hash = hasher.sha256(canonicalBytes);
   if (!/^[0-9a-f]{64}$/.test(hash)) throw new Error("snapshot hash must be a lowercase 64-hex SHA-256 digest");
-  return freeze({ ...data, canonicalJson, canonicalBytes: new Uint8Array(canonicalBytes), hash });
+  const snapshot = { ...data, canonicalJson, hash } as DeploymentSnapshotV1;
+  Object.defineProperty(snapshot, "canonicalBytes", { enumerable: true, configurable: false, get: () => new Uint8Array(canonicalBytes) });
+  return freeze(snapshot);
 }
 export function createDeploymentPlan(snapshot: DeploymentSnapshotV1): DeploymentPlanV1 {
   const steps: readonly DeploymentPlanStepV1[] = freeze([{ order: 1, action: "validate-snapshot", mockOnly: true as const }, { order: 2, action: "prepare-artifact", mockOnly: true as const }, { order: 3, action: "await-mock-dispatch", mockOnly: true as const }]);
