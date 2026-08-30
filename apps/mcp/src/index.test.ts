@@ -6,6 +6,7 @@ import {
   createMockDeployLiteApiClient,
   deployLiteMcpToolDefinitions,
   deployLiteMcpTools,
+  assertAdvisoryOnlyRequest,
   type DeployLiteApiClient,
   type McpReadAuthorizer
 } from "./index.js";
@@ -84,6 +85,12 @@ describe("DeployLite MCP read-only scaffold", () => {
 
     expect(status.requestId).toBe("req_cross_surface_1");
     expect(logs.events.every((event) => event.requestId === "req_cross_surface_1")).toBe(true);
+  });
+
+  it("denies create, confirm, execute, and bypass requests before an API client is invoked", () => {
+    for (const action of ["create", "confirm", "execute", "bypass"]) {
+      expect(() => assertAdvisoryOnlyRequest(action)).toThrow("ADVISORY_ONLY");
+    }
   });
 });
 
