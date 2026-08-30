@@ -87,13 +87,31 @@ jobs:
       - name: Generate web image SBOM
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
         with: { scan-type: image, image-ref: deploylite-web:ci, format: cyclonedx, output: web.sbom.json, scanners: vuln }
-      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
-        with: { image-ref: deploylite-api:ci, format: json, output: api.trivy.json, severity: "HIGH,CRITICAL", exit-code: "1", ignore-unfixed: "false" }
-      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
-        with: { image-ref: deploylite-web:ci, format: json, output: web.trivy.json, severity: "HIGH,CRITICAL", exit-code: "1", ignore-unfixed: "false" }
+      - id: api_image_trivy_scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
+        continue-on-error: true
+        with: { scan-type: image, image-ref: deploylite-api:ci, format: json, output: api.trivy.json, severity: "HIGH,CRITICAL", exit-code: "1", ignore-unfixed: "false" }
+      - id: web_image_trivy_scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
+        continue-on-error: true
+        with: { scan-type: image, image-ref: deploylite-web:ci, format: json, output: web.trivy.json, severity: "HIGH,CRITICAL", exit-code: "1", ignore-unfixed: "false" }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
-        with: { name: supply-chain-reports, path: "*.{sbom,trivy}.json", if-no-files-found: warn, retention-days: 30 }
+        with:
+          name: supply-chain-reports
+          path: |
+            api.sbom.json
+            web.sbom.json
+            api.trivy.json
+            web.trivy.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Verify image vulnerability scans passed
+        if: always()
+        run: |
+          set -Eeuo pipefail
+          test "${{ steps.api_image_trivy_scan.outcome }}" = success
+          test "${{ steps.web_image_trivy_scan.outcome }}" = success
 
   baseline-gate:
     if: always()
