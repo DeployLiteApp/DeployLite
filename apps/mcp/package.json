@@ -5,13 +5,14 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run",
+    "test": "vitest run --allowOnly=false",
     "test:only-guard": "node ./scripts/assert-vitest-only-guard.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@deploylite/config": "workspace:*",
-    "@deploylite/contracts": "workspace:*"
+    "@deploylite/contracts": "workspace:*",
+    "zod": "^3.24.1"
   }
 }
