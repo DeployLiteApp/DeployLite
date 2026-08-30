@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { AuditEventListItem } from "@deploylite/contracts";
 import { loadAuditEvents, type AuditListFailureReason } from "@/lib/auth-boundary";
-import { AuditDrawer, type AuditDrawerState, type AuditRefreshHandler } from "@/components/audit-drawer";
+import { AuditDrawer, type AuditDrawerState, type AuditLoadHandler } from "@/components/audit-drawer";
+import { AUDIT_PAGE_SIZE, buildAuditHistoryRequest, createLatestAuditRequestRunner, resolveAuditHistoryResult, resolveAuditLoadIntent, type AuditHistoryFilters, type AuditHistoryCursor, type AuditLoadIntent } from "./audit-history-pagination-model";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -17,6 +18,9 @@ import { Card, CardContent } from "@/components/ui/card";
  */
 
 type AuditHistoryFailure = { kind: "error"; reason: AuditListFailureReason; status?: number };
+export { AUDIT_PAGE_SIZE, buildAuditHistoryRequest, createLatestAuditRequestRunner, resolveAuditHistoryResult, resolveAuditLoadIntent } from "./audit-history-pagination-model";
+export type { AuditHistoryFilters, AuditHistoryCursor, AuditLoadIntent } from "./audit-history-pagination-model";
+export type AuditHistoryRequest = Parameters<typeof loadAuditEvents>[0];
 
 export type ProjectAuditHistoryPanelProps = {
   apiBaseUrl: string | null;
@@ -39,33 +43,38 @@ export function ProjectAuditHistoryPanel({
   const [events, setEvents] = useState<AuditEventListItem[]>(initialEvents);
   const [total, setTotal] = useState(initialTotal);
   const [state, setState] = useState<AuditDrawerState>(initialState);
-  const [limit] = useState(50);
-  const [offset] = useState(0);
+  const [filters, setFilters] = useState<AuditHistoryFilters>({});
+  const [limit] = useState(AUDIT_PAGE_SIZE);
+  const [offset, setOffset] = useState(0);
+  const [isLoading, setIsLoading] = useState(false);
+  const filtersRef = useRef<AuditHistoryFilters>(filters);
+  const offsetRef = useRef(offset);
+  const runnerRef = useRef<ReturnType<typeof createLatestAuditRequestRunner> | null>(null);
+  filtersRef.current = filters;
+  offsetRef.current = offset;
+  if (!runnerRef.current) {
+    runnerRef.current = createLatestAuditRequestRunner(loadAuditEvents, (request, result) => {
+      const nextFilters = { actor: request.actor, action: request.action };
+      filtersRef.current = nextFilters;
+      offsetRef.current = request.offset ?? 0;
+      setFilters(nextFilters);
+      setOffset(request.offset ?? 0);
+      const next = resolveAuditHistoryResult(result);
+      setEvents(next.events);
+      setTotal(next.total);
+      setState(next.state);
+    }, setIsLoading);
+  }
 
   // The drawer accepts a sync OR async refresh callback; this handler is
   // async because the API roundtrip awaits the response before the
   // preview state can be updated. The drawer swallows the returned
   // promise internally, so the parent does not need a fire-and-forget
   // wrapper.
-  const onRefresh: AuditRefreshHandler = async (filter) => {
-    const result = await loadAuditEvents({
-      apiBaseUrl: apiBaseUrl ?? undefined,
-      cookieHeader,
-      projectId,
-      actor: filter.actor,
-      action: filter.action,
-      limit,
-      offset
-    });
-    if (result.kind === "ready") {
-      setEvents(result.data.events);
-      setTotal(result.data.total);
-      setState({ kind: "ready" });
-    } else {
-      setEvents([]);
-      setTotal(0);
-      setState({ kind: "error", reason: result.reason, status: result.status });
-    }
+  const onRefresh: AuditLoadHandler = async (intent: AuditLoadIntent) => {
+    const cursor: AuditHistoryCursor = resolveAuditLoadIntent(intent, { filters: filtersRef.current, offset: offsetRef.current });
+    const request = buildAuditHistoryRequest({ apiBaseUrl, cookieHeader, projectId, cursor, limit });
+    await runnerRef.current?.(request);
   };
 
   if (initialState.kind === "error" && initialState.reason === "forbidden") {
@@ -130,6 +139,7 @@ export function ProjectAuditHistoryPanel({
         limit={limit}
         offset={offset}
         onRefresh={onRefresh}
+        isLoading={isLoading}
       />
     </div>
   );
