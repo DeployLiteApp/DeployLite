@@ -31,6 +31,7 @@ describe("API PostgreSQL integration test gating", () => {
 
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(0);
-    expect(`${result.stdout}${result.stderr}`).toMatch(/Test Files\s+1 skipped/);
+    const output = `${result.stdout}${result.stderr}`.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+    expect(output).toMatch(/Test Files\s+1 skipped/);
   }, 30_000);
 });
