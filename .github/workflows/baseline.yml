@@ -77,21 +77,27 @@ jobs:
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
         with: { scan-type: fs, scan-ref: ., severity: "HIGH,CRITICAL", exit-code: "1", ignore-unfixed: "false" }
       - run: docker build --file apps/api/Dockerfile --tag deploylite-api:ci . && docker build --file apps/web/Dockerfile --tag deploylite-web:ci .
+        if: always()
       - id: images
+        if: always()
         run: |
           printf 'api_digest=%s\n' "$(docker inspect --type=image deploylite-api:ci | jq -er '.[0].Id')" >> "$GITHUB_OUTPUT"
           printf 'web_digest=%s\n' "$(docker inspect --type=image deploylite-web:ci | jq -er '.[0].Id')" >> "$GITHUB_OUTPUT"
       - name: Generate API image SBOM
+        if: always()
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
         with: { scan-type: image, image-ref: deploylite-api:ci, format: cyclonedx, output: api.sbom.json, scanners: vuln }
       - name: Generate web image SBOM
+        if: always()
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
         with: { scan-type: image, image-ref: deploylite-web:ci, format: cyclonedx, output: web.sbom.json, scanners: vuln }
       - id: api_image_trivy_scan
+        if: always()
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
         continue-on-error: true
         with: { scan-type: image, image-ref: deploylite-api:ci, format: json, output: api.trivy.json, severity: "HIGH,CRITICAL", exit-code: "1", ignore-unfixed: "false" }
       - id: web_image_trivy_scan
+        if: always()
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
         continue-on-error: true
         with: { scan-type: image, image-ref: deploylite-web:ci, format: json, output: web.trivy.json, severity: "HIGH,CRITICAL", exit-code: "1", ignore-unfixed: "false" }
