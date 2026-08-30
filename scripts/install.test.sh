@@ -328,6 +328,90 @@ test_start_bootstrap_is_bounded_and_never_activates_runtime() {
   assert_not_contains "$compose_calls" '--profile runtime' || return 1
 }
 
+check_test_platform() {
+  local tmp="$1"
+  printf 'ID=ubuntu\nVERSION_ID="22.04"\n' >"$tmp"
+  DEPLOYLITE_OS_RELEASE_FILE="$tmp"
+  uname_machine() { printf 'x86_64\n'; }
+}
+
+check_test_commands() {
+  command_exists() {
+    [[ "$1" == "docker" || "$1" == "timeout" || "$1" == "ss" ]]
+  }
+  run() {
+    printf '%s\n' "$*" >>"$CHECK_TEST_CALL_LOG"
+    case "$*" in
+      *'docker --version'*) printf 'Docker version 29.0.0\n' ;;
+      *'docker compose version'*) printf 'Docker Compose version v2.40.0\n' ;;
+      *) return 0 ;;
+    esac
+  }
+  port_available() { return 0; }
+}
+
+test_check_mode_succeeds_with_read_only_probes() {
+  local tmp output status
+  tmp="$(mktemp)"
+  CHECK_TEST_CALL_LOG="$(mktemp)"
+  check_test_platform "$tmp"
+  check_test_commands
+  output="$(main --check 2>&1)" && status=0 || status=$?
+  [[ "$status" -eq 0 ]] || return 1
+  assert_contains "$output" 'Prerequisite check passed' || return 1
+  assert_contains "$output" '[PASS] Docker Compose plugin' || return 1
+  assert_not_contains "$(<"$CHECK_TEST_CALL_LOG")" 'apt-get' || return 1
+  assert_not_contains "$(<"$CHECK_TEST_CALL_LOG")" 'install' || return 1
+  assert_not_contains "$(<"$CHECK_TEST_CALL_LOG")" 'compose up' || return 1
+  rm -f "$tmp" "$CHECK_TEST_CALL_LOG"
+}
+
+test_check_mode_reports_missing_prerequisite_deterministically() {
+  local tmp output status
+  tmp="$(mktemp)"
+  check_test_platform "$tmp"
+  command_exists() { [[ "$1" == "timeout" || "$1" == "ss" ]]; }
+  run() { return 0; }
+  port_available() { return 0; }
+  output="$(main --check 2>&1)" && status=0 || status=$?
+  [[ "$status" -eq 2 ]] || return 1
+  assert_contains "$output" '[FAIL] required command: docker' || return 1
+  assert_contains "$output" 'Prerequisite check failed: 2 check(s) failed.' || return 1
+  rm -f "$tmp"
+}
+
+test_check_mode_reports_unsupported_platform() {
+  local tmp output status
+  tmp="$(mktemp)"
+  printf 'ID=alpine\nVERSION_ID="3.20"\n' >"$tmp"
+  DEPLOYLITE_OS_RELEASE_FILE="$tmp"
+  uname_machine() { printf 'x86_64\n'; }
+  check_test_commands
+  output="$(main --check 2>&1)" && status=0 || status=$?
+  [[ "$status" -eq 2 ]] || return 1
+  assert_contains "$output" '[FAIL] supported OS' || return 1
+  rm -f "$tmp"
+}
+
+test_check_mode_reports_occupied_port() {
+  local tmp output status
+  tmp="$(mktemp)"
+  check_test_platform "$tmp"
+  check_test_commands
+  port_available() { [[ "$1" != "80" ]]; }
+  output="$(main --check 2>&1)" && status=0 || status=$?
+  [[ "$status" -eq 2 ]] || return 1
+  assert_contains "$output" '[FAIL] port 80/tcp readiness' || return 1
+  rm -f "$tmp"
+}
+
+test_check_mode_is_distinct_from_noop() {
+  local output status
+  output="$(main --check --noop 2>&1)" && status=0 || status=$?
+  [[ "$status" -eq 2 ]] || return 1
+  assert_contains "$output" '--check cannot be combined with --noop' || return 1
+}
+
 run_test 'redaction masks secrets' test_redaction_masks_database_url_and_secret_assignments
 run_test 'unsupported host fails before mutation' test_unsupported_host_fails_without_mutation
 run_test 'occupied port fails actionably' test_occupied_port_fails_actionably
@@ -349,6 +433,11 @@ run_test 'rejects stale or inconsistent runtime secrets' test_prepare_runtime_en
 run_test 'rejects malformed runtime secret values' test_prepare_runtime_env_rejects_malformed_secret_values
 run_test 'verifies local DNS and HTTPS response markers' test_verify_local_reachability_checks_dns_header_and_body
 run_test 'pulls, builds, and starts only the bounded bootstrap control plane' test_start_bootstrap_is_bounded_and_never_activates_runtime
+run_test 'check mode succeeds using read-only probes' test_check_mode_succeeds_with_read_only_probes
+run_test 'check mode reports missing prerequisites deterministically' test_check_mode_reports_missing_prerequisite_deterministically
+run_test 'check mode reports unsupported platforms' test_check_mode_reports_unsupported_platform
+run_test 'check mode reports occupied ports' test_check_mode_reports_occupied_port
+run_test 'check mode remains distinct from noop mode' test_check_mode_is_distinct_from_noop
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

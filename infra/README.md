@@ -32,6 +32,14 @@ docker compose -f infra/vps/compose.yml -f infra/vps/compose.tls.yml config --no
 
 ## VPS installer runbook
 
+Audit a host without installing packages, writing files, generating secrets, contacting a remote service, or activating Docker:
+
+```bash
+sudo bash scripts/install.sh --check
+```
+
+The check reports the supported OS/architecture, required local commands, Docker/Compose versions, and readiness of ports `80` and `443`. It exits `0` only when every prerequisite passes and `2` when one or more checks fail. `--check` performs probes; it is distinct from `--noop`, which skips preflight and installation entirely.
+
 Bootstrap from an audited immutable GitHub commit SHA on a clean supported VPS:
 
 ```bash
