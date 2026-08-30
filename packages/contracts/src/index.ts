@@ -280,6 +280,7 @@ export type {
 export { DEPLOYMENT_SNAPSHOT_SCHEMA_VERSION, createDeploymentPlan, createDeploymentSnapshot } from "./deployment-contract/snapshot-plan.js";
 export type { CanonicalHasher, DeploymentPlanStatus, DeploymentPlanStepV1, DeploymentPlanV1, DeploymentSnapshotInputV1, DeploymentSnapshotV1, SecretReferenceV1 } from "./deployment-contract/snapshot-plan.js";
 export * from "./deployment-contract/protocol.js";
+export { assertNoDeploymentEffects } from "./deployment-contract/testing/forbidden-effects.js";
 export type EnvVariableMetadata = z.infer<typeof envVariableMetadataSchema>;
 export type EnvVariableMetadataUpsertRequest = z.infer<typeof envVariableMetadataUpsertRequestSchema>;
 export type EnvSecretValue = z.infer<typeof envSecretValueSchema>;
