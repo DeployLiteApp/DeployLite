@@ -1,12 +1,23 @@
 import { and, eq, gt, isNull } from "drizzle-orm";
-import type { ControlCommand, ControlCommandRepository, ControlConfirmation, ControlConfirmationRepository, ConfirmationOutcome } from "@deploylite/domain";
+import type { ConfirmedProjectDeleteInput, ConfirmedProjectDeleteOutcome, ControlCommand, ControlCommandRepository, ControlConfirmation, ControlConfirmationRepository, ControlDeleteRepository, ControlGrant, ControlGrantRepository, ConfirmationOutcome } from "@deploylite/domain";
 import { IdempotencyConflictError, scopeKey } from "@deploylite/domain";
 
 import type { DeployLiteDb } from "../client.js";
-import { controlCommandAudits, controlCommandConfirmations, controlCommands, type ControlCommandRow } from "../schema.js";
+import { auditEvents, controlCommandAudits, controlCommandConfirmations, controlCommands, controlGrants, projects, type ControlCommandRow, type ControlGrantRow } from "../schema.js";
 
-export class DbControlCommandRepository implements ControlCommandRepository, ControlConfirmationRepository {
+export class DbControlGrantRepository implements ControlGrantRepository {
   constructor(private readonly db: DeployLiteDb) {}
+
+  async listForActor(actorId: string): Promise<ControlGrant[]> {
+    const rows = await this.db.select().from(controlGrants).where(eq(controlGrants.actorUserId, actorId));
+    return rows.map(toGrant);
+  }
+}
+
+export type ControlDeleteFaultStage = "confirmation-consumed" | "project-deleted" | "command-completed" | "audit-recorded";
+
+export class DbControlCommandRepository implements ControlDeleteRepository, ControlConfirmationRepository {
+  constructor(private readonly db: DeployLiteDb, private readonly injectFault?: (stage: ControlDeleteFaultStage) => void | Promise<void>) {}
 
   async resolve(command: ControlCommand): Promise<{ command: ControlCommand; created: boolean }> {
     const key = scopeKey(command.scope);
@@ -30,6 +41,14 @@ export class DbControlCommandRepository implements ControlCommandRepository, Con
     await this.db.insert(controlCommandConfirmations).values({ id: confirmation.id, commandId: confirmation.commandId, actorUserId: confirmation.actorId, action: confirmation.action, scopeKind: confirmation.scope.kind, scopeKey: scopeKey(confirmation.scope), inputDigest: confirmation.inputDigest, classification: confirmation.classification, expiresAt: confirmation.expiresAt, consumedAt: confirmation.consumedAt });
   }
 
+  async complete(command: ControlCommand): Promise<ControlCommand> {
+    const [completed] = await this.db.update(controlCommands).set({ status: "completed", updatedAt: new Date() }).where(and(eq(controlCommands.id, command.id), eq(controlCommands.status, "eligible"))).returning();
+    if (completed) return toCommand(completed);
+    const [current] = await this.db.select().from(controlCommands).where(eq(controlCommands.id, command.id)).limit(1);
+    if (!current) throw new Error("Control command was not found");
+    return toCommand(current);
+  }
+
   async consume(command: ControlCommand, confirmation: ControlConfirmation, now = new Date()): Promise<ConfirmationOutcome> {
     return this.db.transaction(async (tx) => {
       const [consumed] = await tx.update(controlCommandConfirmations).set({ consumedAt: now }).where(and(eq(controlCommandConfirmations.id, confirmation.id), eq(controlCommandConfirmations.commandId, command.id), eq(controlCommandConfirmations.actorUserId, command.actorId), eq(controlCommandConfirmations.action, command.action), eq(controlCommandConfirmations.scopeKind, command.scope.kind), eq(controlCommandConfirmations.scopeKey, scopeKey(command.scope)), eq(controlCommandConfirmations.inputDigest, command.inputDigest), eq(controlCommandConfirmations.classification, "destructive"), isNull(controlCommandConfirmations.consumedAt), gt(controlCommandConfirmations.expiresAt, now))).returning();
@@ -46,8 +65,38 @@ export class DbControlCommandRepository implements ControlCommandRepository, Con
       return { command: toCommand(eligible), accepted: true, reason: null };
     });
   }
+
+  async executeConfirmedProjectDelete({ command, confirmation, projectId, requestId, now = new Date() }: ConfirmedProjectDeleteInput): Promise<ConfirmedProjectDeleteOutcome> {
+    return this.db.transaction(async (tx) => {
+      const [current] = await tx.select().from(controlCommands).where(eq(controlCommands.id, command.id)).limit(1);
+      if (!current) throw new Error("Control command was not found");
+      if (current.status === "completed") return { command: toCommand(current), accepted: true, reason: null, removed: true, auditRecorded: true, alreadyCompleted: true };
+      const [consumed] = await tx.update(controlCommandConfirmations).set({ consumedAt: now }).where(and(eq(controlCommandConfirmations.id, confirmation.id), eq(controlCommandConfirmations.commandId, command.id), eq(controlCommandConfirmations.actorUserId, command.actorId), eq(controlCommandConfirmations.action, command.action), eq(controlCommandConfirmations.scopeKind, command.scope.kind), eq(controlCommandConfirmations.scopeKey, scopeKey(command.scope)), eq(controlCommandConfirmations.inputDigest, command.inputDigest), eq(controlCommandConfirmations.classification, "destructive"), isNull(controlCommandConfirmations.consumedAt), gt(controlCommandConfirmations.expiresAt, now))).returning();
+      if (!consumed) {
+        await tx.insert(controlCommandAudits).values({ commandId: command.id, confirmationId: confirmation.id, correlationId: command.correlationId, outcome: "rejected", reason: "confirmation_rejected" });
+        return { command: toCommand(current), accepted: false, reason: "confirmation_rejected", removed: false, auditRecorded: true, alreadyCompleted: false };
+      }
+      await this.fault("confirmation-consumed");
+      const [deleted] = await tx.delete(projects).where(eq(projects.id, projectId)).returning({ id: projects.id });
+      if (!deleted) throw new Error("Project was not found for confirmed deletion");
+      await this.fault("project-deleted");
+      const [completed] = await tx.update(controlCommands).set({ status: "completed", updatedAt: now }).where(and(eq(controlCommands.id, command.id), eq(controlCommands.status, "pending_confirmation"))).returning();
+      if (!completed) throw new Error("Control command was not eligible for completion");
+      await this.fault("command-completed");
+      await tx.insert(controlCommandAudits).values({ commandId: command.id, confirmationId: confirmation.id, correlationId: command.correlationId, outcome: "completed", reason: null });
+      await tx.insert(auditEvents).values({ actorUserId: command.actorId, action: "project.delete", targetType: "project", targetId: projectId, requestId, correlationId: command.correlationId, metadata: { commandId: command.id, confirmationId: confirmation.id } });
+      await this.fault("audit-recorded");
+      return { command: toCommand(completed), accepted: true, reason: null, removed: true, auditRecorded: true, alreadyCompleted: false };
+    });
+  }
+
+  private async fault(stage: ControlDeleteFaultStage): Promise<void> { await this.injectFault?.(stage); }
 }
 
 function toCommand(row: ControlCommandRow): ControlCommand {
   return { id: row.id, actorId: row.actorUserId, action: row.action as ControlCommand["action"], scope: row.scopeKind === "platform" ? { kind: "platform" } : { kind: "project", projectId: row.scopeKey }, inputDigest: row.inputDigest, idempotencyKey: row.idempotencyKey, correlationId: row.correlationId, status: row.status as ControlCommand["status"], expiresAt: row.expiresAt };
+}
+
+function toGrant(row: ControlGrantRow): ControlGrant {
+  return { id: row.id, actorId: row.actorUserId, action: row.action as ControlGrant["action"], scope: row.scopeKind === "platform" ? { kind: "platform" } : { kind: "project", projectId: row.scopeKey } };
 }
