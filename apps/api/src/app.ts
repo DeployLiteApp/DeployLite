@@ -27,7 +27,7 @@ import {
   type RuntimeActivation,
   type RuntimeActivationCommand
 } from "@deploylite/contracts";
-import { BcryptPasswordHasher, bootstrapInitialAdmin, closeDbPool, createDbClient, createDbPool, createOpaqueSessionToken, DbAgentRepository, DbAuditRepository, DbAuthUserRepository, DbDeploymentRepository, DbEnvSecretValueRepository, DbEnvVariableMetadataRepository, DbProjectRepository, DbSessionRepository, hashSessionToken, type DeployLiteDb } from "@deploylite/db";
+import { BcryptPasswordHasher, bootstrapInitialAdmin, closeDbPool, createDbClient, createDbPool, createOpaqueSessionToken, DbAgentRepository, DbAuditRepository, DbAuthUserRepository, DbControlCommandRepository, DbControlGrantRepository, DbDeploymentRepository, DbEnvSecretValueRepository, DbEnvVariableMetadataRepository, DbProjectRepository, DbSessionRepository, hashSessionToken, type DeployLiteDb } from "@deploylite/db";
 import {
   AgentStatusService,
   authenticateLocalUser,
@@ -37,6 +37,12 @@ import {
   InMemoryEnvSecretValueRepository,
   InMemoryEnvVariableMetadataRepository,
   InitialAdminAlreadyExistsError,
+  IdempotencyConflictError,
+  ConfirmationRejectedError,
+  PolicyEvaluator,
+  createConfirmation,
+  createControlCommand,
+  scopeKey,
   toSafeAuthUser,
   type AuditEvent,
   type AuditEventInput,
@@ -46,6 +52,13 @@ import {
   type AuthUser,
   type AuthUserRepository,
   type CanonicalRoleName,
+  type ControlCommand,
+  type ControlCommandRepository,
+  type ControlDeleteRepository,
+  type ControlConfirmation,
+  type ControlConfirmationRepository,
+  type ControlGrant,
+  type ControlGrantRepository,
   type CreateInitialAdminInput,
   type CreateSessionInput,
   type EnvSecretValueRepository,
@@ -439,6 +452,8 @@ type PlatformRepositoryOptions = {
   envSecretValues?: EnvSecretValueRepository;
   envSecretCipher?: EnvSecretCipher;
   runtimeActivationDispatcher?: RuntimeActivationDispatcher;
+  controlDeletes?: ControlDeleteRepository;
+  controlGrants?: ControlGrantRepository;
 };
 
 type PlatformRepositories = PlatformRepositoryOptions & {
@@ -448,6 +463,8 @@ type PlatformRepositories = PlatformRepositoryOptions & {
   envSecretCipher: EnvSecretCipher;
   deployRunner: DeployRunner;
   runtimeActivationDispatcher: RuntimeActivationDispatcher;
+  controlDeletes: ControlDeleteRepository;
+  controlGrants: ControlGrantRepository;
 };
 
 export type RuntimeActivationDispatcher = {
@@ -487,7 +504,7 @@ function createLazyEnvSecretCipher(env: EnvSecretKeySource): EnvSecretCipher {
   };
 }
 
-function createApiState(env: EnvSecretKeySource, overrides: Partial<PlatformRepositoryOptions> = {}): PlatformRepositories {
+function createApiState(env: EnvSecretKeySource, overrides: Partial<PlatformRepositoryOptions> = {}, audit?: AuditRepository): PlatformRepositories {
   const agents = overrides.agents ?? new InMemoryAgentRepository();
   const deployments = overrides.deployments ?? new InMemoryDeploymentRepository();
   const projects = overrides.projects ?? new InMemoryProjectRepository();
@@ -497,7 +514,77 @@ function createApiState(env: EnvSecretKeySource, overrides: Partial<PlatformRepo
   const runtimeActivationDispatcher = overrides.runtimeActivationDispatcher ?? new UnavailableRuntimeActivationDispatcher();
   const agentStatus = new AgentStatusService(agents);
   const deployRunner = new DeployRunner(deployments, envMetadata, agentStatus, envSecretCipher);
-  return { agents, deployments, projects, envMetadata, envSecretValues, envSecretCipher, agentStatus, deployRunner, runtimeActivationDispatcher };
+  return { agents, deployments, projects, envMetadata, envSecretValues, envSecretCipher, agentStatus, deployRunner, runtimeActivationDispatcher, controlDeletes: overrides.controlDeletes ?? new InMemoryControlDeleteRepository(projects, audit ?? new InMemoryAuditRepository()), controlGrants: overrides.controlGrants ?? new InMemoryControlGrantRepository() };
+}
+
+class InMemoryControlGrantRepository implements ControlGrantRepository {
+  constructor(private readonly grants: ControlGrant[] = []) {}
+  async listForActor(actorId: string): Promise<ControlGrant[]> {
+    return this.grants.filter((grant) => grant.actorId === actorId).map((grant) => structuredClone(grant));
+  }
+}
+
+class InMemoryControlDeleteRepository implements ControlDeleteRepository {
+  readonly #commands = new Map<string, ControlCommand>();
+  readonly #confirmations = new Map<string, ControlConfirmation>();
+
+  async resolve(command: ControlCommand): Promise<{ command: ControlCommand; created: boolean }> {
+    const key = `${command.actorId}:${command.action}:${scopeKey(command.scope)}:${command.idempotencyKey}`;
+    const existing = this.#commands.get(key);
+    if (existing) {
+      if (existing.inputDigest !== command.inputDigest) throw new IdempotencyConflictError();
+      return { command: structuredClone(existing), created: false };
+    }
+    this.#commands.set(key, structuredClone(command));
+    return { command: structuredClone(command), created: true };
+  }
+
+  async bind(confirmation: ControlConfirmation): Promise<void> { this.#confirmations.set(confirmation.id, structuredClone(confirmation)); }
+
+  async consume(command: ControlCommand, confirmation: ControlConfirmation, now = new Date()) {
+    const stored = this.#confirmations.get(confirmation.id);
+    const current = [...this.#commands.values()].find((candidate) => candidate.id === command.id);
+    if (!stored || !current) return { command, accepted: false, reason: "confirmation_rejected" };
+    try {
+      if (stored.actorId !== confirmation.actorId || stored.action !== confirmation.action || scopeKey(stored.scope) !== scopeKey(confirmation.scope) || stored.inputDigest !== confirmation.inputDigest || stored.classification !== confirmation.classification) throw new ConfirmationRejectedError();
+      if (stored.commandId !== current.id || stored.consumedAt || stored.expiresAt <= now) throw new ConfirmationRejectedError();
+      stored.consumedAt = now;
+      current.status = "eligible";
+      return { command: structuredClone(current), accepted: true, reason: null };
+    } catch (error) {
+      if (error instanceof ConfirmationRejectedError) return { command: structuredClone(current), accepted: false, reason: "confirmation_rejected" };
+      throw error;
+    }
+  }
+
+  async complete(command: ControlCommand): Promise<ControlCommand> {
+    const current = [...this.#commands.values()].find((candidate) => candidate.id === command.id);
+    if (!current) throw new Error("Control command was not found");
+    if (current.status === "eligible") current.status = "completed";
+    return structuredClone(current);
+  }
+
+  constructor(private readonly projects: ProjectRepository, private readonly audit: AuditRepository) {}
+
+  async executeConfirmedProjectDelete({ command, confirmation, projectId, requestId }: Parameters<ControlDeleteRepository["executeConfirmedProjectDelete"]>[0]) {
+    const project = await this.projects.findById(projectId);
+    if (!project) throw new Error("Project was not found for confirmed deletion");
+    const commandBefore = [...this.#commands.values()].find((candidate) => candidate.id === command.id);
+    const confirmationBefore = this.#confirmations.get(confirmation.id);
+    const outcome = await this.consume(command, confirmation);
+    if (!outcome.accepted || outcome.command.status === "completed") return { ...outcome, removed: outcome.command.status === "completed", auditRecorded: outcome.command.status === "completed", alreadyCompleted: outcome.command.status === "completed" };
+    try {
+      if (!await this.projects.remove(projectId)) throw new Error("Project was not found for confirmed deletion");
+      const completed = await this.complete(outcome.command);
+      await this.audit.append({ actorUserId: command.actorId, action: "project.delete", targetType: "project", targetId: projectId, requestId, correlationId: command.correlationId, metadata: { commandId: command.id, confirmationId: confirmation.id } });
+      return { command: completed, accepted: true, reason: null, removed: true, auditRecorded: true, alreadyCompleted: false };
+    } catch (error) {
+      if (confirmationBefore) this.#confirmations.set(confirmation.id, confirmationBefore);
+      if (commandBefore) Object.assign(commandBefore, structuredClone(command));
+      await this.projects.save(project);
+      throw error;
+    }
+  }
 }
 
 /**
@@ -702,7 +789,9 @@ function createDbAuthAdapters(env: DeployLiteEnv, options: BuildApiAppOptions): 
       projects: options.state?.projects ?? new DbProjectRepository(db),
       envMetadata: options.state?.envMetadata ?? new DbEnvVariableMetadataRepository(db),
       envSecretValues: options.state?.envSecretValues ?? new DbEnvSecretValueRepository(db),
-      envSecretCipher: options.state?.envSecretCipher
+      envSecretCipher: options.state?.envSecretCipher,
+      controlDeletes: options.state?.controlDeletes ?? new DbControlCommandRepository(db),
+      controlGrants: options.state?.controlGrants ?? new DbControlGrantRepository(db)
     })
   };
 }
@@ -713,10 +802,11 @@ async function createRuntimeRepositories(env: DeployLiteEnv, options: BuildApiAp
     return { ...repositories, auth: { ...repositories.auth, ...options.auth } };
   }
 
+  const auth = { ...(await createSeededInMemoryAuthAdapters(env)), ...options.auth };
   return {
-    auth: { ...(await createSeededInMemoryAuthAdapters(env)), ...options.auth },
+    auth,
     shouldSeedMockData: true,
-    state: createApiState(env, options.state)
+    state: createApiState(env, options.state, auth.audit)
   };
 }
 
@@ -893,7 +983,7 @@ function registerCoreHooks(app: FastifyInstance, corsOrigin: string | null): voi
   });
 }
 
-function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapters: AuthAdapters, authConfig: AuthConfig): void {
+function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapters: AuthAdapters, authConfig: AuthConfig, confirmedDeleteEnabled: boolean): void {
   const requireAuth = createAuthPreHandler(adapters, authConfig);
   const requireMutationRole = createRolePreHandler(adapters, ["admin", "operator"]);
   const requireAdminRole = createRolePreHandler(adapters, ["admin"]);
@@ -997,12 +1087,51 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
     const saved = await state.projects.save(next);
     return ok(request, { project: saved, audit: auditMutation(request, "project.update", "project", saved.id) });
   });
-  app.delete(`${API_PREFIX}/projects/:projectId`, { preHandler: [requireAuth, requireMutationRole] }, async (request, reply) => {
-    const params = z.object({ projectId: z.string().min(1) }).parse(request.params);
-    const existing = await state.projects.findById(params.projectId);
-    if (!existing) {
-      return reply.code(404).send(errorEnvelope(request, "NOT_FOUND", "Project not found."));
+  app.delete(`${API_PREFIX}/projects/:projectId`, { preHandler: confirmedDeleteEnabled ? requireAuth : [requireAuth, requireMutationRole] }, async (request, reply) => {
+    const params = z.object({ projectId: z.string().trim().min(1) }).parse(request.params);
+    if (confirmedDeleteEnabled) {
+      const scope = { kind: "project" as const, projectId: params.projectId };
+      const decision = new PolicyEvaluator().evaluate({
+        actorId: request.auth!.user.id,
+        role: request.auth!.user.role,
+        action: "project.delete",
+        scope,
+        correlationId: request.correlationContext.correlationId,
+         grants: await state.controlGrants.listForActor(request.auth!.user.id)
+      });
+      if (!decision.allowed) {
+        await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "project.delete.rejected", targetType: "project", targetId: params.projectId, metadata: { reason: decision.code } });
+        return reply.code(403).send(errorEnvelope(request, decision.code, "Project deletion is not authorized."));
+      }
+      const idempotencyKey = getHeaderValue(request, "x-control-idempotency-key");
+      if (!idempotencyKey) return reply.code(400).send(errorEnvelope(request, "IDEMPOTENCY_KEY_REQUIRED", "An idempotency key is required for confirmed deletion."));
+      let resolved: { command: ControlCommand; created: boolean };
+      try {
+        resolved = await state.controlDeletes.resolve(createControlCommand({ actorId: request.auth!.user.id, action: "project.delete", scope, input: { projectId: params.projectId }, idempotencyKey, correlationId: request.correlationContext.correlationId }));
+      } catch (error) {
+        if (error instanceof IdempotencyConflictError) return reply.code(409).send(errorEnvelope(request, error.code, error.message));
+        throw error;
+      }
+      if (resolved.command.status === "completed") return ok(request, { removed: true, commandId: resolved.command.id, idempotent: true });
+      const existing = await state.projects.findById(params.projectId);
+      if (!existing) return reply.code(404).send(errorEnvelope(request, "NOT_FOUND", "Project not found."));
+      const confirmationId = getHeaderValue(request, "x-control-confirmation-id");
+      if (resolved.created && !confirmationId) {
+        const confirmation = createConfirmation({ command: resolved.command, classification: "destructive" });
+        await state.controlDeletes.bind(confirmation);
+        await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "project.delete.pending_confirmation", targetType: "project", targetId: params.projectId, metadata: { commandId: resolved.command.id } });
+        return reply.code(202).send(ok(request, { commandId: resolved.command.id, confirmationId: confirmation.id, confirmationRequired: true }));
+      }
+      if (!confirmationId) return reply.code(409).send(errorEnvelope(request, "CONFIRMATION_REQUIRED", "An explicit confirmation is required for project deletion."));
+      const confirmation = { id: confirmationId, commandId: resolved.command.id, actorId: resolved.command.actorId, action: resolved.command.action, scope: resolved.command.scope, inputDigest: resolved.command.inputDigest, classification: "destructive" as const, expiresAt: resolved.command.expiresAt, consumedAt: null };
+      const outcome = await state.controlDeletes.executeConfirmedProjectDelete({ command: resolved.command, confirmation, projectId: params.projectId, requestId: request.correlationContext.requestId });
+      if (outcome.alreadyCompleted) return ok(request, { removed: true, commandId: outcome.command.id, idempotent: true });
+      if (!outcome.accepted) return reply.code(409).send(errorEnvelope(request, "CONFIRMATION_REJECTED", "Confirmation is not eligible for this command."));
+      if (!outcome.auditRecorded) await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "project.delete", targetType: "project", targetId: params.projectId, metadata: { commandId: outcome.command.id, confirmationId } });
+      return ok(request, { removed: true, commandId: outcome.command.id, idempotent: false });
     }
+    const existing = await state.projects.findById(params.projectId);
+    if (!existing) return reply.code(404).send(errorEnvelope(request, "NOT_FOUND", "Project not found."));
     const removed = await state.projects.remove(params.projectId);
     if (!removed) {
       return reply.code(404).send(errorEnvelope(request, "NOT_FOUND", "Project not found."));
@@ -1378,7 +1507,7 @@ export async function buildApiApp(options: BuildApiAppOptions = {}): Promise<Fas
     await seedMockData(repositories.state);
   }
   registerCoreHooks(app, corsOrigin);
-  registerRoutes(app, repositories.state, repositories.auth, authConfig);
+  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE);
   app.addHook("onClose", () => {
     repositories.state.deployRunner.cancelTimers();
   });
