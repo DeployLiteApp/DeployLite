@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:24.12.0-alpine@sha256:c921b97d4b74f51744057454b306b418cf693865e73b8100559189605f6955b8 AS build
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS build
 WORKDIR /app
 ENV CI=true
 RUN corepack enable
@@ -13,13 +13,16 @@ RUN pnpm install --frozen-lockfile
 COPY tsconfig.base.json ./
 COPY apps/web apps/web
 COPY packages/contracts packages/contracts
+RUN mkdir -p apps/web/public
 RUN pnpm --filter @deploylite/contracts build && pnpm --filter @deploylite/web build
 
-FROM node:24.12.0-alpine@sha256:c921b97d4b74f51744057454b306b418cf693865e73b8100559189605f6955b8 AS runtime
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
-RUN corepack enable && addgroup -S deploylite && adduser -S deploylite -G deploylite
-COPY --from=build --chown=deploylite:deploylite /app /app
+RUN addgroup -S deploylite && adduser -S deploylite -G deploylite
+COPY --from=build --chown=deploylite:deploylite /app/apps/web/.next/standalone ./
+COPY --from=build --chown=deploylite:deploylite /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=build --chown=deploylite:deploylite /app/apps/web/public ./apps/web/public
 USER deploylite
 EXPOSE 3000
-CMD ["pnpm", "--filter", "@deploylite/web", "exec", "next", "start", "--hostname", "0.0.0.0", "--port", "3000"]
+CMD ["node", "apps/web/server.js"]

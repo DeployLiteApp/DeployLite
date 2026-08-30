@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:24.12.0-alpine@sha256:c921b97d4b74f51744057454b306b418cf693865e73b8100559189605f6955b8 AS build
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS build
 WORKDIR /app
 ENV CI=true
 RUN corepack enable
@@ -22,12 +22,19 @@ COPY packages/contracts packages/contracts
 COPY packages/db packages/db
 COPY packages/domain packages/domain
 RUN pnpm --filter @deploylite/api... build
+RUN pnpm deploy --filter @deploylite/api --prod /prod \
+  && rm -rf /prod/src /prod/node_modules/.bin \
+  && rm -f /prod/Dockerfile /prod/tsconfig.json /prod/vitest.config.ts /prod/vitest.setup.ts \
+  && rm -f /prod/dist/*.test.* \
+  && find /prod/node_modules/.pnpm -type f \( -path '*/src/*' -o -name '*.test.*' -o -name 'tsconfig.json' -o -name 'vitest.config.ts' -o -name 'vitest.setup.ts' \) -delete
 
-FROM node:24.12.0-alpine@sha256:c921b97d4b74f51744057454b306b418cf693865e73b8100559189605f6955b8 AS runtime
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
-RUN corepack enable && addgroup -S deploylite && adduser -S deploylite -G deploylite
-COPY --from=build --chown=deploylite:deploylite /app /app
+RUN addgroup -S deploylite && adduser -S deploylite -G deploylite
+COPY --from=build --chown=deploylite:deploylite /prod /app
+COPY --from=build --chown=deploylite:deploylite /app/packages/db/migrations /app/packages/db/migrations
+COPY --from=build --chown=deploylite:deploylite /app/packages/db/scripts /app/packages/db/scripts
 USER deploylite
 EXPOSE 3001
-CMD ["node", "apps/api/dist/index.js"]
+CMD ["node", "dist/index.js"]
