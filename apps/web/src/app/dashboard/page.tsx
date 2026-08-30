@@ -1,5 +1,6 @@
 import Link from "next/link";
 import React from "react";
+import { summarizeDeploymentStatuses } from "../../lib/dashboard-deployment-status-summary";
 import { formatBytes } from "../../lib/scaffold-shell";
 import { loadRequestAuthSession, loadRequestDashboardMetadata } from "../../lib/server-auth";
 import { AppShell } from "@/components/app-shell";
@@ -60,6 +61,7 @@ export default async function DashboardPage() {
   const agent = agents[0];
   const resources = agent?.resourceSnapshot;
   const latestDeployment = deployments[0];
+  const deploymentStatusSummary = summarizeDeploymentStatuses(deployments);
 
   return (
     <AppShell email={auth.user.email}>
@@ -126,6 +128,20 @@ export default async function DashboardPage() {
             </CardContent>
           </Card>
         </div>
+
+        <Card>
+          <CardHeader>
+            <h2 className="font-heading text-base leading-snug font-medium">Deployment status summary</h2>
+            <CardDescription>Counts summarize deployments loaded for this dashboard response; they are not real-time.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ul aria-label="Deployment statuses" className="grid gap-2 sm:grid-cols-5">
+              {deploymentStatusSummary.map(({ status, label, count }) => (
+                <li className="rounded-lg border border-border/60 px-3 py-2 font-medium sm:text-center" key={status}>{label}: {count}</li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
 
         <Card>
           <CardHeader>

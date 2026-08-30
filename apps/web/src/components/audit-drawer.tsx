@@ -30,6 +30,12 @@ const auditDrawerCopy = {
   actorLabel: "Filter by actor (user id)",
   actionLabel: "Filter by action prefix",
   refresh: "Refresh"
+  ,loading: "Loading audit history…",
+  paginationLabel: "Audit history pagination",
+  previous: "Previous",
+  next: "Next",
+  previousAriaLabel: "Previous audit events",
+  nextAriaLabel: "Next audit events"
 } as const;
 
 export type AuditDrawerState =
@@ -46,6 +52,9 @@ export type AuditDrawerState =
  * in the parent (e.g. an unreachable API) never escapes the render path.
  */
 export type AuditRefreshHandler = (filter: { actor?: string; action?: string }) => void | Promise<void>;
+export type AuditFilterPatch = { actor?: string; action?: string };
+export type AuditLoadIntent = { kind: "refresh" } | { kind: "filter"; patch: AuditFilterPatch } | { kind: "page"; offset: number };
+export type AuditLoadHandler = (intent: AuditLoadIntent) => void | Promise<void>;
 
 export type AuditDrawerProps = {
   apiBaseUrl: string | null;
@@ -58,7 +67,8 @@ export type AuditDrawerProps = {
   total: number;
   limit: number;
   offset: number;
-  onRefresh?: AuditRefreshHandler;
+  onRefresh?: AuditRefreshHandler | AuditLoadHandler;
+  isLoading?: boolean;
 };
 
 export type AuditDrawerContentProps = {
@@ -67,7 +77,8 @@ export type AuditDrawerContentProps = {
   total: number;
   limit: number;
   offset: number;
-  onRefresh?: AuditRefreshHandler;
+  onRefresh?: AuditRefreshHandler | AuditLoadHandler;
+  isLoading?: boolean;
 };
 
 export function maskAuditActor(actorId: string): string {
@@ -161,7 +172,7 @@ export function resolveAuditFilterApply(filterId: string, value: string): { acto
  * the only honest way to assert "clicking Apply calls onRefresh with
  * the resolved filter" is to invoke the helper directly.
  */
-export function fireRefresh(handler: AuditRefreshHandler, filter: { actor?: string; action?: string }): void {
+export function fireRefresh(handler: any, filter: { actor?: string; action?: string } | AuditLoadIntent): void {
   try {
     const result = handler(filter);
     if (result && typeof (result as Promise<void>).then === "function") {
@@ -182,7 +193,13 @@ export function fireRefresh(handler: AuditRefreshHandler, filter: { actor?: stri
  * `renderToStaticMarkup`). The interactive wrapper in `<AuditDrawer>` is
  * responsible for the Sheet chrome and the filter input state.
  */
-export function AuditDrawerContent({ state, events, total, limit, offset, onRefresh }: AuditDrawerContentProps) {
+export function formatAuditRange(offset: number, eventCount: number, total: number): string {
+  if (eventCount === 0) return "Showing 0 of 0";
+  const start = Math.max(0, offset) + 1;
+  return `Showing ${start}–${start + eventCount - 1} of ${total}`;
+}
+
+export function AuditDrawerContent({ state, events, total, limit, offset, onRefresh, isLoading = false }: AuditDrawerContentProps) {
   // The list is metadata-stripped server-side, but we still run a defensive
   // pass over every rendered field. The scrubber drops any 32+ char hex
   // digest (the shape of a SHA-256 fingerprint) so a future API regression
@@ -195,6 +212,10 @@ export function AuditDrawerContent({ state, events, total, limit, offset, onRefr
     targetId: maskAuditTarget(event.targetId),
     requestId: scrubFingerprintLikeValues(event.requestId)
   })), [events]);
+  const rangeText = state.kind === "error" ? null : formatAuditRange(offset, safeEvents.length, total);
+  const paginationUnavailable = state.kind === "error" || safeEvents.length === 0 || isLoading;
+  const previousDisabled = paginationUnavailable || offset <= 0;
+  const nextDisabled = paginationUnavailable || offset + safeEvents.length >= total;
 
   return (
     <div className="flex flex-col gap-4" data-testid="audit-drawer">
@@ -213,19 +234,23 @@ export function AuditDrawerContent({ state, events, total, limit, offset, onRefr
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => fireRefresh(onRefresh, {})}
+              onClick={() => fireRefresh(onRefresh, { kind: "refresh" })}
               data-testid="audit-drawer-refresh"
             >
               {auditDrawerCopy.refresh}
             </Button>
-            <span className="text-xs text-muted-foreground" data-testid="audit-drawer-meta">
-              {total} event(s) · limit {limit} · offset {offset}
-            </span>
+            <nav aria-label={auditDrawerCopy.paginationLabel} data-testid="audit-drawer-pagination" className="flex items-center gap-2">
+              <span role="status" aria-live="polite" aria-atomic="true" data-testid="audit-drawer-range" className="text-xs text-muted-foreground">
+                {isLoading ? `${auditDrawerCopy.loading} ` : null}{rangeText}
+              </span>
+              <Button type="button" variant="outline" size="sm" aria-label={auditDrawerCopy.previousAriaLabel} disabled={previousDisabled} onClick={() => fireRefresh(onRefresh, { kind: "page", offset: Math.max(0, offset - limit) })} data-testid="audit-drawer-previous">{auditDrawerCopy.previous}</Button>
+              <Button type="button" variant="outline" size="sm" aria-label={auditDrawerCopy.nextAriaLabel} disabled={nextDisabled} onClick={() => fireRefresh(onRefresh, { kind: "page", offset: offset + limit })} data-testid="audit-drawer-next">{auditDrawerCopy.next}</Button>
+            </nav>
           </div>
         </FieldGroup>
       ) : null}
 
-      <div id="audit-drawer-list" data-testid="audit-drawer-list" className="flex-1 overflow-auto">
+      <div id="audit-drawer-list" data-testid="audit-drawer-list" className="flex-1 overflow-auto" aria-busy={isLoading}>
         {state.kind === "error" ? (
           <p className="text-sm text-destructive" role="alert" data-testid="audit-drawer-error">
             {describeAuditListFailure(state)}
@@ -261,7 +286,7 @@ export function AuditDrawerContent({ state, events, total, limit, offset, onRefr
   );
 }
 
-function AuditFilterInput({ filterId, placeholder, onRefresh }: { filterId: string; placeholder: string; onRefresh: AuditRefreshHandler }) {
+function AuditFilterInput({ filterId, placeholder, onRefresh }: { filterId: string; placeholder: string; onRefresh: AuditRefreshHandler | AuditLoadHandler }) {
   // The actual interactive filter state lives in the wrapper component so it
   // persists across re-renders. This inner input is uncontrolled on purpose:
   // it forwards its value to the parent only when the user clicks Apply.
@@ -281,7 +306,7 @@ function AuditFilterInput({ filterId, placeholder, onRefresh }: { filterId: stri
         type="button"
         variant="ghost"
         size="sm"
-        onClick={() => fireRefresh(onRefresh, resolveAuditFilterApply(filterId, value))}
+        onClick={() => fireRefresh(onRefresh, { kind: "filter", patch: resolveAuditFilterApply(filterId, value) })}
         data-testid={`${filterId}-apply`}
       >
         Apply
@@ -301,7 +326,8 @@ export function AuditDrawer({
   total,
   limit,
   offset,
-  onRefresh
+  onRefresh,
+  isLoading = false
 }: AuditDrawerProps) {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -321,6 +347,7 @@ export function AuditDrawer({
           limit={limit}
           offset={offset}
           onRefresh={onRefresh}
+          isLoading={isLoading}
         />
       </SheetContent>
     </Sheet>

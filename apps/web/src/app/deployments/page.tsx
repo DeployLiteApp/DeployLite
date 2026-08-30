@@ -1,10 +1,9 @@
 import Link from "next/link";
 import { loadRequestAuthSession, loadRequestDashboardMetadata } from "@/lib/server-auth";
 import { AppShell } from "@/components/app-shell";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { DeploymentHistoryStatusFilter } from "./deployment-history-status-filter";
 
 export const dynamic = "force-dynamic";
 
@@ -70,47 +69,11 @@ export default async function DeploymentsPage() {
               <CardDescription>{deployments.length} record(s)</CardDescription>
             </CardHeader>
             <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>ID</TableHead>
-                    <TableHead>Project</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Commit</TableHead>
-                    <TableHead>Started</TableHead>
-                    <TableHead>Finished</TableHead>
-                    <TableHead></TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {deployments.map((deployment) => (
-                    <TableRow key={deployment.id}>
-                      <TableCell className="font-mono text-xs">{deployment.id}</TableCell>
-                      <TableCell className="font-mono text-xs">{deployment.projectId}</TableCell>
-                      <TableCell><Badge variant={statusVariant(deployment.status)}>{deployment.status}</Badge></TableCell>
-                      <TableCell className="font-mono text-xs">{deployment.commitSha}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{new Date(deployment.startedAt).toLocaleString()}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{deployment.finishedAt ? new Date(deployment.finishedAt).toLocaleString() : "—"}</TableCell>
-                      <TableCell>
-                        <Link href={`/deployments/${deployment.id}`}>
-                          <Button size="sm" variant="outline">Logs</Button>
-                        </Link>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              <DeploymentHistoryStatusFilter deployments={deployments} />
             </CardContent>
           </Card>
         )}
       </div>
     </AppShell>
   );
-}
-
-function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
-  if (status === "succeeded") return "secondary";
-  if (status === "failed" || status === "canceled") return "destructive";
-  if (status === "running" || status === "queued") return "default";
-  return "outline";
 }
