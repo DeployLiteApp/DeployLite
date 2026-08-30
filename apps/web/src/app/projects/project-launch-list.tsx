@@ -1,20 +1,55 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { filterProjectLaunchSummaries, parseProjectRuntimeFilter, parseProjectStatusFilter, PROJECT_RUNTIME_FILTER_OPTIONS, PROJECT_STATUS_FILTER_OPTIONS, type ProjectListFilterCriteria } from "./project-list-filters";
 import type { ProjectLaunchSummary } from "./project-launch-hub";
 
 export type ProjectLaunchListProps = {
   rows: readonly ProjectLaunchSummary[];
 };
 
+export function getProjectListFilterFeedback(displayedCount: number, totalCount: number): string {
+  const summary = `Showing ${displayedCount} of ${totalCount} loaded projects.`;
+  return displayedCount === 0 ? `${summary} No matching projects. Adjust the filters to see loaded projects.` : summary;
+}
+
 export function ProjectLaunchList({ rows }: ProjectLaunchListProps) {
+  const [criteria, setCriteria] = useState<ProjectListFilterCriteria>({ query: "", status: "all", runtime: "all" });
+  const visibleRows = filterProjectLaunchSummaries(rows, criteria);
+
   return (
-    <div data-testid="project-launch-list">
-      <Table data-testid="projects-launch-hub-table">
+    <div className="flex flex-col gap-4" data-testid="project-launch-list">
+      <fieldset className="grid gap-4 rounded-lg border border-border/60 p-4 md:grid-cols-[minmax(0,2fr)_minmax(12rem,1fr)_minmax(12rem,1fr)]">
+        <legend className="sr-only">Filter loaded projects</legend>
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="project-list-query">Search projects</Label>
+          <Input id="project-list-query" name="query" type="search" placeholder="Name, repository, or branch" value={criteria.query} aria-controls="project-launch-list-results" onChange={(event) => setCriteria((current) => ({ ...current, query: event.target.value }))} />
+        </div>
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="project-list-status">Deployment status</Label>
+          <select id="project-list-status" name="status" value={criteria.status} aria-controls="project-launch-list-results" className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30" onChange={(event) => setCriteria((current) => ({ ...current, status: parseProjectStatusFilter(event.target.value) }))}>
+            {PROJECT_STATUS_FILTER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </div>
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="project-list-runtime">Runtime readiness</Label>
+          <select id="project-list-runtime" name="runtime" value={criteria.runtime} aria-controls="project-launch-list-results" className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30" onChange={(event) => setCriteria((current) => ({ ...current, runtime: parseProjectRuntimeFilter(event.target.value) }))}>
+            {PROJECT_RUNTIME_FILTER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </div>
+      </fieldset>
+      <div data-testid="project-launch-filter-feedback" role="status" aria-live="polite" aria-atomic="true" className="text-sm text-muted-foreground">{getProjectListFilterFeedback(visibleRows.length, rows.length)}</div>
+      <div id="project-launch-list-results">
+      {visibleRows.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-border p-6 text-center" data-testid="project-launch-filter-empty"><p className="font-medium">No matching projects.</p><p className="mt-1 text-sm text-muted-foreground">Try adjusting the search, status, or runtime filters.</p></div>
+      ) : <Table data-testid="projects-launch-hub-table">
         <TableHeader>
           <TableRow>
             <TableHead>Name</TableHead>
@@ -27,11 +62,12 @@ export function ProjectLaunchList({ rows }: ProjectLaunchListProps) {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {rows.map((row) => (
+            {visibleRows.map((row) => (
             <LaunchHubRow key={row.project.id} row={row} />
           ))}
         </TableBody>
-      </Table>
+      </Table>}
+      </div>
     </div>
   );
 }
