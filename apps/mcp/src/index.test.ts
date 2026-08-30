@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFile } from "node:fs/promises";
 import type { Deployment, Project } from "@deploylite/contracts";
 import {
   createDeployLiteMcpTools,
@@ -39,8 +40,20 @@ describe("DeployLite MCP read-only scaffold", () => {
     });
   });
 
+  it("uses explicit non-secret markers in MCP mock fixtures", async () => {
+    const source = await readFile(new URL("./index.ts", import.meta.url), "utf8");
+
+    for (const legacyLiteral of ["credential@example.test", "--token=mock-secret", "--password=mock-secret", 'token: "mock-secret"', "dl_1234567890abcdef"]) {
+      expect(source).not.toContain(legacyLiteral);
+    }
+    for (const fixtureMarker of ["fixture-repo-user", "fixture-command-token", "fixture-command-password", "fixture_audit_token", "dl_fixture_mcp_token_12345678"]) {
+      expect(source).toContain(fixtureMarker);
+    }
+  });
+
   it("redacts secret-like deployment log output and keeps reconnect shape", async () => {
     const result = await deployLiteMcpTools.deploylite_get_deployment_logs({ deploymentId: "dep_mock_1", afterSequence: 1 });
+    const logContent = result.structuredContent as { events: Array<{ message: string }> };
     const serialized = JSON.stringify(result);
 
     expect(result.structuredContent).toMatchObject({
@@ -50,7 +63,9 @@ describe("DeployLite MCP read-only scaffold", () => {
       safety: { readOnly: true, destructive: false, redacted: true }
     });
     expect(serialized).toContain("[REDACTED]");
-    expect(serialized).not.toContain("dl_1234567890abcdef");
+    expect(logContent.events[0]?.message).toBe("Using token [REDACTED] for mock fixture");
+    expect(result.content[0]?.text).toContain("[REDACTED]");
+    expect(serialized).not.toContain("dl_fixture_mcp_token_12345678");
   });
 
   it("uses API-shaped deployment filters without mutating data", async () => {
@@ -75,19 +90,19 @@ describe("DeployLite MCP read-only scaffold", () => {
 describe("DeployLite MCP project and audit visibility", () => {
   const projectA = {
     id: "project_a",
-    name: "Álpha https://name-user:name@password@example.test/name",
-    repoUrl: "https://repo-user:repo-password@example.test/alpha.git",
-    defaultBranch: "https://branch-user:branch@password@example.test/main",
-    buildCommand: "printenv SECRET",
-    runCommand: "node server.js --token=secret",
+    name: "Álpha https://fixture-name-user:fixture-name-pass@fixture-name-more@example.test/name",
+    repoUrl: "https://fixture-repo-user:fixture-repo-pass@fixture-repo-more@example.test/alpha.git",
+    defaultBranch: "https://fixture-branch-user:fixture-branch-pass@fixture-branch-more@example.test/main",
+    buildCommand: "printenv FIXTURE_COMMAND_SECRET",
+    runCommand: "node server.js --token=fixture-command-token",
     port: 3000,
-    description: "https://description-user:description@password@example.test/description",
-    imageTag: "https://image-user:image@password@example.test/image",
-    unknown: "must-not-leak"
+    description: "https://fixture-description-user:fixture-description-pass@fixture-description-more@example.test/description",
+    imageTag: "https://fixture-image-user:fixture-image-pass@fixture-image-more@example.test/image",
+    unknown: "fixture-project-unknown"
   };
   const projectB = { ...projectA, id: "project_b", name: "beta", repoUrl: "https://example.test/beta.git" };
   const auditEvents = [
-    { id: "audit_b", actorId: "actor_1", action: "project.updated", projectId: "project_a", targetType: "project", targetId: "project_a", requestId: "raw_request", correlationId: "raw_correlation", timestamp: "2026-01-02T00:00:00.000Z", metadata: { password: "do-not-leak", unknown: "must-not-leak" } },
+    { id: "audit_b", actorId: "actor_1", action: "project.updated", projectId: "project_a", targetType: "project", targetId: "project_a", requestId: "raw_request", correlationId: "raw_correlation", timestamp: "2026-01-02T00:00:00.000Z", metadata: { password: "fixture-audit-password", unknown: "fixture-audit-metadata" } },
     { id: "audit_a", actorId: "actor_1", action: "project.updated", projectId: "project_a", targetType: "project", targetId: "project_a", requestId: "raw_request", correlationId: "raw_correlation", timestamp: "2026-01-02T00:00:00.000Z" },
     { id: "audit_other", actorId: "actor_2", action: "project.deleted", projectId: "project_b", targetType: "project", targetId: "project_b", requestId: "raw_request", correlationId: "raw_correlation", timestamp: "2026-01-01T00:00:00.000Z" }
   ];
@@ -139,7 +154,7 @@ describe("DeployLite MCP project and audit visibility", () => {
     expect(auditContent.events.map((event) => event.id)).toEqual(["audit_a"]);
     expect(auditContent).toMatchObject({ requestId: "mcp_mock_request_1", correlationId: "mcp_mock_request_1", total: 2, offset: 0, limit: 1 });
     const serialized = JSON.stringify([projects.structuredContent, projects.content, audits.structuredContent, audits.content]);
-    for (const value of ["credential", "printenv", "node server", "must-not-leak", "do-not-leak", "metadata", "repoUrl", "buildCommand", "runCommand"]) {
+    for (const value of ["fixture-repo-user", "fixture-repo-pass", "FIXTURE_COMMAND_SECRET", "fixture-command-token", "fixture-project-unknown", "fixture-audit-password", "fixture-audit-metadata", "metadata", "repoUrl", "buildCommand", "runCommand"]) {
       expect(serialized).not.toContain(value);
     }
   });
@@ -149,6 +164,7 @@ describe("DeployLite MCP project and audit visibility", () => {
 
     const result = await tools.deploylite_list_projects({});
     const project = (result.structuredContent as { projects: Array<Record<string, unknown>> }).projects.find(({ id }) => id === "project_a");
+    const text = result.content[0]?.text;
     const serialized = JSON.stringify([result.structuredContent, result.content]);
 
     expect(project).toMatchObject({
@@ -157,8 +173,12 @@ describe("DeployLite MCP project and audit visibility", () => {
       description: "https://[REDACTED]@example.test/description",
       imageTag: "https://[REDACTED]@example.test/image"
     });
-    for (const value of ["name-user", "name-password", "branch-user", "branch-password", "description-user", "description-password", "image-user", "image-password", "repo-user", "repo-password"]) {
+    for (const destination of ["https://[REDACTED]@example.test/name", "https://[REDACTED]@example.test/main", "https://[REDACTED]@example.test/description", "https://[REDACTED]@example.test/image"]) {
+      expect(text).toContain(destination);
+    }
+    for (const value of ["fixture-name-user", "fixture-name-pass", "fixture-name-more", "fixture-branch-user", "fixture-branch-pass", "fixture-branch-more", "fixture-description-user", "fixture-description-pass", "fixture-description-more", "fixture-image-user", "fixture-image-pass", "fixture-image-more", "fixture-repo-user", "fixture-repo-pass", "fixture-repo-more"]) {
       expect(serialized).not.toContain(value);
+      expect(text).not.toContain(value);
     }
   });
 
@@ -248,6 +268,72 @@ describe("DeployLite MCP project and audit visibility", () => {
       const { tools: readinessTools } = contextToolsFor([{ permission: "project.read", scope: "platform" }], [project], status ? [{ ...deployments[0]!, status }] : []);
       await expect(readinessTools.deploylite_get_project_context({ projectId: "project_a" })).resolves.toMatchObject({ structuredContent: { readiness: { status: expected, reason, mode: "mock-only", advisory: "non-executing; not production-health evidence" } } });
     }
+  });
+
+  it("orders valid offset timestamps by their actual instant without mutating source deployments", async () => {
+    const configuredProject = { ...projectA, buildCommand: "pnpm build", runCommand: "pnpm start", port: 3000, imageTag: "alpha:latest" };
+    const deployments: Deployment[] = [
+      { id: "dep_earlier", projectId: "project_a", agentId: "agent_a", status: "failed", commitSha: "abcdef1", startedAt: "2026-01-03T00:00:00.000Z", finishedAt: "2026-01-03T00:01:00.000Z" },
+      { id: "dep_later", projectId: "project_a", agentId: "agent_a", status: "succeeded", commitSha: "abcdef2", startedAt: "2026-01-02T23:30:00.000-01:00", finishedAt: "2026-01-03T00:31:00.000Z" }
+    ];
+    const before = structuredClone(deployments);
+    const { tools } = contextToolsFor([{ permission: "project.read", scope: "platform" }], [configuredProject], deployments);
+
+    const first = await tools.deploylite_get_project_context({ projectId: "project_a" });
+    const second = await tools.deploylite_get_project_context({ projectId: "project_a" });
+
+    expect(first.structuredContent).toMatchObject({ latestDeployment: { id: "dep_later", status: "succeeded" }, readiness: { status: "ready", reason: "latest_deployment_succeeded" } });
+    expect(first).toEqual(second);
+    expect(deployments).toEqual(before);
+  });
+
+  it("uses descending IDs when different offsets resolve to the same instant", async () => {
+    const configuredProject = { ...projectA, buildCommand: "pnpm build", runCommand: "pnpm start", port: 3000, imageTag: "alpha:latest" };
+    const deployments: Deployment[] = [
+      { id: "dep_tie_a", projectId: "project_a", agentId: "agent_a", status: "queued", commitSha: "abcdef1", startedAt: "2026-01-03T01:00:00.000Z", finishedAt: null },
+      { id: "dep_tie_z", projectId: "project_a", agentId: "agent_a", status: "running", commitSha: "abcdef2", startedAt: "2026-01-03T00:00:00.000-01:00", finishedAt: null }
+    ];
+    const { tools } = contextToolsFor([{ permission: "project.read", scope: "platform" }], [configuredProject], deployments);
+
+    const result = await tools.deploylite_get_project_context({ projectId: "project_a" });
+
+    expect(result.structuredContent).toMatchObject({ latestDeployment: { id: "dep_tie_z", status: "running" }, readiness: { status: "attention", reason: "latest_deployment_running" } });
+  });
+
+  it("skips a lexically greatest malformed timestamp so both MCP outputs remain schema-valid and deterministic", async () => {
+    const configuredProject = { ...projectA, buildCommand: "pnpm build", runCommand: "pnpm start", port: 3000, imageTag: "alpha:latest" };
+    const deployments = [
+      { id: "dep_lexical", projectId: "project_a", agentId: "agent_a", status: "failed", commitSha: "abcdef1", startedAt: "2026-01-03T00:00:00.000Z", finishedAt: "2026-01-03T00:01:00.000Z" },
+      { id: "dep_instant", projectId: "project_a", agentId: "agent_a", status: "succeeded", commitSha: "abcdef2", startedAt: "2026-01-02T23:30:00.000-01:00", finishedAt: "2026-01-03T00:31:00.000Z" },
+      { id: "dep_malformed", projectId: "project_a", agentId: "agent_a", status: "queued", commitSha: "abcdef3", startedAt: "zzzz-malformed", finishedAt: null }
+    ] as unknown as Deployment[];
+    const before = structuredClone(deployments);
+    const { tools } = contextToolsFor([{ permission: "project.read", scope: "platform" }], [configuredProject], deployments);
+
+    const first = await tools.deploylite_get_project_context({ projectId: "project_a" });
+    const second = await tools.deploylite_get_project_context({ projectId: "project_a" });
+
+    expect(first.structuredContent).toMatchObject({ latestDeployment: { id: "dep_instant", status: "succeeded", startedAt: "2026-01-02T23:30:00.000-01:00" }, readiness: { status: "ready", reason: "latest_deployment_succeeded" } });
+    expect(first.content[0]?.text).toBe(JSON.stringify(first.structuredContent));
+    expect(first.content[0]?.text).not.toContain("zzzz-malformed");
+    expect(first).toEqual(second);
+    expect(deployments).toEqual(before);
+  });
+
+  it("returns deterministic no-deployment readiness when every candidate timestamp is malformed", async () => {
+    const configuredProject = { ...projectA, buildCommand: "pnpm build", runCommand: "pnpm start", port: 3000, imageTag: "alpha:latest" };
+    const deployments = [
+      { id: "dep_malformed_z", projectId: "project_a", agentId: "agent_a", status: "queued", commitSha: "abcdef1", startedAt: "zzzz-malformed", finishedAt: null },
+      { id: "dep_malformed_a", projectId: "project_a", agentId: "agent_a", status: "failed", commitSha: "abcdef2", startedAt: "aaaa-malformed", finishedAt: null }
+    ] as unknown as Deployment[];
+    const { tools } = contextToolsFor([{ permission: "project.read", scope: "platform" }], [configuredProject], deployments);
+
+    const first = await tools.deploylite_get_project_context({ projectId: "project_a" });
+    const second = await tools.deploylite_get_project_context({ projectId: "project_a" });
+
+    expect(first.structuredContent).toMatchObject({ latestDeployment: null, readiness: { status: "not_configured", reason: "no_deployment" } });
+    expect(first.content[0]?.text).toBe(JSON.stringify(first.structuredContent));
+    expect(first).toEqual(second);
   });
 
   it("uses an allow-list plus redaction for byte-stable dual output without mutating source fixtures", async () => {
