@@ -6,6 +6,7 @@ import {
   AuditDrawerContent,
   describeAuditListFailure,
   fireRefresh,
+  formatAuditRange,
   maskAuditActor,
   maskAuditTarget,
   renderAuditTimestamp,
@@ -289,5 +290,31 @@ describe("AuditDrawerContent render markup", () => {
     );
     expect(html).not.toContain("data-testid=\"audit-drawer-refresh\"");
     expect(html).not.toContain("data-testid=\"audit-drawer-actor-apply\"");
+  });
+
+  it("renders the inclusive range and labelled pagination controls", () => {
+    const html = renderToStaticMarkup(React.createElement(AuditDrawerContent, {
+      events: [event({ id: "ev_first" }), event({ id: "ev_second" })], total: 4, limit: 50, offset: 0,
+      state: { kind: "ready" }, onRefresh: vi.fn()
+    }));
+    expect(formatAuditRange(0, 2, 4)).toBe("Showing 1–2 of 4");
+    expect(html).toContain("Showing 1–2 of 4");
+    expect(html).toContain('aria-label="Previous audit events"');
+    expect(html).toContain('aria-label="Next audit events"');
+    expect(html).toMatch(/data-testid="audit-drawer-previous"[^>]*disabled/);
+  });
+
+  it("disables navigation for empty, error, and loading states", () => {
+    for (const props of [
+      { events: [], state: { kind: "ready" as const }, isLoading: false },
+      { events: [], state: { kind: "error" as const, reason: "api-unreachable" as const }, isLoading: false },
+      { events: [event({})], state: { kind: "ready" as const }, isLoading: true }
+    ]) {
+      const html = renderToStaticMarkup(React.createElement(AuditDrawerContent, {
+        ...props, total: props.events.length, limit: 50, offset: 0, onRefresh: vi.fn()
+      }));
+      expect(html).toMatch(/data-testid="audit-drawer-previous"[^>]*disabled/);
+      expect(html).toMatch(/data-testid="audit-drawer-next"[^>]*disabled/);
+    }
   });
 });
