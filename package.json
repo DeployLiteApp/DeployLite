@@ -19,7 +19,8 @@
     "ci:local:evidence:test": "node --test scripts/ci/local-evidence/*.test.mjs",
     "runtime:contract": "bash scripts/runtime-contract.test.sh",
     "ci:evidence:check": "node scripts/ci/collect-evidence.mjs --check-only",
-    "ci:vitest:forbid-only": "node scripts/ci/vitest-forbid-only.test.mjs"
+    "ci:vitest:forbid-only": "node scripts/ci/vitest-forbid-only.test.mjs",
+    "test:docker-dry-run": "pnpm --filter @deploylite/agent docker-dry-run"
   },
   "devDependencies": {
     "@types/react": "^19.0.2",
