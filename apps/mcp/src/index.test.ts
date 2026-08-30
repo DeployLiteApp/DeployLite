@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFile } from "node:fs/promises";
+import type { Deployment, Project } from "@deploylite/contracts";
 import {
   createDeployLiteMcpTools,
   createMockDeployLiteApiClient,
   deployLiteMcpToolDefinitions,
   deployLiteMcpTools,
-  type DeployLiteApiClient
+  type DeployLiteApiClient,
+  type McpReadAuthorizer
 } from "./index.js";
 
 describe("DeployLite MCP read-only scaffold", () => {
@@ -16,9 +19,10 @@ describe("DeployLite MCP read-only scaffold", () => {
       "deploylite_list_deployments",
       "deploylite_get_deployment_logs",
       "deploylite_list_projects",
-      "deploylite_list_audit_events"
+      "deploylite_list_audit_events",
+      "deploylite_get_project_context"
     ]);
-    expect(tools).toHaveLength(5);
+    expect(tools).toHaveLength(6);
     for (const tool of tools) {
       expect(tool.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
       expect(tool.description).toMatch(/Read-only|read-only/);
@@ -36,8 +40,20 @@ describe("DeployLite MCP read-only scaffold", () => {
     });
   });
 
+  it("uses explicit non-secret markers in MCP mock fixtures", async () => {
+    const source = await readFile(new URL("./index.ts", import.meta.url), "utf8");
+
+    for (const legacyLiteral of ["credential@example.test", "--token=mock-secret", "--password=mock-secret", 'token: "mock-secret"', "dl_1234567890abcdef"]) {
+      expect(source).not.toContain(legacyLiteral);
+    }
+    for (const fixtureMarker of ["fixture-repo-user", "fixture-command-token", "fixture-command-password", "fixture_audit_token", "dl_fixture_mcp_token_12345678"]) {
+      expect(source).toContain(fixtureMarker);
+    }
+  });
+
   it("redacts secret-like deployment log output and keeps reconnect shape", async () => {
     const result = await deployLiteMcpTools.deploylite_get_deployment_logs({ deploymentId: "dep_mock_1", afterSequence: 1 });
+    const logContent = result.structuredContent as { events: Array<{ message: string }> };
     const serialized = JSON.stringify(result);
 
     expect(result.structuredContent).toMatchObject({
@@ -47,7 +63,9 @@ describe("DeployLite MCP read-only scaffold", () => {
       safety: { readOnly: true, destructive: false, redacted: true }
     });
     expect(serialized).toContain("[REDACTED]");
-    expect(serialized).not.toContain("dl_1234567890abcdef");
+    expect(logContent.events[0]?.message).toBe("Using token [REDACTED] for mock fixture");
+    expect(result.content[0]?.text).toContain("[REDACTED]");
+    expect(serialized).not.toContain("dl_fixture_mcp_token_12345678");
   });
 
   it("uses API-shaped deployment filters without mutating data", async () => {
@@ -72,19 +90,19 @@ describe("DeployLite MCP read-only scaffold", () => {
 describe("DeployLite MCP project and audit visibility", () => {
   const projectA = {
     id: "project_a",
-    name: "Álpha https://name-user:name@password@example.test/name",
-    repoUrl: "https://repo-user:repo-password@example.test/alpha.git",
-    defaultBranch: "https://branch-user:branch@password@example.test/main",
-    buildCommand: "printenv SECRET",
-    runCommand: "node server.js --token=secret",
+    name: "Álpha https://fixture-name-user:fixture-name-pass@fixture-name-more@example.test/name",
+    repoUrl: "https://fixture-repo-user:fixture-repo-pass@fixture-repo-more@example.test/alpha.git",
+    defaultBranch: "https://fixture-branch-user:fixture-branch-pass@fixture-branch-more@example.test/main",
+    buildCommand: "printenv FIXTURE_COMMAND_SECRET",
+    runCommand: "node server.js --token=fixture-command-token",
     port: 3000,
-    description: "https://description-user:description@password@example.test/description",
-    imageTag: "https://image-user:image@password@example.test/image",
-    unknown: "must-not-leak"
+    description: "https://fixture-description-user:fixture-description-pass@fixture-description-more@example.test/description",
+    imageTag: "https://fixture-image-user:fixture-image-pass@fixture-image-more@example.test/image",
+    unknown: "fixture-project-unknown"
   };
   const projectB = { ...projectA, id: "project_b", name: "beta", repoUrl: "https://example.test/beta.git" };
   const auditEvents = [
-    { id: "audit_b", actorId: "actor_1", action: "project.updated", projectId: "project_a", targetType: "project", targetId: "project_a", requestId: "raw_request", correlationId: "raw_correlation", timestamp: "2026-01-02T00:00:00.000Z", metadata: { password: "do-not-leak", unknown: "must-not-leak" } },
+    { id: "audit_b", actorId: "actor_1", action: "project.updated", projectId: "project_a", targetType: "project", targetId: "project_a", requestId: "raw_request", correlationId: "raw_correlation", timestamp: "2026-01-02T00:00:00.000Z", metadata: { password: "fixture-audit-password", unknown: "fixture-audit-metadata" } },
     { id: "audit_a", actorId: "actor_1", action: "project.updated", projectId: "project_a", targetType: "project", targetId: "project_a", requestId: "raw_request", correlationId: "raw_correlation", timestamp: "2026-01-02T00:00:00.000Z" },
     { id: "audit_other", actorId: "actor_2", action: "project.deleted", projectId: "project_b", targetType: "project", targetId: "project_b", requestId: "raw_request", correlationId: "raw_correlation", timestamp: "2026-01-01T00:00:00.000Z" }
   ];
@@ -136,7 +154,7 @@ describe("DeployLite MCP project and audit visibility", () => {
     expect(auditContent.events.map((event) => event.id)).toEqual(["audit_a"]);
     expect(auditContent).toMatchObject({ requestId: "mcp_mock_request_1", correlationId: "mcp_mock_request_1", total: 2, offset: 0, limit: 1 });
     const serialized = JSON.stringify([projects.structuredContent, projects.content, audits.structuredContent, audits.content]);
-    for (const value of ["credential", "printenv", "node server", "must-not-leak", "do-not-leak", "metadata", "repoUrl", "buildCommand", "runCommand"]) {
+    for (const value of ["fixture-repo-user", "fixture-repo-pass", "FIXTURE_COMMAND_SECRET", "fixture-command-token", "fixture-project-unknown", "fixture-audit-password", "fixture-audit-metadata", "metadata", "repoUrl", "buildCommand", "runCommand"]) {
       expect(serialized).not.toContain(value);
     }
   });
@@ -146,6 +164,7 @@ describe("DeployLite MCP project and audit visibility", () => {
 
     const result = await tools.deploylite_list_projects({});
     const project = (result.structuredContent as { projects: Array<Record<string, unknown>> }).projects.find(({ id }) => id === "project_a");
+    const text = result.content[0]?.text;
     const serialized = JSON.stringify([result.structuredContent, result.content]);
 
     expect(project).toMatchObject({
@@ -154,8 +173,12 @@ describe("DeployLite MCP project and audit visibility", () => {
       description: "https://[REDACTED]@example.test/description",
       imageTag: "https://[REDACTED]@example.test/image"
     });
-    for (const value of ["name-user", "name-password", "branch-user", "branch-password", "description-user", "description-password", "image-user", "image-password", "repo-user", "repo-password"]) {
+    for (const destination of ["https://[REDACTED]@example.test/name", "https://[REDACTED]@example.test/main", "https://[REDACTED]@example.test/description", "https://[REDACTED]@example.test/image"]) {
+      expect(text).toContain(destination);
+    }
+    for (const value of ["fixture-name-user", "fixture-name-pass", "fixture-name-more", "fixture-branch-user", "fixture-branch-pass", "fixture-branch-more", "fixture-description-user", "fixture-description-pass", "fixture-description-more", "fixture-image-user", "fixture-image-pass", "fixture-image-more", "fixture-repo-user", "fixture-repo-pass", "fixture-repo-more"]) {
       expect(serialized).not.toContain(value);
+      expect(text).not.toContain(value);
     }
   });
 
@@ -170,5 +193,165 @@ describe("DeployLite MCP project and audit visibility", () => {
     expect(first.structuredContent.total).toBe(3);
     expect(defaultPage.structuredContent).toMatchObject({ offset: 0, limit: 50, total: 3 });
     expect(client.listAuditEvents).toHaveBeenCalledTimes(3);
+  });
+
+  function contextToolsFor(
+    grants: Array<{ permission: "project.read" | "audit.read"; scope: "platform" | "project"; projectId?: string }>,
+    projects: Project[] = [projectA],
+    deployments: Deployment[] = [
+      { id: "dep_a", projectId: "project_a", agentId: "agent_a", status: "succeeded", commitSha: "abcdef1", startedAt: "2026-01-02T00:00:00.000Z", finishedAt: "2026-01-02T00:01:00.000Z" }
+    ],
+    authorizer?: McpReadAuthorizer
+  ) {
+    const client: DeployLiteApiClient = {
+      getServerStatus: vi.fn(),
+      listDeployments: vi.fn().mockResolvedValue({ deployments }),
+      getDeploymentLogs: vi.fn(),
+      listProjects: vi.fn().mockResolvedValue(projects),
+      listAuditEvents: vi.fn()
+    };
+    return { client, tools: createDeployLiteMcpTools(client, { readContext: { actorId: "actor_1", grants }, ...(authorizer ? { authorizer } : {}) }) };
+  }
+
+  it("accepts only an exact valid projectId before authorization or reads", async () => {
+    const authorizer: McpReadAuthorizer = { projectScopes: vi.fn(() => "platform" as const), assertAuditScope: vi.fn() };
+    const invalid = contextToolsFor([{ permission: "project.read", scope: "platform" }], undefined, undefined, authorizer);
+    for (const input of [{}, { projectId: "" }, { projectId: " project_a" }, { projectId: "project/a" }, { projectId: "project_a", extra: true }]) {
+      await expect(invalid.tools.deploylite_get_project_context(input)).rejects.toMatchObject({ name: "ZodError" });
+    }
+    expect(invalid.client.listProjects).not.toHaveBeenCalled();
+    expect(invalid.client.listDeployments).not.toHaveBeenCalled();
+    expect(authorizer.projectScopes).not.toHaveBeenCalled();
+
+    const valid = contextToolsFor([{ permission: "project.read", scope: "platform" }]);
+    await expect(valid.tools.deploylite_get_project_context({ projectId: "project_a" })).resolves.toMatchObject({ structuredContent: { project: { id: "project_a" } } });
+    expect(valid.client.listProjects).toHaveBeenCalledTimes(1);
+    expect(valid.client.listDeployments).toHaveBeenCalledTimes(1);
+  });
+
+  it("denies cross-project reads before all client reads and stops missing projects before deployment reads", async () => {
+    const denied = contextToolsFor([{ permission: "project.read", scope: "project", projectId: "project_b" }]);
+    await expect(denied.tools.deploylite_get_project_context({ projectId: "project_a" })).rejects.toMatchObject({ code: "FORBIDDEN", requestId: "mcp_mock_request_1", correlationId: "mcp_mock_request_1" });
+    expect(denied.client.listProjects).not.toHaveBeenCalled();
+    expect(denied.client.listDeployments).not.toHaveBeenCalled();
+
+    const scoped = contextToolsFor([{ permission: "project.read", scope: "project", projectId: "project_a" }]);
+    await expect(scoped.tools.deploylite_get_project_context({ projectId: "project_a" })).resolves.toMatchObject({ structuredContent: { project: { id: "project_a" } } });
+    expect(scoped.client.listProjects).toHaveBeenCalledTimes(1);
+    expect(scoped.client.listDeployments).toHaveBeenCalledTimes(1);
+
+    const missing = contextToolsFor([{ permission: "project.read", scope: "platform" }]);
+    await expect(missing.tools.deploylite_get_project_context({ projectId: "project_missing" })).rejects.toMatchObject({ code: "NOT_FOUND", requestId: "mcp_mock_request_1", correlationId: "mcp_mock_request_1" });
+    expect(missing.client.listProjects).toHaveBeenCalledTimes(1);
+    expect(missing.client.listDeployments).not.toHaveBeenCalled();
+  });
+
+  it("selects the latest deployment deterministically and maps advisory readiness exactly", async () => {
+    const configuredProject = { ...projectA, buildCommand: "pnpm build", runCommand: "pnpm start", port: 3000, imageTag: "alpha:latest" };
+    const deployments: Deployment[] = [
+      { id: "dep_a", projectId: "project_a", agentId: "agent_a", status: "failed", commitSha: "abcdef1", startedAt: "2026-01-03T00:00:00.000Z", finishedAt: "2026-01-03T00:01:00.000Z" },
+      { id: "dep_z", projectId: "project_a", agentId: "agent_a", status: "succeeded", commitSha: "abcdef2", startedAt: "2026-01-03T00:00:00.000Z", finishedAt: "2026-01-03T00:01:00.000Z" }
+    ];
+    const { tools } = contextToolsFor([{ permission: "project.read", scope: "platform" }], [configuredProject], deployments);
+    const result = await tools.deploylite_get_project_context({ projectId: "project_a" });
+    expect(result.structuredContent).toMatchObject({ latestDeployment: { id: "dep_z", status: "succeeded" }, readiness: { status: "ready", reason: "latest_deployment_succeeded", mode: "mock-only", advisory: "non-executing; not production-health evidence" } });
+
+    const readinessCases: Array<[Project, Deployment["status"] | undefined, "ready" | "attention" | "not_configured", string]> = [
+      [{ ...configuredProject, buildCommand: null }, "succeeded", "not_configured", "incomplete_configuration"],
+      [configuredProject, undefined, "not_configured", "no_deployment"],
+      [configuredProject, "queued", "attention", "latest_deployment_queued"],
+      [configuredProject, "running", "attention", "latest_deployment_running"],
+      [configuredProject, "failed", "attention", "latest_deployment_failed"],
+      [configuredProject, "canceled", "attention", "latest_deployment_canceled"]
+    ];
+    for (const [project, status, expected, reason] of readinessCases) {
+      const { tools: readinessTools } = contextToolsFor([{ permission: "project.read", scope: "platform" }], [project], status ? [{ ...deployments[0]!, status }] : []);
+      await expect(readinessTools.deploylite_get_project_context({ projectId: "project_a" })).resolves.toMatchObject({ structuredContent: { readiness: { status: expected, reason, mode: "mock-only", advisory: "non-executing; not production-health evidence" } } });
+    }
+  });
+
+  it("orders valid offset timestamps by their actual instant without mutating source deployments", async () => {
+    const configuredProject = { ...projectA, buildCommand: "pnpm build", runCommand: "pnpm start", port: 3000, imageTag: "alpha:latest" };
+    const deployments: Deployment[] = [
+      { id: "dep_earlier", projectId: "project_a", agentId: "agent_a", status: "failed", commitSha: "abcdef1", startedAt: "2026-01-03T00:00:00.000Z", finishedAt: "2026-01-03T00:01:00.000Z" },
+      { id: "dep_later", projectId: "project_a", agentId: "agent_a", status: "succeeded", commitSha: "abcdef2", startedAt: "2026-01-02T23:30:00.000-01:00", finishedAt: "2026-01-03T00:31:00.000Z" }
+    ];
+    const before = structuredClone(deployments);
+    const { tools } = contextToolsFor([{ permission: "project.read", scope: "platform" }], [configuredProject], deployments);
+
+    const first = await tools.deploylite_get_project_context({ projectId: "project_a" });
+    const second = await tools.deploylite_get_project_context({ projectId: "project_a" });
+
+    expect(first.structuredContent).toMatchObject({ latestDeployment: { id: "dep_later", status: "succeeded" }, readiness: { status: "ready", reason: "latest_deployment_succeeded" } });
+    expect(first).toEqual(second);
+    expect(deployments).toEqual(before);
+  });
+
+  it("uses descending IDs when different offsets resolve to the same instant", async () => {
+    const configuredProject = { ...projectA, buildCommand: "pnpm build", runCommand: "pnpm start", port: 3000, imageTag: "alpha:latest" };
+    const deployments: Deployment[] = [
+      { id: "dep_tie_a", projectId: "project_a", agentId: "agent_a", status: "queued", commitSha: "abcdef1", startedAt: "2026-01-03T01:00:00.000Z", finishedAt: null },
+      { id: "dep_tie_z", projectId: "project_a", agentId: "agent_a", status: "running", commitSha: "abcdef2", startedAt: "2026-01-03T00:00:00.000-01:00", finishedAt: null }
+    ];
+    const { tools } = contextToolsFor([{ permission: "project.read", scope: "platform" }], [configuredProject], deployments);
+
+    const result = await tools.deploylite_get_project_context({ projectId: "project_a" });
+
+    expect(result.structuredContent).toMatchObject({ latestDeployment: { id: "dep_tie_z", status: "running" }, readiness: { status: "attention", reason: "latest_deployment_running" } });
+  });
+
+  it("skips a lexically greatest malformed timestamp so both MCP outputs remain schema-valid and deterministic", async () => {
+    const configuredProject = { ...projectA, buildCommand: "pnpm build", runCommand: "pnpm start", port: 3000, imageTag: "alpha:latest" };
+    const deployments = [
+      { id: "dep_lexical", projectId: "project_a", agentId: "agent_a", status: "failed", commitSha: "abcdef1", startedAt: "2026-01-03T00:00:00.000Z", finishedAt: "2026-01-03T00:01:00.000Z" },
+      { id: "dep_instant", projectId: "project_a", agentId: "agent_a", status: "succeeded", commitSha: "abcdef2", startedAt: "2026-01-02T23:30:00.000-01:00", finishedAt: "2026-01-03T00:31:00.000Z" },
+      { id: "dep_malformed", projectId: "project_a", agentId: "agent_a", status: "queued", commitSha: "abcdef3", startedAt: "zzzz-malformed", finishedAt: null }
+    ] as unknown as Deployment[];
+    const before = structuredClone(deployments);
+    const { tools } = contextToolsFor([{ permission: "project.read", scope: "platform" }], [configuredProject], deployments);
+
+    const first = await tools.deploylite_get_project_context({ projectId: "project_a" });
+    const second = await tools.deploylite_get_project_context({ projectId: "project_a" });
+
+    expect(first.structuredContent).toMatchObject({ latestDeployment: { id: "dep_instant", status: "succeeded", startedAt: "2026-01-02T23:30:00.000-01:00" }, readiness: { status: "ready", reason: "latest_deployment_succeeded" } });
+    expect(first.content[0]?.text).toBe(JSON.stringify(first.structuredContent));
+    expect(first.content[0]?.text).not.toContain("zzzz-malformed");
+    expect(first).toEqual(second);
+    expect(deployments).toEqual(before);
+  });
+
+  it("returns deterministic no-deployment readiness when every candidate timestamp is malformed", async () => {
+    const configuredProject = { ...projectA, buildCommand: "pnpm build", runCommand: "pnpm start", port: 3000, imageTag: "alpha:latest" };
+    const deployments = [
+      { id: "dep_malformed_z", projectId: "project_a", agentId: "agent_a", status: "queued", commitSha: "abcdef1", startedAt: "zzzz-malformed", finishedAt: null },
+      { id: "dep_malformed_a", projectId: "project_a", agentId: "agent_a", status: "failed", commitSha: "abcdef2", startedAt: "aaaa-malformed", finishedAt: null }
+    ] as unknown as Deployment[];
+    const { tools } = contextToolsFor([{ permission: "project.read", scope: "platform" }], [configuredProject], deployments);
+
+    const first = await tools.deploylite_get_project_context({ projectId: "project_a" });
+    const second = await tools.deploylite_get_project_context({ projectId: "project_a" });
+
+    expect(first.structuredContent).toMatchObject({ latestDeployment: null, readiness: { status: "not_configured", reason: "no_deployment" } });
+    expect(first.content[0]?.text).toBe(JSON.stringify(first.structuredContent));
+    expect(first).toEqual(second);
+  });
+
+  it("uses an allow-list plus redaction for byte-stable dual output without mutating source fixtures", async () => {
+    const sourceProject = { ...projectA, buildCommand: "printenv SECRET", runCommand: "node --token=secret", imageTag: "https://image-user:image-password@example.test/image" };
+    const sourceDeployments: Array<Deployment & { credential: string }> = [{ id: "dep_a", projectId: "project_a", agentId: "agent_a", status: "succeeded", commitSha: "abcdef1", startedAt: "2026-01-02T00:00:00.000Z", finishedAt: "2026-01-02T00:01:00.000Z", credential: "do-not-leak" }];
+    const before = structuredClone({ sourceProject, sourceDeployments });
+    const { client, tools } = contextToolsFor([{ permission: "project.read", scope: "platform" }], [sourceProject], sourceDeployments);
+    const first = await tools.deploylite_get_project_context({ projectId: "project_a" });
+    const second = await tools.deploylite_get_project_context({ projectId: "project_a" });
+    const serialized = JSON.stringify([first.structuredContent, first.content]);
+
+    expect(first.structuredContent).toEqual(second.structuredContent);
+    expect(first.content).toEqual(second.content);
+    expect(first.content[0]?.text).toBe(JSON.stringify(first.structuredContent));
+    expect(client.listDeployments).toHaveBeenCalledWith({});
+    expect({ sourceProject, sourceDeployments }).toEqual(before);
+    for (const value of ["repoUrl", "buildCommand", "runCommand", "credential", "do-not-leak", "printenv", "node --token", "image-user", "image-password", "must-not-leak"]) {
+      expect(serialized).not.toContain(value);
+    }
   });
 });
