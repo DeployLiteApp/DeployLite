@@ -63,7 +63,7 @@ if (!output || !withinRoot(output) || !/^[0-9a-f]{40}$/.test(commit ?? "") || !/
 const evidence = {
   commit,
   alphaPosture: "alpha-early-access",
-  runtime: { node: "24.12.0", pnpm: "9.15.4", lockHash },
+  runtime: { node: "24.20.0", pnpm: "9.15.4", lockHash },
   inputs: { composeDigest },
   images,
   checks,

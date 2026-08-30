@@ -18,19 +18,6 @@ overrides:
 importers:
 
   .:
-    dependencies:
-      next:
-        specifier: ^15.5.21
-        version: 15.5.24(@babel/core@7.29.7)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      react:
-        specifier: ^19.0.0
-        version: 19.2.7
-      react-dom:
-        specifier: ^19.0.0
-        version: 19.2.7(react@19.2.7)
-      zod:
-        specifier: ^3.24.1
-        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^22.10.2
@@ -56,6 +43,9 @@ importers:
       '@deploylite/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
 
   apps/api:
     dependencies:
@@ -77,6 +67,9 @@ importers:
       fastify:
         specifier: ^5.12.1
         version: 5.12.1
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
 
   apps/mcp:
     dependencies:
@@ -86,6 +79,9 @@ importers:
       '@deploylite/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
 
   apps/web:
     dependencies:
@@ -116,6 +112,9 @@ importers:
       sonner:
         specifier: ^2.0.7
         version: 2.0.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
     devDependencies:
       '@tailwindcss/postcss':
         specifier: ^4.3.2
