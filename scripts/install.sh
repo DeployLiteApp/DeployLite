@@ -14,6 +14,7 @@ APT_TIMEOUT_SECONDS="${DEPLOYLITE_APT_TIMEOUT_SECONDS:-180}"
 COMPOSE_TIMEOUT_SECONDS="${DEPLOYLITE_COMPOSE_TIMEOUT_SECONDS:-600}"
 INTERACTIVE=1
 NOOP=0
+CHECK=0
 CHANGED_STEPS=()
 CREATED_RUNTIME=0
 
@@ -68,6 +69,8 @@ Usage: install.sh [options]
 Options:
   --interactive, -i       Show the prerequisite confirmation TUI (default).
   --non-interactive   Skip the prerequisite confirmation TUI.
+  --check             Run a read-only prerequisite audit and exit.
+  --noop              Skip preflight and installation (not a prerequisite audit).
   --help, -h          Show this help and exit.
 
 Environment:
@@ -91,6 +94,7 @@ parse_args() {
     case "$1" in
        --interactive|-i) INTERACTIVE=1; shift ;;
        --non-interactive) INTERACTIVE=0; shift ;;
+      --check) CHECK=1; shift ;;
       --noop) NOOP=1; shift ;;
       --help|-h) print_usage; exit 0 ;;
       --)
@@ -233,16 +237,137 @@ detect_arch() {
   esac
 }
 
+uname_machine() { run uname -m; }
+
+bounded_diagnostic() {
+  local value="${1:-}"
+  value="${value//$'\n'/ }"
+  value="${value//$'\r'/ }"
+  value="${value:0:160}"
+  redact "$value"
+}
+
+check_result() {
+  local name="$1" status="$2" detail="${3:-}"
+  if [[ "$status" == "pass" ]]; then
+    printf '%s\n' "[PASS] ${name}${detail:+ — $(bounded_diagnostic "$detail")}";
+  else
+    printf '[FAIL] %s%s\n' "$name" "${detail:+ — $(bounded_diagnostic "$detail")}" >&2
+  fi
+}
+
+check_platform() {
+  local os_file="${DEPLOYLITE_OS_RELEASE_FILE:-/etc/os-release}" machine="" os_id="" os_version="" key value
+  if [[ -r "$os_file" ]]; then
+    while IFS='=' read -r key value; do
+      case "$key" in
+        ID) os_id="${value%\"}"; os_id="${os_id#\"}" ;;
+        VERSION_ID) os_version="${value%\"}"; os_version="${os_version#\"}" ;;
+      esac
+    done <"$os_file"
+  fi
+  if [[ "$os_id:$os_version" == "ubuntu:20.04" ||
+    "$os_id:$os_version" == "ubuntu:22.04" ||
+    "$os_id:$os_version" == "ubuntu:24.04" ||
+    "$os_id:$os_version" == "debian:11" ||
+    "$os_id:$os_version" == "debian:12" ]]; then
+    check_result "supported OS (${os_id} ${os_version})" pass
+  else
+    check_result "supported OS" fail "expected Ubuntu 20.04/22.04/24.04 or Debian 11/12"
+    return 1
+  fi
+  machine="$(uname_machine 2>/dev/null || true)"
+  case "$machine" in
+    x86_64|amd64|aarch64|arm64) check_result "supported architecture ($machine)" pass ;;
+    *) check_result "supported architecture" fail "received ${machine:-unknown}; expected x86_64 or arm64"; return 1 ;;
+  esac
+}
+
+check_command() {
+  local command_name="$1"
+  if command_exists "$command_name"; then
+    check_result "required command: ${command_name}" pass
+    return 0
+  fi
+  check_result "required command: ${command_name}" fail "not found on PATH"
+  return 1
+}
+
+check_docker() {
+  local output=""
+  if ! command_exists docker; then
+    check_result "Docker Engine CLI" fail "docker is not installed"
+    check_result "Docker Compose plugin" fail "cannot probe Compose without docker"
+    return 1
+  fi
+  if ! command_exists timeout; then
+    check_result "Docker Engine CLI" fail "timeout is required to bound the Docker probe"
+    check_result "Docker Compose plugin" fail "timeout is required to bound the Compose probe"
+    return 1
+  fi
+  if output="$(run timeout 5 docker --version 2>&1)"; then
+    check_result "Docker Engine CLI" pass "$(bounded_diagnostic "$output")"
+  else
+    check_result "Docker Engine CLI" fail "docker --version failed: $output"
+    return 1
+  fi
+  if output="$(run timeout 5 docker compose version 2>&1)"; then
+    check_result "Docker Compose plugin" pass "$(bounded_diagnostic "$output")"
+    return 0
+  fi
+  check_result "Docker Compose plugin" fail "docker compose version failed: $output"
+  return 1
+}
+
+check_port() {
+  local port="$1"
+  if ! command_exists ss && ! command_exists lsof; then
+    check_result "port ${port}/tcp readiness" fail "no non-mutating port probe is available"
+    return 1
+  fi
+  if port_available "$port"; then
+    check_result "port ${port}/tcp readiness" pass
+    return 0
+  fi
+  check_result "port ${port}/tcp readiness" fail "port is occupied or could not be verified"
+  return 1
+}
+
+check_prerequisites() {
+  local failures=0
+  printf 'DeployLite prerequisite check (read-only)\n'
+  check_platform || failures=$((failures + 1))
+  check_command docker || failures=$((failures + 1))
+  check_command timeout || failures=$((failures + 1))
+  if command_exists ss || command_exists lsof; then
+    check_result "port probe command (ss or lsof)" pass
+  else
+    check_result "port probe command (ss or lsof)" fail "neither command is installed"
+    failures=$((failures + 1))
+  fi
+  check_docker || failures=$((failures + 1))
+  check_port 80 || failures=$((failures + 1))
+  check_port 443 || failures=$((failures + 1))
+  if (( failures == 0 )); then
+    printf 'Prerequisite check passed. No installer actions were performed.\n'
+    return 0
+  fi
+  printf 'Prerequisite check failed: %d check(s) failed. No installer actions were performed.\n' "$failures" >&2
+  return 2
+}
+
 port_available() {
   local port="$1"
   if command_exists ss; then
-    if ss -ltn "sport = :${port}" | grep -q ":${port}"; then
+    local listeners
+    listeners="$(run ss -ltn "sport = :${port}")"
+    if [[ "$listeners" == *":${port}"* ]]; then
       return 1
     fi
     return 0
   fi
   if command_exists lsof; then
-    if lsof -iTCP:"${port}" -sTCP:LISTEN -Pn >/dev/null 2>&1; then
+    if run lsof -iTCP:"${port}" -sTCP:LISTEN -Pn >/dev/null 2>&1; then
       return 1
     fi
     return 0
@@ -521,6 +646,14 @@ start_bootstrap() {
 
 main() {
   parse_args "$@"
+  if [[ "${CHECK}" == "1" ]]; then
+    if [[ "${NOOP}" == "1" ]]; then
+      fail "--check cannot be combined with --noop." 2
+    fi
+    trap - ERR
+    check_prerequisites
+    return $?
+  fi
   install_log_setup
   if [[ "${INTERACTIVE}" == "1" ]]; then
     [[ "$(prompt_value 'Install Docker prerequisites and Compose templates?' 'yes')" == "yes" ]] || fail "Installation cancelled." 1
