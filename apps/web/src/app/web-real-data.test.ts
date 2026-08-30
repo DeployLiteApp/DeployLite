@@ -604,13 +604,13 @@ describe("projects list page launch hub", () => {
 
     expect(html).toContain("data-project-id=\"project-1\"");
     expect(html).toContain("data-project-id=\"project-2\"");
-    const projectOneIndex = html.indexOf("data-project-id=\"project-1\"");
-    const projectTwoIndex = html.indexOf("data-project-id=\"project-2\"");
-    const depOneIndex = html.indexOf('href="/deployments/dep-1"');
-    const depOtherIndex = html.indexOf('href="/deployments/dep-other"');
-    expect(depOneIndex).toBeGreaterThan(projectOneIndex);
-    expect(depOneIndex).toBeLessThan(projectTwoIndex);
-    expect(depOtherIndex).toBeGreaterThan(projectTwoIndex);
+    const projectOneRow = extractProjectLaunchRow(html, "project-1");
+    const projectTwoRow = extractProjectLaunchRow(html, "project-2");
+    expect(html.indexOf(projectTwoRow)).toBeLessThan(html.indexOf(projectOneRow));
+    expect(projectOneRow).toContain('href="/deployments/dep-1"');
+    expect(projectOneRow).not.toContain('href="/deployments/dep-other"');
+    expect(projectTwoRow).toContain('href="/deployments/dep-other"');
+    expect(projectTwoRow).not.toContain('href="/deployments/dep-1"');
   });
 
   it("preserves the projects list empty state and the API error state", async () => {
@@ -650,6 +650,16 @@ describe("projects list page launch hub", () => {
     expect(errorHtml).not.toContain("data-testid=\"projects-launch-hub-table\"");
   });
 });
+
+function extractProjectLaunchRow(html: string, projectId: string): string {
+  const row = html.match(
+    new RegExp(
+      `<tr(?=[^>]*data-testid="project-launch-row")(?=[^>]*data-project-id="${projectId}")[^>]*>[\\s\\S]*?<\\/tr>`
+    )
+  );
+  if (!row) throw new Error(`Missing project launch row for ${projectId}`);
+  return row[0];
+}
 
 describe("project detail and deploy flow rendering", () => {
   afterEach(() => {

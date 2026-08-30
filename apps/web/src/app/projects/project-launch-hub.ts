@@ -117,3 +117,25 @@ export function summarizeProjectLaunch(project: Project, deployments: Deployment
     deployHref: `/projects/${project.id}#deploy-actions`
   };
 }
+
+export function orderProjectLaunchSummaries(
+  summaries: readonly ProjectLaunchSummary[]
+): ProjectLaunchSummary[] {
+  return summaries
+    .map((summary, sourceIndex) => ({
+      summary,
+      priority: getProjectLaunchPriority(summary),
+      sourceIndex
+    }))
+    .sort((a, b) => a.priority - b.priority || a.sourceIndex - b.sourceIndex)
+    .map(({ summary }) => summary);
+}
+
+function getProjectLaunchPriority(summary: ProjectLaunchSummary): 0 | 1 | 2 {
+  if (!summary.runtime.configured) return 0;
+
+  const latestStatus = summary.latest.deployment?.status;
+  if (latestStatus === "failed" || latestStatus === "canceled") return 1;
+
+  return 2;
+}

@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ProjectLaunchList } from "./project-launch-list";
-import { summarizeProjectLaunch } from "./project-launch-hub";
+import { orderProjectLaunchSummaries, summarizeProjectLaunch } from "./project-launch-hub";
 
 export const dynamic = "force-dynamic";
 
@@ -44,7 +44,7 @@ export default async function ProjectsPage() {
   }
 
   const { projects, deployments } = metadata.data;
-  const launchHubRows = projects.map((project) => summarizeProjectLaunch(project, deployments));
+  const launchHubRows = orderProjectLaunchSummaries(projects.map((project) => summarizeProjectLaunch(project, deployments)));
   const readyCount = launchHubRows.filter((row) => row.nextAction.ctaKey === "inspect-latest-logs").length;
 
   return (
