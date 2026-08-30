@@ -6,6 +6,7 @@ import { InitialAdminSetupPanel, submitInitialAdminSetup } from "./auth-controls
 import DashboardPage from "./dashboard/page.js";
 import DeploymentLogsPage from "./deployments/[deploymentId]/page.js";
 import LoginPage from "./page.js";
+import { getProjectListFilterFeedback, ProjectLaunchList } from "./projects/project-launch-list.js";
 
 vi.mock("next/headers", () => ({
   cookies: vi.fn()
@@ -439,6 +440,22 @@ describe("projects list page launch hub", () => {
     expect(html).toContain("/projects/project-1");
     expect(html).toContain("data-testid=\"project-launch-row\"");
     expect(html).toContain("data-project-id=\"project-1\"");
+    expect(html).toContain("data-testid=\"project-launch-list\"");
+    expect(html).toContain('for="project-list-query"');
+    expect(html).toContain('id="project-list-query"');
+    expect(html).toContain('type="search"');
+    expect(html).toContain('value=""');
+    expect(html).toContain('for="project-list-status"');
+    expect(html).toContain('id="project-list-status"');
+    expect(html).toContain('for="project-list-runtime"');
+    expect(html).toContain('id="project-list-runtime"');
+    expect(html).toContain('role="status"');
+    expect(html).toContain('aria-live="polite"');
+    expect(html).toContain("Showing 1 of 1 loaded projects.");
+    expect((html.match(/<option value="all"[^>]*selected=""/g) ?? []).length).toBe(2);
+    for (const value of ["all", "not-run", "queued", "running", "succeeded", "failed", "canceled", "configured", "needs-command"]) {
+      expect(html).toContain(`value="${value}"`);
+    }
     expect(html).toContain("data-testid=\"project-launch-runtime-badge\"");
     expect(html).toContain("Configured");
     expect(html).toContain("node server.js");
@@ -455,6 +472,21 @@ describe("projects list page launch hub", () => {
     expect(html).toContain('href="/projects/project-1#deploy-actions"');
     expect(html).toContain("Deploy");
     expect(html).not.toContain("data-testid=\"project-launch-cta-logs\"");
+  });
+
+  it("renders partial and zero-result feedback while retaining controls at zero", () => {
+    expect(getProjectListFilterFeedback(2, 5)).toBe("Showing 2 of 5 loaded projects.");
+    expect(getProjectListFilterFeedback(0, 5)).toBe("Showing 0 of 5 loaded projects. No matching projects. Adjust the filters to see loaded projects.");
+
+    const zeroHtml = renderToStaticMarkup(React.createElement(ProjectLaunchList, { rows: [] }));
+
+    expect(zeroHtml).toContain("Showing 0 of 0 loaded projects.");
+    expect(zeroHtml).toContain("No matching projects.");
+    expect(zeroHtml).toContain('id="project-list-query"');
+    expect(zeroHtml).toContain('id="project-list-status"');
+    expect(zeroHtml).toContain('id="project-list-runtime"');
+    expect(zeroHtml).toContain('role="status"');
+    expect(zeroHtml).toContain('aria-live="polite"');
   });
 
   it("routes a project without runtime to the env-metadata anchor and uses a 'Needs command' copy", async () => {
@@ -582,6 +614,13 @@ describe("projects list page launch hub", () => {
   });
 
   it("preserves the projects list empty state and the API error state", async () => {
+    mockCookies();
+    const ProjectsPage = (await import("./projects/page.js")).default;
+    const unauthenticatedHtml = renderToStaticMarkup(await ProjectsPage());
+
+    expect(unauthenticatedHtml).toContain("Sign in required");
+    expect(unauthenticatedHtml).not.toContain("data-testid=\"project-launch-list\"");
+
     mockCookies("deploylite_session", "opaque");
     process.env.DEPLOYLITE_WEB_API_BASE_URL = apiBaseUrl;
     mockFetch({
@@ -591,11 +630,11 @@ describe("projects list page launch hub", () => {
       "/api/v1/deployments": { data: { deployments: [] }, error: null, requestId: "req_deployments_1" }
     });
 
-    const ProjectsPage = (await import("./projects/page.js")).default;
     const emptyHtml = renderToStaticMarkup(await ProjectsPage());
 
     expect(emptyHtml).toContain("No projects yet");
     expect(emptyHtml).toContain("Create your first project to start the deploy flow.");
+    expect(emptyHtml).not.toContain("data-testid=\"project-launch-list\"");
     expect(emptyHtml).not.toContain("data-testid=\"projects-launch-hub-table\"");
 
     mockFetch({
@@ -607,6 +646,7 @@ describe("projects list page launch hub", () => {
 
     const errorHtml = renderToStaticMarkup(await ProjectsPage());
     expect(errorHtml).toContain("Unable to load projects");
+    expect(errorHtml).not.toContain("data-testid=\"project-launch-list\"");
     expect(errorHtml).not.toContain("data-testid=\"projects-launch-hub-table\"");
   });
 });
