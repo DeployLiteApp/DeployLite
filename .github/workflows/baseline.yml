@@ -81,8 +81,12 @@ jobs:
         run: |
           printf 'api_digest=%s\n' "$(docker inspect --type=image deploylite-api:ci | jq -er '.[0].Id')" >> "$GITHUB_OUTPUT"
           printf 'web_digest=%s\n' "$(docker inspect --type=image deploylite-web:ci | jq -er '.[0].Id')" >> "$GITHUB_OUTPUT"
-          docker sbom deploylite-api:ci --format cyclonedx-json --output api.sbom.json
-          docker sbom deploylite-web:ci --format cyclonedx-json --output web.sbom.json
+      - name: Generate API image SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
+        with: { scan-type: image, image-ref: deploylite-api:ci, format: cyclonedx, output: api.sbom.json, scanners: vuln }
+      - name: Generate web image SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
+        with: { scan-type: image, image-ref: deploylite-web:ci, format: cyclonedx, output: web.sbom.json, scanners: vuln }
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
         with: { image-ref: deploylite-api:ci, format: json, output: api.trivy.json, severity: "HIGH,CRITICAL", exit-code: "1", ignore-unfixed: "false" }
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
