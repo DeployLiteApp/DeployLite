@@ -152,13 +152,46 @@ describeIntegration("DeployLite API PostgreSQL integration", () => {
 
     await restartedApp.close();
   }, 30_000);
+
+  it("persists the confirmed delete command and correlated audit while making replay idempotent", async () => {
+    const app = await createPostgresApp();
+    const login = await app.inject({ method: "POST", url: "/api/v1/auth/login", headers: contentHeaders, payload: { email: "admin@example.test", password: adminPassword } });
+    const cookie = login.headers["set-cookie"] as string;
+    const actorId = login.json().data.user.id as string;
+    const projectId = randomUUID();
+    await new DbProjectRepository(requireDb()).save({ id: projectId, name: "Confirmed PostgreSQL project", repoUrl: "https://github.com/example/confirmed-postgres", defaultBranch: "main", buildCommand: null, runCommand: null, port: null, description: null, imageTag: null });
+
+    const noGrantHeaders = { cookie, "x-control-idempotency-key": "postgres-delete-without-grant" };
+    const denied = await app.inject({ method: "DELETE", url: `/api/v1/projects/${projectId}`, headers: noGrantHeaders });
+    expect(denied.statusCode).toBe(403);
+    await expect(requirePool().query("SELECT id FROM control_commands WHERE idempotency_key = $1", [noGrantHeaders["x-control-idempotency-key"]])).resolves.toMatchObject({ rowCount: 0 });
+
+    await requirePool().query("INSERT INTO control_grants (actor_user_id, action, scope_kind, scope_key) VALUES ($1, 'project.delete', 'project', $2)", [actorId, projectId]);
+    const headers = { cookie, "x-control-idempotency-key": "postgres-confirmed-delete" };
+
+    const pending = await app.inject({ method: "DELETE", url: `/api/v1/projects/${projectId}`, headers });
+    expect(pending.statusCode).toBe(202);
+    const { commandId, confirmationId } = pending.json().data;
+
+    const completed = await app.inject({ method: "DELETE", url: `/api/v1/projects/${projectId}`, headers: { ...headers, "x-control-confirmation-id": confirmationId } });
+    expect(completed.statusCode).toBe(200);
+    const replay = await app.inject({ method: "DELETE", url: `/api/v1/projects/${projectId}`, headers: { ...headers, "x-control-confirmation-id": confirmationId } });
+    expect(replay.json().data).toMatchObject({ removed: true, commandId, idempotent: true });
+
+    const audit = await requirePool().query<{ outcome: string; correlation_id: string; consumed_at: Date | null; status: string }>("SELECT a.outcome, a.correlation_id, c.consumed_at, cmd.status FROM control_command_audits a JOIN control_command_confirmations c ON c.id = a.confirmation_id JOIN control_commands cmd ON cmd.id = a.command_id WHERE a.command_id = $1", [commandId]);
+    expect(audit.rows).toEqual([expect.objectContaining({ outcome: "completed", status: "completed", consumed_at: expect.any(Date) })]);
+    expect(audit.rows[0]?.correlation_id).toBeTruthy();
+    await expect(requirePool().query("SELECT id FROM audit_events WHERE correlation_id = $1 AND action = 'project.delete' AND target_id = $2", [audit.rows[0]?.correlation_id, projectId])).resolves.toMatchObject({ rowCount: 1 });
+    await expect(requirePool().query("SELECT id FROM projects WHERE id = $1", [projectId])).resolves.toMatchObject({ rowCount: 0 });
+    await app.close();
+  }, 30_000);
 });
 
 async function createPostgresApp(): Promise<FastifyInstance> {
   return buildApiApp({
     authConfig: { cookieName: "dl_pg_session", cookieSecure: false, sessionTtlSeconds: 3600 },
     db: { pool: requirePool(), client: requireDb() },
-    env: { ...process.env, NODE_ENV: "test", DATABASE_URL: databaseUrl, DEPLOYLITE_BCRYPT_COST: "10" }
+    env: { ...process.env, NODE_ENV: "test", DATABASE_URL: databaseUrl, DEPLOYLITE_BCRYPT_COST: "10", DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE: "true" }
   });
 }
 
