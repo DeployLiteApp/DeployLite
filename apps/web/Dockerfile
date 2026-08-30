@@ -19,7 +19,10 @@ RUN pnpm --filter @deploylite/contracts build && pnpm --filter @deploylite/web b
 FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
-RUN addgroup -S deploylite && adduser -S deploylite -G deploylite
+RUN apk upgrade --no-cache \
+  && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+  && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+  && addgroup -S deploylite && adduser -S deploylite -G deploylite
 COPY --from=build --chown=deploylite:deploylite /app/apps/web/.next/standalone ./
 COPY --from=build --chown=deploylite:deploylite /app/apps/web/.next/static ./apps/web/.next/static
 COPY --from=build --chown=deploylite:deploylite /app/apps/web/public ./apps/web/public
