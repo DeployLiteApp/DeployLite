@@ -1,5 +1,6 @@
 import type { Agent, AgentHeartbeat, Deployment, EnvSecretValue, EnvVariableMetadata, LogEvent, Project, ScaffoldUser } from "@deploylite/contracts";
 import { redactLogMessage } from "@deploylite/config";
+export { InMemorySnapshotStore } from "./deployment-contract/snapshot-memory.js";
 
 export * from "./control-plane.js";
 
