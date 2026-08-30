@@ -2,7 +2,7 @@ import type { LogEvent } from "@deploylite/contracts";
 import { describe, expect, it } from "vitest";
 import { filterDeploymentLogEvents } from "./deployment-log-inspector-model.js";
 
-const event = (id: string, level: LogEvent["level"], message: string): LogEvent => ({ id, deploymentId: "deployment-1", sequence: Number(id), level, message, timestamp: "2026-01-01T00:00:00.000Z", redactionApplied: false, requestId: `request-${id}`, correlationId: `correlation-${id}` });
+const event = (id: string, level: LogEvent["level"], message: string): LogEvent => ({ id, deploymentId: "deployment-1", sequence: Number(id), level, message, timestamp: `2026-01-01T00:00:${id}.000Z`, redactionApplied: false, requestId: `request-${id}`, correlationId: `correlation-${id}` });
 const events = [event("20", "info", "Preparing the deployment"), event("10", "debug", "Resolved build configuration"), event("30", "error", "Build failed"), event("40", "warn", "Using token [REDACTED]")];
 
 describe("filterDeploymentLogEvents", () => {
@@ -21,5 +21,11 @@ describe("filterDeploymentLogEvents", () => {
     expect(filtered.map(({ id }) => id)).toEqual(["20"]);
     expect(filtered[0]).toBe(events[0]);
     expect(events[3]?.message).toContain("[REDACTED]");
+  });
+
+  it("searches sequence and timestamp fields without changing the source events", () => {
+    expect(filterDeploymentLogEvents(events, { query: "10", severity: "all" }).map(({ id }) => id)).toEqual(["10"]);
+    expect(filterDeploymentLogEvents(events, { query: "00:00:30", severity: "all" }).map(({ id }) => id)).toEqual(["30"]);
+    expect(events.map(({ id }) => id)).toEqual(["20", "10", "30", "40"]);
   });
 });
