@@ -8,6 +8,8 @@ import { createDbClient, createDbPool, closeDbPool, type DeployLiteDb } from "./
 import { assertEnvMetadataHasNoValueColumns, toEnvVariableMetadataInsert } from "./env-metadata.js";
 import { DbAuthUserRepository, DbRoleRepository, DbSessionRepository } from "./repositories/auth.js";
 import { DbAgentRepository, DbDeploymentRepository, DbProjectRepository } from "./repositories/deployment-data.js";
+import { DbControlCommandRepository, DbControlGrantRepository } from "./repositories/control-plane.js";
+import { IdempotencyConflictError, createConfirmation, createControlCommand, digestControlInput } from "@deploylite/domain";
 
 const { Client } = pg;
 
@@ -38,7 +40,7 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
 
     await applyMigrations(databaseUrl);
 
-    pool = createDbPool(databaseUrl, { max: 1 });
+    pool = createDbPool(databaseUrl, { max: 2 });
     db = createDbClient(pool);
   }, 30_000);
 
@@ -107,7 +109,7 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
     });
 
     await closeDbPool(requirePool());
-    pool = createDbPool(databaseUrl, { max: 1 });
+    pool = createDbPool(databaseUrl, { max: 2 });
     db = createDbClient(pool);
 
     await expect(requireDbAuthUserRepository().findByEmail("admin@example.test")).resolves.toMatchObject({
@@ -228,7 +230,7 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
       endpoint: "https://agent.integration.test",
       status: "online"
     });
-    await expect(requireDbProjectRepository().list()).resolves.toContainEqual({
+    expect(await requireDbProjectRepository().list()).toContainEqual(expect.objectContaining({
       id: projectId,
       name: "Integration project",
       repoUrl: "https://github.com/example/deploylite-integration",
@@ -238,7 +240,7 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
       port: 3000,
       description: null,
       imageTag: null
-    });
+    }));
     await expect(requireDbDeploymentRepository().findById(deploymentId)).resolves.toMatchObject({
       id: deploymentId,
       projectId,
@@ -304,6 +306,72 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
         value: "plain-text-secret"
       } as Parameters<typeof toEnvVariableMetadataInsert>[0])
     ).toThrow("Environment variable metadata cannot include secret value field");
+  });
+
+  it("resolves concurrent idempotency retries once, rejects mismatched reuse, and rolls back a command", async () => {
+    const client = requirePool();
+    const role = (await client.query<{ id: string }>("SELECT id FROM roles WHERE name = 'admin'")).rows[0];
+    if (!role) throw new Error("Canonical admin role was not seeded");
+    const actorId = randomUUID();
+    await client.query("INSERT INTO users (id, email, email_normalized, password_hash, role_id) VALUES ($1, $2, $2, $3, $4)", [actorId, `${actorId}@example.test`, "hash", role.id]);
+    const command = createControlCommand({ actorId, action: "project.delete", scope: { kind: "project", projectId: randomUUID() }, input: { project: "one" }, idempotencyKey: "retry-key", correlationId: "corr-command" });
+    const repo = new DbControlCommandRepository(requireDb());
+    const retries = await Promise.all([repo.resolve(command), repo.resolve({ ...command, id: randomUUID() })]);
+    expect(retries.filter((result) => result.created)).toHaveLength(1);
+    expect(new Set(retries.map((result) => result.command.id))).toEqual(new Set([retries.find((result) => result.created)?.command.id]));
+    await expect(repo.resolve({ ...command, id: randomUUID(), inputDigest: digestControlInput({ project: "other" }) })).rejects.toBeInstanceOf(IdempotencyConflictError);
+
+    const rolledBackId = randomUUID();
+    await client.query("BEGIN");
+    await client.query("INSERT INTO control_commands (id, actor_user_id, action, scope_kind, scope_key, input_digest, idempotency_key, correlation_id, expires_at) VALUES ($1, $2, 'project.delete', 'project', $3, $4, 'rollback-key', 'corr-rollback', now())", [rolledBackId, actorId, randomUUID(), digestControlInput({ rollback: true })]);
+    await client.query("ROLLBACK");
+    await expect(client.query("SELECT id FROM control_commands WHERE id = $1", [rolledBackId])).resolves.toMatchObject({ rowCount: 0 });
+  });
+
+  it("loads only persisted actor/action grants and fails closed for absent or cross-project scopes", async () => {
+    const client = requirePool();
+    const role = (await client.query<{ id: string }>("SELECT id FROM roles WHERE name = 'operator'")).rows[0];
+    if (!role) throw new Error("Canonical operator role was not seeded");
+    const actorId = randomUUID();
+    await client.query("INSERT INTO users (id, email, email_normalized, password_hash, role_id) VALUES ($1, $2, $2, $3, $4)", [actorId, `${actorId}@example.test`, "hash", role.id]);
+    const projectA = randomUUID();
+    const projectB = randomUUID();
+    await client.query("INSERT INTO control_grants (actor_user_id, action, scope_kind, scope_key) VALUES ($1, 'project.delete', 'project', $2)", [actorId, projectA]);
+    const grants = await new DbControlGrantRepository(requireDb()).listForActor(actorId);
+
+    expect(grants).toEqual([expect.objectContaining({ actorId, action: "project.delete", scope: { kind: "project", projectId: projectA } })]);
+    expect(grants.some((grant) => grant.scope.kind === "project" && grant.scope.projectId === projectB)).toBe(false);
+    await expect(new DbControlGrantRepository(requireDb()).listForActor(randomUUID())).resolves.toEqual([]);
+  });
+
+  it("atomically rejects mismatched, expired, and replayed confirmations with correlated audit evidence", async () => {
+    const client = requirePool();
+    const role = (await client.query<{ id: string }>("SELECT id FROM roles WHERE name = 'admin'")).rows[0];
+    if (!role) throw new Error("Canonical admin role was not seeded");
+    const actorId = randomUUID();
+    await client.query("INSERT INTO users (id, email, email_normalized, password_hash, role_id) VALUES ($1, $2, $2, $3, $4)", [actorId, `${actorId}@example.test`, "hash", role.id]);
+    const repo = new DbControlCommandRepository(requireDb());
+    const command = createControlCommand({ actorId, action: "project.delete", scope: { kind: "project", projectId: randomUUID() }, input: { project: "one" }, idempotencyKey: "confirmation-key", correlationId: "corr-confirmation" });
+    await repo.resolve(command);
+    const mismatchedActorId = randomUUID();
+    await client.query("INSERT INTO users (id, email, email_normalized, password_hash, role_id) VALUES ($1, $2, $2, $3, $4)", [mismatchedActorId, `${mismatchedActorId}@example.test`, "hash", role.id]);
+    const mismatched = { ...createConfirmation({ command, classification: "destructive" }), actorId: mismatchedActorId };
+    await repo.bind(mismatched);
+    await expect(repo.consume(command, mismatched)).resolves.toMatchObject({ accepted: false, reason: "confirmation_rejected" });
+    const validCommand = createControlCommand({ ...command, idempotencyKey: "confirmation-valid-key", input: { project: "valid" } });
+    await repo.resolve(validCommand);
+    const confirmation = createConfirmation({ command: validCommand, classification: "destructive" });
+    await repo.bind(confirmation);
+    const outcomes = await Promise.all([repo.consume(validCommand, confirmation), repo.consume(validCommand, confirmation)]);
+    expect(outcomes.filter((outcome) => outcome.accepted)).toHaveLength(1);
+    expect(outcomes.filter((outcome) => !outcome.accepted)).toHaveLength(1);
+    await expect(client.query("SELECT outcome, correlation_id FROM control_command_audits WHERE command_id = $1 ORDER BY created_at", [validCommand.id])).resolves.toMatchObject({ rowCount: 2, rows: expect.arrayContaining([expect.objectContaining({ outcome: "accepted", correlation_id: validCommand.correlationId }), expect.objectContaining({ outcome: "rejected", correlation_id: validCommand.correlationId })]) });
+
+    const expired = createControlCommand({ ...command, idempotencyKey: "expired-key", correlationId: "corr-expired", input: { project: "expired" } });
+    await repo.resolve(expired);
+    const expiredConfirmation = createConfirmation({ command: expired, classification: "destructive", expiresAt: new Date(0) });
+    await repo.bind(expiredConfirmation);
+    await expect(repo.consume(expired, expiredConfirmation)).resolves.toMatchObject({ accepted: false, reason: "confirmation_rejected" });
   });
 });
 
