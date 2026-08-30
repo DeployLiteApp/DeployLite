@@ -17,7 +17,9 @@ describe("DeploymentHistoryStatusFilter", () => {
     const select = screen.getByRole("combobox", { name: "Filter by status" });
     expect(select.tagName).toBe("SELECT");
     expect(Array.from(select.querySelectorAll("option")).map((option) => option.value)).toEqual(["all", "queued", "running", "succeeded", "failed", "canceled"]);
-    expect(screen.getByText("Showing 5 deployment records.").getAttribute("aria-live")).toBe("polite");
+    const count = screen.getByText("Showing 5 deployment records.");
+    expect(count.getAttribute("aria-live")).toBe("polite");
+    expect(count.getAttribute("aria-atomic")).toBe("true");
   });
   it("updates rows and count through native keyboard selection", async () => {
     const user = userEvent.setup(); render(<DeploymentHistoryStatusFilter deployments={history} />);
@@ -38,5 +40,24 @@ describe("DeploymentHistoryStatusFilter", () => {
     await user.selectOptions(screen.getByRole("combobox", { name: "Filter by status" }), "running");
     const rows = screen.getAllByRole("row"); expect(rows).toHaveLength(3); expect(rows[1]?.textContent).toContain("running-1"); expect(rows[2]?.textContent).toContain("running-2");
     expect(screen.getAllByRole("link", { name: "Logs" })[0]?.getAttribute("href")).toBe("/deployments/running-1");
+  });
+
+  it("keeps reset state and project-to-deployment associations stable while filtering", async () => {
+    const user = userEvent.setup();
+    const filteredHistory = [deployment("deployment-a", "running"), deployment("deployment-b", "failed")];
+    render(<DeploymentHistoryStatusFilter deployments={filteredHistory} />);
+
+    const select = screen.getByRole("combobox", { name: "Filter by status" });
+    const reset = screen.getByRole("button", { name: "Show all statuses" });
+    expect((reset as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("project-deployment-a")).toBeTruthy();
+    expect(screen.getAllByRole("link", { name: "Logs" })[0]?.getAttribute("href")).toBe("/deployments/deployment-a");
+
+    await user.selectOptions(select, "failed");
+
+    expect((reset as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText("project-deployment-a")).toBeNull();
+    expect(screen.getByText("project-deployment-b")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Logs" }).getAttribute("href")).toBe("/deployments/deployment-b");
   });
 });
