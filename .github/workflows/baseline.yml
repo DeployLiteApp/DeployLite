@@ -23,7 +23,7 @@ jobs:
           version: 9.15.4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 24.12.0
+          node-version: 24.20.0
           cache: pnpm
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
@@ -53,7 +53,7 @@ jobs:
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with: { version: 9.15.4 }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with: { node-version: 24.12.0, cache: pnpm }
+        with: { node-version: 24.20.0, cache: pnpm }
       - run: corepack enable && pnpm install --frozen-lockfile
       - run: pnpm --filter @deploylite/db db:migrate
         env: { DATABASE_URL: postgres://deploylite:deploylite-ci-only@localhost:5432/deploylite }
@@ -71,7 +71,7 @@ jobs:
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with: { version: 9.15.4 }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with: { node-version: 24.12.0, cache: pnpm }
+        with: { node-version: 24.20.0, cache: pnpm }
       - run: corepack enable && pnpm install --frozen-lockfile
       - run: pnpm ci:evidence:check && bash scripts/compose.test.sh
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
@@ -127,7 +127,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.1.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with: { node-version: 24.12.0 }
+        with: { node-version: 24.20.0 }
       - name: Collect pass evidence
         if: needs.quality.result == 'success' && needs.postgres-integration.result == 'success' && needs.compose-and-supply-chain.result == 'success'
         run: |
