@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { LogEvent } from "@deploylite/contracts";
 import { DeploymentLogInspector } from "./deployment-log-inspector.js";
 
-const event = (id: string, level: LogEvent["level"], message: string): LogEvent => ({ id, deploymentId: "deployment-1", sequence: Number(id), level, message, timestamp: "2026-01-01T00:00:00.000Z", redactionApplied: false, requestId: `request-${id}`, correlationId: `correlation-${id}` });
+const event = (id: string, level: LogEvent["level"], message: string): LogEvent => ({ id, deploymentId: "deployment-1", sequence: Number(id), level, message, timestamp: `2026-01-01T00:00:${id}.000Z`, redactionApplied: false, requestId: `request-${id}`, correlationId: `correlation-${id}` });
 const events = [event("20", "info", "Preparing the deployment"), event("10", "debug", "Resolved build configuration"), event("30", "error", "Build failed"), event("40", "warn", "Using token [REDACTED]")];
 afterEach(() => cleanup());
 
@@ -13,8 +13,13 @@ describe("DeploymentLogInspector", () => {
   it("renders labelled controls and a polite result count", async () => {
     const user = userEvent.setup(); render(<DeploymentLogInspector events={events} />);
     const search = screen.getByRole("searchbox", { name: "Search log events" });
+    expect(search.tagName).toBe("INPUT");
+    expect(screen.getByRole("combobox", { name: "Severity" }).tagName).toBe("SELECT");
+    expect(screen.getByRole("button", { name: "Reset filters" }).tagName).toBe("BUTTON");
     await user.type(search, "build"); await user.selectOptions(screen.getByRole("combobox", { name: "Severity" }), "error");
-    expect(screen.getByRole("status").textContent).toBe("Showing 1 of 4 events"); expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    const status = screen.getByRole("status");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.textContent).toBe("Showing 1 of 4 events"); expect(screen.getAllByRole("listitem")).toHaveLength(1);
   });
   it("distinguishes empty and no-match states, then resets", async () => {
     const user = userEvent.setup(); const { unmount } = render(<DeploymentLogInspector events={[]} />);
@@ -26,5 +31,22 @@ describe("DeploymentLogInspector", () => {
   it("renders redacted messages and visible request metadata", () => {
     render(<DeploymentLogInspector events={events} />);
     expect(screen.getByText("Using token [REDACTED]")).toBeTruthy(); expect(screen.getByText("request-40")).toBeTruthy();
+  });
+
+  it("exposes every finite severity and keeps redacted metadata visible after filtering", async () => {
+    const user = userEvent.setup();
+    render(<DeploymentLogInspector events={events} />);
+    const severity = screen.getByRole("combobox", { name: "Severity" });
+
+    expect(Array.from(severity.querySelectorAll("option")).map((option) => option.value)).toEqual([
+      "all", "debug", "info", "warn", "error"
+    ]);
+
+    await user.selectOptions(severity, "warn");
+
+    expect(screen.getByRole("status").textContent).toBe("Showing 1 of 4 events");
+    expect(screen.getByText("Using token [REDACTED]")).toBeTruthy();
+    expect(screen.getByText("request-40")).toBeTruthy();
+    expect(screen.queryByText("Build failed")).toBeNull();
   });
 });
