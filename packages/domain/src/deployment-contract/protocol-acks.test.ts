@@ -1,0 +1,5 @@
+import { describe, expect, it } from "vitest";
+import { InMemoryProtocolTransport } from "./protocol-memory.js";
+import { AckOrderError } from "@deploylite/contracts";
+const clock = { now: () => 0 }; const make = () => new InMemoryProtocolTransport({ clock, leasePolicy: { ttlMs: 50 }, retryPolicy: { maxAttempts: 1, deadlineMs: 0, backoffMs: () => 0 }, capabilities: [] });
+describe("deployment ACK ordering", () => { it("advances stage ACKs monotonically", () => { const t = make(); const lease = t.claimLease("d"); const base = { schemaVersion: 1 as const, deploymentId: "d", commandId: "c", lease }; t.recordStageAck({ ...base, stage: "prepare", sequence: 1 }); expect(() => t.recordStageAck({ ...base, stage: "queue", sequence: 0 })).toThrow(AckOrderError); }); it("requires terminal intent before terminal ACK", () => { const t = make(); const lease = t.claimLease("d"); const input = { schemaVersion: 1 as const, deploymentId: "d", commandId: "c", lease, status: "succeeded" as const }; expect(() => t.recordTerminalAck(input)).toThrow("durable terminal intent"); t.recordTerminalIntent(input); expect(t.recordTerminalAck(input).state.kind).toBe("terminal-ack"); }); });

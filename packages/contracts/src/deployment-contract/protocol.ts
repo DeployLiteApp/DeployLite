@@ -29,3 +29,19 @@ export function validateDeploymentCommand(command: DeploymentCommandV1): Deploym
 export type ProtocolDispatch<T = unknown> = (command: DeploymentCommandV1, attempt: number) => T;
 export interface DeliveryResultV1<T = unknown> { readonly schemaVersion: 1; readonly commandId: string; readonly deploymentId: string; readonly payloadFingerprint: string; readonly attempts: number; readonly backoffMs: readonly number[]; readonly replayed: boolean; readonly result: T; }
 export function isRetryableProtocolError(error: unknown): error is ProtocolError { return error instanceof ProtocolError && error.retryable && (error.code === "transient-transport" || error.code === "transient-lease"); }
+export interface StageAckInputV1 { readonly schemaVersion: number; readonly deploymentId: string; readonly commandId: string; readonly lease: LeaseV1; readonly stage: string; readonly sequence: number; }
+export type StageAckV1 = Omit<StageAckInputV1, "schemaVersion"> & { readonly schemaVersion: 1 };
+export const TERMINAL_STATUSES = ["succeeded", "failed", "canceled"] as const;
+export type TerminalStatusV1 = (typeof TERMINAL_STATUSES)[number];
+export interface TerminalIntentInputV1 { readonly schemaVersion: number; readonly deploymentId: string; readonly commandId: string; readonly lease: LeaseV1; readonly status: TerminalStatusV1; }
+export type TerminalIntentV1 = Omit<TerminalIntentInputV1, "schemaVersion"> & { readonly schemaVersion: 1 };
+export type TerminalAckV1 = TerminalIntentV1;
+function version(value: number) { if (value !== 1) throw new ProtocolValidationError("unsupported protocol schema version"); }
+export function createStageAck(input: StageAckInputV1): StageAckV1 { version(input.schemaVersion); if (!Number.isInteger(input.sequence) || input.sequence < 0 || !input.stage.trim()) throw new ProtocolValidationError("invalid stage ACK"); if (input.lease.deploymentId !== input.deploymentId) throw new ProtocolValidationError("lease deploymentId does not match ACK"); return freeze({ ...input, schemaVersion: 1 as const }); }
+export function createTerminalIntent(input: TerminalIntentInputV1): TerminalIntentV1 { version(input.schemaVersion); if (!TERMINAL_STATUSES.includes(input.status) || input.lease.deploymentId !== input.deploymentId) throw new ProtocolValidationError("invalid terminal intent"); return freeze({ ...input, schemaVersion: 1 as const }); }
+export const createTerminalAck = createTerminalIntent;
+export interface StageAckStateV1 extends StageAckV1 { readonly kind: "stage"; }
+export interface TerminalPendingAckStateV1 extends Omit<TerminalIntentV1, "schemaVersion"> { readonly kind: "terminal-pending-ack"; }
+export interface TerminalAckStateV1 extends Omit<TerminalIntentV1, "schemaVersion"> { readonly kind: "terminal-ack"; }
+export type AckStateV1 = StageAckStateV1 | TerminalPendingAckStateV1 | TerminalAckStateV1;
+export interface AckResultV1 { readonly state: AckStateV1; readonly replayed: boolean; }
