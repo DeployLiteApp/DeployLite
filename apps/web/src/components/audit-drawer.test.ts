@@ -317,4 +317,49 @@ describe("AuditDrawerContent render markup", () => {
       expect(html).toMatch(/data-testid="audit-drawer-next"[^>]*disabled/);
     }
   });
+
+  it("keeps the inclusive range correct for a partial final window", () => {
+    expect(formatAuditRange(100, 25, 125)).toBe("Showing 101–125 of 125");
+    const html = renderToStaticMarkup(React.createElement(AuditDrawerContent, {
+      events: Array.from({ length: 25 }, (_, index) => event({ id: `ev_${index}` })),
+      total: 125, limit: 50, offset: 100, state: { kind: "ready" }, onRefresh: vi.fn()
+    }));
+    expect(html).toContain("Showing 101–125 of 125");
+    expect(html).toMatch(/data-testid="audit-drawer-next"[^>]*disabled/);
+  });
+
+  it("keeps the loaded rows visible and marks the list busy while loading", () => {
+    const html = renderToStaticMarkup(React.createElement(AuditDrawerContent, {
+      events: [event({ id: "ev_loading" })], total: 2, limit: 50, offset: 0,
+      state: { kind: "ready" }, onRefresh: vi.fn(), isLoading: true
+    }));
+    expect(html).toContain('aria-busy="true"');
+    expect(html).toContain("ev_loading");
+    expect(html).toContain("Loading audit history");
+    expect(html).toMatch(/data-testid="audit-drawer-previous"[^>]*disabled/);
+    expect(html).toMatch(/data-testid="audit-drawer-next"[^>]*disabled/);
+  });
+
+  it("omits the range and disables navigation for an error response", () => {
+    const html = renderToStaticMarkup(React.createElement(AuditDrawerContent, {
+      events: [], total: 0, limit: 50, offset: 0,
+      state: { kind: "error", reason: "api-unreachable" }, onRefresh: vi.fn()
+    }));
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("local API is unreachable");
+    expect(html).not.toContain("Showing ");
+    expect(html).toMatch(/data-testid="audit-drawer-previous"[^>]*disabled/);
+    expect(html).toMatch(/data-testid="audit-drawer-next"[^>]*disabled/);
+  });
+
+  it("redacts fingerprint-shaped values in a later paginated window", () => {
+    const fingerprint = "abcdef0123456789abcdef0123456789";
+    const html = renderToStaticMarkup(React.createElement(AuditDrawerContent, {
+      events: [event({ id: "ev_later", targetId: `envv_env_1:${fingerprint}`, requestId: `req_${fingerprint}` })],
+      total: 51, limit: 50, offset: 50, state: { kind: "ready" }, onRefresh: vi.fn()
+    }));
+    expect(html).toContain("Showing 51–51 of 51");
+    expect(html).not.toContain(fingerprint);
+    expect(html).toContain("[REDACTED]");
+  });
 });
