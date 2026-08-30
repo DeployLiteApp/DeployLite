@@ -24,4 +24,4 @@ For every supported-component update, include before/after versions and digests,
 
 ## Current boundary
 
-The policy/evidence slice documents controls only. CI/security gates, automation, VPS smoke, backups, production deployment, and aggregate release approval are intentionally pending.
+Hosted quality, PostgreSQL integration, Compose/supply-chain, and aggregate baseline gates are implemented. The Compose/supply-chain gate runs filesystem and API/web image Trivy scans, generates CycloneDX SBOMs, records image and Compose digest evidence, and builds hardened small runtime images. The release record still does not prove image provenance or signing, production deployment, infrastructure mutation, Traefik/ACME production routing, or VPS smoke. Aggregate release approval remains pending, so DeployLite is not production-ready.
