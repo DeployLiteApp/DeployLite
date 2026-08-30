@@ -191,6 +191,60 @@ describe("dashboard real API rendering", () => {
     expect(html).not.toContain("Mock platform status");
   });
 
+  it("renders an accessible fixed-order deployment status summary from loaded deployments", async () => {
+    mockCookies("deploylite_session", "opaque");
+    process.env.DEPLOYLITE_WEB_API_BASE_URL = apiBaseUrl;
+    mockFetch({
+      "/api/v1/auth/me": { data: { user: userFixture }, error: null, requestId: "req_auth_1" },
+      "/api/v1/projects": { data: { projects: [] }, error: null, requestId: "req_projects_1" },
+      "/api/v1/agents": { data: { agents: [] }, error: null, requestId: "req_agents_1" },
+      "/api/v1/deployments": {
+        data: { deployments: [
+          { ...deploymentFixture, id: "dep-running", status: "running" },
+          { ...deploymentFixture, id: "dep-success", status: "succeeded" },
+          { ...deploymentFixture, id: "dep-failed", status: "failed" },
+          { ...deploymentFixture, id: "dep-running-2", status: "running" }
+        ] },
+        error: null,
+        requestId: "req_deployments_summary"
+      }
+    });
+
+    const html = renderToStaticMarkup(await DashboardPage());
+
+    expect(html).toContain("Deployment status summary");
+    expect(html).toContain("Counts summarize deployments loaded for this dashboard response; they are not real-time.");
+    expect(html).toContain('<ul aria-label="Deployment statuses"');
+    expect(html).toContain("Succeeded: 1");
+    expect(html).toContain("Failed: 1");
+    expect(html).toContain("Canceled: 0");
+    expect(html).toContain("Running: 2");
+    expect(html).toContain("Queued: 0");
+    expect(html.indexOf("Succeeded: 1")).toBeLessThan(html.indexOf("Failed: 1"));
+    expect(html.indexOf("Failed: 1")).toBeLessThan(html.indexOf("Canceled: 0"));
+    expect(html.indexOf("Canceled: 0")).toBeLessThan(html.indexOf("Running: 2"));
+    expect(html.indexOf("Running: 2")).toBeLessThan(html.indexOf("Queued: 0"));
+  });
+
+  it("renders every zero-count status when the loaded deployment data is empty", async () => {
+    mockCookies("deploylite_session", "opaque");
+    process.env.DEPLOYLITE_WEB_API_BASE_URL = apiBaseUrl;
+    mockFetch({
+      "/api/v1/auth/me": { data: { user: userFixture }, error: null, requestId: "req_auth_1" },
+      "/api/v1/projects": { data: { projects: [] }, error: null, requestId: "req_projects_1" },
+      "/api/v1/agents": { data: { agents: [] }, error: null, requestId: "req_agents_1" },
+      "/api/v1/deployments": { data: { deployments: [] }, error: null, requestId: "req_deployments_empty" }
+    });
+
+    const html = renderToStaticMarkup(await DashboardPage());
+
+    expect(html).toContain("Succeeded: 0");
+    expect(html).toContain("Failed: 0");
+    expect(html).toContain("Canceled: 0");
+    expect(html).toContain("Running: 0");
+    expect(html).toContain("Queued: 0");
+  });
+
   it("renders unauthenticated, empty, and error dashboard states", async () => {
     mockCookies();
     expect(renderToStaticMarkup(await DashboardPage())).toContain("Sign in required");
@@ -604,13 +658,13 @@ describe("projects list page launch hub", () => {
 
     expect(html).toContain("data-project-id=\"project-1\"");
     expect(html).toContain("data-project-id=\"project-2\"");
-    const projectOneIndex = html.indexOf("data-project-id=\"project-1\"");
-    const projectTwoIndex = html.indexOf("data-project-id=\"project-2\"");
-    const depOneIndex = html.indexOf('href="/deployments/dep-1"');
-    const depOtherIndex = html.indexOf('href="/deployments/dep-other"');
-    expect(depOneIndex).toBeGreaterThan(projectOneIndex);
-    expect(depOneIndex).toBeLessThan(projectTwoIndex);
-    expect(depOtherIndex).toBeGreaterThan(projectTwoIndex);
+    const projectOneRow = extractProjectLaunchRow(html, "project-1");
+    const projectTwoRow = extractProjectLaunchRow(html, "project-2");
+    expect(html.indexOf(projectTwoRow)).toBeLessThan(html.indexOf(projectOneRow));
+    expect(projectOneRow).toContain('href="/deployments/dep-1"');
+    expect(projectOneRow).not.toContain('href="/deployments/dep-other"');
+    expect(projectTwoRow).toContain('href="/deployments/dep-other"');
+    expect(projectTwoRow).not.toContain('href="/deployments/dep-1"');
   });
 
   it("preserves the projects list empty state and the API error state", async () => {
@@ -650,6 +704,16 @@ describe("projects list page launch hub", () => {
     expect(errorHtml).not.toContain("data-testid=\"projects-launch-hub-table\"");
   });
 });
+
+function extractProjectLaunchRow(html: string, projectId: string): string {
+  const row = html.match(
+    new RegExp(
+      `<tr(?=[^>]*data-testid="project-launch-row")(?=[^>]*data-project-id="${projectId}")[^>]*>[\\s\\S]*?<\\/tr>`
+    )
+  );
+  if (!row) throw new Error(`Missing project launch row for ${projectId}`);
+  return row[0];
+}
 
 describe("project detail and deploy flow rendering", () => {
   afterEach(() => {

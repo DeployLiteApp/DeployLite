@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { DeploymentLogInspector } from "./deployment-log-inspector";
 
 export const dynamic = "force-dynamic";
 
@@ -177,13 +178,7 @@ export default async function DeploymentLogsPage({ params }: { params: Promise<{
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {events.length === 0 ? (
-              <p className="text-sm text-muted-foreground" data-testid="log-empty-state">No log events are available yet.</p>
-            ) : (
-              <pre className="overflow-auto rounded-md bg-muted p-3 text-xs leading-relaxed">
-                {events.map((event) => `${event.sequence} ${event.level.toUpperCase()} ${event.message}`).join("\n")}
-              </pre>
-            )}
+            <DeploymentLogInspector events={events} />
           </CardContent>
         </Card>
       </div>

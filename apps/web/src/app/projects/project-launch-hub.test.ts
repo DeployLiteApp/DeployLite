@@ -2,6 +2,7 @@ import type { Deployment, Project } from "@deploylite/contracts";
 import { describe, expect, it } from "vitest";
 import {
   getLatestDeploymentForProject,
+  orderProjectLaunchSummaries,
   summarizeProjectLaunch,
   summarizeProjectLatest,
   summarizeProjectNextAction,
@@ -168,5 +169,44 @@ describe("project launch hub helpers", () => {
     expect(second).toEqual(first);
     expect(project).toEqual(originalProject);
     expect(deployments).toEqual(originalDeployments);
+  });
+});
+
+describe("orderProjectLaunchSummaries", () => {
+  it("prioritizes missing runtime before failed or canceled deployments and ordinary rows", () => {
+    const summaries = [
+      summarizeProjectLaunch(createProject({ id: "ordinary" }), [createDeployment({ projectId: "ordinary", status: "succeeded" })]),
+      summarizeProjectLaunch(createProject({ id: "failed" }), [createDeployment({ projectId: "failed", status: "failed" })]),
+      summarizeProjectLaunch(createProject({ id: "needs-command", runCommand: null, port: null }), [createDeployment({ projectId: "needs-command", status: "failed" })]),
+      summarizeProjectLaunch(createProject({ id: "canceled" }), [createDeployment({ projectId: "canceled", status: "canceled" })])
+    ];
+
+    expect(orderProjectLaunchSummaries(summaries).map(({ project }) => project.id)).toEqual([
+      "needs-command", "failed", "canceled", "ordinary"
+    ]);
+  });
+
+  it("preserves source order within every priority and does not mutate input", () => {
+    const summaries = [
+      summarizeProjectLaunch(createProject({ id: "ordinary-a" }), []),
+      summarizeProjectLaunch(createProject({ id: "attention-a" }), [createDeployment({ projectId: "attention-a", status: "failed" })]),
+      summarizeProjectLaunch(createProject({ id: "needs-command-a", runCommand: null, port: null }), []),
+      summarizeProjectLaunch(createProject({ id: "ordinary-b" }), []),
+      summarizeProjectLaunch(createProject({ id: "attention-b" }), [createDeployment({ projectId: "attention-b", status: "canceled" })]),
+      summarizeProjectLaunch(createProject({ id: "needs-command-b", runCommand: null, port: null }), [])
+    ];
+    const original = [...summaries];
+
+    const ordered = orderProjectLaunchSummaries(summaries);
+
+    expect(ordered.map(({ project }) => project.id)).toEqual([
+      "needs-command-a", "needs-command-b", "attention-a", "attention-b", "ordinary-a", "ordinary-b"
+    ]);
+    expect(ordered).not.toBe(summaries);
+    expect(summaries).toEqual(original);
+  });
+
+  it("returns an empty array for empty input", () => {
+    expect(orderProjectLaunchSummaries([])).toEqual([]);
   });
 });
