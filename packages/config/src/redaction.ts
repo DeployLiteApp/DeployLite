@@ -8,9 +8,9 @@ const REDACTED = "[REDACTED]";
 const SAFE_PROJECTION_KEYS = new Set([
   "requestId", "correlationId", "id", "actorId", "action", "targetType", "targetId", "timestamp", "service", "mode", "safety", "metadata",
   "agents", "summary", "agentCount", "onlineAgentCount", "name", "endpoint", "status", "lastHeartbeatAt", "resourceSnapshot",
-  "cpuLoad", "memoryUsedBytes", "memoryTotalBytes", "diskUsedBytes", "diskTotalBytes", "deployments", "projectId", "agentId",
+  "cpuLoad", "memoryUsedBytes", "memoryTotalBytes", "diskUsedBytes", "diskTotalBytes", "deployments", "projects", "project", "latestDeployment", "readiness", "projectId", "agentId", "defaultBranch", "port", "description", "imageTag",
   "commitSha", "startedAt", "finishedAt", "deploymentId", "events", "sequence", "level", "message", "redactionApplied", "resume",
-  "afterSequence", "nextAfterSequence", "readOnly", "destructive", "dockerSocketAccess", "hostShellExecution", "traefikAcmeMutation",
+  "afterSequence", "nextAfterSequence", "readOnly", "destructive", "dockerSocketAccess", "hostShellExecution", "traefikAcmeMutation", "total", "offset", "limit", "advisory",
   "productionAuthClaims", "redacted", "reason", "role", "allowedRoles", "projectId", "key", "scope", "keyVersion", "classification", "status", "field", "password", "valueFingerprint"
 ]);
 
