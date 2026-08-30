@@ -13,15 +13,19 @@ The following capabilities are available in the current `main` branch:
 | Project configuration | Create, edit, and delete project metadata |
 | Environment values | Encrypted-value foundation and masked value handling |
 | Control-plane views | Deployment and log metadata with Server-Sent Events (SSE) log inspection |
-| Model Context Protocol (MCP) | Read-only server status, deployment, and log inspection |
+| Model Context Protocol (MCP) | Read-only, non-executing server status, deployment, and log inspection |
+| Runtime port contract | Project runtime ports are bounded and covered by tests; this does not start a production executor |
+| Baseline verification | Hosted quality, PostgreSQL integration, Compose/supply-chain, and aggregate gates run under strict `main` protection |
+| Dependency and image security | Filesystem and API/web image Trivy scans, CycloneDX SBOMs, digest evidence, and hardened small runtime images |
+| Local CI evidence | Explicit local check execution and GitHub Issue-comment publication for advisory evidence only |
 
-The current deployment-control and agent surfaces are Alpha/early access, not a finished production deployment platform. Real Docker execution, privileged host mutation, and production hardening remain gated work. See the [platform support policy](docs/support-policy.md) and [release-evidence contract](docs/release-evidence.md) for the current release-baseline boundary.
+The current deployment-control and agent surfaces are Alpha/early access, not a finished production deployment platform. Real production execution, privileged host mutation, provenance/signing, VPS smoke, routing, certificates, and release approval remain pending. See the [platform support policy](docs/support-policy.md) and [release-evidence contract](docs/release-evidence.md) for the current boundary.
 
 ## What is planned
 
-DeployLite does not yet provide a real deployment executor, multi-service applications, Docker Compose or Swarm workloads, networks, volumes, backups, managed databases, service-level secrets, routing, certificates, registries, CI/CD, webhooks, observability, healthchecks, functional rollback, remote build servers, or MCP writes.
+DeployLite does not yet provide a production deployment executor, multi-service applications, Docker Compose or Swarm workloads, networks, volumes, backups, managed databases, service-level secrets, registries, deployment CI/CD integrations, webhooks, observability, healthchecks, functional rollback, remote build servers, or MCP writes.
 
-See the [community roadmap](docs/community-roadmap.md) for planned P0–P7 phases and their acceptance boundaries. Planned work is not a product commitment or an implemented capability.
+See the [community roadmap](docs/community-roadmap.md) for the incomplete planned P0–P8 phases and their acceptance boundaries. Planned work is not a product commitment or an implemented capability.
 
 ## Work with the community
 

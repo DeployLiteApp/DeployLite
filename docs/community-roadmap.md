@@ -7,7 +7,7 @@ meta:
 
 # How will DeployLite grow?
 
-DeployLite is an open-source, community-oriented, self-hosted deployment control plane. This roadmap separates the verified `main` baseline from planned work, so contributors can evaluate scope without treating a future phase as shipped behavior.
+DeployLite is an open-source, community-oriented, self-hosted deployment control plane. This roadmap separates the verified `main` baseline from incomplete planned P0–P8 work, so contributors can evaluate scope without treating a future phase as shipped behavior.
 
 ## Page plan
 
@@ -20,9 +20,9 @@ DeployLite is an open-source, community-oriented, self-hosted deployment control
 
 ## Start from the verified baseline
 
-The `main` branch provides an HTTP-first VPS installer, first-owner setup, cookie sessions and RBAC, project metadata management, encrypted environment-value foundations with masked handling, control-plane deployment and log metadata, and a read-only MCP surface.
+The `main` branch provides an HTTP-first VPS installer, first-owner setup, cookie sessions and RBAC, project metadata management, encrypted environment-value foundations with masked handling, control-plane deployment and log metadata, a read-only MCP surface, bounded runtime-port handling with tests, and a protected hosted baseline CI pipeline.
 
-The existing deployment-control and agent surfaces are not a real production executor. Real Docker execution, privileged host mutation, routing, certificates, and production hardening are planned rather than implemented.
+The existing deployment-control and agent surfaces are not a real production executor. Real production execution, privileged host mutation, provenance/signing, VPS smoke, routing, certificates, and release approval are planned rather than implemented.
 
 ## Follow the planned phases
 
@@ -38,10 +38,11 @@ Each phase has an outcome and an acceptance boundary. A phase is not complete un
 | P5 | Add CI/CD, webhooks, notifications, scheduling, observability, healthchecks, and tenant governance | Automation is idempotent and cancellable; integrations have delivery status; authorization tests deny cross-tenant access; events trace to a source command |
 | P6 | Publish a versioned API and controlled MCP writes | API tokens are scoped and rotatable; MCP writes use the same command, audit, idempotency, authorization, and confirmation path as the web interface |
 | P7 | Add audited AI assistance | AI receives allowlisted redacted context, links recommendations to evidence, and can only request a normal command preview; it cannot autonomously control infrastructure |
+| P8 | Complete production operations and release readiness | Production execution, VPS smoke, provenance/signing, Traefik/ACME routing, infrastructure mutation, rollback, and release approval pass their independent evidence gates |
 
 ## Keep planned work honest
 
-The roadmap includes real Git and Dockerfile execution, Docker Compose, Swarm, networks, volumes, backups, managed databases, service-level secrets, routing, certificates, TCP, UDP, catalog applications, registries, CI/CD, webhooks, observability, healthchecks, functional rollback, and remote build servers. None of these items is implemented unless the verified baseline says so.
+The roadmap includes real Git and Dockerfile execution, Docker Compose, Swarm, networks, volumes, backups, managed databases, service-level secrets, routing, certificates, TCP, UDP, catalog applications, registries, deployment CI/CD, webhooks, observability, healthchecks, functional rollback, and remote build servers. None of these items is implemented unless the verified baseline says so. The hosted baseline pipeline and advisory local evidence bridge do not make DeployLite production-ready.
 
 DeployLite will not copy third-party code, templates, credentials, private endpoints, or deployment configuration into this project. References may inform a problem statement, but DeployLite defines and tests its own public behavior.
 
