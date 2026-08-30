@@ -2,6 +2,8 @@ import type { Agent, AgentHeartbeat, Deployment, EnvSecretValue, EnvVariableMeta
 import { redactLogMessage } from "@deploylite/config";
 export { InMemorySnapshotStore } from "./deployment-contract/snapshot-memory.js";
 export { InMemoryProtocolTransport } from "./deployment-contract/protocol-memory.js";
+export * from "./deployment-contract/docker-image-executor.js";
+export { FakeDockerImageTransport } from "./deployment-contract/testing/fake-docker-image-transport.js";
 
 export * from "./control-plane.js";
 
