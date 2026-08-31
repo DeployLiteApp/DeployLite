@@ -57,8 +57,8 @@ phase_evidence() {
   rc="$(<"$raw_rc")"; raw="$(<"$raw_output")"
   [[ "$rc" =~ ^[0-9]+$ ]] || failed 'migration exit code evidence is invalid.'
   [[ -s "$raw_output" ]] || failed 'migration evidence is missing.'
-  raw="${raw//"${VPS_DB_PASSWORD:-}"/[REDACTED]}"
-  raw="${raw//"${VPS_API_TOKEN:-}"/[REDACTED]}"
+  [[ -z "${VPS_DB_PASSWORD:-}" ]] || raw="${raw//"$VPS_DB_PASSWORD"/[REDACTED]}"
+  [[ -z "${VPS_API_TOKEN:-}" ]] || raw="${raw//"$VPS_API_TOKEN"/[REDACTED]}"
   raw="$(printf '%s' "$raw" | sed -E -e 's/(Authorization:[[:space:]]*(Bearer|Basic)[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig' -e 's/((PASSWORD|TOKEN|SECRET|API_KEY|DATABASE_URL)[[:space:]]*=[[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' -e 's#(postgres(ql)?://[^:/@]+:)[^@[:space:]]+@#\1[REDACTED]@#Ig')"
   # Drain the pipe after head reaches the limit so printf cannot receive SIGPIPE under pipefail.
   redacted="$(printf '%s' "$raw" | { head -c "$max_bytes"; cat >/dev/null; })"
