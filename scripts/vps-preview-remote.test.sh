@@ -45,6 +45,12 @@ grep -Fq -- 'down --volumes --remove-orphans' "$compose_log"
 grep -Fq -- 'owned-image' "$rm_log"
 if grep -Fq -- 'shared-image' "$rm_log"; then exit 1; fi
 [[ ! -e "/var/tmp/deploylite-preview/$preview_id" ]]
+known_id="known-$RANDOM"; known_output="$work/known-secret"
+"${envbase[@]}" VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$known_id" VPS_DB_PASSWORD=known-db-password \
+  VPS_MIGRATION_COMMAND='printf "value=known-db-password\n"' bash "$script" migration-only "$known_id" >"$known_output" 2>&1
+grep -Fq 'value=[REDACTED]' "$known_output"
+grep -Fq 'known-db-password' "$known_output" && exit 1
+[[ ! -e "/var/tmp/deploylite-preview/$known_id" ]]
 large_id="large-$RANDOM"; large_output="$work/large-output"
 # The migration command is intentionally evaluated by the remote bash process.
 # shellcheck disable=SC2016
@@ -57,6 +63,8 @@ grep -Fq 'migration_rc=0' "$large_output"
 large_redacted="$(awk '/^output_begin$/{capture=1; next} /^output_end$/{capture=0} capture' "$large_output")"
 [[ "$(printf '%s' "$large_redacted" | wc -c)" -eq 65536 ]]
 large_checksum="$(printf '%s' "$large_redacted" | sha256sum | awk '{print $1}')"
+[[ "$large_checksum" == 1f8745f0d2d1387ec1af2211a3cf417b2e9e885e853472649c1d979d0e9370e3 ]]
+grep -Fq '[REDACTED]' "$large_output" && exit 1
 grep -Fq "redacted_sha256=$large_checksum" "$large_output"
 grep -Fq 'PASS: migration-only' "$large_output"
 [[ ! -e "/var/tmp/deploylite-preview/$large_id" ]]
