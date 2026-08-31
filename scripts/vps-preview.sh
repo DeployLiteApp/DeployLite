@@ -38,6 +38,7 @@ remote_root="${remote_root:-/var/tmp/deploylite-preview/$preview_id}"
 [[ "$remote_host" != production* && "$remote_host" != canonical* && "$remote_host" != deploylite* ]] || blocked 'canonical and production hosts are forbidden.'
 [[ "$remote_user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || blocked 'invalid remote user.'
 vps_source_provenance "$source_dir" "$expected_commit" "$expected_tree" >/dev/null || exit $?
+source_url="${VPS_SOURCE_URL:-$(git -C "$source_dir" remote get-url origin)}"
 vps_require_isolated_resources "project=$preview_id" "root=$remote_root" 'ports=127.0.0.1:55433,127.0.0.1:58080,127.0.0.1:58443'
 
 [[ -n "${VPS_KNOWN_HOSTS_FILE:-}" && -r "$VPS_KNOWN_HOSTS_FILE" ]] || blocked 'VPS_KNOWN_HOSTS_FILE is required for strict host verification.'
@@ -45,14 +46,19 @@ vps_require_isolated_resources "project=$preview_id" "root=$remote_root" 'ports=
 if [[ -n "${SSHPASS:-}" ]]; then
   command -v sshpass >/dev/null 2>&1 || blocked 'SSHPASS requires sshpass.'
   ssh_cmd=(sshpass -e ssh)
-  scp_cmd=(sshpass -e scp)
 else
   ssh_cmd=(ssh)
-  scp_cmd=(scp)
 fi
 command -v "${ssh_cmd[0]}" >/dev/null 2>&1 || blocked 'SSH client is required.'
-command -v "${scp_cmd[0]}" >/dev/null 2>&1 || blocked 'SCP client is required.'
 [[ "${VPS_HOST_FINGERPRINT:-}" =~ ^SHA256:[A-Za-z0-9+/=]+$ ]] || blocked 'VPS_HOST_FINGERPRINT must be a SHA256 fingerprint.'
+command -v ssh-keygen >/dev/null 2>&1 || blocked 'ssh-keygen is required.'
+[[ "${VPS_HOST_FINGERPRINT:-}" =~ ^SHA256:[A-Za-z0-9+/=]+$ ]] || blocked 'VPS_HOST_FINGERPRINT must be a SHA256 fingerprint.'
+host_keys="$(ssh-keygen -F "$remote_host" -f "$VPS_KNOWN_HOSTS_FILE" 2>/dev/null | awk -v host="$remote_host" '$1 == host { print $2 " " $3 }')"
+[[ -n "$host_keys" ]] || blocked 'known_hosts has no exact entry for VPS_HOST.'
+while IFS= read -r host_key; do
+  fingerprint="$(printf '%s\n' "$host_key" | ssh-keygen -lf - 2>/dev/null | awk '{print $2}')"
+  [[ "$fingerprint" == "$VPS_HOST_FINGERPRINT" ]] || blocked 'VPS_HOST_FINGERPRINT does not match the exact VPS_HOST entry.'
+done <<< "$host_keys"
 ssh_opts=(-o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$VPS_KNOWN_HOSTS_FILE")
 if [[ -n "${SSHPASS:-}" ]]; then
   ssh_opts+=(-o BatchMode=no)
@@ -66,13 +72,19 @@ trap cleanup EXIT
 status=0
 trap 'status=$?; printf "FAILED: interrupted (status %s)\n" "$status" >&2; exit "$status"' INT TERM
 
-git -C "$source_dir" archive --format=tar.gz --output="$tmpdir/source.tar.gz" HEAD
-archive_remote="/var/tmp/deploylite-preview-$preview_id.source.tar.gz"
-"${scp_cmd[@]}" "${ssh_opts[@]}" "$tmpdir/source.tar.gz" "$remote_user@$remote_host:$archive_remote" >/dev/null
-printf -v health_q '%q' "${VPS_HEALTH_COMMAND:-true}"
-printf -v compose_q '%q' "${VPS_COMPOSE_COMMAND:-}"
-remote_command=("VPS_REMOTE_ROOT=$remote_root" "VPS_ARCHIVE=$archive_remote" "VPS_COMMIT=$expected_commit" "VPS_TREE=$expected_tree" "VPS_LOOPBACK_PORTS=127.0.0.1:55433,127.0.0.1:58080,127.0.0.1:58443" "VPS_HEALTH_COMMAND=$health_q" "VPS_COMPOSE_COMMAND=$compose_q" "bash -s" "$mode" "$preview_id")
-"${ssh_cmd[@]}" "${ssh_opts[@]}" "$remote_user@$remote_host" "${remote_command[*]}" < "$script_dir/vps-preview-remote.sh"
+printf -v source_q '%q' "$source_url"
+printf -v root_q '%q' "$remote_root"
+printf -v commit_q '%q' "$expected_commit"
+printf -v tree_q '%q' "$expected_tree"
+remote_command="VPS_REMOTE_ROOT=$root_q VPS_SOURCE_URL=$source_q VPS_COMMIT=$commit_q VPS_TREE=$tree_q VPS_LOOPBACK_PORTS=127.0.0.1:55433,127.0.0.1:58080,127.0.0.1:58443"
+for variable in VPS_MIGRATION_COMMAND VPS_COMPOSE_COMMAND VPS_HEALTH_COMMAND; do
+  printf -v value_q '%q' "${!variable:-}"
+  remote_command+=" $variable=$value_q"
+done
+printf -v mode_q '%q' "$mode"
+printf -v id_q '%q' "$preview_id"
+remote_command+=" bash -s $mode_q $id_q"
+"${ssh_cmd[@]}" "${ssh_opts[@]}" "$remote_user@$remote_host" "$remote_command" < "$script_dir/vps-preview-remote.sh"
 
 printf 'READY: mode=%s id=%s commit=%s tree=%s\n' "$mode" "$preview_id" "$expected_commit" "$expected_tree"
 printf 'SSH: strict host verification enabled; fingerprint supplied out-of-band.\n'
