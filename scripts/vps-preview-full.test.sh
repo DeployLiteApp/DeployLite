@@ -11,7 +11,12 @@ shift 2
 exec "$@"
 EOF
 chmod +x "$source_repo/bin/timeout"
-base=(env -i PATH="$source_repo/bin:$PATH" VPS_SOURCE_URL="$source_repo" VPS_COMMIT="$commit" VPS_TREE="$tree" VPS_COMPOSE_COMMAND=true VPS_MIGRATION_COMMAND='printf ready' VPS_HEALTH_COMMAND=true VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$id")
+cat > "$source_repo/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$source_repo/bin/docker"
+base=(env -i PATH="$source_repo/bin:$PATH" VPS_DOCKER_BIN="$source_repo/bin/docker" VPS_SOURCE_URL="$source_repo" VPS_COMMIT="$commit" VPS_TREE="$tree" VPS_COMPOSE_COMMAND=true VPS_MIGRATION_COMMAND='printf ready' VPS_HEALTH_COMMAND=true VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$id")
 output="$("${base[@]}" bash "$script" preview "$id")"
 [[ "$output" == *'PASS: preview'* && -f "/var/tmp/deploylite-preview/$id/.deploylite-preview-owner" ]]
 rm -rf -- "/var/tmp/deploylite-preview/$id"
