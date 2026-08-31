@@ -69,11 +69,11 @@ phase_evidence() {
 phase_cleanup() {
   [[ -f "$marker" ]] || failed 'cleanup marker is missing; refusing rollback.'
   [[ "$(sed -n '1p' "$marker")" == deploylite-preview-owner && "$(sed -n '2p' "$marker")" == "$preview_id" && "$(sed -n '3p' "$marker")" == "$project" ]] || failed 'ownership marker drifted.'
-  if [[ "${VPS_CLEANUP_FAIL:-0}" == 1 ]]; then failed 'injected cleanup failure.'; fi
+  if [[ "${VPS_CLEANUP_FAIL:-0}" == 1 ]]; then failed 'injected cleanup failure.'; return 1; fi
   if [[ -n "${VPS_COMPOSE_COMMAND:-}" ]]; then
-    COMPOSE_PROJECT_NAME="$project" bash -c "$VPS_COMPOSE_COMMAND down --remove-orphans"
+    COMPOSE_PROJECT_NAME="$project" bash -c "$VPS_COMPOSE_COMMAND down --remove-orphans" || return 1
   elif [[ -x "${VPS_COMPOSE_WRAPPER:-}" ]]; then
-    "$VPS_COMPOSE_WRAPPER" --project-name "$project" down --remove-orphans
+    "$VPS_COMPOSE_WRAPPER" --project-name "$project" down --remove-orphans || return 1
   fi
   [[ -z "${VPS_ARCHIVE:-}" ]] || rm -f -- "$VPS_ARCHIVE"
   rm -rf -- "$root"

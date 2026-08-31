@@ -28,6 +28,9 @@ jobs:
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: pnpm runtime:contract
+      - run: shellcheck -x scripts/vps-preview.sh scripts/vps-preview-lib.sh scripts/vps-preview-remote.sh scripts/*vps-preview*.test.sh
+      - run: pnpm test:vps-preview
+      - run: bash scripts/vps-preview-failure-matrix.test.sh
       - run: pnpm test:docker-dry-run
       - run: pnpm ci:vitest:forbid-only
       - run: pnpm --filter @deploylite/contracts --filter @deploylite/config --filter @deploylite/domain --filter @deploylite/agent --filter @deploylite/db build
