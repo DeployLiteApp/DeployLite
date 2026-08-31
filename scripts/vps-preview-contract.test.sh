@@ -4,10 +4,13 @@ root="$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 script="$root/scripts/vps-preview.sh"
 lib="$root/scripts/vps-preview-lib.sh"
 work="$(mktemp -d)"; trap 'rm -rf -- "$work"' EXIT
-known_hosts="$work/known_hosts"; printf '%s\n' 'preview.example.test ssh-ed25519 AAAAfixture' > "$known_hosts"
-ssh-keygen -q -t ed25519 -N '' -f "$work/host-key"
-printf 'preview.example.test %s\n' "$(<"$work/host-key.pub")" > "$known_hosts"
-fingerprint="$(ssh-keygen -lf "$work/host-key.pub" | awk '{print $2}')"
+known_hosts="$work/known_hosts"
+for key_type in ed25519 rsa ecdsa; do
+  ssh-keygen -q -t "$key_type" -N '' -f "$work/host-key-$key_type"
+done
+fingerprint="$(ssh-keygen -lf "$work/host-key-rsa.pub" | awk '{print $2}')"
+printf 'preview.example.test %s\npreview.example.test %s\npreview.example.test %s\n' \
+  "$(<"$work/host-key-ed25519.pub")" "$(<"$work/host-key-rsa.pub")" "$(<"$work/host-key-ecdsa.pub")" > "$known_hosts"
 run_blocked() { local out status; set +e; out=$("$@" 2>&1); status=$?; set -e; if [[ $status -eq 3 && "$out" == *BLOCKED:* && "$out" != *fixture-secret* ]]; then return 0; fi; return 1; }
 assert() { "$@" || { printf 'assertion failed: %s\n' "$*" >&2; exit 1; }; }
 commit="$(git -C "$root" rev-parse HEAD)"; tree="$(git -C "$root" rev-parse 'HEAD^{tree}')"
@@ -30,6 +33,16 @@ assert run_blocked "${base[@]}" bash "$script" migration-only --source "$work/so
 assert run_blocked "${base[@]}" bash "$script" migration-only --source "$work/source" --commit "$commit" --tree "$tree" --id preview-one --host production.example.test
 output="$("${base[@]}" bash "$script" migration-only --source "$work/source" --commit "$commit" --tree "$tree" --id preview-one)"
 [[ "$output" == *'READY:'* && "$output" != *fixture-secret* ]]
+single_known_hosts="$work/single-known_hosts"
+printf 'preview.example.test %s\n' "$(<"$work/host-key-rsa.pub")" > "$single_known_hosts"
+single_output="$("${base[@]}" VPS_KNOWN_HOSTS_FILE="$single_known_hosts" bash "$script" migration-only --source "$work/source" --commit "$commit" --tree "$tree" --id single-match)"
+[[ "$single_output" == *'READY: mode=migration-only id=single-match'* ]]
+none_known_hosts="$work/none-known_hosts"
+printf 'preview.example.test %s\npreview.example.test %s\n' "$(<"$work/host-key-ed25519.pub")" "$(<"$work/host-key-ecdsa.pub")" > "$none_known_hosts"
+assert run_blocked "${base[@]}" VPS_KNOWN_HOSTS_FILE="$none_known_hosts" bash "$script" migration-only --source "$work/source" --commit "$commit" --tree "$tree" --id no-match
+wrong_host_known_hosts="$work/wrong-host-known_hosts"
+printf 'preview.example.test %s\nother.example.test %s\n' "$(<"$work/host-key-ed25519.pub")" "$(<"$work/host-key-rsa.pub")" > "$wrong_host_known_hosts"
+assert run_blocked "${base[@]}" VPS_KNOWN_HOSTS_FILE="$wrong_host_known_hosts" bash "$script" migration-only --source "$work/source" --commit "$commit" --tree "$tree" --id wrong-host
 alias_root="$work/path with spaces/DEPLOYLITE"
 mkdir -p "$(dirname -- "$alias_root")" "$work/outside"
 ln -s "$root" "$alias_root"
