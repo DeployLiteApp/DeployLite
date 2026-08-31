@@ -56,15 +56,35 @@ else
   ssh_cmd=(ssh)
 fi
 command -v "${ssh_cmd[0]}" >/dev/null 2>&1 || blocked 'SSH client is required.'
-[[ "${VPS_HOST_FINGERPRINT:-}" =~ ^SHA256:[A-Za-z0-9+/=]+$ ]] || blocked 'VPS_HOST_FINGERPRINT must be a SHA256 fingerprint.'
 command -v ssh-keygen >/dev/null 2>&1 || blocked 'ssh-keygen is required.'
 [[ "${VPS_HOST_FINGERPRINT:-}" =~ ^SHA256:[A-Za-z0-9+/=]+$ ]] || blocked 'VPS_HOST_FINGERPRINT must be a SHA256 fingerprint.'
-host_keys="$(ssh-keygen -F "$remote_host" -f "$VPS_KNOWN_HOSTS_FILE" 2>/dev/null | awk -v host="$remote_host" '$1 == host { print $2 " " $3 }')"
-[[ -n "$host_keys" ]] || blocked 'known_hosts has no exact entry for VPS_HOST.'
+set +e
+host_lookup="$(ssh-keygen -F "$remote_host" -f "$VPS_KNOWN_HOSTS_FILE")"
+lookup_status=$?
+set -e
+[[ "$lookup_status" -eq 0 ]] || [[ "$lookup_status" -eq 1 ]] || blocked 'ssh-keygen failed while reading VPS_KNOWN_HOSTS_FILE.'
+set +e
+host_keys="$(printf '%s\n' "$host_lookup" | awk -v host="$remote_host" '
+  /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+  NF < 3 || $1 != host { invalid=1; next }
+  { print $2 " " $3; found=1 }
+  END { if (invalid || !found) exit 1 }
+')"
+parse_status=$?
+set -e
+[[ "$parse_status" -eq 0 ]] || blocked 'known_hosts output has no valid exact VPS_HOST key entries.'
+matched=0
 while IFS= read -r host_key; do
-  fingerprint="$(printf '%s\n' "$host_key" | ssh-keygen -lf - 2>/dev/null | awk '{print $2}')"
-  [[ "$fingerprint" == "$VPS_HOST_FINGERPRINT" ]] || blocked 'VPS_HOST_FINGERPRINT does not match the exact VPS_HOST entry.'
+  set +e
+  fingerprint_line="$(printf '%s\n' "$host_key" | ssh-keygen -lf -)"
+  fingerprint_status=$?
+  set -e
+  [[ "$fingerprint_status" -eq 0 ]] || blocked 'ssh-keygen failed while fingerprinting a VPS_HOST key entry.'
+  fingerprint="$(printf '%s\n' "$fingerprint_line" | awk 'NF >= 2 { print $2; exit }')"
+  [[ -n "$fingerprint" ]] || blocked 'ssh-keygen returned malformed fingerprint output.'
+  [[ "$fingerprint" == "$VPS_HOST_FINGERPRINT" ]] && matched=1
 done <<< "$host_keys"
+[[ "$matched" -eq 1 ]] || blocked 'VPS_HOST_FINGERPRINT does not match any exact VPS_HOST entry.'
 ssh_opts=(-o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$VPS_KNOWN_HOSTS_FILE")
 if [[ -n "${SSHPASS:-}" ]]; then
   ssh_opts+=(-o BatchMode=no)
