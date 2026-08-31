@@ -64,6 +64,13 @@ assert_order() {
 image_removed="$work/image-removed"; rm_log="$work/docker-rm.log"; compose_log="$work/compose.log"; project_scope_log="$work/project-scope.log"
 # shellcheck disable=SC2016
 envbase=(env -i PATH="$work:$PATH" REAL_GIT="$(command -v git)" LOCAL_REMOTE="$source_repo" VPS_GIT_BIN="$work/fake-git" VPS_DOCKER_BIN="$work/fake-docker" DOCKER_IMAGE_REMOVED="$image_removed" DOCKER_RM_LOG="$rm_log" COMPOSE_LOG="$compose_log" PROJECT_SCOPE_LOG="$project_scope_log" VPS_COMPOSE_WRAPPER="$work/fake-compose" VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$preview_id" VPS_SOURCE_URL=https://example.test/deploylite.git VPS_COMMIT="$commit" VPS_TREE="$tree" VPS_MIGRATION_COMMAND='printf "%s\n" "$COMPOSE_PROJECT_NAME" > "$PROJECT_SCOPE_LOG"; printf "migration output\n"' VPS_KEEP_PREVIEW=0)
+invalid_ports_id="invalid-ports-$RANDOM"; invalid_ports_root="/var/tmp/deploylite-preview/$invalid_ports_id"
+run_case remote-invalid-ports 3 "${envbase[@]}" VPS_REMOTE_ROOT="$invalid_ports_root" VPS_LOOPBACK_PORTS='0.0.0.0:15432,127.0.0.1:18080,127.0.0.1:18443' bash "$script" migration-only "$invalid_ports_id"
+[[ ! -e "$invalid_ports_root" ]]
+pass_through_id="pass-through-$RANDOM"; pass_through_root="/var/tmp/deploylite-preview/$pass_through_id"; pass_through_log="$work/pass-through.log"
+# shellcheck disable=SC2016
+"${envbase[@]}" VPS_REMOTE_ROOT="$pass_through_root" VPS_LOOPBACK_PORTS='127.0.0.1:015432,127.0.0.1:18080,127.0.0.1:18443' VPS_MIGRATION_COMMAND='printf "%s\n" "$VPS_LOOPBACK_PORTS" > "$PASS_THROUGH_LOG"' PASS_THROUGH_LOG="$pass_through_log" bash "$script" migration-only "$pass_through_id" >"$work/pass-through-output" 2>&1
+[[ "$(<"$pass_through_log")" == '127.0.0.1:015432,127.0.0.1:18080,127.0.0.1:18443' && ! -e "$pass_through_root" ]]
 output="$("${envbase[@]}" bash "$script" migration-only "$preview_id")"; [[ "$output" == *'EVIDENCE: migration_rc=0'* && "$output" == *'PASS: migration-only'* ]]
 printf '%s\n' "$output" > "$work/success"
 [[ -f "$project_scope_log" ]] || { printf 'migration project scope was not recorded\n' >&2; exit 1; }
