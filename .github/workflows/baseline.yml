@@ -78,6 +78,7 @@ jobs:
         with: { node-version: 24.20.0, cache: pnpm }
       - run: corepack enable && pnpm install --frozen-lockfile
       - run: pnpm ci:evidence:check && bash scripts/compose.test.sh
+      - run: pnpm test:migration-image
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
         with: { scan-type: fs, scan-ref: ., severity: "HIGH,CRITICAL", exit-code: "1", ignore-unfixed: "false" }
       - run: docker build --file apps/api/Dockerfile --tag deploylite-api:ci . && docker build --file apps/web/Dockerfile --tag deploylite-web:ci .
