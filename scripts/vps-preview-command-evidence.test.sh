@@ -24,7 +24,8 @@ elif [[ "${ENVELOPE_MODE:-valid}" == incomplete ]]; then
   printf '%s\n' 'VPS_EVIDENCE_BEGIN' 'preview_id=quote-check' 'output_begin' 'password=secret' 'output_end' 'VPS_EVIDENCE_END'
   exit "${SSH_STATUS:-0}"
 fi
-printf '%s\n' 'PHASE: setup complete' 'PHASE: migration start' 'PHASE: migration complete status=0' 'PHASE: evidence start' 'PHASE: evidence complete' 'VPS_EVIDENCE_BEGIN' 'preview_id=quote-check' 'project=deploylite-preview-quote-check' 'commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'tree=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' 'mode=migration-only' 'migration_rc=0' 'redacted_sha256=30688345ac750027b3b7ec622e3102df7c83996873701618f21e158690250095' 'output_begin' 'password=secret' 'output_end' 'VPS_EVIDENCE_END' 'PHASE: cleanup start' 'PHASE: cleanup complete status=0'
+printf '%s\n' 'PHASE: setup complete' 'PHASE: migration start' 'PHASE: migration complete status=0' 'PHASE: evidence start' 'PHASE: evidence complete' 'VPS_EVIDENCE_BEGIN' 'preview_id=quote-check' 'project=deploylite-preview-quote-check' 'commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'tree=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' 'mode=migration-only' "migration_rc=${MIGRATION_RC:-0}" 'redacted_sha256=30688345ac750027b3b7ec622e3102df7c83996873701618f21e158690250095' 'output_begin' 'password=secret' 'output_end' 'VPS_EVIDENCE_END' 'PHASE: cleanup start' 'PHASE: cleanup complete status=0'
+exit "${SSH_STATUS:-0}"
 EOF
 chmod +x "$work/bin/ssh"
 cat > "$work/bin/sshpass" <<'EOF'
@@ -97,6 +98,7 @@ for envelope_mode in absent empty incomplete; do
   mode_status=$?
   set -e
   [[ "$mode_status" -ne 0 && -s "$evidence_file" && "$(file_mode "$evidence_file")" == 600 ]]
+  if grep -Fq 'READY:' "$work/$envelope_mode-output"; then exit 1; fi
   if grep -Fq 'secret' "$evidence_file" || grep -Fq 'secret' "$work/$envelope_mode-output"; then exit 1; fi
   grep -Fq 'EVIDENCE EXCERPT:' "$work/$envelope_mode-output"
   set +e
@@ -105,4 +107,14 @@ done
 nonzero_status=$?
 set -e
 [[ "$nonzero_status" -eq 255 && -s "$work/nonzero-evidence" ]]
+if grep -Fq 'READY:' "$work/nonzero-output"; then exit 1; fi
+valid_failure_evidence="$work/valid-failure-evidence"
+set +e
+"${base[@]}" ENVELOPE_MODE=valid SSH_STATUS=10 MIGRATION_RC=7 VPS_LOCAL_EVIDENCE_FILE="$valid_failure_evidence" VPS_DB_PASSWORD=secret bash "$script" migration-only --source "$source_repo" --commit "$commit" --tree "$tree" --id quote-check >"$work/valid-failure-output" 2>&1
+valid_failure_status=$?
+set -e
+[[ "$valid_failure_status" -eq 10 && -s "$valid_failure_evidence" && "$(file_mode "$valid_failure_evidence")" == 600 ]]
+grep -Fq 'VPS_EVIDENCE_BEGIN' "$valid_failure_evidence"
+grep -Fq 'migration_rc=7' "$valid_failure_evidence"
+if grep -Fq 'READY:' "$work/valid-failure-output"; then exit 1; fi
 printf '%s\n' 'VPS command forwarding test passed.'
