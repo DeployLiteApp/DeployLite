@@ -21,7 +21,7 @@ require_loopback_ports() {
   IFS=',' read -r -a entries <<< "$ports"
   [[ "${#entries[@]}" -eq 3 ]] || blocked 'VPS_LOOPBACK_PORTS must contain exactly three PostgreSQL, web, and API mappings.'
   for entry in "${entries[@]}"; do
-    [[ "$entry" =~ ^127\.0\.0\.1:[0-9]+$ ]] || blocked 'VPS_LOOPBACK_PORTS must use exact 127.0.0.1 decimal mappings.'
+    [[ "$entry" =~ ^127\.0\.0\.1:[0-9]{1,5}$ ]] || blocked 'VPS_LOOPBACK_PORTS must use exact 127.0.0.1 decimal mappings.'
     host="${entry%%:*}"; port="${entry#*:}"
     canonical="$port"
     while [[ "${#canonical}" -gt 1 && "${canonical#0}" != "$canonical" ]]; do canonical="${canonical#0}"; done

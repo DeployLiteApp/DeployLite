@@ -67,10 +67,13 @@ envbase=(env -i PATH="$work:$PATH" REAL_GIT="$(command -v git)" LOCAL_REMOTE="$s
 invalid_ports_id="invalid-ports-$RANDOM"; invalid_ports_root="/var/tmp/deploylite-preview/$invalid_ports_id"
 run_case remote-invalid-ports 3 "${envbase[@]}" VPS_REMOTE_ROOT="$invalid_ports_root" VPS_LOOPBACK_PORTS='0.0.0.0:15432,127.0.0.1:18080,127.0.0.1:18443' bash "$script" migration-only "$invalid_ports_id"
 [[ ! -e "$invalid_ports_root" ]]
+six_digit_id="six-digit-$RANDOM"; six_digit_root="/var/tmp/deploylite-preview/$six_digit_id"
+run_case remote-six-digit 3 "${envbase[@]}" VPS_REMOTE_ROOT="$six_digit_root" VPS_LOOPBACK_PORTS='127.0.0.1:015432,127.0.0.1:18080,127.0.0.1:18443' bash "$script" migration-only "$six_digit_id"
+[[ ! -e "$six_digit_root" ]]
 pass_through_id="pass-through-$RANDOM"; pass_through_root="/var/tmp/deploylite-preview/$pass_through_id"; pass_through_log="$work/pass-through.log"
 # shellcheck disable=SC2016
-"${envbase[@]}" VPS_REMOTE_ROOT="$pass_through_root" VPS_LOOPBACK_PORTS='127.0.0.1:015432,127.0.0.1:18080,127.0.0.1:18443' VPS_MIGRATION_COMMAND='printf "%s\n" "$VPS_LOOPBACK_PORTS" > "$PASS_THROUGH_LOG"' PASS_THROUGH_LOG="$pass_through_log" bash "$script" migration-only "$pass_through_id" >"$work/pass-through-output" 2>&1
-[[ "$(<"$pass_through_log")" == '127.0.0.1:015432,127.0.0.1:18080,127.0.0.1:18443' && ! -e "$pass_through_root" ]]
+"${envbase[@]}" VPS_REMOTE_ROOT="$pass_through_root" VPS_LOOPBACK_PORTS='127.0.0.1:01543,127.0.0.1:18080,127.0.0.1:18443' VPS_MIGRATION_COMMAND='printf "%s\n" "$VPS_LOOPBACK_PORTS" > "$PASS_THROUGH_LOG"; printf "pass-through migration\n"' PASS_THROUGH_LOG="$pass_through_log" bash "$script" migration-only "$pass_through_id" >"$work/pass-through-output" 2>&1
+[[ "$(<"$pass_through_log")" == '127.0.0.1:01543,127.0.0.1:18080,127.0.0.1:18443' && ! -e "$pass_through_root" ]]
 output="$("${envbase[@]}" bash "$script" migration-only "$preview_id")"; [[ "$output" == *'EVIDENCE: migration_rc=0'* && "$output" == *'PASS: migration-only'* ]]
 printf '%s\n' "$output" > "$work/success"
 [[ -f "$project_scope_log" ]] || { printf 'migration project scope was not recorded\n' >&2; exit 1; }

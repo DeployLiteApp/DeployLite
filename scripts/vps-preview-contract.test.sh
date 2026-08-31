@@ -35,12 +35,14 @@ assert run_blocked "${base[@]}" bash "$script" migration-only --source "$work/so
 assert run_blocked "${base[@]}" bash "$script" migration-only --source "$work/source" --commit "$commit" --tree "$tree" --id preview-one --host production.example.test
 output="$("${base[@]}" bash "$script" migration-only --source "$work/source" --commit "$commit" --tree "$tree" --id preview-one)"
 [[ "$output" == *'READY:'* && "$output" != *fixture-secret* ]]
-grep -Fq 'VPS_LOOPBACK_PORTS=127.0.0.1:55433,127.0.0.1:58080,127.0.0.1:58443' "$work/ssh-command"
+printf -v expected_ports_q '%q' '127.0.0.1:55433,127.0.0.1:58080,127.0.0.1:58443'
+grep -Fq "VPS_LOOPBACK_PORTS=$expected_ports_q" "$work/ssh-command"
 custom_ports='127.0.0.1:15432,127.0.0.1:18080,127.0.0.1:18443'
 rm -f -- "$work/ssh-called"
 custom_output="$("${base[@]}" VPS_LOOPBACK_PORTS="$custom_ports" bash "$script" migration-only --source "$work/source" --commit "$commit" --tree "$tree" --id custom-one)"
 [[ "$custom_output" == *'READY:'* ]]
-grep -Fq "VPS_LOOPBACK_PORTS=$custom_ports" "$work/ssh-command"
+printf -v expected_ports_q '%q' "$custom_ports"
+grep -Fq "VPS_LOOPBACK_PORTS=$expected_ports_q" "$work/ssh-command"
 for invalid_ports in \
   '10.0.0.1:15432,127.0.0.1:18080,127.0.0.1:18443' \
   '127.0.0.1:15432,0.0.0.0:18080,127.0.0.1:18443' \
@@ -52,6 +54,7 @@ for invalid_ports in \
   '127.0.0.1:15432,127.0.0.1:18080' \
   '127.0.0.1:15432,127.0.0.1:18080,127.0.0.1:18443,127.0.0.1:19443' \
   '127.0.0.1:15432,127.0.0.1:15432,127.0.0.1:18443' \
+  '127.0.0.1:01543,127.0.0.1:1543,127.0.0.1:18443' \
   '127.0.0.1:015432,127.0.0.1:15432,127.0.0.1:18443' \
   '127.0.0.1:15432,127.0.0.1:18080,127.0.0.1:18443 '; do
   rm -f -- "$work/ssh-called"
