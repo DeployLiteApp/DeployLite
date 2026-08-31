@@ -104,7 +104,7 @@ while IFS= read -r host_key; do
   [[ "$fingerprint" == "$VPS_HOST_FINGERPRINT" ]] && matched=1
 done <<< "$host_keys"
 [[ "$matched" -eq 1 ]] || blocked 'VPS_HOST_FINGERPRINT does not match any exact VPS_HOST entry.'
-ssh_opts=(-o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$VPS_KNOWN_HOSTS_FILE")
+ssh_opts=(-o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$VPS_KNOWN_HOSTS_FILE")
 if [[ -n "${SSHPASS:-}" ]]; then
   ssh_opts+=(-o BatchMode=no)
 else

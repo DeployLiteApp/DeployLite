@@ -11,6 +11,7 @@ mkdir -p "$work/bin"
 cat > "$work/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+printf '%s\n' "$@" > "${ARGV_CAPTURE:?}"
 printf '%s\n' "${*: -1}" > "${CAPTURE:?}"
 cat >/dev/null
 if [[ "${ENVELOPE_MODE:-valid}" == absent ]]; then
@@ -26,6 +27,14 @@ fi
 printf '%s\n' 'VPS_EVIDENCE_BEGIN' 'preview_id=quote-check' 'project=deploylite-preview-quote-check' 'commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'tree=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' 'mode=migration-only' 'migration_rc=0' 'redacted_sha256=30688345ac750027b3b7ec622e3102df7c83996873701618f21e158690250095' 'output_begin' 'password=secret' 'output_end' 'VPS_EVIDENCE_END'
 EOF
 chmod +x "$work/bin/ssh"
+cat > "$work/bin/sshpass" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+[[ "${1:-}" == -e ]] || exit 2
+shift
+exec ssh "$@"
+EOF
+chmod +x "$work/bin/sshpass"
 file_mode() {
   if stat -c '%a' "$1" >/dev/null 2>&1; then
     stat -c '%a' "$1"
@@ -39,7 +48,8 @@ health_text='printf "health value with spaces and \"quotes\"\\n"'
 printf -v expected_migration_q '%q' "$command_text"
 printf -v expected_compose_q '%q' "$compose_text"
 printf -v expected_health_q '%q' "$health_text"
-base=(env -i PATH="$work/bin:$PATH" CAPTURE="$capture" VPS_HOST=preview.example.test VPS_KNOWN_HOSTS_FILE="$known_hosts" VPS_HOST_FINGERPRINT="$fingerprint" VPS_SOURCE_URL=https://example.test/deploylite.git)
+argv_capture="$work/ssh-argv"
+base=(env -i PATH="$work/bin:$PATH" CAPTURE="$capture" ARGV_CAPTURE="$argv_capture" VPS_HOST=preview.example.test VPS_KNOWN_HOSTS_FILE="$known_hosts" VPS_HOST_FINGERPRINT="$fingerprint" VPS_SOURCE_URL=https://example.test/deploylite.git)
 local_evidence="$work/local-evidence"
 output="$("${base[@]}" VPS_DB_PASSWORD=secret VPS_LOCAL_EVIDENCE_FILE="$local_evidence" VPS_MIGRATION_COMMAND="$command_text" VPS_COMPOSE_COMMAND="$compose_text" VPS_HEALTH_COMMAND="$health_text" bash "$script" migration-only --source "$source_repo" --commit "$commit" --tree "$tree" --id quote-check)"
 [[ "$output" == *'READY:'* ]]
@@ -54,6 +64,23 @@ captured="$(<"$capture")"
 [[ "$captured" == *"VPS_COMPOSE_COMMAND=$expected_compose_q"* ]]
 [[ "$captured" == *"VPS_HEALTH_COMMAND=$expected_health_q"* ]]
 if grep -Fq 'scp' <<<"$captured"; then exit 1; fi
+assert_ssh_options() {
+  local batch_mode="$1"
+  local other_batch_mode=yes
+  [[ "$batch_mode" == yes ]] && other_batch_mode=no
+  [[ "$(grep -Fc -- '-o' "$argv_capture")" -eq 6 ]]
+  [[ "$(grep -Fc -- 'ConnectTimeout=10' "$argv_capture")" -eq 1 ]]
+  [[ "$(grep -Fc -- 'ServerAliveInterval=15' "$argv_capture")" -eq 1 ]]
+  [[ "$(grep -Fc -- 'ServerAliveCountMax=4' "$argv_capture")" -eq 1 ]]
+  [[ "$(grep -Fc -- 'StrictHostKeyChecking=yes' "$argv_capture")" -eq 1 ]]
+  [[ "$(grep -Fc -- "UserKnownHostsFile=$known_hosts" "$argv_capture")" -eq 1 ]]
+  [[ "$(grep -Fc -- "BatchMode=$batch_mode" "$argv_capture")" -eq 1 ]]
+  ! grep -Eq "StrictHostKeyChecking=(no|accept-new)|UserKnownHostsFile=/dev/null|ServerAliveInterval=0|BatchMode=$other_batch_mode" "$argv_capture"
+}
+assert_ssh_options yes
+password_output="$("${base[@]}" SSHPASS=secret VPS_LOCAL_EVIDENCE_FILE="$work/password-evidence" bash "$script" migration-only --source "$source_repo" --commit "$commit" --tree "$tree" --id password-check)"
+[[ "$password_output" == *'READY:'* ]]
+assert_ssh_options no
 cleanup_output="$("${base[@]}" VPS_COMPOSE_COMMAND="$compose_text" bash "$script" cleanup --id cleanup-cli)"
 [[ "$cleanup_output" == *'READY: mode=cleanup id=cleanup-cli'* ]]
 cleanup_captured="$(<"$capture")"
