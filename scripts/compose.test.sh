@@ -37,6 +37,18 @@ contains 'DEPLOYLITE_SESSION_COOKIE_SECURE: "true"'
   printf 'migrate must receive the generated URL-safe DATABASE_URL\n'
   exit 1
 }
+[[ "$migrate_environment" == *$'target: migration'* ]] || {
+  printf 'migrate must build the dedicated migration target\n'
+  exit 1
+}
+[[ "$migrate_environment" == *'image: deploylite-migration:local'* ]] || {
+  printf 'migrate must use a dedicated image tag\n'
+  exit 1
+}
+[[ "$migrate_environment" == *'entrypoint:'*'node'*'scripts/migrate.mjs'* ]] || {
+  printf 'migrate must use the package-correct migration entrypoint\n'
+  exit 1
+}
 if [[ "$rendered" == *'"3001:3001"'* || "$rendered" == *'"80:3000"'* ]]; then
   printf 'API or web must not publish host ports\n'
   exit 1
