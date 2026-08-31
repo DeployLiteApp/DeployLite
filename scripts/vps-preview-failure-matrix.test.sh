@@ -3,7 +3,14 @@ set -Eeuo pipefail
 root="$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"; script="$root/scripts/vps-preview-remote.sh"
 source_repo="$(mktemp -d)"; trap 'rm -rf -- "$source_repo"' EXIT; git clone -q --no-local "$root" "$source_repo"
 commit="$(git -C "$source_repo" rev-parse HEAD)"; tree="$(git -C "$source_repo" rev-parse 'HEAD^{tree}')"; id="matrix-$RANDOM"; root_dir="/var/tmp/deploylite-preview/$id"
-base=(env -i PATH="$PATH" VPS_SOURCE_URL="$source_repo" VPS_COMMIT="$commit" VPS_TREE="$tree" VPS_MIGRATION_COMMAND='printf "DATABASE_URL=postgres://u:secret@db/x\nAuthorization: Bearer token\n"' VPS_REMOTE_ROOT="$root_dir")
+docker_bin="$source_repo/fake-docker"
+cat > "$docker_bin" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+exit 0
+EOF
+chmod +x "$docker_bin"
+base=(env -i PATH="$PATH" VPS_DOCKER_BIN="$docker_bin" VPS_SOURCE_URL="$source_repo" VPS_COMMIT="$commit" VPS_TREE="$tree" VPS_MIGRATION_COMMAND='printf "DATABASE_URL=postgres://u:secret@db/x\nAuthorization: Bearer token\n"' VPS_REMOTE_ROOT="$root_dir")
 expect() { local wanted="$1"; shift; set +e; "$@" >/dev/null 2>&1; local got=$?; set -e; [[ "$got" -eq "$wanted" ]] || { printf 'expected %s got %s\n' "$wanted" "$got" >&2; exit 1; }; }
 expect 0 "${base[@]}" VPS_MIGRATION_COMMAND='printf evidence' bash "$script" migration-only "$id"
 expect 10 "${base[@]}" VPS_MIGRATION_COMMAND='printf "bad=1\n"; exit 9' bash "$script" migration-only "$id"
