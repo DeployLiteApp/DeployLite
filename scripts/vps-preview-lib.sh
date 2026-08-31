@@ -42,13 +42,21 @@ vps_redact() {
 }
 
 vps_source_provenance() {
-  local source="$1" expected_commit="$2" expected_tree="$3" status commit tree
-  [[ -d "$source/.git" ]] || vps_fail 'source must be a Git checkout.'
+  local source="$1" expected_commit="$2" expected_tree="$3" status commit tree source_url
+  [[ -d "$source/.git" ]] || { vps_fail 'source must be a Git checkout.'; return 3; }
   status="$(git -C "$source" status --porcelain)"
-  [[ -z "$status" ]] || vps_fail 'source checkout must be clean.'
-  commit="$(git -C "$source" rev-parse HEAD)" || vps_fail 'cannot resolve source commit.'
-  tree="$(git -C "$source" rev-parse 'HEAD^{tree}')" || vps_fail 'cannot resolve source tree.'
-  [[ "$commit" == "$expected_commit" ]] || vps_fail 'source commit does not match the requested commit.'
-  [[ "$tree" == "$expected_tree" ]] || vps_fail 'source tree does not match the requested tree.'
-  printf '%s %s\n' "$commit" "$tree"
+  [[ -z "$status" ]] || { vps_fail 'source checkout must be clean.'; return 3; }
+  commit="$(git -C "$source" rev-parse HEAD)" || { vps_fail 'cannot resolve source commit.'; return 3; }
+  tree="$(git -C "$source" rev-parse 'HEAD^{tree}')" || { vps_fail 'cannot resolve source tree.'; return 3; }
+  [[ "$commit" == "$expected_commit" ]] || { vps_fail 'source commit does not match the requested commit.'; return 3; }
+  [[ "$tree" == "$expected_tree" ]] || { vps_fail 'source tree does not match the requested tree.'; return 3; }
+  source_url="${VPS_SOURCE_URL:-$(git -C "$source" remote get-url origin 2>/dev/null || true)}"
+  vps_valid_source_url "$source_url" || { vps_fail 'source URL must be an explicit safe HTTPS URL or the checkout origin.'; return 3; }
+  printf '%s %s %s\n' "$commit" "$tree" "$source_url"
+}
+
+vps_valid_source_url() {
+  local source_url="${1:-}"
+  [[ "$source_url" =~ ^https://[^/@[:space:]]+(/[^[:space:]]*)?$ ]] || return 1
+  [[ "$source_url" != *\\* && "$source_url" != *..* && "$source_url" != *#* ]] || return 1
 }

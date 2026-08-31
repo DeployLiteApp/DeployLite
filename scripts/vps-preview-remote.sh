@@ -22,21 +22,18 @@ require_safe_resource() {
 phase_setup() {
   require_safe_resource
   [[ ! -e "$root" ]] || blocked 'preview directory already exists; ownership cannot be proven safely.'
-  mkdir -p "$source_dir" "$evidence"
+  mkdir -p "$evidence"
   printf 'deploylite-preview-owner\n%s\n%s\n' "$preview_id" "$project" > "$marker"
   chmod 600 "$marker"
   [[ "$(wc -l < "$marker")" -eq 3 ]] || failed 'ownership marker write failed.'
-  if [[ -n "${VPS_ARCHIVE:-}" ]]; then
-    [[ -f "$VPS_ARCHIVE" ]] || failed 'source archive is missing.'
-    tar -xzf "$VPS_ARCHIVE" -C "$source_dir" --strip-components=1
-  elif [[ -n "${VPS_SOURCE_URL:-}" ]]; then
-    "$git_bin" -C "$source_dir" init -q
-    "$git_bin" -C "$source_dir" remote add origin "$VPS_SOURCE_URL"
-    "$git_bin" -C "$source_dir" fetch --depth=1 origin "$VPS_COMMIT"
-    "$git_bin" -C "$source_dir" checkout --detach -q "$VPS_COMMIT"
-  fi
-  [[ "$($git_bin -C "$source_dir" rev-parse HEAD 2>/dev/null)" == "${VPS_COMMIT:-}" ]] || failed 'remote commit verification failed.'
-  [[ "$($git_bin -C "$source_dir" rev-parse 'HEAD^{tree}' 2>/dev/null)" == "${VPS_TREE:-}" ]] || failed 'remote tree verification failed.'
+  [[ -n "${VPS_SOURCE_URL:-}" && -n "${VPS_COMMIT:-}" && -n "${VPS_TREE:-}" ]] || failed 'source URL, commit, and tree are required.'
+  "$git_bin" init -q "$source_dir"
+  "$git_bin" -C "$source_dir" remote add origin "$VPS_SOURCE_URL"
+  "$git_bin" -C "$source_dir" fetch --depth=1 origin "$VPS_COMMIT"
+  "$git_bin" -C "$source_dir" checkout --detach -q "$VPS_COMMIT"
+  [[ -z "$($git_bin -C "$source_dir" status --porcelain)" ]] || failed 'remote checkout is not clean.'
+  [[ "$($git_bin -C "$source_dir" rev-parse HEAD 2>/dev/null)" == "$VPS_COMMIT" ]] || failed 'remote commit verification failed.'
+  [[ "$($git_bin -C "$source_dir" rev-parse 'HEAD^{tree}' 2>/dev/null)" == "$VPS_TREE" ]] || failed 'remote tree verification failed.'
 }
 phase_migrate() {
   local rc=0
@@ -75,7 +72,6 @@ phase_cleanup() {
   elif [[ -x "${VPS_COMPOSE_WRAPPER:-}" ]]; then
     "$VPS_COMPOSE_WRAPPER" --project-name "$project" down --remove-orphans || return 1
   fi
-  [[ -z "${VPS_ARCHIVE:-}" ]] || rm -f -- "$VPS_ARCHIVE"
   rm -rf -- "$root"
 }
 cleanup_on_exit() {
