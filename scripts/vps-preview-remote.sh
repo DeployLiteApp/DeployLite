@@ -43,7 +43,7 @@ phase_migrate() {
   : > "$raw_output"; chmod 600 "$raw_output"
   set +e
   if [[ -n "${VPS_MIGRATION_COMMAND:-}" ]]; then
-    bash -c "$VPS_MIGRATION_COMMAND" </dev/null >"$raw_output" 2>&1
+    COMPOSE_PROJECT_NAME="$project" bash -c "$VPS_MIGRATION_COMMAND" </dev/null >"$raw_output" 2>&1
   else
     failed 'VPS_MIGRATION_COMMAND is required.' >"$raw_output" 2>&1
   fi

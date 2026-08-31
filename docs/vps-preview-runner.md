@@ -23,7 +23,9 @@ fetch source, run migrations, collect evidence, or start services. A full
 preview starts only isolated loopback services and remains running only after bounded health verification
 succeeds. Migration, Compose, and health commands are forwarded as one
 shell-quoted value each, preserving spaces and quotes without exposing
-credentials.
+credentials. Migration, preview startup, and cleanup execute under the same
+preview-specific Compose project; canonical or default project fallback is
+forbidden.
 
 The runner deliberately rejects canonical projects, ports `80`/`443`, router
 and canonical network/volume names, ambiguous existing directories, and
