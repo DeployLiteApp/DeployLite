@@ -56,6 +56,17 @@ grep -Fq -- 'down --volumes --remove-orphans' "$compose_log"
 grep -Fq -- 'owned-image' "$rm_log"
 if grep -Fq -- 'shared-image' "$rm_log"; then exit 1; fi
 [[ ! -e "/var/tmp/deploylite-preview/$preview_id" ]]
+streamed_id="streamed-$RANDOM"; streamed_output="$work/streamed-output"
+set +e; "${envbase[@]}" VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$streamed_id" \
+  VPS_MIGRATION_COMMAND='cat >/dev/null; printf "streamed migration\n"' \
+  bash -s migration-only "$streamed_id" <"$script" >"$streamed_output" 2>&1; status=$?; set -e
+[[ "$status" -eq 0 && ! -e "/var/tmp/deploylite-preview/$streamed_id" ]]
+[[ "$(grep -c '^VPS_EVIDENCE_BEGIN$' "$streamed_output")" -eq 1 ]]
+[[ "$(grep -c '^VPS_EVIDENCE_END$' "$streamed_output")" -eq 1 ]]
+grep -Fq 'EVIDENCE: migration_rc=0' "$streamed_output"
+grep -Fq 'migration_rc=0' "$streamed_output"
+grep -Fq 'PASS: migration-only' "$streamed_output"
+assert_order "$streamed_output" 'PHASE: setup complete' 'PHASE: migration start' 'PHASE: migration complete status=0' 'PHASE: evidence start' 'PHASE: evidence complete' 'PHASE: cleanup start' 'PHASE: cleanup complete status=0'
 known_id="known-$RANDOM"; known_output="$work/known-secret"
 "${envbase[@]}" VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$known_id" VPS_DB_PASSWORD=known-db-password \
   VPS_MIGRATION_COMMAND='printf "value=known-db-password\n"' bash "$script" migration-only "$known_id" >"$known_output" 2>&1
