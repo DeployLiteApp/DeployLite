@@ -89,6 +89,9 @@ if [[ "$mode" != cleanup ]]; then
     printf -v value_q '%q' "${!variable:-}"
     remote_command+=" $variable=$value_q"
   done
+else
+  printf -v compose_q '%q' "${VPS_COMPOSE_COMMAND:-}"
+  remote_command+=" VPS_COMPOSE_COMMAND=$compose_q"
 fi
 printf -v mode_q '%q' "$mode"
 printf -v id_q '%q' "$preview_id"
@@ -100,14 +103,16 @@ set +e
 pipeline_status=("${PIPESTATUS[@]}")
 set -e
 ssh_status="${pipeline_status[0]}"
-[[ -s "$captured" ]] || fail 'SSH returned no redacted output.'
-evidence_payload="$tmpdir/evidence-payload"
-awk '/^VPS_EVIDENCE_BEGIN$/{inside=1; next} /^VPS_EVIDENCE_END$/{inside=0; found=1; next} inside {print} END {if (!found) exit 1}' \
-  "$captured" > "$evidence_payload" || fail 'expected VPS evidence envelope is absent.'
-[[ -s "$evidence_payload" ]] || fail 'expected VPS evidence envelope is empty.'
-grep -Fq 'preview_id=' "$evidence_payload" || fail 'VPS evidence envelope is incomplete.'
-grep -Fq 'redacted_sha256=' "$evidence_payload" || fail 'VPS evidence checksum is missing.'
-if [[ -n "${VPS_LOCAL_EVIDENCE_FILE:-}" ]]; then
+if [[ "$mode" != cleanup ]]; then
+  [[ -s "$captured" ]] || fail 'SSH returned no redacted output.'
+  evidence_payload="$tmpdir/evidence-payload"
+  awk '/^VPS_EVIDENCE_BEGIN$/{inside=1; next} /^VPS_EVIDENCE_END$/{inside=0; found=1; next} inside {print} END {if (!found) exit 1}' \
+    "$captured" > "$evidence_payload" || fail 'expected VPS evidence envelope is absent.'
+  [[ -s "$evidence_payload" ]] || fail 'expected VPS evidence envelope is empty.'
+  grep -Fq 'preview_id=' "$evidence_payload" || fail 'VPS evidence envelope is incomplete.'
+  grep -Fq 'redacted_sha256=' "$evidence_payload" || fail 'VPS evidence checksum is missing.'
+fi
+if [[ "$mode" != cleanup && -n "${VPS_LOCAL_EVIDENCE_FILE:-}" ]]; then
   local_evidence_file="$VPS_LOCAL_EVIDENCE_FILE"
   [[ "$local_evidence_file" == /* && "$local_evidence_file" != */ && "$local_evidence_file" != *$'\n'* ]] ||
     blocked 'VPS_LOCAL_EVIDENCE_FILE must be an absolute file path.'

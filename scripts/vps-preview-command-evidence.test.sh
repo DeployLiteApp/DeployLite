@@ -35,10 +35,14 @@ captured="$(<"$capture")"
 [[ "$captured" == *"VPS_COMPOSE_COMMAND=$expected_compose_q"* ]]
 [[ "$captured" == *"VPS_HEALTH_COMMAND=$expected_health_q"* ]]
 if grep -Fq 'scp' <<<"$captured"; then exit 1; fi
-cleanup_output="$("${base[@]}" bash "$script" cleanup --id cleanup-cli)"
+cleanup_output="$("${base[@]}" VPS_COMPOSE_COMMAND="$compose_text" bash "$script" cleanup --id cleanup-cli)"
 [[ "$cleanup_output" == *'READY: mode=cleanup id=cleanup-cli'* ]]
 cleanup_captured="$(<"$capture")"
-if grep -Fq 'VPS_SOURCE_URL=' <<<"$cleanup_captured" || grep -Fq 'VPS_MIGRATION_COMMAND=' <<<"$cleanup_captured" || grep -Fq 'VPS_HEALTH_COMMAND=' <<<"$cleanup_captured"; then exit 1; fi
+printf -v expected_cleanup_q '%q' "$compose_text"
+[[ "$cleanup_captured" == *"VPS_COMPOSE_COMMAND=$expected_cleanup_q"* ]]
+if grep -Fq 'VPS_SOURCE_URL=' <<<"$cleanup_captured" || grep -Fq 'VPS_COMMIT=' <<<"$cleanup_captured" ||
+  grep -Fq 'VPS_TREE=' <<<"$cleanup_captured" || grep -Fq 'VPS_MIGRATION_COMMAND=' <<<"$cleanup_captured" ||
+  grep -Fq 'VPS_HEALTH_COMMAND=' <<<"$cleanup_captured"; then exit 1; fi
 set +e
 "${base[@]}" NO_EVIDENCE=1 VPS_LOCAL_EVIDENCE_FILE="$work/missing-evidence" VPS_DB_PASSWORD=secret bash "$script" migration-only --source "$source_repo" --commit "$commit" --tree "$tree" --id quote-check >"$work/missing-output" 2>&1
 missing_status=$?
