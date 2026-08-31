@@ -9,7 +9,18 @@ run_blocked() { local out status; set +e; out=$("$@" 2>&1); status=$?; set -e; [
 assert() { "$@" || { printf 'assertion failed: %s\n' "$*" >&2; exit 1; }; }
 commit="$(git -C "$root" rev-parse HEAD)"; tree="$(git -C "$root" rev-parse 'HEAD^{tree}')"
 git clone --quiet --no-local "$root" "$work/source"
-base=(env -i PATH="$PATH" VPS_HOST=preview.example.test VPS_KNOWN_HOSTS_FILE="$known_hosts" VPS_HOST_FINGERPRINT=SHA256:fixture SSHPASS=fixture-secret)
+mkdir -p "$work/bin"
+cat > "$work/bin/scp" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$work/bin/ssh" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'PASS: fake remote\n'
+EOF
+chmod +x "$work/bin/ssh" "$work/bin/scp"
+base=(env -i PATH="$work/bin:$PATH" VPS_HOST=preview.example.test VPS_KNOWN_HOSTS_FILE="$known_hosts" VPS_HOST_FINGERPRINT=SHA256:fixture)
 assert run_blocked "${base[@]}" bash "$script" migration-only --source "$work/source" --commit "$commit" --tree "$tree" --id 'bad/id'
 assert run_blocked "${base[@]}" bash "$script" migration-only --source "$work/source" --commit "$commit" --tree "$tree" --id preview-one --remote-root /opt/deploylite
 assert run_blocked "${base[@]}" bash "$script" migration-only --source "$work/source" --commit "$commit" --tree "$tree" --id preview-one --host production.example.test
