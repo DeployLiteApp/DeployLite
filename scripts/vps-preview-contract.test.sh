@@ -19,8 +19,9 @@ exit 0
 EOF
 cat > "$work/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
+set -Eeuo pipefail
 cat >/dev/null
-printf '%s\n' 'VPS_EVIDENCE_BEGIN' 'preview_id=preview-one' 'project=deploylite-preview-preview-one' 'commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'tree=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' 'migration_rc=0' 'redacted_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'output_begin' 'PASS: fake remote' 'output_end' 'VPS_EVIDENCE_END'
+printf '%s\n' 'VPS_EVIDENCE_BEGIN' 'preview_id=preview-one' 'project=deploylite-preview-preview-one' 'commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'tree=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' 'mode=migration-only' 'migration_rc=0' 'redacted_sha256=01aa5a615af892efa3b5f87cc556aec5a2a2da15df5123a38ce542d226b25ae2' 'output_begin' 'PASS: fake remote' 'output_end' 'VPS_EVIDENCE_END'
 EOF
 chmod +x "$work/bin/ssh" "$work/bin/scp"
 base=(env -i PATH="$work/bin:$PATH" VPS_HOST=preview.example.test VPS_KNOWN_HOSTS_FILE="$known_hosts" VPS_HOST_FINGERPRINT="$fingerprint" VPS_SOURCE_URL=https://example.test/deploylite.git)

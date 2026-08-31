@@ -14,9 +14,16 @@ set -Eeuo pipefail
 printf '%s\n' "${*: -1}" > "${CAPTURE:?}"
 cat >/dev/null
 if [[ "${NO_EVIDENCE:-0}" == 1 ]]; then exit "${SSH_STATUS:-0}"; fi
-printf '%s\n' 'VPS_EVIDENCE_BEGIN' 'preview_id=quote-check' 'project=deploylite-preview-quote-check' 'commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'tree=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' 'migration_rc=0' 'redacted_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'output_begin' 'password=secret' 'output_end' 'VPS_EVIDENCE_END'
+printf '%s\n' 'VPS_EVIDENCE_BEGIN' 'preview_id=quote-check' 'project=deploylite-preview-quote-check' 'commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'tree=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' 'mode=migration-only' 'migration_rc=0' 'redacted_sha256=30688345ac750027b3b7ec622e3102df7c83996873701618f21e158690250095' 'output_begin' 'password=secret' 'output_end' 'VPS_EVIDENCE_END'
 EOF
 chmod +x "$work/bin/ssh"
+file_mode() {
+  if stat -c '%a' "$1" >/dev/null 2>&1; then
+    stat -c '%a' "$1"
+  else
+    stat -f '%Lp' "$1"
+  fi
+}
 command_text='printf "migration value with spaces and \"quotes\"\\n"'
 compose_text='printf "compose value with spaces and \"quotes\"\\n"'
 health_text='printf "health value with spaces and \"quotes\"\\n"'
@@ -27,7 +34,7 @@ base=(env -i PATH="$work/bin:$PATH" CAPTURE="$capture" VPS_HOST=preview.example.
 local_evidence="$work/local-evidence"
 output="$("${base[@]}" VPS_DB_PASSWORD=secret VPS_LOCAL_EVIDENCE_FILE="$local_evidence" VPS_MIGRATION_COMMAND="$command_text" VPS_COMPOSE_COMMAND="$compose_text" VPS_HEALTH_COMMAND="$health_text" bash "$script" migration-only --source "$source_repo" --commit "$commit" --tree "$tree" --id quote-check)"
 [[ "$output" == *'READY:'* ]]
-[[ -s "$local_evidence" && "$(stat -f '%Lp' "$local_evidence")" == 600 ]]
+[[ -s "$local_evidence" && "$(file_mode "$local_evidence")" == 600 ]]
 grep -Fq 'VPS_EVIDENCE_BEGIN' "$local_evidence"
 if grep -Fq 'secret' "$local_evidence"; then exit 1; fi
 captured="$(<"$capture")"
