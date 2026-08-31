@@ -38,9 +38,20 @@ printf '%s\n' "$*" >> "${COMPOSE_LOG:?}"
 EOF
 chmod +x "$work/fake-compose"
 run_case() { local name="$1" expected="$2"; shift 2; local output status; set +e; output=$("$@" 2>&1); status=$?; set -e; [[ "$status" -eq "$expected" ]] || { printf '%s: expected %s got %s\n%s\n' "$name" "$expected" "$status" "$output" >&2; exit 1; }; }
+assert_order() {
+  local file="$1" previous=0 needle line
+  shift
+  for needle in "$@"; do
+    line="$(awk -v needle="$needle" -v after="$previous" 'NR > after && $0 == needle { print NR; exit }' "$file")"
+    [[ -n "$line" ]] || { printf 'missing or out-of-order phase breadcrumb: %s\n' "$needle" >&2; exit 1; }
+    previous="$line"
+  done
+}
 image_removed="$work/image-removed"; rm_log="$work/docker-rm.log"; compose_log="$work/compose.log"
 envbase=(env -i PATH="$work:$PATH" REAL_GIT="$(command -v git)" LOCAL_REMOTE="$source_repo" VPS_GIT_BIN="$work/fake-git" VPS_DOCKER_BIN="$work/fake-docker" DOCKER_IMAGE_REMOVED="$image_removed" DOCKER_RM_LOG="$rm_log" COMPOSE_LOG="$compose_log" VPS_COMPOSE_WRAPPER="$work/fake-compose" VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$preview_id" VPS_SOURCE_URL=https://example.test/deploylite.git VPS_COMMIT="$commit" VPS_TREE="$tree" VPS_MIGRATION_COMMAND='printf "password=secret\n"' VPS_KEEP_PREVIEW=0)
 output="$("${envbase[@]}" bash "$script" migration-only "$preview_id")"; [[ "$output" == *'EVIDENCE: migration_rc=0'* && "$output" == *'PASS: migration-only'* ]]
+printf '%s\n' "$output" > "$work/success"
+assert_order "$work/success" 'PHASE: setup complete' 'PHASE: migration start' 'PHASE: migration complete status=0' 'PHASE: evidence start' 'PHASE: evidence complete' 'PHASE: cleanup start' 'PHASE: cleanup complete status=0'
 grep -Fq -- 'down --volumes --remove-orphans' "$compose_log"
 grep -Fq -- 'owned-image' "$rm_log"
 if grep -Fq -- 'shared-image' "$rm_log"; then exit 1; fi
@@ -71,8 +82,15 @@ grep -Fq 'PASS: migration-only' "$large_output"
 set +e; "${envbase[@]}" VPS_MIGRATION_COMMAND='printf "token=secret\n"; exit 7' bash "$script" migration-only test-two >"$work/fail" 2>&1; status=$?; set -e
 [[ "$status" -eq 10 && ! -e "/var/tmp/deploylite-preview/$preview_id" ]]
 grep -Fq 'EVIDENCE: migration_rc=7' "$work/fail"
+assert_order "$work/fail" 'PHASE: setup complete' 'PHASE: migration start' 'PHASE: migration complete status=7' 'PHASE: evidence start' 'PHASE: evidence complete' 'PHASE: cleanup start' 'PHASE: cleanup complete status=0'
+evidence_failure_id="evidence-failure-$RANDOM"; evidence_failure_output="$work/evidence-failure"
+set +e; "${envbase[@]}" VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$evidence_failure_id" VPS_MAX_EVIDENCE_BYTES=invalid bash "$script" migration-only "$evidence_failure_id" >"$evidence_failure_output" 2>&1; status=$?; set -e
+[[ "$status" -eq 1 && ! -e "/var/tmp/deploylite-preview/$evidence_failure_id" ]]
+if grep -Fq 'VPS_EVIDENCE_BEGIN' "$evidence_failure_output"; then exit 1; fi
+assert_order "$evidence_failure_output" 'PHASE: setup complete' 'PHASE: migration start' 'PHASE: migration complete status=0' 'PHASE: evidence start' 'PHASE: cleanup start' 'PHASE: cleanup complete status=0'
 set +e; "${envbase[@]}" VPS_REMOTE_ROOT=/var/tmp/deploylite-preview/cleanup-failure VPS_CLEANUP_FAIL=1 VPS_MIGRATION_COMMAND='exit 7' bash "$script" migration-only cleanup-failure >"$work/cleanup-fail" 2>&1; rc=$?; set -e
 [[ "$rc" -eq 10 ]] && grep -Fq 'EVIDENCE: migration_rc=7' "$work/cleanup-fail" && grep -Fq 'CLEANUP FAILED:' "$work/cleanup-fail"
+grep -Fq 'PHASE: cleanup complete status=1' "$work/cleanup-fail"
 rm -rf -- "/var/tmp/deploylite-preview/cleanup-failure"
 cleanup_id="cleanup-$RANDOM"; cleanup_root="/var/tmp/deploylite-preview/$cleanup_id"
 mkdir -p "$cleanup_root"

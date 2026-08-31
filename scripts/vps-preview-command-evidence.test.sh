@@ -24,7 +24,7 @@ elif [[ "${ENVELOPE_MODE:-valid}" == incomplete ]]; then
   printf '%s\n' 'VPS_EVIDENCE_BEGIN' 'preview_id=quote-check' 'output_begin' 'password=secret' 'output_end' 'VPS_EVIDENCE_END'
   exit "${SSH_STATUS:-0}"
 fi
-printf '%s\n' 'VPS_EVIDENCE_BEGIN' 'preview_id=quote-check' 'project=deploylite-preview-quote-check' 'commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'tree=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' 'mode=migration-only' 'migration_rc=0' 'redacted_sha256=30688345ac750027b3b7ec622e3102df7c83996873701618f21e158690250095' 'output_begin' 'password=secret' 'output_end' 'VPS_EVIDENCE_END'
+printf '%s\n' 'PHASE: setup complete' 'PHASE: migration start' 'PHASE: migration complete status=0' 'PHASE: evidence start' 'PHASE: evidence complete' 'VPS_EVIDENCE_BEGIN' 'preview_id=quote-check' 'project=deploylite-preview-quote-check' 'commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'tree=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' 'mode=migration-only' 'migration_rc=0' 'redacted_sha256=30688345ac750027b3b7ec622e3102df7c83996873701618f21e158690250095' 'output_begin' 'password=secret' 'output_end' 'VPS_EVIDENCE_END' 'PHASE: cleanup start' 'PHASE: cleanup complete status=0'
 EOF
 chmod +x "$work/bin/ssh"
 cat > "$work/bin/sshpass" <<'EOF'
@@ -57,7 +57,7 @@ output="$("${base[@]}" VPS_DB_PASSWORD=secret VPS_LOCAL_EVIDENCE_FILE="$local_ev
 grep -Fq 'VPS_EVIDENCE_BEGIN' "$local_evidence"
 if grep -Fq 'secret' "$local_evidence"; then exit 1; fi
 expected_transcript="$work/expected-transcript"
-printf '%s\n' 'VPS_EVIDENCE_BEGIN' 'preview_id=quote-check' 'project=deploylite-preview-quote-check' 'commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'tree=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' 'mode=migration-only' 'migration_rc=0' 'redacted_sha256=30688345ac750027b3b7ec622e3102df7c83996873701618f21e158690250095' 'output_begin' 'password=[REDACTED]' 'output_end' 'VPS_EVIDENCE_END' > "$expected_transcript"
+printf '%s\n' 'PHASE: setup complete' 'PHASE: migration start' 'PHASE: migration complete status=0' 'PHASE: evidence start' 'PHASE: evidence complete' 'VPS_EVIDENCE_BEGIN' 'preview_id=quote-check' 'project=deploylite-preview-quote-check' 'commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'tree=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' 'mode=migration-only' 'migration_rc=0' 'redacted_sha256=30688345ac750027b3b7ec622e3102df7c83996873701618f21e158690250095' 'output_begin' 'password=[REDACTED]' 'output_end' 'VPS_EVIDENCE_END' 'PHASE: cleanup start' 'PHASE: cleanup complete status=0' > "$expected_transcript"
 cmp -s "$local_evidence" "$expected_transcript"
 captured="$(<"$capture")"
 [[ "$captured" == *"VPS_MIGRATION_COMMAND=$expected_migration_q"* ]]
