@@ -53,6 +53,15 @@ if [[ "$mode" != cleanup ]]; then
   [[ "$expected_commit" =~ ^[0-9a-f]{40}$ && "$expected_tree" =~ ^[0-9a-f]{40}$ ]] || blocked 'commit and tree must be full hexadecimal object IDs.'
 fi
 vps_require_safe_id "$preview_id"
+if [[ "$mode" != cleanup ]]; then
+  default_loopback_ports='127.0.0.1:55433,127.0.0.1:58080,127.0.0.1:58443'
+  if [[ -n "${VPS_LOOPBACK_PORTS+x}" ]]; then
+    preview_ports="$VPS_LOOPBACK_PORTS"
+  else
+    preview_ports="$default_loopback_ports"
+  fi
+  vps_require_loopback_ports "$preview_ports"
+fi
 remote_root="${remote_root:-/var/tmp/deploylite-preview/$preview_id}"
 [[ "$remote_root" =~ ^/var/tmp/deploylite-preview/[a-z0-9][a-z0-9-]{2,31}$ ]] || blocked 'remote root must be an isolated var/tmp preview directory.'
 [[ "$remote_root" != */canonical* && "$remote_root" != */production* ]] || blocked 'canonical and production paths are forbidden.'
@@ -64,7 +73,9 @@ if [[ "$mode" != cleanup ]]; then
   vps_source_provenance "$source_dir" "$expected_commit" "$expected_tree" >/dev/null || exit $?
   source_url="${VPS_SOURCE_URL:-$(git -C "$source_dir" remote get-url origin)}"
 fi
-vps_require_isolated_resources "project=$preview_id" "root=$remote_root" 'ports=127.0.0.1:55433,127.0.0.1:58080,127.0.0.1:58443'
+if [[ "$mode" != cleanup ]]; then
+  vps_require_isolated_resources "project=$preview_id" "root=$remote_root" "ports=$preview_ports"
+fi
 
 [[ -n "${VPS_KNOWN_HOSTS_FILE:-}" && -r "$VPS_KNOWN_HOSTS_FILE" ]] || blocked 'VPS_KNOWN_HOSTS_FILE is required for strict host verification.'
 [[ -s "$VPS_KNOWN_HOSTS_FILE" ]] || blocked 'VPS_KNOWN_HOSTS_FILE must not be empty.'
@@ -123,7 +134,8 @@ if [[ "$mode" != cleanup ]]; then
   printf -v source_q '%q' "$source_url"
   printf -v commit_q '%q' "$expected_commit"
   printf -v tree_q '%q' "$expected_tree"
-  remote_command+=" VPS_SOURCE_URL=$source_q VPS_COMMIT=$commit_q VPS_TREE=$tree_q VPS_LOOPBACK_PORTS=127.0.0.1:55433,127.0.0.1:58080,127.0.0.1:58443"
+  printf -v ports_q '%q' "$preview_ports"
+  remote_command+=" VPS_SOURCE_URL=$source_q VPS_COMMIT=$commit_q VPS_TREE=$tree_q VPS_LOOPBACK_PORTS=$ports_q"
   for variable in VPS_MIGRATION_COMMAND VPS_COMPOSE_COMMAND VPS_HEALTH_COMMAND; do
     printf -v value_q '%q' "${!variable:-}"
     remote_command+=" $variable=$value_q"

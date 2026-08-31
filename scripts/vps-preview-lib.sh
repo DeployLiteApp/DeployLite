@@ -26,6 +26,26 @@ vps_require_isolated_resources() {
   done
 }
 
+vps_require_loopback_ports() {
+  local ports="$1" entry host port canonical previous
+  local -a entries seen
+  IFS=',' read -r -a entries <<< "$ports"
+  if [[ "${#entries[@]}" -ne 3 ]]; then vps_fail 'VPS_LOOPBACK_PORTS must contain exactly three PostgreSQL, web, and API mappings.'; return 3; fi
+  for entry in "${entries[@]}"; do
+    if [[ ! "$entry" =~ ^127\.0\.0\.1:[0-9]{1,5}$ ]]; then vps_fail 'VPS_LOOPBACK_PORTS must use exact 127.0.0.1 decimal mappings.'; return 3; fi
+    host="${entry%%:*}"; port="${entry#*:}"
+    canonical="$port"
+    while [[ "${#canonical}" -gt 1 && "${canonical#0}" != "$canonical" ]]; do canonical="${canonical#0}"; done
+    if [[ "$host" != 127.0.0.1 ]]; then vps_fail 'VPS_LOOPBACK_PORTS must use exact 127.0.0.1 decimal mappings.'; return 3; fi
+    if ((10#$canonical < 1024 || 10#$canonical > 65535)); then vps_fail 'VPS_LOOPBACK_PORTS ports must be decimal values from 1024 through 65535.'; return 3; fi
+    if [[ "$canonical" == 80 || "$canonical" == 443 ]]; then vps_fail 'VPS_LOOPBACK_PORTS must not use ports 80 or 443.'; return 3; fi
+    for previous in "${seen[@]:-}"; do
+      if [[ "$canonical" == "$previous" ]]; then vps_fail 'VPS_LOOPBACK_PORTS ports must be numerically unique.'; return 3; fi
+    done
+    seen+=("$canonical")
+  done
+}
+
 vps_redact() {
   # Keep output bounded and redact both values and common assignment/URL forms.
   local input secret name

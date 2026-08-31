@@ -23,16 +23,44 @@ EOF
 cat > "$work/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+: > "${SSH_CALLED:?}"
+printf '%s\n' "${*: -1}" > "${CAPTURE:?}"
 cat >/dev/null
 printf '%s\n' 'VPS_EVIDENCE_BEGIN' 'preview_id=preview-one' 'project=deploylite-preview-preview-one' 'commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'tree=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' 'mode=migration-only' 'migration_rc=0' 'redacted_sha256=01aa5a615af892efa3b5f87cc556aec5a2a2da15df5123a38ce542d226b25ae2' 'output_begin' 'PASS: fake remote' 'output_end' 'VPS_EVIDENCE_END'
 EOF
 chmod +x "$work/bin/ssh" "$work/bin/scp"
-base=(env -i PATH="$work/bin:$PATH" VPS_HOST=preview.example.test VPS_KNOWN_HOSTS_FILE="$known_hosts" VPS_HOST_FINGERPRINT="$fingerprint" VPS_SOURCE_URL=https://example.test/deploylite.git)
+base=(env -i PATH="$work/bin:$PATH" SSH_CALLED="$work/ssh-called" CAPTURE="$work/ssh-command" VPS_HOST=preview.example.test VPS_KNOWN_HOSTS_FILE="$known_hosts" VPS_HOST_FINGERPRINT="$fingerprint" VPS_SOURCE_URL=https://example.test/deploylite.git)
 assert run_blocked "${base[@]}" bash "$script" migration-only --source "$work/source" --commit "$commit" --tree "$tree" --id 'bad/id'
 assert run_blocked "${base[@]}" bash "$script" migration-only --source "$work/source" --commit "$commit" --tree "$tree" --id preview-one --remote-root /opt/deploylite
 assert run_blocked "${base[@]}" bash "$script" migration-only --source "$work/source" --commit "$commit" --tree "$tree" --id preview-one --host production.example.test
 output="$("${base[@]}" bash "$script" migration-only --source "$work/source" --commit "$commit" --tree "$tree" --id preview-one)"
 [[ "$output" == *'READY:'* && "$output" != *fixture-secret* ]]
+printf -v expected_ports_q '%q' '127.0.0.1:55433,127.0.0.1:58080,127.0.0.1:58443'
+grep -Fq "VPS_LOOPBACK_PORTS=$expected_ports_q" "$work/ssh-command"
+custom_ports='127.0.0.1:15432,127.0.0.1:18080,127.0.0.1:18443'
+rm -f -- "$work/ssh-called"
+custom_output="$("${base[@]}" VPS_LOOPBACK_PORTS="$custom_ports" bash "$script" migration-only --source "$work/source" --commit "$commit" --tree "$tree" --id custom-one)"
+[[ "$custom_output" == *'READY:'* ]]
+printf -v expected_ports_q '%q' "$custom_ports"
+grep -Fq "VPS_LOOPBACK_PORTS=$expected_ports_q" "$work/ssh-command"
+for invalid_ports in \
+  '10.0.0.1:15432,127.0.0.1:18080,127.0.0.1:18443' \
+  '127.0.0.1:15432,0.0.0.0:18080,127.0.0.1:18443' \
+  'localhost:15432,127.0.0.1:18080,127.0.0.1:18443' \
+  '127.0.0.1:80,127.0.0.1:18080,127.0.0.1:18443' \
+  '127.0.0.1:15432,127.0.0.1:443,127.0.0.1:18443' \
+  '127.0.0.1:1023,127.0.0.1:18080,127.0.0.1:18443' \
+  '127.0.0.1:65536,127.0.0.1:18080,127.0.0.1:18443' \
+  '127.0.0.1:15432,127.0.0.1:18080' \
+  '127.0.0.1:15432,127.0.0.1:18080,127.0.0.1:18443,127.0.0.1:19443' \
+  '127.0.0.1:15432,127.0.0.1:15432,127.0.0.1:18443' \
+  '127.0.0.1:01543,127.0.0.1:1543,127.0.0.1:18443' \
+  '127.0.0.1:015432,127.0.0.1:15432,127.0.0.1:18443' \
+  '127.0.0.1:15432,127.0.0.1:18080,127.0.0.1:18443 '; do
+  rm -f -- "$work/ssh-called"
+  assert run_blocked "${base[@]}" VPS_LOOPBACK_PORTS="$invalid_ports" bash "$script" migration-only --source "$work/source" --commit "$commit" --tree "$tree" --id invalid-ports
+  [[ ! -e "$work/ssh-called" ]]
+done
 single_known_hosts="$work/single-known_hosts"
 printf 'preview.example.test %s\n' "$(<"$work/host-key-rsa.pub")" > "$single_known_hosts"
 single_output="$("${base[@]}" VPS_KNOWN_HOSTS_FILE="$single_known_hosts" bash "$script" migration-only --source "$work/source" --commit "$commit" --tree "$tree" --id single-match)"

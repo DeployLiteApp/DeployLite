@@ -15,6 +15,34 @@ git_bin="${VPS_GIT_BIN:-git}"
 docker_bin="${VPS_DOCKER_BIN:-docker}"
 
 blocked() { printf 'BLOCKED: %s\n' "$*" >&2; exit 3; }
+require_loopback_ports() {
+  local ports="$1" entry host port canonical previous
+  local -a entries seen
+  IFS=',' read -r -a entries <<< "$ports"
+  [[ "${#entries[@]}" -eq 3 ]] || blocked 'VPS_LOOPBACK_PORTS must contain exactly three PostgreSQL, web, and API mappings.'
+  for entry in "${entries[@]}"; do
+    [[ "$entry" =~ ^127\.0\.0\.1:[0-9]{1,5}$ ]] || blocked 'VPS_LOOPBACK_PORTS must use exact 127.0.0.1 decimal mappings.'
+    host="${entry%%:*}"; port="${entry#*:}"
+    canonical="$port"
+    while [[ "${#canonical}" -gt 1 && "${canonical#0}" != "$canonical" ]]; do canonical="${canonical#0}"; done
+    [[ "$host" == 127.0.0.1 && "${#canonical}" -le 5 ]] || blocked 'VPS_LOOPBACK_PORTS ports must be decimal values from 1024 through 65535.'
+    ((10#$canonical >= 1024 && 10#$canonical <= 65535)) || blocked 'VPS_LOOPBACK_PORTS ports must be decimal values from 1024 through 65535.'
+    [[ "$canonical" != 80 && "$canonical" != 443 ]] || blocked 'VPS_LOOPBACK_PORTS must not use ports 80 or 443.'
+    for previous in "${seen[@]:-}"; do
+      [[ "$canonical" != "$previous" ]] || blocked 'VPS_LOOPBACK_PORTS ports must be numerically unique.'
+    done
+    seen+=("$canonical")
+  done
+}
+if [[ "$mode" != cleanup ]]; then
+  default_loopback_ports='127.0.0.1:55433,127.0.0.1:58080,127.0.0.1:58443'
+  if [[ -n "${VPS_LOOPBACK_PORTS+x}" ]]; then
+    preview_ports="$VPS_LOOPBACK_PORTS"
+  else
+    preview_ports="$default_loopback_ports"
+  fi
+  require_loopback_ports "$preview_ports"
+fi
 failed() { printf 'FAILED: %s\n' "$*" >&2; return 1; }
 require_safe_resource() {
   [[ "$project" != deploylite && "$project" != *canonical* && "$project" != *production* ]] || blocked 'canonical Compose project is forbidden.'
@@ -135,8 +163,6 @@ phase_migrate || migration_rc=$?
 phase_evidence
 if [[ "${migration_rc:-0}" -ne 0 ]]; then exit 10; fi
 if [[ "$mode" == preview ]]; then
-  preview_ports="${VPS_LOOPBACK_PORTS:-127.0.0.1:55433,127.0.0.1:58080,127.0.0.1:58443}"
-  [[ "$preview_ports" != *:80* && "$preview_ports" != *:443* && "$preview_ports" == 127.0.0.1:* ]] || blocked 'preview services must use loopback high ports.'
   [[ -n "${VPS_COMPOSE_COMMAND:-}" || -x "${VPS_COMPOSE_WRAPPER:-}" ]] || failed 'isolated Compose command is required for preview.'
   if [[ -n "${VPS_COMPOSE_COMMAND:-}" ]]; then
     COMPOSE_PROJECT_NAME="$project" bash -c "$VPS_COMPOSE_COMMAND up -d postgres api web" </dev/null

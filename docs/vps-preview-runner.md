@@ -27,6 +27,15 @@ credentials. Migration, preview startup, and cleanup execute under the same
 preview-specific Compose project; canonical or default project fallback is
 forbidden.
 
+For `preview`, `VPS_LOOPBACK_PORTS` optionally overrides the three comma-separated
+host mappings in this order: `PostgreSQL,web,API` (for example,
+`127.0.0.1:15432,127.0.0.1:18080,127.0.0.1:18443`). Each mapping must use
+`127.0.0.1` and a unique decimal port from `1024` through `65535`; ports `80`
+and `443` are not allowed. If unset, the default is
+`127.0.0.1:55433,127.0.0.1:58080,127.0.0.1:58443`. The local runner validates
+the value before SSH and the remote runner validates it again without
+normalizing or reordering valid bytes.
+
 The runner deliberately rejects canonical projects, ports `80`/`443`, router
 and canonical network/volume names, ambiguous existing directories, and
 unowned cleanup targets. Tests use local fake commands or local Git remotes;
