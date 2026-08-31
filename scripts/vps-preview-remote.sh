@@ -84,9 +84,9 @@ phase_cleanup() {
   if ! command -v "$docker_bin" >/dev/null 2>&1; then failed 'validated Docker bin is unavailable.'; return 1; fi
   if [[ "${VPS_CLEANUP_FAIL:-0}" == 1 ]]; then failed 'injected cleanup failure.'; return 1; fi
   if [[ -n "${VPS_COMPOSE_COMMAND:-}" ]]; then
-    COMPOSE_PROJECT_NAME="$project" bash -c "$VPS_COMPOSE_COMMAND down --volumes --remove-orphans" || return 1
+    COMPOSE_PROJECT_NAME="$project" bash -c "$VPS_COMPOSE_COMMAND down --volumes --remove-orphans" </dev/null || return 1
   elif [[ -x "${VPS_COMPOSE_WRAPPER:-}" ]]; then
-    "$VPS_COMPOSE_WRAPPER" --project-name "$project" down --volumes --remove-orphans || return 1
+    "$VPS_COMPOSE_WRAPPER" --project-name "$project" down --volumes --remove-orphans </dev/null || return 1
   fi
   local resource ids id
   for resource in container network volume image; do
@@ -139,12 +139,12 @@ if [[ "$mode" == preview ]]; then
   [[ "$preview_ports" != *:80* && "$preview_ports" != *:443* && "$preview_ports" == 127.0.0.1:* ]] || blocked 'preview services must use loopback high ports.'
   [[ -n "${VPS_COMPOSE_COMMAND:-}" || -x "${VPS_COMPOSE_WRAPPER:-}" ]] || failed 'isolated Compose command is required for preview.'
   if [[ -n "${VPS_COMPOSE_COMMAND:-}" ]]; then
-    COMPOSE_PROJECT_NAME="$project" bash -c "$VPS_COMPOSE_COMMAND up -d postgres api web"
+    COMPOSE_PROJECT_NAME="$project" bash -c "$VPS_COMPOSE_COMMAND up -d postgres api web" </dev/null
   else
-    "$VPS_COMPOSE_WRAPPER" --project-name "$project" up -d postgres api web
+    "$VPS_COMPOSE_WRAPPER" --project-name "$project" up -d postgres api web </dev/null
   fi
   [[ -n "${VPS_HEALTH_COMMAND:-}" ]] || failed 'health command is required for preview.'
-  timeout "${VPS_HEALTH_TIMEOUT:-30s}" bash -c "$VPS_HEALTH_COMMAND" || exit 11
+  timeout "${VPS_HEALTH_TIMEOUT:-30s}" bash -c "$VPS_HEALTH_COMMAND" </dev/null || exit 11
   VPS_KEEP_PREVIEW=1 export VPS_KEEP_PREVIEW
 fi
 printf 'PASS: %s\n' "$mode"
