@@ -93,7 +93,34 @@ fi
 printf -v mode_q '%q' "$mode"
 printf -v id_q '%q' "$preview_id"
 remote_command+=" bash -s $mode_q $id_q"
-"${ssh_cmd[@]}" "${ssh_opts[@]}" "$remote_user@$remote_host" "$remote_command" < "$script_dir/vps-preview-remote.sh"
+captured="$tmpdir/redacted-evidence"
+set +e
+"${ssh_cmd[@]}" "${ssh_opts[@]}" "$remote_user@$remote_host" "$remote_command" < "$script_dir/vps-preview-remote.sh" 2>&1 |
+  vps_redact | tee "$captured" >/dev/null
+pipeline_status=("${PIPESTATUS[@]}")
+set -e
+ssh_status="${pipeline_status[0]}"
+[[ -s "$captured" ]] || fail 'SSH returned no redacted output.'
+evidence_payload="$tmpdir/evidence-payload"
+awk '/^VPS_EVIDENCE_BEGIN$/{inside=1; next} /^VPS_EVIDENCE_END$/{inside=0; found=1; next} inside {print} END {if (!found) exit 1}' \
+  "$captured" > "$evidence_payload" || fail 'expected VPS evidence envelope is absent.'
+[[ -s "$evidence_payload" ]] || fail 'expected VPS evidence envelope is empty.'
+grep -Fq 'preview_id=' "$evidence_payload" || fail 'VPS evidence envelope is incomplete.'
+grep -Fq 'redacted_sha256=' "$evidence_payload" || fail 'VPS evidence checksum is missing.'
+if [[ -n "${VPS_LOCAL_EVIDENCE_FILE:-}" ]]; then
+  local_evidence_file="$VPS_LOCAL_EVIDENCE_FILE"
+  [[ "$local_evidence_file" == /* && "$local_evidence_file" != */ && "$local_evidence_file" != *$'\n'* ]] ||
+    blocked 'VPS_LOCAL_EVIDENCE_FILE must be an absolute file path.'
+  local_evidence_dir="${local_evidence_file%/*}"; [[ -d "$local_evidence_dir" ]] || blocked 'VPS_LOCAL_EVIDENCE_FILE directory must exist.'
+  local_evidence_tmp="$(mktemp "$local_evidence_dir/.vps-evidence.XXXXXX")"
+  chmod 600 "$local_evidence_tmp"
+  if ! cp -- "$captured" "$local_evidence_tmp" || ! mv -f -- "$local_evidence_tmp" "$local_evidence_file"; then
+    rm -f -- "$local_evidence_tmp"
+    fail 'cannot persist local VPS evidence.'
+  fi
+  chmod 600 "$local_evidence_file"
+fi
+[[ "$ssh_status" -eq 0 || "$ssh_status" -eq 10 ]] || exit "$ssh_status"
 
 printf 'READY: mode=%s id=%s commit=%s tree=%s\n' "$mode" "$preview_id" "$expected_commit" "$expected_tree"
 printf 'SSH: strict host verification enabled; fingerprint supplied out-of-band.\n'
