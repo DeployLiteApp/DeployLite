@@ -3,8 +3,9 @@ set -Eeuo pipefail
 set +x
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-root_dir="$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null)" || { printf 'BLOCKED: run from a checkout.\n' >&2; exit 3; }
-[[ "$script_dir/vps-preview.sh" == "$root_dir/scripts/vps-preview.sh" ]] || { printf 'BLOCKED: script must remain in scripts/.\n' >&2; exit 3; }
+git_root="$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null)" || { printf 'BLOCKED: run from a checkout.\n' >&2; exit 3; }
+git_root="$(cd -- "$git_root" && pwd -P)" || { printf 'BLOCKED: run from a checkout.\n' >&2; exit 3; }
+[[ "$script_dir/vps-preview.sh" == "$git_root/scripts/vps-preview.sh" ]] || { printf 'BLOCKED: script must remain in scripts/.\n' >&2; exit 3; }
 # shellcheck source=scripts/vps-preview-lib.sh
 source "$script_dir/vps-preview-lib.sh"
 
