@@ -46,16 +46,9 @@ output="$("${base[@]}" VPS_DB_PASSWORD=secret VPS_LOCAL_EVIDENCE_FILE="$local_ev
 [[ -s "$local_evidence" && "$(file_mode "$local_evidence")" == 600 ]]
 grep -Fq 'VPS_EVIDENCE_BEGIN' "$local_evidence"
 if grep -Fq 'secret' "$local_evidence"; then exit 1; fi
-if command -v sha256sum >/dev/null 2>&1; then
-  checksum_command=(sha256sum)
-else
-  checksum_command=(shasum -a 256)
-fi
-checksum_file() { "${checksum_command[@]}" "$1" | awk '{print $1}'; }
 expected_transcript="$work/expected-transcript"
 printf '%s\n' 'VPS_EVIDENCE_BEGIN' 'preview_id=quote-check' 'project=deploylite-preview-quote-check' 'commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'tree=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' 'mode=migration-only' 'migration_rc=0' 'redacted_sha256=30688345ac750027b3b7ec622e3102df7c83996873701618f21e158690250095' 'output_begin' 'password=[REDACTED]' 'output_end' 'VPS_EVIDENCE_END' > "$expected_transcript"
-success_checksum="$(checksum_file "$local_evidence")"
-[[ "$success_checksum" == "$(checksum_file "$expected_transcript")" ]]
+cmp -s "$local_evidence" "$expected_transcript"
 captured="$(<"$capture")"
 [[ "$captured" == *"VPS_MIGRATION_COMMAND=$expected_migration_q"* ]]
 [[ "$captured" == *"VPS_COMPOSE_COMMAND=$expected_compose_q"* ]]
