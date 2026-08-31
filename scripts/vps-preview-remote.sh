@@ -35,9 +35,11 @@ phase_setup() {
   [[ -z "$($git_bin -C "$source_dir" status --porcelain)" ]] || failed 'remote checkout is not clean.'
   [[ "$($git_bin -C "$source_dir" rev-parse HEAD 2>/dev/null)" == "$VPS_COMMIT" ]] || failed 'remote commit verification failed.'
   [[ "$($git_bin -C "$source_dir" rev-parse 'HEAD^{tree}' 2>/dev/null)" == "$VPS_TREE" ]] || failed 'remote tree verification failed.'
+  printf '%s\n' 'PHASE: setup complete'
 }
 phase_migrate() {
   local rc=0
+  printf '%s\n' 'PHASE: migration start'
   : > "$raw_output"; chmod 600 "$raw_output"
   set +e
   if [[ -n "${VPS_MIGRATION_COMMAND:-}" ]]; then
@@ -48,10 +50,12 @@ phase_migrate() {
   rc=$?
   set -e
   printf '%s\n' "$rc" > "$raw_rc"; chmod 600 "$raw_rc"
+  printf 'PHASE: migration complete status=%s\n' "$rc"
   return "$rc"
 }
 phase_evidence() {
   local rc raw redacted checksum max_bytes
+  printf '%s\n' 'PHASE: evidence start'
   max_bytes="${VPS_MAX_EVIDENCE_BYTES:-65536}"
   [[ "$max_bytes" =~ ^[0-9]+$ ]] || failed 'evidence byte limit is invalid.'
   rc="$(<"$raw_rc")"; raw="$(<"$raw_output")"
@@ -69,6 +73,7 @@ phase_evidence() {
     "mode=$mode" "migration_rc=$rc" "redacted_sha256=$checksum" 'output_begin' \
     "$redacted" 'output_end' 'VPS_EVIDENCE_END' > "$evidence/summary"
   chmod 600 "$evidence/summary"
+  printf '%s\n' 'PHASE: evidence complete'
   printf 'EVIDENCE: migration_rc=%s\n' "$rc"
   cat "$evidence/summary"
 }
@@ -106,7 +111,9 @@ phase_cleanup() {
 cleanup_on_exit() {
   local primary=$?
   if [[ "$mode" == migration-only || "$primary" -ne 0 || "${VPS_KEEP_PREVIEW:-0}" != 1 ]]; then
-    set +e; cleanup_output="$(phase_cleanup 2>&1)"; cleanup_rc=$?; set -e
+    printf '%s\n' 'PHASE: cleanup start'
+    set +e; cleanup_output="$(set -e; phase_cleanup 2>&1)"; cleanup_rc=$?; set -e
+    printf 'PHASE: cleanup complete status=%s\n' "$cleanup_rc"
     [[ "$cleanup_rc" -eq 0 ]] || printf 'CLEANUP FAILED: %s\n' "$cleanup_output" >&2
     [[ "$primary" -ne 0 ]] && exit "$primary"
     [[ "${cleanup_rc:-0}" -eq 0 ]] || exit 2
@@ -114,7 +121,10 @@ cleanup_on_exit() {
   exit "$primary"
 }
 if [[ "$mode" == cleanup ]]; then
-  phase_cleanup
+  printf '%s\n' 'PHASE: cleanup start'
+  set +e; (set -e; phase_cleanup); cleanup_rc=$?; set -e
+  printf 'PHASE: cleanup complete status=%s\n' "$cleanup_rc"
+  [[ "$cleanup_rc" -eq 0 ]] || exit "$cleanup_rc"
   printf 'PASS: cleanup\n'
   exit 0
 fi
