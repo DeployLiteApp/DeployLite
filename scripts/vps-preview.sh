@@ -41,6 +41,7 @@ vps_source_provenance "$source_dir" "$expected_commit" "$expected_tree" >/dev/nu
 vps_require_isolated_resources "project=$preview_id" "root=$remote_root" 'ports=127.0.0.1:55433,127.0.0.1:58080,127.0.0.1:58443'
 
 [[ -n "${VPS_KNOWN_HOSTS_FILE:-}" && -r "$VPS_KNOWN_HOSTS_FILE" ]] || blocked 'VPS_KNOWN_HOSTS_FILE is required for strict host verification.'
+[[ -s "$VPS_KNOWN_HOSTS_FILE" ]] || blocked 'VPS_KNOWN_HOSTS_FILE must not be empty.'
 if [[ -n "${SSHPASS:-}" ]]; then
   command -v sshpass >/dev/null 2>&1 || blocked 'SSHPASS requires sshpass.'
   ssh_cmd=(sshpass -e ssh)
@@ -51,8 +52,13 @@ else
 fi
 command -v "${ssh_cmd[0]}" >/dev/null 2>&1 || blocked 'SSH client is required.'
 command -v "${scp_cmd[0]}" >/dev/null 2>&1 || blocked 'SCP client is required.'
-[[ -n "${VPS_HOST_FINGERPRINT:-}" ]] || blocked 'VPS_HOST_FINGERPRINT is required.'
-ssh_opts=(-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$VPS_KNOWN_HOSTS_FILE")
+[[ "${VPS_HOST_FINGERPRINT:-}" =~ ^SHA256:[A-Za-z0-9+/=]+$ ]] || blocked 'VPS_HOST_FINGERPRINT must be a SHA256 fingerprint.'
+ssh_opts=(-o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$VPS_KNOWN_HOSTS_FILE")
+if [[ -n "${SSHPASS:-}" ]]; then
+  ssh_opts+=(-o BatchMode=no)
+else
+  ssh_opts+=(-o BatchMode=yes)
+fi
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/vps-preview.XXXXXX")"
 cleanup() { rm -rf -- "$tmpdir"; }
