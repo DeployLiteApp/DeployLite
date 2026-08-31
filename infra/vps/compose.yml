@@ -33,14 +33,15 @@ services:
     build:
       context: ../..
       dockerfile: apps/api/Dockerfile
-    image: deploylite-api:local
+      target: migration
+    image: deploylite-migration:local
     restart: "no"
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
-    command: ["node", "packages/db/scripts/migrate.mjs"]
+    entrypoint: ["node", "scripts/migrate.mjs"]
     networks:
       - deploylite
 
