@@ -18,12 +18,15 @@ chmod +x "$work/bin/ssh"
 command_text='printf "migration value with spaces and \"quotes\"\\n"'
 compose_text='printf "compose value with spaces and \"quotes\"\\n"'
 health_text='printf "health value with spaces and \"quotes\"\\n"'
+printf -v expected_migration_q '%q' "$command_text"
+printf -v expected_compose_q '%q' "$compose_text"
+printf -v expected_health_q '%q' "$health_text"
 base=(env -i PATH="$work/bin:$PATH" CAPTURE="$capture" VPS_HOST=preview.example.test VPS_KNOWN_HOSTS_FILE="$known_hosts" VPS_HOST_FINGERPRINT="$fingerprint" VPS_SOURCE_URL=https://example.test/deploylite.git)
 output="$("${base[@]}" VPS_MIGRATION_COMMAND="$command_text" VPS_COMPOSE_COMMAND="$compose_text" VPS_HEALTH_COMMAND="$health_text" bash "$script" migration-only --source "$source_repo" --commit "$commit" --tree "$tree" --id quote-check)"
 [[ "$output" == *'READY:'* ]]
 captured="$(<"$capture")"
-[[ "$captured" == *'VPS_MIGRATION_COMMAND=printf\ "migration\ value\ with\ spaces\ and\ \\"quotes\\"\\\\n"'* ]]
-[[ "$captured" == *'VPS_COMPOSE_COMMAND=printf\ "compose\ value\ with\ spaces\ and\ \\"quotes\\"\\\\n"'* ]]
-[[ "$captured" == *'VPS_HEALTH_COMMAND=printf\ "health\ value\ with\ spaces\ and\ \\"quotes\\"\\\\n"'* ]]
+[[ "$captured" == *"VPS_MIGRATION_COMMAND=$expected_migration_q"* ]]
+[[ "$captured" == *"VPS_COMPOSE_COMMAND=$expected_compose_q"* ]]
+[[ "$captured" == *"VPS_HEALTH_COMMAND=$expected_health_q"* ]]
 if grep -Fq 'scp' <<<"$captured"; then exit 1; fi
 printf '%s\n' 'VPS command forwarding test passed.'

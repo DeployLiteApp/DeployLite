@@ -34,6 +34,6 @@ assert run_blocked "${base[@]}" VPS_SOURCE_URL=file:///tmp/private.git bash "$sc
 grep -Fq 'sshpass -e' "$script"
 grep -Fq 'StrictHostKeyChecking=yes' "$script"
 grep -Fq 'HEAD^{tree}' "$lib"
-grep -Fq 'scp' "$script" && exit 1 || true
-grep -Fq 'VPS_ARCHIVE' "$script" && exit 1 || true
+if grep -Fq 'scp' "$script"; then exit 1; fi
+if grep -Fq 'VPS_ARCHIVE' "$script"; then exit 1; fi
 printf '%s\n' 'VPS preview contract tests passed.'
