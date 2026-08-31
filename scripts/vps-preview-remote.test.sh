@@ -45,6 +45,21 @@ grep -Fq -- 'down --volumes --remove-orphans' "$compose_log"
 grep -Fq -- 'owned-image' "$rm_log"
 if grep -Fq -- 'shared-image' "$rm_log"; then exit 1; fi
 [[ ! -e "/var/tmp/deploylite-preview/$preview_id" ]]
+large_id="large-$RANDOM"; large_output="$work/large-output"
+# The migration command is intentionally evaluated by the remote bash process.
+# shellcheck disable=SC2016
+"${envbase[@]}" VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$large_id" VPS_MAX_EVIDENCE_BYTES=65536 \
+  VPS_MIGRATION_COMMAND='i=0; while [[ "$i" -lt 70000 ]]; do printf x; i=$((i + 1)); done' \
+  bash "$script" migration-only "$large_id" >"$large_output" 2>&1
+[[ "$(grep -c '^VPS_EVIDENCE_BEGIN$' "$large_output")" -eq 1 ]]
+[[ "$(grep -c '^VPS_EVIDENCE_END$' "$large_output")" -eq 1 ]]
+grep -Fq 'migration_rc=0' "$large_output"
+large_redacted="$(awk '/^output_begin$/{capture=1; next} /^output_end$/{capture=0} capture' "$large_output")"
+[[ "$(printf '%s' "$large_redacted" | wc -c)" -eq 65536 ]]
+large_checksum="$(printf '%s' "$large_redacted" | sha256sum | awk '{print $1}')"
+grep -Fq "redacted_sha256=$large_checksum" "$large_output"
+grep -Fq 'PASS: migration-only' "$large_output"
+[[ ! -e "/var/tmp/deploylite-preview/$large_id" ]]
 set +e; "${envbase[@]}" VPS_MIGRATION_COMMAND='printf "token=secret\n"; exit 7' bash "$script" migration-only test-two >"$work/fail" 2>&1; status=$?; set -e
 [[ "$status" -eq 10 && ! -e "/var/tmp/deploylite-preview/$preview_id" ]]
 grep -Fq 'EVIDENCE: migration_rc=7' "$work/fail"
