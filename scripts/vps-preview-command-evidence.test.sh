@@ -68,13 +68,14 @@ assert_ssh_options() {
   local batch_mode="$1"
   local other_batch_mode=yes
   [[ "$batch_mode" == yes ]] && other_batch_mode=no
-  [[ "$(grep -Fc -- '-o' "$argv_capture")" -eq 6 ]]
-  [[ "$(grep -Fc -- 'ConnectTimeout=10' "$argv_capture")" -eq 1 ]]
-  [[ "$(grep -Fc -- 'ServerAliveInterval=15' "$argv_capture")" -eq 1 ]]
-  [[ "$(grep -Fc -- 'ServerAliveCountMax=4' "$argv_capture")" -eq 1 ]]
-  [[ "$(grep -Fc -- 'StrictHostKeyChecking=yes' "$argv_capture")" -eq 1 ]]
-  [[ "$(grep -Fc -- "UserKnownHostsFile=$known_hosts" "$argv_capture")" -eq 1 ]]
-  [[ "$(grep -Fc -- "BatchMode=$batch_mode" "$argv_capture")" -eq 1 ]]
+  count_arg() { awk -v expected="$1" '$0 == expected { count++ } END { print count + 0 }' "$argv_capture"; }
+  [[ "$(count_arg '-o')" -eq 6 ]]
+  [[ "$(count_arg 'ConnectTimeout=10')" -eq 1 ]]
+  [[ "$(count_arg 'ServerAliveInterval=15')" -eq 1 ]]
+  [[ "$(count_arg 'ServerAliveCountMax=4')" -eq 1 ]]
+  [[ "$(count_arg 'StrictHostKeyChecking=yes')" -eq 1 ]]
+  [[ "$(count_arg "UserKnownHostsFile=$known_hosts")" -eq 1 ]]
+  [[ "$(count_arg "BatchMode=$batch_mode")" -eq 1 ]]
   ! grep -Eq "StrictHostKeyChecking=(no|accept-new)|UserKnownHostsFile=/dev/null|ServerAliveInterval=0|BatchMode=$other_batch_mode" "$argv_capture"
 }
 assert_ssh_options yes
