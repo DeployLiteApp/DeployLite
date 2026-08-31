@@ -51,18 +51,23 @@ phase_migrate() {
   return "$rc"
 }
 phase_evidence() {
-  local rc raw
+  local rc raw redacted checksum
   rc="$(<"$raw_rc")"; raw="$(<"$raw_output")"
   [[ "$rc" =~ ^[0-9]+$ ]] || failed 'migration exit code evidence is invalid.'
   [[ -s "$raw_output" ]] || failed 'migration evidence is missing.'
   raw="${raw//"${VPS_DB_PASSWORD:-}"/[REDACTED]}"
   raw="${raw//"${VPS_API_TOKEN:-}"/[REDACTED]}"
   raw="$(printf '%s' "$raw" | sed -E -e 's/(Authorization:[[:space:]]*(Bearer|Basic)[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig' -e 's/((PASSWORD|TOKEN|SECRET|API_KEY|DATABASE_URL)[[:space:]]*=[[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' -e 's#(postgres(ql)?://[^:/@]+:)[^@[:space:]]+@#\1[REDACTED]@#Ig')"
-  raw="$(printf '%s' "$raw" | head -c "${VPS_MAX_EVIDENCE_BYTES:-65536}")"
-  printf 'id=%s\nproject=%s\ncommit=%s\ntree=%s\nmode=%s\nmigration_rc=%s\noutput=%s\n' \
-    "$preview_id" "$project" "${VPS_COMMIT:-}" "${VPS_TREE:-}" "$mode" "$rc" "$raw" > "$evidence/summary"
+  redacted="$(printf '%s' "$raw" | head -c "${VPS_MAX_EVIDENCE_BYTES:-65536}")"
+  checksum="$(printf '%s' "$redacted" | sha256sum | awk '{print $1}')"
+  printf '%s\n' \
+    'VPS_EVIDENCE_BEGIN' \
+    "preview_id=$preview_id" "project=$project" "commit=${VPS_COMMIT:-}" "tree=${VPS_TREE:-}" \
+    "mode=$mode" "migration_rc=$rc" "redacted_sha256=$checksum" 'output_begin' \
+    "$redacted" 'output_end' 'VPS_EVIDENCE_END' > "$evidence/summary"
   chmod 600 "$evidence/summary"
   printf 'EVIDENCE: migration_rc=%s\n' "$rc"
+  cat "$evidence/summary"
 }
 phase_cleanup() {
   require_safe_resource
