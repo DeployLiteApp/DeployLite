@@ -167,7 +167,7 @@ if [[ "$mode" != cleanup ]]; then
     fail "$envelope_error"
   fi
 fi
-[[ "$ssh_status" -eq 0 || "$ssh_status" -eq 10 ]] || exit "$ssh_status"
+[[ "$ssh_status" -eq 0 ]] || exit "$ssh_status"
 
 printf 'READY: mode=%s id=%s commit=%s tree=%s\n' "$mode" "$preview_id" "$expected_commit" "$expected_tree"
 printf 'SSH: strict host verification enabled; fingerprint supplied out-of-band.\n'
