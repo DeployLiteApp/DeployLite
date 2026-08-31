@@ -61,10 +61,14 @@ assert_order() {
     previous="$line"
   done
 }
-image_removed="$work/image-removed"; rm_log="$work/docker-rm.log"; compose_log="$work/compose.log"
-envbase=(env -i PATH="$work:$PATH" REAL_GIT="$(command -v git)" LOCAL_REMOTE="$source_repo" VPS_GIT_BIN="$work/fake-git" VPS_DOCKER_BIN="$work/fake-docker" DOCKER_IMAGE_REMOVED="$image_removed" DOCKER_RM_LOG="$rm_log" COMPOSE_LOG="$compose_log" VPS_COMPOSE_WRAPPER="$work/fake-compose" VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$preview_id" VPS_SOURCE_URL=https://example.test/deploylite.git VPS_COMMIT="$commit" VPS_TREE="$tree" VPS_MIGRATION_COMMAND='printf "password=secret\n"' VPS_KEEP_PREVIEW=0)
+image_removed="$work/image-removed"; rm_log="$work/docker-rm.log"; compose_log="$work/compose.log"; project_scope_log="$work/project-scope.log"
+# shellcheck disable=SC2016
+envbase=(env -i PATH="$work:$PATH" REAL_GIT="$(command -v git)" LOCAL_REMOTE="$source_repo" VPS_GIT_BIN="$work/fake-git" VPS_DOCKER_BIN="$work/fake-docker" DOCKER_IMAGE_REMOVED="$image_removed" DOCKER_RM_LOG="$rm_log" COMPOSE_LOG="$compose_log" PROJECT_SCOPE_LOG="$project_scope_log" VPS_COMPOSE_WRAPPER="$work/fake-compose" VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$preview_id" VPS_SOURCE_URL=https://example.test/deploylite.git VPS_COMMIT="$commit" VPS_TREE="$tree" VPS_MIGRATION_COMMAND='printf "%s\n" "$COMPOSE_PROJECT_NAME" > "$PROJECT_SCOPE_LOG"; printf "migration output\n"' VPS_KEEP_PREVIEW=0)
 output="$("${envbase[@]}" bash "$script" migration-only "$preview_id")"; [[ "$output" == *'EVIDENCE: migration_rc=0'* && "$output" == *'PASS: migration-only'* ]]
 printf '%s\n' "$output" > "$work/success"
+[[ -f "$project_scope_log" ]] || { printf 'migration project scope was not recorded\n' >&2; exit 1; }
+scope="$(<"$project_scope_log")"; [[ "$scope" == "deploylite-preview-$preview_id" ]] || { printf 'expected isolated migration project, got %s\n' "$scope" >&2; exit 1; }
+[[ "$scope" != deploylite && "$scope" != canonical* ]] || exit 1
 assert_order "$work/success" 'PHASE: setup complete' 'PHASE: migration start' 'PHASE: migration complete status=0' 'PHASE: evidence start' 'PHASE: evidence complete' 'PHASE: cleanup start' 'PHASE: cleanup complete status=0'
 grep -Fq -- 'down --volumes --remove-orphans' "$compose_log"
 grep -Fq -- 'owned-image' "$rm_log"
@@ -139,8 +143,13 @@ grep -Fq '[REDACTED]' "$large_output" && exit 1
 grep -Fq "redacted_sha256=$large_checksum" "$large_output"
 grep -Fq 'PASS: migration-only' "$large_output"
 [[ ! -e "/var/tmp/deploylite-preview/$large_id" ]]
-set +e; "${envbase[@]}" VPS_MIGRATION_COMMAND='printf "token=secret\n"; exit 7' bash "$script" migration-only test-two >"$work/fail" 2>&1; status=$?; set -e
+# shellcheck disable=SC2016
+failed_migration_command='printf "%s\n" "$COMPOSE_PROJECT_NAME" > "$PROJECT_SCOPE_LOG"; printf "migration failure\n"; exit 7'
+set +e; "${envbase[@]}" VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/test-two" VPS_MIGRATION_COMMAND="$failed_migration_command" bash "$script" migration-only test-two >"$work/fail" 2>&1; status=$?; set -e
 [[ "$status" -eq 10 && ! -e "/var/tmp/deploylite-preview/$preview_id" ]]
+[[ -f "$project_scope_log" ]] || { printf 'failed migration project scope was not recorded\n' >&2; exit 1; }
+scope="$(<"$project_scope_log")"; [[ "$scope" == deploylite-preview-test-two ]] || { printf 'expected isolated failed migration project, got %s\n' "$scope" >&2; exit 1; }
+[[ "$scope" != deploylite && "$scope" != canonical* ]] || exit 1
 grep -Fq 'EVIDENCE: migration_rc=7' "$work/fail"
 assert_order "$work/fail" 'PHASE: setup complete' 'PHASE: migration start' 'PHASE: migration complete status=7' 'PHASE: evidence start' 'PHASE: evidence complete' 'PHASE: cleanup start' 'PHASE: cleanup complete status=0'
 evidence_failure_id="evidence-failure-$RANDOM"; evidence_failure_output="$work/evidence-failure"
