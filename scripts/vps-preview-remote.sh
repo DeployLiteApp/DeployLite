@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 set +x
 
-mode="${1:-}"; [[ "$mode" == migration-only || "$mode" == preview ]] || { printf 'BLOCKED: invalid mode.\n' >&2; exit 3; }; shift
+mode="${1:-}"; [[ "$mode" == migration-only || "$mode" == preview || "$mode" == cleanup ]] || { printf 'BLOCKED: invalid mode.\n' >&2; exit 3; }; shift
 preview_id="${1:-}"; [[ "$preview_id" =~ ^[a-z0-9][a-z0-9-]{2,31}$ ]] || { printf 'BLOCKED: invalid preview ID.\n' >&2; exit 3; }; shift
 root="${VPS_REMOTE_ROOT:-/var/tmp/deploylite-preview/$preview_id}"
 marker="$root/.deploylite-preview-owner"
@@ -105,6 +105,11 @@ cleanup_on_exit() {
   fi
   exit "$primary"
 }
+if [[ "$mode" == cleanup ]]; then
+  phase_cleanup
+  printf 'PASS: cleanup\n'
+  exit 0
+fi
 trap cleanup_on_exit EXIT
 trap 'exit 130' INT
 phase_setup

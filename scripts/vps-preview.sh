@@ -8,11 +8,11 @@ root_dir="$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null)" || { pr
 # shellcheck source=scripts/vps-preview-lib.sh
 source "$script_dir/vps-preview-lib.sh"
 
-usage() { printf '%s\n' 'Usage: vps-preview.sh migration-only|preview --source CHECKOUT --commit SHA --tree TREE --id ID'; }
+usage() { printf '%s\n' 'Usage: vps-preview.sh migration-only|preview --source CHECKOUT --commit SHA --tree TREE --id ID | cleanup --id ID'; }
 blocked() { printf 'BLOCKED: %s\n' "$*" >&2; exit 3; }
 fail() { printf 'FAILED: %s\n' "$*" >&2; exit 1; }
 
-mode="${1:-}"; [[ "$mode" == migration-only || "$mode" == preview ]] || { usage >&2; exit 3; }; shift
+mode="${1:-}"; [[ "$mode" == migration-only || "$mode" == preview || "$mode" == cleanup ]] || { usage >&2; exit 3; }; shift
 source_dir=""; expected_commit=""; expected_tree=""; preview_id=""
 remote_host="${VPS_HOST:-}"; remote_user="${VPS_USER:-deploylite}"; remote_root="${VPS_REMOTE_ROOT:-}"
 while (($#)); do
@@ -27,8 +27,11 @@ while (($#)); do
     *) blocked "unknown argument: $1" ;;
   esac
 done
-[[ -n "$source_dir" && -n "$expected_commit" && -n "$expected_tree" && -n "$preview_id" ]] || blocked 'source, commit, tree, and ID are required.'
-[[ "$expected_commit" =~ ^[0-9a-f]{40}$ && "$expected_tree" =~ ^[0-9a-f]{40}$ ]] || blocked 'commit and tree must be full hexadecimal object IDs.'
+[[ -n "$preview_id" ]] || blocked 'preview ID is required.'
+if [[ "$mode" != cleanup ]]; then
+  [[ -n "$source_dir" && -n "$expected_commit" && -n "$expected_tree" ]] || blocked 'source, commit, tree, and ID are required.'
+  [[ "$expected_commit" =~ ^[0-9a-f]{40}$ && "$expected_tree" =~ ^[0-9a-f]{40}$ ]] || blocked 'commit and tree must be full hexadecimal object IDs.'
+fi
 vps_require_safe_id "$preview_id"
 remote_root="${remote_root:-/var/tmp/deploylite-preview/$preview_id}"
 [[ "$remote_root" =~ ^/var/tmp/deploylite-preview/[a-z0-9][a-z0-9-]{2,31}$ ]] || blocked 'remote root must be an isolated var/tmp preview directory.'
@@ -37,8 +40,10 @@ remote_root="${remote_root:-/var/tmp/deploylite-preview/$preview_id}"
 [[ "$remote_host" != *:* && "$remote_host" != */* ]] || blocked 'host must be a hostname, not a URL or path.'
 [[ "$remote_host" != production* && "$remote_host" != canonical* && "$remote_host" != deploylite* ]] || blocked 'canonical and production hosts are forbidden.'
 [[ "$remote_user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || blocked 'invalid remote user.'
-vps_source_provenance "$source_dir" "$expected_commit" "$expected_tree" >/dev/null || exit $?
-source_url="${VPS_SOURCE_URL:-$(git -C "$source_dir" remote get-url origin)}"
+if [[ "$mode" != cleanup ]]; then
+  vps_source_provenance "$source_dir" "$expected_commit" "$expected_tree" >/dev/null || exit $?
+  source_url="${VPS_SOURCE_URL:-$(git -C "$source_dir" remote get-url origin)}"
+fi
 vps_require_isolated_resources "project=$preview_id" "root=$remote_root" 'ports=127.0.0.1:55433,127.0.0.1:58080,127.0.0.1:58443'
 
 [[ -n "${VPS_KNOWN_HOSTS_FILE:-}" && -r "$VPS_KNOWN_HOSTS_FILE" ]] || blocked 'VPS_KNOWN_HOSTS_FILE is required for strict host verification.'
@@ -72,15 +77,18 @@ trap cleanup EXIT
 status=0
 trap 'status=$?; printf "FAILED: interrupted (status %s)\n" "$status" >&2; exit "$status"' INT TERM
 
-printf -v source_q '%q' "$source_url"
 printf -v root_q '%q' "$remote_root"
-printf -v commit_q '%q' "$expected_commit"
-printf -v tree_q '%q' "$expected_tree"
-remote_command="VPS_REMOTE_ROOT=$root_q VPS_SOURCE_URL=$source_q VPS_COMMIT=$commit_q VPS_TREE=$tree_q VPS_LOOPBACK_PORTS=127.0.0.1:55433,127.0.0.1:58080,127.0.0.1:58443"
-for variable in VPS_MIGRATION_COMMAND VPS_COMPOSE_COMMAND VPS_HEALTH_COMMAND; do
-  printf -v value_q '%q' "${!variable:-}"
-  remote_command+=" $variable=$value_q"
-done
+remote_command="VPS_REMOTE_ROOT=$root_q"
+if [[ "$mode" != cleanup ]]; then
+  printf -v source_q '%q' "$source_url"
+  printf -v commit_q '%q' "$expected_commit"
+  printf -v tree_q '%q' "$expected_tree"
+  remote_command+=" VPS_SOURCE_URL=$source_q VPS_COMMIT=$commit_q VPS_TREE=$tree_q VPS_LOOPBACK_PORTS=127.0.0.1:55433,127.0.0.1:58080,127.0.0.1:58443"
+  for variable in VPS_MIGRATION_COMMAND VPS_COMPOSE_COMMAND VPS_HEALTH_COMMAND; do
+    printf -v value_q '%q' "${!variable:-}"
+    remote_command+=" $variable=$value_q"
+  done
+fi
 printf -v mode_q '%q' "$mode"
 printf -v id_q '%q' "$preview_id"
 remote_command+=" bash -s $mode_q $id_q"

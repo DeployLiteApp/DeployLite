@@ -1,7 +1,8 @@
 # VPS preview runner
 
 `scripts/vps-preview.sh` is an operator-only diagnostic tool. It accepts
-`migration-only` and `preview` modes, requires a clean checkout plus exact
+`migration-only`, `preview`, and marker-gated `cleanup` modes. The first two
+require a clean checkout plus exact
 commit and tree IDs, and uses only strict SSH host verification. Passwords
 must be supplied through `SSHPASS` (consumed with `sshpass -e`) or an SSH key
 agent; credentials are never command arguments, files, or output.
@@ -16,8 +17,10 @@ The remote script runs setup, migration capture, evidence readback, and
 cleanup as separate phases. Migration output and its exit code are written
 with mode `0600` before the result is returned; evidence reads those files
 even when migration fails, and cleanup never replaces the primary migration
-status. `migration-only` always cleans. A full preview starts only isolated
-loopback services and remains running only after bounded health verification
+status. `migration-only` always cleans. `cleanup --id ID` requires the existing
+exact ownership marker and performs only isolated resource cleanup; it does not
+fetch source, run migrations, collect evidence, or start services. A full
+preview starts only isolated loopback services and remains running only after bounded health verification
 succeeds. Migration, Compose, and health commands are forwarded as one
 shell-quoted value each, preserving spaces and quotes without exposing
 credentials.
