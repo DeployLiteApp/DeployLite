@@ -51,14 +51,17 @@ phase_migrate() {
   return "$rc"
 }
 phase_evidence() {
-  local rc raw redacted checksum
+  local rc raw redacted checksum max_bytes
+  max_bytes="${VPS_MAX_EVIDENCE_BYTES:-65536}"
+  [[ "$max_bytes" =~ ^[0-9]+$ ]] || failed 'evidence byte limit is invalid.'
   rc="$(<"$raw_rc")"; raw="$(<"$raw_output")"
   [[ "$rc" =~ ^[0-9]+$ ]] || failed 'migration exit code evidence is invalid.'
   [[ -s "$raw_output" ]] || failed 'migration evidence is missing.'
   raw="${raw//"${VPS_DB_PASSWORD:-}"/[REDACTED]}"
   raw="${raw//"${VPS_API_TOKEN:-}"/[REDACTED]}"
   raw="$(printf '%s' "$raw" | sed -E -e 's/(Authorization:[[:space:]]*(Bearer|Basic)[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig' -e 's/((PASSWORD|TOKEN|SECRET|API_KEY|DATABASE_URL)[[:space:]]*=[[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' -e 's#(postgres(ql)?://[^:/@]+:)[^@[:space:]]+@#\1[REDACTED]@#Ig')"
-  redacted="$(printf '%s' "$raw" | head -c "${VPS_MAX_EVIDENCE_BYTES:-65536}")"
+  # Drain the pipe after head reaches the limit so printf cannot receive SIGPIPE under pipefail.
+  redacted="$(printf '%s' "$raw" | { head -c "$max_bytes"; cat >/dev/null; })"
   checksum="$(printf '%s' "$redacted" | sha256sum | awk '{print $1}')"
   printf '%s\n' \
     'VPS_EVIDENCE_BEGIN' \
