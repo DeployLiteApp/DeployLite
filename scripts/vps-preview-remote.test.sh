@@ -57,9 +57,9 @@ grep -Fq -- 'owned-image' "$rm_log"
 if grep -Fq -- 'shared-image' "$rm_log"; then exit 1; fi
 [[ ! -e "/var/tmp/deploylite-preview/$preview_id" ]]
 streamed_id="streamed-$RANDOM"; streamed_output="$work/streamed-output"
-set +e; cat "$script" | "${envbase[@]}" VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$streamed_id" \
+set +e; "${envbase[@]}" VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$streamed_id" \
   VPS_MIGRATION_COMMAND='cat >/dev/null; printf "streamed migration\n"' \
-  bash -s migration-only "$streamed_id" >"$streamed_output" 2>&1; status=$?; set -e
+  bash -s migration-only "$streamed_id" <"$script" >"$streamed_output" 2>&1; status=$?; set -e
 [[ "$status" -eq 0 && ! -e "/var/tmp/deploylite-preview/$streamed_id" ]]
 [[ "$(grep -c '^VPS_EVIDENCE_BEGIN$' "$streamed_output")" -eq 1 ]]
 [[ "$(grep -c '^VPS_EVIDENCE_END$' "$streamed_output")" -eq 1 ]]
