@@ -7,7 +7,7 @@ meta:
 
 # How will DeployLite grow?
 
-DeployLite is an open-source, community-oriented, self-hosted deployment control plane. This roadmap separates the verified `main` baseline from incomplete planned P0–P8 work, so contributors can evaluate scope without treating a future phase as shipped behavior.
+DeployLite is an open-source, community-oriented, self-hosted deployment control plane. This roadmap separates the verified `main` baseline from planned P0 to P8 work, so contributors can evaluate scope without treating a future phase as shipped behavior.
 
 ## Page plan
 
@@ -20,29 +20,51 @@ DeployLite is an open-source, community-oriented, self-hosted deployment control
 
 ## Start from the verified baseline
 
-The `main` branch provides an HTTP-first VPS installer, first-owner setup, cookie sessions and RBAC, project metadata management, encrypted environment-value foundations with masked handling, control-plane deployment and log metadata, a read-only MCP surface, bounded runtime-port handling with tests, and a protected hosted baseline CI pipeline.
+The `main` branch provides an HTTP-first VPS installer, first-owner setup, cookie sessions and role-based access control (RBAC), project metadata management, encrypted environment-value foundations with masked handling, control-plane deployment and log metadata, a read-only MCP surface, bounded `runtimePort` handling with tests, and protected hosted baseline gates.
 
-The existing deployment-control and agent surfaces are not a real production executor. Real production execution, privileged host mutation, provenance/signing, VPS smoke, routing, certificates, and release approval are planned rather than implemented.
+The baseline records CI evidence for quality, PostgreSQL integration, and Compose and supply-chain checks. Those checks include image scanning, software bills of materials (SBOMs), digest evidence, and hardened runtime images. They do not prove image provenance, production deployment, infrastructure mutation, or release approval.
+
+The current runtime path remains non-executing by default. Its `runtimePort` contract bounds and validates a requested port, while the Docker dry-run spawns no process, opens no network connection, reads no secret source, and mutates no infrastructure. Hardened transport foundations exist, but the default runtime capability returns `capability_unavailable`; production activation remains a separate concern.
+
+The following capabilities are not shipped on `main`: real Docker execution, privileged host mutation, production routing, certificate issuance or renewal, VPS smoke, production hardening, provenance or signing, and release approval. Existing Traefik, ACME, and certificate metadata are configuration and data foundations, not proof of a working production path.
+
+## Build toward the Dokploy-class goal
+
+DeployLite’s product goal is a Dokploy-class self-hosted platform: a one-command, resumable TUI prepares only the supported host runtime and prerequisites; the web UI handles first-owner setup and product configuration; later phases add real applications, networks, volumes, proxy routing, TLS, and infrastructure operations.
+
+The installer must not ask for application configuration. The web UI and shared command boundary own product actions, while operators retain explicit authorization and visible results for infrastructure changes.
 
 ## Follow the planned phases
 
-Each phase has an outcome and an acceptance boundary. A phase is not complete until its acceptance boundary is met.
+Each phase has an outcome and a short acceptance boundary. A phase is not complete until its boundary is met on a supported environment and the result has evidence.
 
 | Phase | Planned outcome | Acceptance boundary |
 | --- | --- | --- |
-| P0 | Harden the shared command, capability, secret, and audit model | Every new mutation has actor, project scope, idempotency, audit evidence, and a terminal result; unsupported actions are rejected |
-| P1 | Add a real, secure Git and Dockerfile deployment path plus a curated, versioned catalog | Repository and build inputs validate deterministically; templates reference secrets instead of embedding values; real execution has regression and safety coverage |
-| P2 | Add multi-service projects through validated Docker Compose before Swarm | Compose inputs are parsed, canonicalized, policy-validated, dry-runable, and secret-safe; stack logs and replacement behavior have integration coverage |
-| P3 | Add servers, registries, networks, volumes, domains, routing, certificates, TCP, and UDP | Server enrollment is scoped and expiring; registry credentials remain encrypted and redacted; routing is idempotent; ownership, renewal, and routing rollback have observable tests |
-| P4 | Add stateful workloads and operations | Managed databases have isolated storage, generated credentials, backups, retention, restore confirmation, and restore evidence; telemetry never exposes secrets |
-| P5 | Add CI/CD, webhooks, notifications, scheduling, observability, healthchecks, and tenant governance | Automation is idempotent and cancellable; integrations have delivery status; authorization tests deny cross-tenant access; events trace to a source command |
-| P6 | Publish a versioned API and controlled MCP writes | API tokens are scoped and rotatable; MCP writes use the same command, audit, idempotency, authorization, and confirmation path as the web interface |
-| P7 | Add audited AI assistance | AI receives allowlisted redacted context, links recommendations to evidence, and can only request a normal command preview; it cannot autonomously control infrastructure |
-| P8 | Complete production operations and release readiness | Production execution, VPS smoke, provenance/signing, Traefik/ACME routing, infrastructure mutation, rollback, and release approval pass their independent evidence gates |
+| P0 | Ship a one-command, resumable TUI for host prerequisites | Interactive by default; idempotently validates and installs the supported Docker and Compose runtime; records safe preflight results; never asks for app configuration; hands product setup to the web UI |
+| P1 | Add Traefik, Let’s Encrypt, and HTTPS access | The proxy owns 80/443; HTTP redirects to HTTPS; ACME issuance and renewal, persistent certificate storage, and a supported-VPS domain smoke test pass |
+| P2 | Add real applications and deployment operations | A capability-negotiated agent executes Docker; deployments persist immutable config snapshots, expose real status, stream real logs, and support safe stop, redeploy, and rollback with audit evidence |
+| P3 | Make Compose, networks, and volumes first-class resources | Compose is parsed, canonicalized, policy-validated, dry-runable, and secret-safe; ownership, attachment, inspection, backup where applicable, and confirmed cleanup are tested |
+| P4 | Add domains, routing, certificates, registries, TCP, and UDP | Routes are scoped and idempotent; ownership conflicts fail closed; changes support preview, apply, and rollback evidence; renewal and HTTP, WebSocket, and domain smoke tests pass |
+| P5 | Add stateful workloads and operations | Managed databases and catalog apps have isolated storage, generated credentials, backup and retention policy, destructive restore confirmation, restore evidence, health checks, and secret-safe telemetry |
+| P6 | Add CI/CD, webhooks, notifications, scheduling, observability, and health checks | Automation is idempotent, cancellable, and traceable; webhooks are verified; jobs expose delivery status; metrics, logs, health checks, alerts, and optional provider-backed outbound email work |
+| P7 | Publish a versioned API and controlled MCP writes | Tokens are scoped and rotatable; webhooks are signed and replay-safe; MCP writes use the web UI’s command, audit, idempotency, authorization, capability, preview, and confirmation path |
+| P8 | Add audited AI assistance and release readiness | AI uses allowlisted, redacted context and normal command previews; production execution, rollback, provenance, signing, release approval, and independent evidence gates pass; AI never controls infrastructure autonomously |
+
+## Separate current capability from planned work
+
+The roadmap includes real Git and Dockerfile execution, Docker Compose, Swarm, networks, volumes, backups, managed databases, service-level secrets, routing, certificates, TCP, UDP, catalog applications, registries, CI/CD, webhooks, observability, health checks, functional rollback, and remote build servers. These remain planned unless the verified baseline names them as shipped.
+
+The hosted baseline is a required CI control with retained evidence. The local evidence bridge is advisory only. Neither makes DeployLite production-ready, changes release eligibility, replaces hosted provenance, or activates the default runtime capability.
+
+## Post-release: optional managed mail
+
+Managed inbound mail is outside P0 to P8 and is not a current capability. A future module would need MX hosting, SMTP reception, IMAP or POP, webmail, mailbox storage, spam filtering, antivirus, IP reputation, and mail-server DNS and port operations.
+
+P6 may send transactional email through an optional external SMTP or API provider for alerts, invitations, password recovery, and deployment notifications. DeployLite does not need to run a mail server for that capability.
+
+Any managed-mail module must be isolated from the control plane and run on a dedicated host or explicitly selected infrastructure. It needs separate backup, abuse, reputation, DNS, and lifecycle requirements before implementation.
 
 ## Keep planned work honest
-
-The roadmap includes real Git and Dockerfile execution, Docker Compose, Swarm, networks, volumes, backups, managed databases, service-level secrets, routing, certificates, TCP, UDP, catalog applications, registries, deployment CI/CD, webhooks, observability, healthchecks, functional rollback, and remote build servers. None of these items is implemented unless the verified baseline says so. The hosted baseline pipeline and advisory local evidence bridge do not make DeployLite production-ready.
 
 DeployLite will not copy third-party code, templates, credentials, private endpoints, or deployment configuration into this project. References may inform a problem statement, but DeployLite defines and tests its own public behavior.
 
@@ -50,4 +72,4 @@ DeployLite will not copy third-party code, templates, credentials, private endpo
 
 Read [how to contribute](../CONTRIBUTING.md) before opening work. Read [the security policy](../SECURITY.md) before reporting a vulnerability.
 
-Contributions must keep secrets encrypted at rest, redacted in every read path, and outside AI and MCP context. Infrastructure mutations must use a shared command boundary with authorization, audit evidence, idempotency, capability negotiation, and a visible terminal result.
+Contributions must keep secrets encrypted at rest, redacted in every read path, and outside AI and MCP context. Infrastructure mutations must use a shared command boundary with authorization, audit evidence, idempotency, capability negotiation, and a visible terminal result. Unsupported or disabled capabilities must fail closed without reaching Docker, host shells, or production infrastructure.
