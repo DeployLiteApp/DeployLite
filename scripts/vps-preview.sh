@@ -60,6 +60,14 @@ trap cleanup EXIT
 status=0
 trap 'status=$?; printf "FAILED: interrupted (status %s)\n" "$status" >&2; exit "$status"' INT TERM
 
+git -C "$source_dir" archive --format=tar.gz --output="$tmpdir/source.tar.gz" HEAD
+archive_remote="/var/tmp/deploylite-preview-$preview_id.source.tar.gz"
+"${scp_cmd[@]}" "${ssh_opts[@]}" "$tmpdir/source.tar.gz" "$remote_user@$remote_host:$archive_remote" >/dev/null
+printf -v health_q '%q' "${VPS_HEALTH_COMMAND:-true}"
+printf -v compose_q '%q' "${VPS_COMPOSE_COMMAND:-}"
+remote_command=("VPS_REMOTE_ROOT=$remote_root" "VPS_ARCHIVE=$archive_remote" "VPS_COMMIT=$expected_commit" "VPS_TREE=$expected_tree" "VPS_LOOPBACK_PORTS=127.0.0.1:55433,127.0.0.1:58080,127.0.0.1:58443" "VPS_HEALTH_COMMAND=$health_q" "VPS_COMPOSE_COMMAND=$compose_q" "bash -s" "$mode" "$preview_id")
+"${ssh_cmd[@]}" "${ssh_opts[@]}" "$remote_user@$remote_host" "${remote_command[*]}" < "$script_dir/vps-preview-remote.sh"
+
 printf 'READY: mode=%s id=%s commit=%s tree=%s\n' "$mode" "$preview_id" "$expected_commit" "$expected_tree"
 printf 'SSH: strict host verification enabled; fingerprint supplied out-of-band.\n'
 printf 'SSH options: %s\n' "${ssh_opts[*]}"

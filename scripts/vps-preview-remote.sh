@@ -26,7 +26,10 @@ phase_setup() {
   printf 'deploylite-preview-owner\n%s\n%s\n' "$preview_id" "$project" > "$marker"
   chmod 600 "$marker"
   [[ "$(wc -l < "$marker")" -eq 3 ]] || failed 'ownership marker write failed.'
-  if [[ -n "${VPS_SOURCE_URL:-}" ]]; then
+  if [[ -n "${VPS_ARCHIVE:-}" ]]; then
+    [[ -f "$VPS_ARCHIVE" ]] || failed 'source archive is missing.'
+    tar -xzf "$VPS_ARCHIVE" -C "$source_dir" --strip-components=1
+  elif [[ -n "${VPS_SOURCE_URL:-}" ]]; then
     "$git_bin" -C "$source_dir" init -q
     "$git_bin" -C "$source_dir" remote add origin "$VPS_SOURCE_URL"
     "$git_bin" -C "$source_dir" fetch --depth=1 origin "$VPS_COMMIT"
@@ -54,6 +57,10 @@ phase_evidence() {
   rc="$(<"$raw_rc")"; raw="$(<"$raw_output")"
   [[ "$rc" =~ ^[0-9]+$ ]] || failed 'migration exit code evidence is invalid.'
   [[ -s "$raw_output" ]] || failed 'migration evidence is missing.'
+  raw="${raw//"${VPS_DB_PASSWORD:-}"/[REDACTED]}"
+  raw="${raw//"${VPS_API_TOKEN:-}"/[REDACTED]}"
+  raw="$(printf '%s' "$raw" | sed -E -e 's/(Authorization:[[:space:]]*(Bearer|Basic)[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig' -e 's/((PASSWORD|TOKEN|SECRET|API_KEY|DATABASE_URL)[[:space:]]*=[[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' -e 's#(postgres(ql)?://[^:/@]+:)[^@[:space:]]+@#\1[REDACTED]@#Ig')"
+  raw="$(printf '%s' "$raw" | head -c "${VPS_MAX_EVIDENCE_BYTES:-65536}")"
   printf 'id=%s\nproject=%s\ncommit=%s\ntree=%s\nmode=%s\nmigration_rc=%s\noutput=%s\n' \
     "$preview_id" "$project" "${VPS_COMMIT:-}" "${VPS_TREE:-}" "$mode" "$rc" "$raw" > "$evidence/summary"
   chmod 600 "$evidence/summary"
@@ -63,9 +70,12 @@ phase_cleanup() {
   [[ -f "$marker" ]] || failed 'cleanup marker is missing; refusing rollback.'
   [[ "$(sed -n '1p' "$marker")" == deploylite-preview-owner && "$(sed -n '2p' "$marker")" == "$preview_id" && "$(sed -n '3p' "$marker")" == "$project" ]] || failed 'ownership marker drifted.'
   if [[ "${VPS_CLEANUP_FAIL:-0}" == 1 ]]; then failed 'injected cleanup failure.'; fi
-  if [[ -x "${VPS_COMPOSE_WRAPPER:-}" ]]; then
+  if [[ -n "${VPS_COMPOSE_COMMAND:-}" ]]; then
+    COMPOSE_PROJECT_NAME="$project" bash -c "$VPS_COMPOSE_COMMAND down --remove-orphans"
+  elif [[ -x "${VPS_COMPOSE_WRAPPER:-}" ]]; then
     "$VPS_COMPOSE_WRAPPER" --project-name "$project" down --remove-orphans
   fi
+  [[ -z "${VPS_ARCHIVE:-}" ]] || rm -f -- "$VPS_ARCHIVE"
   rm -rf -- "$root"
 }
 cleanup_on_exit() {
@@ -84,7 +94,14 @@ phase_migrate || migration_rc=$?
 phase_evidence
 if [[ "${migration_rc:-0}" -ne 0 ]]; then exit 10; fi
 if [[ "$mode" == preview ]]; then
-  [[ "${VPS_LOOPBACK_PORTS:-127.0.0.1:55433,127.0.0.1:58080,127.0.0.1:58443}" != *:80* && "${VPS_LOOPBACK_PORTS:-}" != *:443* ]] || blocked 'canonical ports are forbidden.'
+  preview_ports="${VPS_LOOPBACK_PORTS:-127.0.0.1:55433,127.0.0.1:58080,127.0.0.1:58443}"
+  [[ "$preview_ports" != *:80* && "$preview_ports" != *:443* && "$preview_ports" == 127.0.0.1:* ]] || blocked 'preview services must use loopback high ports.'
+  [[ -n "${VPS_COMPOSE_COMMAND:-}" || -x "${VPS_COMPOSE_WRAPPER:-}" ]] || failed 'isolated Compose command is required for preview.'
+  if [[ -n "${VPS_COMPOSE_COMMAND:-}" ]]; then
+    COMPOSE_PROJECT_NAME="$project" bash -c "$VPS_COMPOSE_COMMAND up -d postgres api web"
+  else
+    "$VPS_COMPOSE_WRAPPER" --project-name "$project" up -d postgres api web
+  fi
   [[ -n "${VPS_HEALTH_COMMAND:-}" ]] || failed 'health command is required for preview.'
   timeout "${VPS_HEALTH_TIMEOUT:-30s}" bash -c "$VPS_HEALTH_COMMAND" || exit 11
   VPS_KEEP_PREVIEW=1 export VPS_KEEP_PREVIEW
