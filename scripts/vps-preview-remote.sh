@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 set +x
 
-mode="${1:-}"; [[ "$mode" == migration-only || "$mode" == preview ]] || { printf 'BLOCKED: invalid mode.\n' >&2; exit 3; }; shift
+mode="${1:-}"; [[ "$mode" == migration-only || "$mode" == preview || "$mode" == cleanup ]] || { printf 'BLOCKED: invalid mode.\n' >&2; exit 3; }; shift
 preview_id="${1:-}"; [[ "$preview_id" =~ ^[a-z0-9][a-z0-9-]{2,31}$ ]] || { printf 'BLOCKED: invalid preview ID.\n' >&2; exit 3; }; shift
 root="${VPS_REMOTE_ROOT:-/var/tmp/deploylite-preview/$preview_id}"
 marker="$root/.deploylite-preview-owner"
@@ -12,6 +12,7 @@ evidence="$root/evidence"
 raw_output="$evidence/migration.raw"
 raw_rc="$evidence/migration.rc"
 git_bin="${VPS_GIT_BIN:-git}"
+docker_bin="${VPS_DOCKER_BIN:-docker}"
 
 blocked() { printf 'BLOCKED: %s\n' "$*" >&2; exit 3; }
 failed() { printf 'FAILED: %s\n' "$*" >&2; return 1; }
@@ -64,25 +65,51 @@ phase_evidence() {
   printf 'EVIDENCE: migration_rc=%s\n' "$rc"
 }
 phase_cleanup() {
+  require_safe_resource
   [[ -f "$marker" ]] || failed 'cleanup marker is missing; refusing rollback.'
   [[ "$(sed -n '1p' "$marker")" == deploylite-preview-owner && "$(sed -n '2p' "$marker")" == "$preview_id" && "$(sed -n '3p' "$marker")" == "$project" ]] || failed 'ownership marker drifted.'
+  if ! command -v "$docker_bin" >/dev/null 2>&1; then failed 'validated Docker bin is unavailable.'; return 1; fi
   if [[ "${VPS_CLEANUP_FAIL:-0}" == 1 ]]; then failed 'injected cleanup failure.'; return 1; fi
   if [[ -n "${VPS_COMPOSE_COMMAND:-}" ]]; then
-    COMPOSE_PROJECT_NAME="$project" bash -c "$VPS_COMPOSE_COMMAND down --remove-orphans" || return 1
+    COMPOSE_PROJECT_NAME="$project" bash -c "$VPS_COMPOSE_COMMAND down --volumes --remove-orphans" || return 1
   elif [[ -x "${VPS_COMPOSE_WRAPPER:-}" ]]; then
-    "$VPS_COMPOSE_WRAPPER" --project-name "$project" down --remove-orphans || return 1
+    "$VPS_COMPOSE_WRAPPER" --project-name "$project" down --volumes --remove-orphans || return 1
   fi
+  local resource ids id
+  for resource in container network volume image; do
+    ids="$("$docker_bin" "$resource" ls -q --filter "label=com.docker.compose.project=$project")" || { failed "cannot inspect project $resource resources."; return 1; }
+    if [[ -n "$ids" ]]; then
+      if [[ "$resource" == image ]]; then
+        while IFS= read -r id; do
+          [[ -n "$id" ]] || continue
+          "$docker_bin" image rm --force "$id" || { failed "cannot remove project image $id."; return 1; }
+        done <<< "$ids"
+      else
+        failed "project $resource cleanup left resources: $ids"; return 1
+      fi
+    fi
+  done
+  for resource in container network volume image; do
+    ids="$("$docker_bin" "$resource" ls -q --filter "label=com.docker.compose.project=$project")" || { failed "cannot verify project $resource resources."; return 1; }
+    [[ -z "$ids" ]] || { failed "project $resource verification found resources: $ids"; return 1; }
+  done
   rm -rf -- "$root"
 }
 cleanup_on_exit() {
   local primary=$?
   if [[ "$mode" == migration-only || "$primary" -ne 0 || "${VPS_KEEP_PREVIEW:-0}" != 1 ]]; then
-    set +e; phase_cleanup; cleanup_rc=$?; set -e
+    set +e; cleanup_output="$(phase_cleanup 2>&1)"; cleanup_rc=$?; set -e
+    [[ "$cleanup_rc" -eq 0 ]] || printf 'CLEANUP FAILED: %s\n' "$cleanup_output" >&2
     [[ "$primary" -ne 0 ]] && exit "$primary"
     [[ "${cleanup_rc:-0}" -eq 0 ]] || exit 2
   fi
   exit "$primary"
 }
+if [[ "$mode" == cleanup ]]; then
+  phase_cleanup
+  printf 'PASS: cleanup\n'
+  exit 0
+fi
 trap cleanup_on_exit EXIT
 trap 'exit 130' INT
 phase_setup
