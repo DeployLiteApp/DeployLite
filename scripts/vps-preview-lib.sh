@@ -38,7 +38,7 @@ vps_redact() {
     -e 's/(Authorization:[[:space:]]*(Bearer|Basic)[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig' \
     -e 's/((PASSWORD|TOKEN|SECRET|API_KEY|DATABASE_URL)[[:space:]]*=[[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' \
     -e 's#(postgres(ql)?://[^:/@]+:)[^@[:space:]]+@#\1[REDACTED]@#Ig')"
-  printf '%s' "$input"
+  [[ -n "$input" ]] && printf '%s\n' "$input"
 }
 
 vps_source_provenance() {

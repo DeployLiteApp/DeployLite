@@ -13,7 +13,16 @@ cat > "$work/bin/ssh" <<'EOF'
 set -Eeuo pipefail
 printf '%s\n' "${*: -1}" > "${CAPTURE:?}"
 cat >/dev/null
-if [[ "${NO_EVIDENCE:-0}" == 1 ]]; then exit "${SSH_STATUS:-0}"; fi
+if [[ "${ENVELOPE_MODE:-valid}" == absent ]]; then
+  printf '%s\n' 'password=secret' 'Authorization: Bearer secret'
+  exit "${SSH_STATUS:-0}"
+elif [[ "${ENVELOPE_MODE:-valid}" == empty ]]; then
+  printf '%s\n' 'VPS_EVIDENCE_BEGIN' 'VPS_EVIDENCE_END'
+  exit "${SSH_STATUS:-0}"
+elif [[ "${ENVELOPE_MODE:-valid}" == incomplete ]]; then
+  printf '%s\n' 'VPS_EVIDENCE_BEGIN' 'preview_id=quote-check' 'output_begin' 'password=secret' 'output_end' 'VPS_EVIDENCE_END'
+  exit "${SSH_STATUS:-0}"
+fi
 printf '%s\n' 'VPS_EVIDENCE_BEGIN' 'preview_id=quote-check' 'project=deploylite-preview-quote-check' 'commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'tree=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' 'mode=migration-only' 'migration_rc=0' 'redacted_sha256=30688345ac750027b3b7ec622e3102df7c83996873701618f21e158690250095' 'output_begin' 'password=secret' 'output_end' 'VPS_EVIDENCE_END'
 EOF
 chmod +x "$work/bin/ssh"
@@ -37,6 +46,9 @@ output="$("${base[@]}" VPS_DB_PASSWORD=secret VPS_LOCAL_EVIDENCE_FILE="$local_ev
 [[ -s "$local_evidence" && "$(file_mode "$local_evidence")" == 600 ]]
 grep -Fq 'VPS_EVIDENCE_BEGIN' "$local_evidence"
 if grep -Fq 'secret' "$local_evidence"; then exit 1; fi
+expected_transcript="$work/expected-transcript"
+printf '%s\n' 'VPS_EVIDENCE_BEGIN' 'preview_id=quote-check' 'project=deploylite-preview-quote-check' 'commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'tree=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' 'mode=migration-only' 'migration_rc=0' 'redacted_sha256=30688345ac750027b3b7ec622e3102df7c83996873701618f21e158690250095' 'output_begin' 'password=[REDACTED]' 'output_end' 'VPS_EVIDENCE_END' > "$expected_transcript"
+cmp -s "$local_evidence" "$expected_transcript"
 captured="$(<"$capture")"
 [[ "$captured" == *"VPS_MIGRATION_COMMAND=$expected_migration_q"* ]]
 [[ "$captured" == *"VPS_COMPOSE_COMMAND=$expected_compose_q"* ]]
@@ -51,8 +63,18 @@ if grep -Fq 'VPS_SOURCE_URL=' <<<"$cleanup_captured" || grep -Fq 'VPS_COMMIT=' <
   grep -Fq 'VPS_TREE=' <<<"$cleanup_captured" || grep -Fq 'VPS_MIGRATION_COMMAND=' <<<"$cleanup_captured" ||
   grep -Fq 'VPS_HEALTH_COMMAND=' <<<"$cleanup_captured"; then exit 1; fi
 set +e
-"${base[@]}" NO_EVIDENCE=1 VPS_LOCAL_EVIDENCE_FILE="$work/missing-evidence" VPS_DB_PASSWORD=secret bash "$script" migration-only --source "$source_repo" --commit "$commit" --tree "$tree" --id quote-check >"$work/missing-output" 2>&1
-missing_status=$?
+for envelope_mode in absent empty incomplete; do
+  evidence_file="$work/$envelope_mode-evidence"
+  "${base[@]}" ENVELOPE_MODE="$envelope_mode" VPS_LOCAL_EVIDENCE_FILE="$evidence_file" VPS_DB_PASSWORD=secret VPS_FAILURE_EXCERPT_BYTES=32 bash "$script" migration-only --source "$source_repo" --commit "$commit" --tree "$tree" --id quote-check >"$work/$envelope_mode-output" 2>&1
+  mode_status=$?
+  set -e
+  [[ "$mode_status" -ne 0 && -s "$evidence_file" && "$(file_mode "$evidence_file")" == 600 ]]
+  if grep -Fq 'secret' "$evidence_file" || grep -Fq 'secret' "$work/$envelope_mode-output"; then exit 1; fi
+  grep -Fq 'EVIDENCE EXCERPT:' "$work/$envelope_mode-output"
+  set +e
+done
+"${base[@]}" ENVELOPE_MODE=absent SSH_STATUS=255 VPS_LOCAL_EVIDENCE_FILE="$work/nonzero-evidence" VPS_DB_PASSWORD=secret bash "$script" migration-only --source "$source_repo" --commit "$commit" --tree "$tree" --id quote-check >"$work/nonzero-output" 2>&1
+nonzero_status=$?
 set -e
-[[ "$missing_status" -ne 0 && ! -e "$work/missing-evidence" ]]
+[[ "$nonzero_status" -eq 255 && -s "$work/nonzero-evidence" ]]
 printf '%s\n' 'VPS command forwarding test passed.'

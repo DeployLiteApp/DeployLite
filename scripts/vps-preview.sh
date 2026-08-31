@@ -12,6 +12,25 @@ source "$script_dir/vps-preview-lib.sh"
 usage() { printf '%s\n' 'Usage: vps-preview.sh migration-only|preview --source CHECKOUT --commit SHA --tree TREE --id ID | cleanup --id ID'; }
 blocked() { printf 'BLOCKED: %s\n' "$*" >&2; exit 3; }
 fail() { printf 'FAILED: %s\n' "$*" >&2; exit 1; }
+emit_evidence_excerpt() {
+  local excerpt
+  excerpt="$(LC_ALL=C head -c "${VPS_FAILURE_EXCERPT_BYTES:-2048}" "$captured" | vps_redact)"
+  printf 'EVIDENCE EXCERPT: %s\n' "${excerpt:-[empty]}" >&2
+}
+persist_local_evidence() {
+  local_evidence_file="${VPS_LOCAL_EVIDENCE_FILE:-}"
+  [[ "$local_evidence_file" == /* && "$local_evidence_file" != */ && "$local_evidence_file" != *$'\n'* ]] ||
+    blocked 'VPS_LOCAL_EVIDENCE_FILE must be an absolute file path.'
+  local_evidence_dir="${local_evidence_file%/*}"
+  [[ -d "$local_evidence_dir" ]] || blocked 'VPS_LOCAL_EVIDENCE_FILE directory must exist.'
+  local_evidence_tmp="$(mktemp "$local_evidence_dir/.vps-evidence.XXXXXX")"
+  chmod 600 "$local_evidence_tmp"
+  if ! cp -- "$captured" "$local_evidence_tmp" || ! mv -f -- "$local_evidence_tmp" "$local_evidence_file"; then
+    rm -f -- "$local_evidence_tmp"
+    fail 'cannot persist local VPS evidence.'
+  fi
+  chmod 600 "$local_evidence_file"
+}
 
 mode="${1:-}"; [[ "$mode" == migration-only || "$mode" == preview || "$mode" == cleanup ]] || { usage >&2; exit 3; }; shift
 source_dir=""; expected_commit=""; expected_tree=""; preview_id=""
@@ -123,27 +142,30 @@ set +e
 pipeline_status=("${PIPESTATUS[@]}")
 set -e
 ssh_status="${pipeline_status[0]}"
-if [[ "$mode" != cleanup ]]; then
-  [[ -s "$captured" ]] || fail 'SSH returned no redacted output.'
-  evidence_payload="$tmpdir/evidence-payload"
-  awk '/^VPS_EVIDENCE_BEGIN$/{inside=1; next} /^VPS_EVIDENCE_END$/{inside=0; found=1; next} inside {print} END {if (!found) exit 1}' \
-    "$captured" > "$evidence_payload" || fail 'expected VPS evidence envelope is absent.'
-  [[ -s "$evidence_payload" ]] || fail 'expected VPS evidence envelope is empty.'
-  grep -Fq 'preview_id=' "$evidence_payload" || fail 'VPS evidence envelope is incomplete.'
-  grep -Fq 'redacted_sha256=' "$evidence_payload" || fail 'VPS evidence checksum is missing.'
-fi
 if [[ "$mode" != cleanup && -n "${VPS_LOCAL_EVIDENCE_FILE:-}" ]]; then
-  local_evidence_file="$VPS_LOCAL_EVIDENCE_FILE"
-  [[ "$local_evidence_file" == /* && "$local_evidence_file" != */ && "$local_evidence_file" != *$'\n'* ]] ||
-    blocked 'VPS_LOCAL_EVIDENCE_FILE must be an absolute file path.'
-  local_evidence_dir="${local_evidence_file%/*}"; [[ -d "$local_evidence_dir" ]] || blocked 'VPS_LOCAL_EVIDENCE_FILE directory must exist.'
-  local_evidence_tmp="$(mktemp "$local_evidence_dir/.vps-evidence.XXXXXX")"
-  chmod 600 "$local_evidence_tmp"
-  if ! cp -- "$captured" "$local_evidence_tmp" || ! mv -f -- "$local_evidence_tmp" "$local_evidence_file"; then
-    rm -f -- "$local_evidence_tmp"
-    fail 'cannot persist local VPS evidence.'
+  persist_local_evidence
+fi
+if [[ "$mode" != cleanup ]]; then
+  envelope_error=''
+  if [[ ! -s "$captured" ]]; then
+    envelope_error='SSH returned no redacted output.'
   fi
-  chmod 600 "$local_evidence_file"
+  evidence_payload="$tmpdir/evidence-payload"
+  if [[ -z "$envelope_error" ]] && ! awk '/^VPS_EVIDENCE_BEGIN$/{inside=1; next} /^VPS_EVIDENCE_END$/{inside=0; found=1; next} inside {print} END {if (!found) exit 1}' \
+    "$captured" > "$evidence_payload"; then
+    envelope_error='expected VPS evidence envelope is absent.'
+  elif [[ -z "$envelope_error" && ! -s "$evidence_payload" ]]; then
+    envelope_error='expected VPS evidence envelope is empty.'
+  elif [[ -z "$envelope_error" ]] && ! grep -Fq 'preview_id=' "$evidence_payload"; then
+    envelope_error='VPS evidence envelope is incomplete.'
+  elif [[ -z "$envelope_error" ]] && ! grep -Fq 'redacted_sha256=' "$evidence_payload"; then
+    envelope_error='VPS evidence checksum is missing.'
+  fi
+  if [[ -n "$envelope_error" ]]; then
+    emit_evidence_excerpt
+    [[ "$ssh_status" -eq 0 || "$ssh_status" -eq 10 ]] || exit "$ssh_status"
+    fail "$envelope_error"
+  fi
 fi
 [[ "$ssh_status" -eq 0 || "$ssh_status" -eq 10 ]] || exit "$ssh_status"
 
