@@ -37,6 +37,20 @@ set -Eeuo pipefail
 printf '%s\n' "$*" >> "${COMPOSE_LOG:?}"
 EOF
 chmod +x "$work/fake-compose"
+cat > "$work/consuming-compose" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+cat >/dev/null
+printf '%s\n' "$*" >> "${COMPOSE_LOG:?}"
+EOF
+chmod +x "$work/consuming-compose"
+cat > "$work/timeout" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shift
+exec "$@"
+EOF
+chmod +x "$work/timeout"
 run_case() { local name="$1" expected="$2"; shift 2; local output status; set +e; output=$("$@" 2>&1); status=$?; set -e; [[ "$status" -eq "$expected" ]] || { printf '%s: expected %s got %s\n%s\n' "$name" "$expected" "$status" "$output" >&2; exit 1; }; }
 assert_order() {
   local file="$1" previous=0 needle line
@@ -67,6 +81,41 @@ grep -Fq 'EVIDENCE: migration_rc=0' "$streamed_output"
 grep -Fq 'migration_rc=0' "$streamed_output"
 grep -Fq 'PASS: migration-only' "$streamed_output"
 assert_order "$streamed_output" 'PHASE: setup complete' 'PHASE: migration start' 'PHASE: migration complete status=0' 'PHASE: evidence start' 'PHASE: evidence complete' 'PHASE: cleanup start' 'PHASE: cleanup complete status=0'
+preview_streamed_id="preview-streamed-$RANDOM"; preview_streamed_output="$work/preview-streamed-output"; preview_streamed_log="$work/preview-streamed-compose.log"; preview_health_log="$work/preview-streamed-health.log"
+# shellcheck disable=SC2016
+preview_health_command='cat >/dev/null; printf "health\n" >> "$HEALTH_LOG"; printf "healthy\n"'
+set +e; "${envbase[@]}" VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$preview_streamed_id" \
+  VPS_COMPOSE_WRAPPER="$work/consuming-compose" COMPOSE_LOG="$preview_streamed_log" HEALTH_LOG="$preview_health_log" \
+  VPS_MIGRATION_COMMAND='printf "preview migration\n"' \
+  VPS_HEALTH_COMMAND="$preview_health_command" \
+  bash -s preview "$preview_streamed_id" <"$script" >"$preview_streamed_output" 2>&1; status=$?; set -e
+[[ "$status" -eq 0 && -e "/var/tmp/deploylite-preview/$preview_streamed_id/.deploylite-preview-owner" ]] || { cat "$preview_streamed_output" >&2; exit 1; }
+grep -Fq -- '--project-name deploylite-preview-'"$preview_streamed_id"' up -d postgres api web' "$preview_streamed_log"
+grep -Fxq 'health' "$preview_health_log"
+grep -Fq 'healthy' "$preview_streamed_output"
+grep -Fq 'PASS: preview' "$preview_streamed_output"
+assert_order "$preview_streamed_output" 'PHASE: evidence complete' 'healthy' 'PASS: preview'
+[[ -d "/var/tmp/deploylite-preview/$preview_streamed_id/source" && -d "/var/tmp/deploylite-preview/$preview_streamed_id/evidence" ]]
+rm -rf -- "/var/tmp/deploylite-preview/$preview_streamed_id"
+command_streamed_id="command-streamed-$RANDOM"; command_streamed_output="$work/command-streamed-output"; command_streamed_log="$work/command-streamed.log"
+set +e; "${envbase[@]}" VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$command_streamed_id" \
+  VPS_COMPOSE_COMMAND='cat >/dev/null; printf "compose command\n"' COMPOSE_LOG="$command_streamed_log" \
+  VPS_MIGRATION_COMMAND='printf "command migration\n"' VPS_HEALTH_COMMAND='cat >/dev/null; printf "command health\n"' \
+  bash -s preview "$command_streamed_id" <"$script" >"$command_streamed_output" 2>&1; status=$?; set -e
+[[ "$status" -eq 0 && -e "/var/tmp/deploylite-preview/$command_streamed_id/.deploylite-preview-owner" ]]
+grep -Fq 'compose command' "$command_streamed_output"
+grep -Fq 'command health' "$command_streamed_output"
+grep -Fq 'PASS: preview' "$command_streamed_output"
+rm -rf -- "/var/tmp/deploylite-preview/$command_streamed_id"
+cleanup_streamed_id="cleanup-streamed-$RANDOM"; cleanup_streamed_root="/var/tmp/deploylite-preview/$cleanup_streamed_id"
+mkdir -p "$cleanup_streamed_root"
+printf 'deploylite-preview-owner\n%s\ndeploylite-preview-%s\n' "$cleanup_streamed_id" "$cleanup_streamed_id" > "$cleanup_streamed_root/.deploylite-preview-owner"
+cleanup_streamed_output="$work/cleanup-streamed-output"
+"${envbase[@]}" VPS_REMOTE_ROOT="$cleanup_streamed_root" VPS_COMPOSE_WRAPPER="$work/consuming-compose" COMPOSE_LOG="$preview_streamed_log" \
+  bash -s cleanup "$cleanup_streamed_id" <"$script" >"$cleanup_streamed_output" 2>&1
+grep -Fq 'PASS: cleanup' "$cleanup_streamed_output"
+grep -Fq -- '--project-name deploylite-preview-'"$cleanup_streamed_id"' down --volumes --remove-orphans' "$preview_streamed_log"
+[[ ! -e "$cleanup_streamed_root" ]]
 known_id="known-$RANDOM"; known_output="$work/known-secret"
 "${envbase[@]}" VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$known_id" VPS_DB_PASSWORD=known-db-password \
   VPS_MIGRATION_COMMAND='printf "value=known-db-password\n"' bash "$script" migration-only "$known_id" >"$known_output" 2>&1
