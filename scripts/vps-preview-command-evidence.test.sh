@@ -29,4 +29,8 @@ captured="$(<"$capture")"
 [[ "$captured" == *"VPS_COMPOSE_COMMAND=$expected_compose_q"* ]]
 [[ "$captured" == *"VPS_HEALTH_COMMAND=$expected_health_q"* ]]
 if grep -Fq 'scp' <<<"$captured"; then exit 1; fi
+cleanup_output="$("${base[@]}" bash "$script" cleanup --id cleanup-cli)"
+[[ "$cleanup_output" == *'READY: mode=cleanup id=cleanup-cli'* ]]
+cleanup_captured="$(<"$capture")"
+if grep -Fq 'VPS_SOURCE_URL=' <<<"$cleanup_captured" || grep -Fq 'VPS_MIGRATION_COMMAND=' <<<"$cleanup_captured" || grep -Fq 'VPS_HEALTH_COMMAND=' <<<"$cleanup_captured"; then exit 1; fi
 printf '%s\n' 'VPS command forwarding test passed.'
