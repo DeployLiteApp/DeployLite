@@ -81,7 +81,7 @@ assert_ssh_options() {
   local other_batch_mode=yes
   [[ "$batch_mode" == yes ]] && other_batch_mode=no
   count_arg() { awk -v expected="$1" '$0 == expected { count++ } END { print count + 0 }' "$argv_capture"; }
-  [[ "$(count_arg '-o')" -eq 6 ]]
+  [[ "$(count_arg '-o')" -eq "${EXPECTED_SSH_OPTION_COUNT:-6}" ]]
   [[ "$(count_arg 'ConnectTimeout=10')" -eq 1 ]]
   [[ "$(count_arg 'ServerAliveInterval=15')" -eq 1 ]]
   [[ "$(count_arg 'ServerAliveCountMax=4')" -eq 1 ]]
