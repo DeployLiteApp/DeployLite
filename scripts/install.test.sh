@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2329,SC2030,SC2031
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -412,6 +413,163 @@ test_check_mode_is_distinct_from_noop() {
   assert_contains "$output" '--check cannot be combined with --noop' || return 1
 }
 
+state_test_setup() {
+  local tmp="$1"
+  printf 'ID=ubuntu\nVERSION_ID="22.04"\n' >"${tmp}/os-release"
+  DEPLOYLITE_OS_RELEASE_FILE="${tmp}/os-release"
+  unset DEPLOYLITE_PUBLIC_HOST
+  INSTALL_DIR="${tmp}/install"
+  STATE_DIR="${INSTALL_DIR}/.state"
+  STATE_FILE="${STATE_DIR}/install-state"
+  LOCK_DIR="${STATE_DIR}/install.lock"
+  mkdir -p "$INSTALL_DIR"
+  command_exists() { command -v "$1" >/dev/null 2>&1; }
+  as_root() { "$@"; }
+  state_prepare_dir
+  acquire_state_lock
+  trap release_state_lock EXIT
+  state_load
+}
+
+test_state_first_run_markers_and_repeat_noop() (
+  local tmp attempts=0
+  tmp="$(mktemp -d)"
+  state_test_setup "$tmp"
+  state_step() { attempts=$((attempts + 1)); }
+  run_durable_step install-curl state_step
+  run_durable_step install-curl state_step
+  [[ "$attempts" -eq 1 ]] || return 1
+  [[ "${COMPLETED_STEPS[*]}" == "install-curl" ]] || return 1
+  [[ "$(awk -F= '$1 == "schema_version" {print $2}' "$STATE_FILE")" == "1" ]] || return 1
+  rm -rf "$tmp"
+)
+
+test_state_failure_then_resume() (
+  local tmp status attempts=0 durable=()
+  tmp="$(mktemp -d)"; state_test_setup "$tmp"; release_state_lock; set +e
+  install_log_setup() { :; }; preflight() { :; }; install_curl() { durable+=(curl); }
+  install_docker() { durable+=(docker); attempts=$((attempts + 1)); [[ "$attempts" -gt 1 ]]; }
+  prepare_install_dir() { durable+=(dir); }; prepare_runtime_env() { :; }; validate_compose() { :; }; start_bootstrap() { :; }
+  main --non-interactive >/dev/null 2>&1; status=$?; [[ "$status" -ne 0 ]] || return 1; release_state_lock
+  main --non-interactive >/dev/null 2>&1; status=$?; set -e
+  [[ "$status" -eq 0 && "${durable[*]}" == "curl docker docker dir" ]] || return 1; rm -rf "$tmp"
+)
+
+test_state_interrupted_step_is_not_marked() (
+  local tmp status
+  tmp="$(mktemp -d)"
+  state_test_setup "$tmp"
+  COMPLETED_STEPS=(install-curl)
+  state_write
+  state_step() { return 143; }
+  run_durable_step install-docker state_step >/dev/null 2>&1 && status=0 || status=$?
+  [[ "$status" -eq 143 ]] || return 1
+  [[ "$(<"$STATE_FILE")" != *install-docker* ]] || return 1
+  rm -rf "$tmp"
+)
+
+test_state_context_mismatch_resets_completed_steps() (
+  local tmp
+  tmp="$(mktemp -d)"
+  state_test_setup "$tmp"
+  state_step() { :; }
+  run_durable_step install-curl state_step
+  DEPLOYLITE_PUBLIC_HOST="changed.example.test"
+  state_load
+  [[ "${#COMPLETED_STEPS[@]}" -eq 0 && -e "$STATE_FILE" ]] || return 1
+  rm -rf "$tmp"
+)
+
+test_state_rejects_malformed_unknown_and_symlink_state() (
+  local tmp target invalid sentinel message
+  tmp="$(mktemp -d)"; state_test_setup "$tmp"; sentinel="$STATE_DIR/install-state.invalid.sentinel"; printf sentinel >"$sentinel"
+  printf 'schema_version=1\nunknown=value\ncompleted_steps=install-curl\n' >"$STATE_FILE"
+  for invalid in unknown install-docker install-curl,prepare-install-dir install-curl,install-curl; do
+    if [[ "$invalid" == unknown ]]; then printf 'schema_version=1\nunknown=value\ncompleted_steps=install-curl\n' >"$STATE_FILE"; else printf 'schema_version=1\ncontext_fingerprint=%s\ncompleted_steps=%s\n' "$(installer_context_fingerprint)" "$invalid" >"$STATE_FILE"; fi
+    chmod 600 "$STATE_FILE"
+    state_load || return 1
+    [[ "${#COMPLETED_STEPS[@]}" -eq 0 && -e "$STATE_FILE" ]] || return 1
+  done
+  printf 'schema_version=1\ncontext_fingerprint=bad\ncompleted_steps=install-curl\n' >"$STATE_FILE"
+  chmod 600 "$STATE_FILE"
+  state_load || return 1
+  [[ "${#COMPLETED_STEPS[@]}" -eq 0 && -e "$STATE_FILE" ]] || return 1
+  [[ "$(<"$sentinel")" == sentinel ]] || return 1
+  printf 'schema_version=1\ncontext_fingerprint=%s\ncompleted_steps=install-curl\n' "$(installer_context_fingerprint)" >"$STATE_FILE"
+  chmod 644 "$STATE_FILE"
+  state_load >/dev/null 2>&1 && return 1 || :
+  [[ -e "$STATE_FILE" ]] || return 1
+  chmod 600 "$STATE_FILE"
+  target="$tmp/target"
+  printf 'schema_version=1\ncontext_fingerprint=%s\ncompleted_steps=install-curl\n' "$(installer_context_fingerprint)" >"$target"
+  rm -f "$STATE_FILE"
+  ln -s "$target" "$STATE_FILE"
+  message="$(state_load 2>&1)" && return 1 || :
+  [[ -L "$STATE_FILE" ]] || return 1
+  assert_contains "$message" 'Manual recovery' || return 1
+  [[ "$(<"$sentinel")" == sentinel ]] || return 1
+  rm -rf "$tmp"
+)
+
+test_state_fingerprint_dimensions_reset_without_secrets() (
+  local tmp dimension baseline arch=x86_64 source_hash=baseline
+  tmp="$(mktemp -d)"; state_test_setup "$tmp"; DEPLOYLITE_EXPECTED_PUBLIC_IP=SECRET_SENTINEL
+  sha256_file() { printf '%s\n' "$source_hash"; }; uname_machine() { printf '%s\n' "$arch"; }
+  for dimension in os arch path input source; do
+    STATE_CONTEXT_FINGERPRINT="$(installer_context_fingerprint)"; COMPLETED_STEPS=(install-curl); state_write; baseline="$STATE_CONTEXT_FINGERPRINT"
+    case "$dimension" in
+      os) printf 'ID=debian\nVERSION_ID="12"\n' >"$tmp/os-release" ;;
+      arch) arch=arm64 ;;
+      path) mkdir "$tmp/other"; INSTALL_DIR="$tmp/other" ;;
+      input) DEPLOYLITE_PUBLIC_HOST=changed.example.test ;;
+      source) source_hash=changed ;;
+    esac
+    [[ "$(installer_context_fingerprint)" != "$baseline" ]] || return 1; state_load; [[ "${#COMPLETED_STEPS[@]}" -eq 0 ]] || return 1
+  done
+  [[ "$(<"$STATE_FILE")" != *SECRET_SENTINEL* ]] || return 1; rm -rf "$tmp"
+)
+
+test_main_flow_replays_only_transient_work() (
+  local tmp calls=() durable=() transient=()
+  tmp="$(mktemp -d)"; state_test_setup "$tmp"; release_state_lock
+  install_log_setup() { :; }; preflight() { transient+=(preflight); }; install_curl() { durable+=(curl); }
+  install_docker() { durable+=(docker); }; prepare_install_dir() { durable+=(dir); }
+  prepare_runtime_env() { transient+=(runtime); }; validate_compose() { transient+=(compose); }; start_bootstrap() { transient+=(bootstrap); }
+  main --non-interactive; release_state_lock; main --non-interactive
+  [[ "${durable[*]}" == "curl docker dir" ]] || return 1
+  [[ "${transient[*]}" == "preflight runtime compose bootstrap preflight runtime compose bootstrap" ]] || return 1
+  rm -rf "$tmp"
+)
+
+test_main_flow_blocks_concurrent_run() (
+  local tmp first second
+  tmp="$(mktemp -d)"; printf 'ID=ubuntu\nVERSION_ID="22.04"\n' >"$tmp/os-release"
+  bash -c 'source "$1"; TEST_TMP="$2"; INSTALL_DIR="$TEST_TMP/install"; STATE_DIR="$INSTALL_DIR/.state"; STATE_FILE="$STATE_DIR/install-state"; LOCK_DIR="$STATE_DIR/install.lock"; DEPLOYLITE_OS_RELEASE_FILE="$TEST_TMP/os-release"; as_root(){ "$@"; }; install_log_setup(){ :; }; preflight(){ :; }; install_curl(){ : >"$TEST_TMP/ready"; while [[ ! -e "$TEST_TMP/release" ]]; do sleep 0.01; done; }; install_docker(){ :; }; prepare_install_dir(){ :; }; prepare_runtime_env(){ :; }; validate_compose(){ :; }; start_bootstrap(){ :; }; main --non-interactive' _ "$ROOT_DIR/scripts/install.sh" "$tmp" >/dev/null 2>&1 & first=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -e "$tmp/ready" ]] && break; sleep 0.01; done; [[ -e "$tmp/ready" ]] || return 1
+  set +e; bash -c 'source "$1"; TEST_TMP="$2"; INSTALL_DIR="$TEST_TMP/install"; STATE_DIR="$INSTALL_DIR/.state"; STATE_FILE="$STATE_DIR/install-state"; LOCK_DIR="$STATE_DIR/install.lock"; DEPLOYLITE_OS_RELEASE_FILE="$TEST_TMP/os-release"; as_root(){ "$@"; }; install_log_setup(){ :; }; preflight(){ : >"$TEST_TMP/second-preflight"; }; install_curl(){ :; }; install_docker(){ :; }; prepare_install_dir(){ :; }; prepare_runtime_env(){ :; }; validate_compose(){ :; }; start_bootstrap(){ :; }; main --non-interactive' _ "$ROOT_DIR/scripts/install.sh" "$tmp" >/dev/null 2>&1; second=$?; set -e
+  [[ "$second" -ne 0 && ! -e "$tmp/second-preflight" ]] || return 1; : >"$tmp/release"; wait "$first"; [[ ! -e "$tmp/install/.state/install.lock" ]] || return 1; rm -rf "$tmp"
+)
+
+test_main_flow_signal_does_not_mark_active_step() {
+  local signal="$1" tmp status
+  tmp="$(mktemp -d)"; printf 'ID=ubuntu\nVERSION_ID="22.04"\n' >"$tmp/os-release"
+  set +e; bash -c 'source "$1"; SIGNAL="$3"; INSTALL_DIR="$2/install"; STATE_DIR="$INSTALL_DIR/.state"; STATE_FILE="$STATE_DIR/install-state"; LOCK_DIR="$STATE_DIR/install.lock"; DEPLOYLITE_OS_RELEASE_FILE="$2/os-release"; mkdir -p "$INSTALL_DIR"; as_root(){ "$@"; }; install_log_setup(){ :; }; preflight(){ :; }; install_curl(){ :; }; install_docker(){ kill -s "$SIGNAL" "$$"; }; prepare_install_dir(){ :; }; prepare_runtime_env(){ :; }; validate_compose(){ :; }; start_bootstrap(){ :; }; main --non-interactive' _ "$ROOT_DIR/scripts/install.sh" "$tmp" "$signal" >/dev/null 2>&1; status=$?; set -e
+  [[ "$status" -eq 130 || "$status" -eq 143 ]] || return 1
+  [[ "$(<"$tmp/install/.state/install-state")" != *install-docker* && ! -e "$tmp/install/.state/install.lock" ]] || return 1; rm -rf "$tmp"
+}
+
+test_main_flow_signal_int() { test_main_flow_signal_does_not_mark_active_step INT; }
+test_main_flow_signal_term() { test_main_flow_signal_does_not_mark_active_step TERM; }
+
+test_state_uses_root_model_for_nonroot_operations() (
+  local tmp mode sudo_log
+  tmp="$(mktemp -d)"; state_test_setup "$tmp"; release_state_lock
+  sudo_log="$tmp/sudo.log"; as_root() { printf 'sudo %s\n' "$*" >>"$sudo_log"; "$@"; }; acquire_state_lock; COMPLETED_STEPS=(install-curl); state_write; release_state_lock
+  mode="$(stat -f '%Lp' "$STATE_FILE" 2>/dev/null || stat -c '%a' "$STATE_FILE")"
+  [[ "$mode" == 600 && "$(<"$sudo_log")" == *'sudo mktemp'* && "$(<"$sudo_log")" == *'sudo sync -f'* && "$(<"$sudo_log")" == *'sudo mv'* ]] || return 1
+  rm -rf "$tmp"
+)
+
 run_test 'redaction masks secrets' test_redaction_masks_database_url_and_secret_assignments
 run_test 'unsupported host fails before mutation' test_unsupported_host_fails_without_mutation
 run_test 'occupied port fails actionably' test_occupied_port_fails_actionably
@@ -438,6 +596,17 @@ run_test 'check mode reports missing prerequisites deterministically' test_check
 run_test 'check mode reports unsupported platforms' test_check_mode_reports_unsupported_platform
 run_test 'check mode reports occupied ports' test_check_mode_reports_occupied_port
 run_test 'check mode remains distinct from noop mode' test_check_mode_is_distinct_from_noop
+run_test 'state records first-run markers and repeats durable steps as no-ops' test_state_first_run_markers_and_repeat_noop
+run_test 'state resumes after a failed durable step' test_state_failure_then_resume
+run_test 'interrupted durable steps are not marked complete' test_state_interrupted_step_is_not_marked
+run_test 'context mismatch resets completed state' test_state_context_mismatch_resets_completed_steps
+run_test 'state rejects malformed, unknown, and symlink inputs' test_state_rejects_malformed_unknown_and_symlink_state
+run_test 'fingerprint dimensions reset state without secrets' test_state_fingerprint_dimensions_reset_without_secrets
+run_test 'main flow skips only durable prerequisite side effects' test_main_flow_replays_only_transient_work
+run_test 'main flow blocks concurrent runs before side effects' test_main_flow_blocks_concurrent_run
+run_test 'INT preserves prior state and does not mark active step' test_main_flow_signal_int
+run_test 'TERM preserves prior state and does not mark active step' test_main_flow_signal_term
+run_test 'state uses root model for non-root operations' test_state_uses_root_model_for_nonroot_operations
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
