@@ -265,6 +265,47 @@ phase_cleanup() {
       done <<< "$project_container_ids"
       compose down --volumes --remove-orphans || return 1
     fi
+    project_container_ids="$($docker_bin container ls -aq --filter "label=com.docker.compose.project=$project")" || {
+      failed 'cannot prove project containers are gone before volume recovery.'
+      return 1
+    }
+    [[ -z "$project_container_ids" ]] || {
+      failed 'project containers remain; refusing volume recovery.'
+      return 1
+    }
+    local project_volumes volume volume_label mounted_container_ids volume_count=0
+    project_volumes="$($docker_bin volume ls -q --filter "label=com.docker.compose.project=$project")" || {
+      failed 'cannot enumerate project volumes for bounded recovery.'
+      return 1
+    }
+    while IFS= read -r volume; do
+      [[ -n "$volume" ]] || continue
+      volume_count=$((volume_count + 1)); (( volume_count <= 32 )) || {
+        failed 'project volume cleanup exceeded the bounded recovery limit.'
+        return 1
+      }
+      [[ "$volume" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || {
+        failed 'project volume identity is invalid.'
+        return 1
+      }
+      volume_label="$($docker_bin volume inspect -f '{{ index .Labels "com.docker.compose.project" }}' "$volume" 2>/dev/null || true)"
+      [[ "$volume_label" == "$project" ]] || {
+        failed 'project volume ownership verification failed; refusing recovery.'
+        return 1
+      }
+      mounted_container_ids="$($docker_bin container ls -aq --filter "volume=$volume")" || {
+        failed "cannot prove project volume $volume is unmounted."
+        return 1
+      }
+      [[ -z "$mounted_container_ids" ]] || {
+        failed "project volume $volume is mounted; refusing recovery."
+        return 1
+      }
+      "$docker_bin" volume rm "$volume" >/dev/null || {
+        failed "cannot remove exactly owned unmounted project volume $volume."
+        return 1
+      }
+    done <<< "$project_volumes"
   elif [[ -n "${VPS_COMPOSE_COMMAND:-}" ]]; then
     COMPOSE_PROJECT_NAME="$project" bash -c "$VPS_COMPOSE_COMMAND down --volumes --remove-orphans" </dev/null || return 1
   elif [[ -x "${VPS_COMPOSE_WRAPPER:-}" ]]; then

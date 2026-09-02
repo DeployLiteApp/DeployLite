@@ -50,6 +50,7 @@ services:
     build:
       context: ../..
       dockerfile: apps/api/Dockerfile
+      target: runtime
     image: deploylite-api:local
     restart: unless-stopped
     depends_on:

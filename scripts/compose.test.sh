@@ -12,6 +12,7 @@ base_rendered="$(docker compose -f "$ROOT_DIR/infra/vps/compose.yml" config --no
 rendered="$(docker compose -f "$ROOT_DIR/infra/vps/compose.yml" -f "$ROOT_DIR/infra/vps/compose.tls.yml" config --no-interpolate)"
 merged_rendered="$(docker compose --env-file "$runtime_env" -f "$ROOT_DIR/infra/vps/compose.yml" -f "$ROOT_DIR/infra/vps/compose.tls.yml" --profile bootstrap config)"
 migrate_environment="$(printf '%s\n' "$merged_rendered" | awk '/^  migrate:$/,/^  api:$/')"
+api_environment="$(printf '%s\n' "$merged_rendered" | awk '/^  api:$/,/^  web:$/')"
 
 contains() { [[ "$rendered" == *"$1"* ]] || { printf 'missing: %s\n' "$1"; return 1; }; }
 [[ "$base_rendered" == *'traefik:v3.6.7'* ]] || { printf 'base Compose must pin Traefik v3.6.7 for Docker API compatibility\n'; exit 1; }
@@ -39,6 +40,10 @@ contains 'DEPLOYLITE_SESSION_COOKIE_SECURE: "true"'
 }
 [[ "$migrate_environment" == *$'target: migration'* ]] || {
   printf 'migrate must build the dedicated migration target\n'
+  exit 1
+}
+[[ "$api_environment" == *$'target: runtime'* ]] || {
+  printf 'api must build the runtime target\n'
   exit 1
 }
 [[ "$migrate_environment" == *'image: deploylite-migration:local'* ]] || {

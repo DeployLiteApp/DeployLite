@@ -176,19 +176,23 @@ set -Eeuo pipefail
 if [[ "${1:-}" == compose ]]; then
   if [[ "$*" == *' down '* ]]; then
     n=0; [[ -f "$RECOVERY_STATE" ]] && n="$(<"$RECOVERY_STATE")"; n=$((n + 1)); printf '%s\n' "$n" > "$RECOVERY_STATE"
-    if (( n == 1 )); then printf '%s\n' 'down1:network-in-use' >> "$RECOVERY_LOG"; exit 1; fi
-    printf '%s\n' 'down2:success-network-volume-zero' >> "$RECOVERY_LOG"; printf '0\n' > "$RECOVERY_NETWORK"; printf '0\n' > "$RECOVERY_VOLUME"
+   if (( n == 1 )); then printf '%s\n' 'down1:network-in-use' >> "$RECOVERY_LOG"; exit 1; fi
+   printf '%s\n' 'down2:success-network-volume-leftover' >> "$RECOVERY_LOG"; printf '0\n' > "$RECOVERY_NETWORK"
   fi
   exit 0
 fi
 if [[ "${1:-}" == container && "${2:-}" == ls ]]; then
+  if [[ "$*" == *'volume='* ]]; then printf '%s\n' 'verify:volume-unmounted' >> "$RECOVERY_LOG"; exit 0; fi
   if [[ "$(<"$RECOVERY_CONTAINER")" == 1 ]]; then printf '%s\n' 'enumerate:container-owned' >> "$RECOVERY_LOG"; printf '%s\n' 'abc123'; else printf '%s\n' 'verify:container-zero' >> "$RECOVERY_LOG"; fi
   exit 0
 fi
 if [[ "${1:-}" == inspect && "${3:-}" == *Config.Labels* ]]; then printf '%s\n' 'inspect:project-label' >> "$RECOVERY_LOG"; printf '%s\n' "${RECOVERY_PROJECT:?}"; exit 0; fi
 if [[ "${1:-}" == container && "${2:-}" == rm ]]; then printf '%s\n' 'remove:exact-container' >> "$RECOVERY_LOG"; printf '0\n' > "$RECOVERY_CONTAINER"; : > "$RECOVERY_RM"; exit 0; fi
+if [[ "${1:-}" == volume && "${2:-}" == inspect ]]; then printf '%s\n' 'inspect:project-volume-label' >> "$RECOVERY_LOG"; printf '%s\n' "${RECOVERY_PROJECT:?}"; exit 0; fi
+if [[ "${1:-}" == volume && "${2:-}" == rm ]]; then printf '%s\n' 'remove:exact-volume' >> "$RECOVERY_LOG"; printf '0\n' > "$RECOVERY_VOLUME"; exit 0; fi
 if [[ "${1:-}" == image && "${2:-}" == inspect ]]; then (( $(<"$RECOVERY_IMAGES") > 0 )); exit $?; fi
 if [[ "${1:-}" == image && "${2:-}" == rm ]]; then printf '%s\n' 'remove:exact-image' >> "$RECOVERY_LOG"; n="$(<"$RECOVERY_IMAGES")"; printf '%s\n' "$((n - 1))" > "$RECOVERY_IMAGES"; exit 0; fi
+if [[ "${1:-}" == volume && "${2:-}" == ls && "$(<"$RECOVERY_VOLUME")" == 1 ]]; then printf '%s\n' 'leftover-volume'; exit 0; fi
 case "${1:-}" in
   network) [[ "$(<"$RECOVERY_NETWORK")" == 0 ]] && printf '%s\n' 'verify:network-zero' >> "$RECOVERY_LOG"; exit 0;;
   volume) [[ "$(<"$RECOVERY_VOLUME")" == 0 ]] && printf '%s\n' 'verify:volume-zero' >> "$RECOVERY_LOG"; exit 0;;
@@ -199,7 +203,7 @@ EOF
 chmod +x "$work/recovery-docker"
 printf '0\n' > "$recovery_state"; printf '1\n' > "$recovery_root/container-state"; printf '1\n' > "$recovery_root/network-state"; printf '1\n' > "$recovery_root/volume-state"; printf '3\n' > "$recovery_root/image-state"
 env -i PATH="$work:$PATH" VPS_DOCKER_BIN="$work/recovery-docker" RECOVERY_PROJECT="deploylite-preview-$recovery_id" RECOVERY_LOG="$recovery_log" RECOVERY_RM="$recovery_rm" RECOVERY_STATE="$recovery_state" RECOVERY_CONTAINER="$recovery_root/container-state" RECOVERY_NETWORK="$recovery_root/network-state" RECOVERY_VOLUME="$recovery_root/volume-state" RECOVERY_IMAGES="$recovery_root/image-state" VPS_REMOTE_ROOT="$recovery_root" bash "$script" cleanup "$recovery_id" >/dev/null
-assert_order "$recovery_log" 'down1:network-in-use' 'inspect:project-label' 'remove:exact-container' 'down2:success-network-volume-zero' 'verify:container-zero' 'verify:network-zero' 'verify:volume-zero' 'verify:image-zero'
+assert_order "$recovery_log" 'down1:network-in-use' 'inspect:project-label' 'remove:exact-container' 'down2:success-network-volume-leftover' 'verify:container-zero' 'inspect:project-volume-label' 'verify:volume-unmounted' 'remove:exact-volume' 'verify:network-zero' 'verify:volume-zero' 'verify:image-zero'
 [[ ! -e "$recovery_root" && -f "$recovery_rm" ]]
 wrong_id="wrong-label-$RANDOM"; wrong_root="/var/tmp/deploylite-preview/$wrong_id"; mkdir -p "$wrong_root"; printf 'deploylite-preview-owner\n%s\ndeploylite-preview-%s\n' "$wrong_id" "$wrong_id" > "$wrong_root/.deploylite-preview-owner"
 printf '%s\n' 'services:' '  migrate:' "    image: deploylite-preview-${wrong_id}-migrate:${commit}" '  api:' "    image: deploylite-preview-${wrong_id}-api:${commit}" '  web:' "    image: deploylite-preview-${wrong_id}-web:${commit}" > "$wrong_root/preview.override.yml"
@@ -217,6 +221,41 @@ chmod +x "$work/wrong-label-docker"
 wrong_rm="$work/wrong-rm"; run_case wrong-label-fails-closed 1 env -i PATH="$work:$PATH" WRONG_RM="$wrong_rm" VPS_DOCKER_BIN="$work/wrong-label-docker" VPS_REMOTE_ROOT="$wrong_root" bash "$script" cleanup "$wrong_id"
 [[ -e "$wrong_root" && ! -e "$wrong_rm" ]]
 rm -rf -- "$wrong_root"
+mounted_id="mounted-volume-$RANDOM"; mounted_root="/var/tmp/deploylite-preview/$mounted_id"; mounted_rm="$work/mounted-rm"
+mkdir -p "$mounted_root"; printf 'deploylite-preview-owner\n%s\ndeploylite-preview-%s\n' "$mounted_id" "$mounted_id" > "$mounted_root/.deploylite-preview-owner"
+printf '%s\n' 'services:' '  migrate:' "    image: deploylite-preview-${mounted_id}-migrate:${commit}" '  api:' "    image: deploylite-preview-${mounted_id}-api:${commit}" '  web:' "    image: deploylite-preview-${mounted_id}-web:${commit}" > "$mounted_root/preview.override.yml"; : > "$mounted_root/.env"
+cat > "$work/mounted-volume-docker" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "${1:-}" == compose ]]; then exit 1; fi
+if [[ "${1:-}" == container && "${2:-}" == ls && "$*" != *'volume='* ]]; then exit 0; fi
+if [[ "${1:-}" == volume && "${2:-}" == ls ]]; then printf '%s\n' 'mounted-volume'; exit 0; fi
+if [[ "${1:-}" == volume && "${2:-}" == inspect ]]; then printf '%s\n' "${MOUNTED_PROJECT:?}"; exit 0; fi
+if [[ "${1:-}" == container && "${2:-}" == ls && "$*" == *'volume='* ]]; then printf '%s\n' 'mounted-container'; exit 0; fi
+if [[ "${1:-}" == volume && "${2:-}" == rm ]]; then : > "$MOUNTED_RM"; exit 0; fi
+exit 0
+EOF
+chmod +x "$work/mounted-volume-docker"
+run_case mounted-volume-fails-closed 1 env -i PATH="$work:$PATH" MOUNTED_PROJECT="deploylite-preview-$mounted_id" MOUNTED_RM="$mounted_rm" VPS_DOCKER_BIN="$work/mounted-volume-docker" VPS_REMOTE_ROOT="$mounted_root" bash "$script" cleanup "$mounted_id"
+[[ -e "$mounted_root" && ! -e "$mounted_rm" ]]
+rm -rf -- "$mounted_root"
+wrong_volume_id="wrong-volume-$RANDOM"; wrong_volume_root="/var/tmp/deploylite-preview/$wrong_volume_id"; wrong_volume_rm="$work/wrong-volume-rm"
+mkdir -p "$wrong_volume_root"; printf 'deploylite-preview-owner\n%s\ndeploylite-preview-%s\n' "$wrong_volume_id" "$wrong_volume_id" > "$wrong_volume_root/.deploylite-preview-owner"
+printf '%s\n' 'services:' '  migrate:' "    image: deploylite-preview-${wrong_volume_id}-migrate:${commit}" '  api:' "    image: deploylite-preview-${wrong_volume_id}-api:${commit}" '  web:' "    image: deploylite-preview-${wrong_volume_id}-web:${commit}" > "$wrong_volume_root/preview.override.yml"; : > "$wrong_volume_root/.env"
+cat > "$work/wrong-volume-docker" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "${1:-}" == compose ]]; then exit 1; fi
+if [[ "${1:-}" == container && "${2:-}" == ls ]]; then exit 0; fi
+if [[ "${1:-}" == volume && "${2:-}" == ls ]]; then printf '%s\n' 'wrong-volume'; exit 0; fi
+if [[ "${1:-}" == volume && "${2:-}" == inspect ]]; then printf '%s\n' 'unrelated-project'; exit 0; fi
+if [[ "${1:-}" == volume && "${2:-}" == rm ]]; then : > "$WRONG_VOLUME_RM"; exit 0; fi
+exit 0
+EOF
+chmod +x "$work/wrong-volume-docker"
+run_case wrong-volume-fails-closed 1 env -i PATH="$work:$PATH" WRONG_VOLUME_RM="$wrong_volume_rm" VPS_DOCKER_BIN="$work/wrong-volume-docker" VPS_REMOTE_ROOT="$wrong_volume_root" bash "$script" cleanup "$wrong_volume_id"
+[[ -e "$wrong_volume_root" && ! -e "$wrong_volume_rm" ]]
+rm -rf -- "$wrong_volume_root"
 invalid_interval_id="invalid-interval-$RANDOM"; invalid_interval_root="/var/tmp/deploylite-preview/$invalid_interval_id"; invalid_interval_output="$work/invalid-interval-output"; started="$(date +%s)"
 set +e; env -i PATH="$work:$PATH" NATIVE_LOG="$native_log" NATIVE_PROJECT="deploylite-preview-$invalid_interval_id" NATIVE_IMAGE_RM="$work/invalid-image-rm" NATIVE_COUNT="$work/invalid-count" NATIVE_CURL_COUNT="$work/invalid-curl-count" \
   VPS_DOCKER_BIN="$work/native-docker" VPS_SOURCE_URL="$source_repo" VPS_COMMIT="$commit" VPS_TREE="$tree" VPS_REMOTE_ROOT="$invalid_interval_root" VPS_HEALTH_TIMEOUT=30 VPS_HEALTH_INTERVAL=invalid \
