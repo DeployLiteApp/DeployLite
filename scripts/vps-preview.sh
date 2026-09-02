@@ -140,6 +140,12 @@ if [[ "$mode" != cleanup ]]; then
     printf -v value_q '%q' "${!variable:-}"
     remote_command+=" $variable=$value_q"
   done
+  for variable in VPS_HEALTH_TIMEOUT VPS_HEALTH_INTERVAL; do
+    if [[ -n "${!variable+x}" ]]; then
+      printf -v value_q '%q' "${!variable}"
+      remote_command+=" $variable=$value_q"
+    fi
+  done
 else
   printf -v compose_q '%q' "${VPS_COMPOSE_COMMAND:-}"
   remote_command+=" VPS_COMPOSE_COMMAND=$compose_q"
