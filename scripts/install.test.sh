@@ -216,118 +216,47 @@ test_redact_stream_removes_postgres_passwords_and_key_value_secrets() {
   assert_contains "$output" 'plain line' || { printf 'plain line lost in stream: %s\n' "$output"; return 1; }
 }
 
-test_validate_compose_omits_runtime_profile() {
+test_validate_compose_uses_base_and_tls_overlay_without_profiles() {
   local compose_calls=""
-  compose_bounded() { compose_calls="$*"; }
+  compose() { compose_calls="$*"; }
   validate_compose >/dev/null
   assert_contains "$compose_calls" 'config' || return 1
   assert_contains "$compose_calls" '--no-interpolate' || return 1
-  assert_contains "$compose_calls" '--profile bootstrap' || return 1
+  assert_not_contains "$compose_calls" '--profile' || return 1
 }
 
-test_prepare_runtime_env_rejects_stale_or_inconsistent_values() {
-  local tmp output status
+test_runtime_generation_and_orchestration_are_not_callable() {
+  if declare -F prepare_runtime_env >/dev/null; then return 1; fi
+  if declare -F generate_secret >/dev/null; then return 1; fi
+  if declare -F start_bootstrap >/dev/null; then return 1; fi
+  if declare -F verify_local_reachability >/dev/null; then return 1; fi
+}
+
+test_main_hands_off_without_secrets_or_runtime_commands() (
+  local tmp output calls_file
   tmp="$(mktemp -d)"
-  INSTALL_DIR="$tmp/install"
-  RUNTIME_ENV_FILE="$INSTALL_DIR/.env"
-  mkdir -p "$INSTALL_DIR"
-  printf 'DEPLOYLITE_PUBLIC_HOST=old.example.test\nPOSTGRES_PASSWORD=short\nDEPLOYLITE_SECRET_KEY=%064d\n' 0 >"$RUNTIME_ENV_FILE"
-  as_root() { "$@"; }
-  DEPLOYLITE_PUBLIC_HOST="new.example.test"
-  output="$(prepare_runtime_env 2>&1)" && status=0 || status=$?
-  [[ "$status" -eq 2 ]] || return 1
-  assert_contains "$output" 'host does not match' || return 1
+  calls_file="$tmp/compose-calls"
+  state_test_setup "$tmp"
+  release_state_lock
+  install_log_setup() { :; }
+  preflight() { :; }
+  install_curl() { :; }
+  install_docker() { :; }
+  prepare_install_dir() { :; }
+  compose() { printf '%s\n' "$*" >>"$calls_file"; }
+  output="$(main --non-interactive)"
+  [[ ! -e "$tmp/install/.env" ]] || return 1
+  assert_contains "$(<"$calls_file")" 'config --no-interpolate' || return 1
+  for forbidden in pull build up down run migrate health; do
+    assert_not_contains "$(<"$calls_file")" "$forbidden" || return 1
+  done
+  assert_contains "$output" 'P0 prerequisite setup complete' || return 1
+  assert_contains "$output" 'No runtime secrets were generated or persisted' || return 1
+  assert_contains "$output" 'P0 prerequisite setup is complete' || return 1
+  assert_contains "$output" 'runtime setup was not executed' || return 1
+  assert_contains "$output" 'tracked P1 work #233' || return 1
   rm -rf "$tmp"
-}
-
-test_prepare_runtime_env_rejects_malformed_secret_values() {
-  local tmp output status
-  tmp="$(mktemp -d)"
-  INSTALL_DIR="$tmp/install"
-  RUNTIME_ENV_FILE="$INSTALL_DIR/.env"
-  mkdir -p "$INSTALL_DIR"
-  printf 'DEPLOYLITE_PUBLIC_HOST=deploylite.com\nPOSTGRES_PASSWORD=short\nDEPLOYLITE_SECRET_KEY=also-short\n' >"$RUNTIME_ENV_FILE"
-  as_root() { "$@"; }
-  unset DEPLOYLITE_PUBLIC_HOST
-  output="$(prepare_runtime_env 2>&1)" && status=0 || status=$?
-  [[ "$status" -eq 2 ]] || return 1
-  assert_contains "$output" 'POSTGRES_PASSWORD has an invalid generated-secret format' || return 1
-  rm -rf "$tmp"
-}
-
-test_verify_local_reachability_checks_dns_header_and_body() {
-  local tmp headers_path body_path
-  DEPLOYLITE_PUBLIC_HOST="local.example.test"
-  DEPLOYLITE_EXPECTED_PUBLIC_IP="203.0.113.10"
-  command_exists() { [[ "$1" == "curl" || "$1" == "getent" ]]; }
-  getent() { printf '203.0.113.10 STREAM local.example.test\n'; }
-  curl() {
-    if [[ "$*" == *'api.ipify.org'* ]]; then
-      printf '203.0.113.10'
-      return 0
-    fi
-    while (( $# > 0 )); do
-      case "$1" in
-        --dump-header|--output) shift; printf '%s\n' "$1" >>/tmp/deploylite-curl-paths.test;;
-      esac
-      shift
-    done
-    headers_path="$(sed -n '1p' /tmp/deploylite-curl-paths.test)"
-    body_path="$(sed -n '2p' /tmp/deploylite-curl-paths.test)"
-    printf 'HTTP/2 200\nX-DeployLite-Bootstrap: ready\n\n' >"$headers_path"
-    printf '<html>DeployLite first owner</html>\n' >"$body_path"
-  }
-  : >/tmp/deploylite-curl-paths.test
-  verify_local_reachability
-  rm -f /tmp/deploylite-curl-paths.test "$headers_path" "$body_path"
-}
-
-test_prepare_runtime_env_uses_restricted_file_without_secret_output() {
-  local tmp output mode contents
-  tmp="$(mktemp -d)"
-  INSTALL_DIR="$tmp/install"
-  RUNTIME_ENV_FILE="$INSTALL_DIR/.env"
-  mkdir -p "$INSTALL_DIR"
-  as_root() { "$@"; }
-  command_exists() { [[ "$1" == "openssl" ]]; }
-  openssl() { printf 'generated-secret\n'; }
-  output="$(prepare_runtime_env)"
-  mode="$(stat -f '%Lp' "$RUNTIME_ENV_FILE")"
-  contents="$(<"$RUNTIME_ENV_FILE")"
-  [[ "$mode" == "600" ]] || return 1
-  assert_contains "$contents" 'DEPLOYLITE_PUBLIC_HOST=deploylite.com' || return 1
-  assert_not_contains "$output" 'generated-secret' || return 1
-  rm -rf "$tmp"
-}
-
-test_prepare_runtime_env_generates_a_url_safe_database_url() {
-  local tmp output password database_url
-  tmp="$(mktemp -d)"
-  INSTALL_DIR="$tmp/install"
-  RUNTIME_ENV_FILE="$INSTALL_DIR/.env"
-  password="$(printf 'a%.0s' {1..62})+/"
-  mkdir -p "$INSTALL_DIR"
-  as_root() { "$@"; }
-  command_exists() { [[ "$1" == "openssl" ]]; }
-  openssl() { printf '%s\n' "$password"; }
-  output="$(prepare_runtime_env)"
-  database_url="$(awk -F= '$1 == "DATABASE_URL" { print substr($0, length($1) + 2) }' "$RUNTIME_ENV_FILE")"
-  [[ "$database_url" == *'%2B'* && "$database_url" == *'%2F'* ]] || return 1
-  node -e 'new URL(process.argv[1])' "$database_url"
-  assert_not_contains "$output" "$password" || return 1
-  rm -rf "$tmp"
-}
-
-test_start_bootstrap_is_bounded_and_never_activates_runtime() {
-  local compose_calls=""
-  compose_bounded() { compose_calls+="|$*"; }
-  verify_local_reachability() { :; }
-  start_bootstrap >/dev/null
-  assert_contains "$compose_calls" '--profile bootstrap pull' || return 1
-  assert_contains "$compose_calls" '--profile bootstrap build' || return 1
-  assert_contains "$compose_calls" '--profile bootstrap up -d --wait --wait-timeout 120' || return 1
-  assert_not_contains "$compose_calls" '--profile runtime' || return 1
-}
+)
 
 check_test_platform() {
   local tmp="$1"
@@ -449,7 +378,7 @@ test_state_failure_then_resume() (
   tmp="$(mktemp -d)"; state_test_setup "$tmp"; release_state_lock; set +e
   install_log_setup() { :; }; preflight() { :; }; install_curl() { durable+=(curl); }
   install_docker() { durable+=(docker); attempts=$((attempts + 1)); [[ "$attempts" -gt 1 ]]; }
-  prepare_install_dir() { durable+=(dir); }; prepare_runtime_env() { :; }; validate_compose() { :; }; start_bootstrap() { :; }
+  prepare_install_dir() { durable+=(dir); }; validate_compose() { :; }
   main --non-interactive >/dev/null 2>&1; status=$?; [[ "$status" -ne 0 ]] || return 1; release_state_lock
   main --non-interactive >/dev/null 2>&1; status=$?; set -e
   [[ "$status" -eq 0 && "${durable[*]}" == "curl docker docker dir" ]] || return 1; rm -rf "$tmp"
@@ -513,7 +442,8 @@ test_state_rejects_malformed_unknown_and_symlink_state() (
 
 test_state_fingerprint_dimensions_reset_without_secrets() (
   local tmp dimension baseline arch=x86_64 source_hash=baseline
-  tmp="$(mktemp -d)"; state_test_setup "$tmp"; DEPLOYLITE_EXPECTED_PUBLIC_IP=SECRET_SENTINEL
+  tmp="$(mktemp -d)"; state_test_setup "$tmp"; # shellcheck disable=SC2034
+  DEPLOYLITE_EXPECTED_PUBLIC_IP=SECRET_SENTINEL
   sha256_file() { printf '%s\n' "$source_hash"; }; uname_machine() { printf '%s\n' "$arch"; }
   for dimension in os arch path input source; do
     STATE_CONTEXT_FINGERPRINT="$(installer_context_fingerprint)"; COMPLETED_STEPS=(install-curl); state_write; baseline="$STATE_CONTEXT_FINGERPRINT"
@@ -534,26 +464,26 @@ test_main_flow_replays_only_transient_work() (
   tmp="$(mktemp -d)"; state_test_setup "$tmp"; release_state_lock
   install_log_setup() { :; }; preflight() { transient+=(preflight); }; install_curl() { durable+=(curl); }
   install_docker() { durable+=(docker); }; prepare_install_dir() { durable+=(dir); }
-  prepare_runtime_env() { transient+=(runtime); }; validate_compose() { transient+=(compose); }; start_bootstrap() { transient+=(bootstrap); }
+  validate_compose() { transient+=(compose); }
   main --non-interactive; release_state_lock; main --non-interactive
   [[ "${durable[*]}" == "curl docker dir" ]] || return 1
-  [[ "${transient[*]}" == "preflight runtime compose bootstrap preflight runtime compose bootstrap" ]] || return 1
+  [[ "${transient[*]}" == "preflight compose preflight compose" ]] || return 1
   rm -rf "$tmp"
 )
 
 test_main_flow_blocks_concurrent_run() (
   local tmp first second
   tmp="$(mktemp -d)"; printf 'ID=ubuntu\nVERSION_ID="22.04"\n' >"$tmp/os-release"
-  bash -c 'source "$1"; TEST_TMP="$2"; INSTALL_DIR="$TEST_TMP/install"; STATE_DIR="$INSTALL_DIR/.state"; STATE_FILE="$STATE_DIR/install-state"; LOCK_DIR="$STATE_DIR/install.lock"; DEPLOYLITE_OS_RELEASE_FILE="$TEST_TMP/os-release"; as_root(){ "$@"; }; install_log_setup(){ :; }; preflight(){ :; }; install_curl(){ : >"$TEST_TMP/ready"; while [[ ! -e "$TEST_TMP/release" ]]; do sleep 0.01; done; }; install_docker(){ :; }; prepare_install_dir(){ :; }; prepare_runtime_env(){ :; }; validate_compose(){ :; }; start_bootstrap(){ :; }; main --non-interactive' _ "$ROOT_DIR/scripts/install.sh" "$tmp" >/dev/null 2>&1 & first=$!
+  bash -c 'source "$1"; TEST_TMP="$2"; INSTALL_DIR="$TEST_TMP/install"; STATE_DIR="$INSTALL_DIR/.state"; STATE_FILE="$STATE_DIR/install-state"; LOCK_DIR="$STATE_DIR/install.lock"; DEPLOYLITE_OS_RELEASE_FILE="$TEST_TMP/os-release"; as_root(){ "$@"; }; install_log_setup(){ :; }; preflight(){ :; }; install_curl(){ : >"$TEST_TMP/ready"; while [[ ! -e "$TEST_TMP/release" ]]; do sleep 0.01; done; }; install_docker(){ :; }; prepare_install_dir(){ :; }; validate_compose(){ :; }; main --non-interactive' _ "$ROOT_DIR/scripts/install.sh" "$tmp" >/dev/null 2>&1 & first=$!
   for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -e "$tmp/ready" ]] && break; sleep 0.01; done; [[ -e "$tmp/ready" ]] || return 1
-  set +e; bash -c 'source "$1"; TEST_TMP="$2"; INSTALL_DIR="$TEST_TMP/install"; STATE_DIR="$INSTALL_DIR/.state"; STATE_FILE="$STATE_DIR/install-state"; LOCK_DIR="$STATE_DIR/install.lock"; DEPLOYLITE_OS_RELEASE_FILE="$TEST_TMP/os-release"; as_root(){ "$@"; }; install_log_setup(){ :; }; preflight(){ : >"$TEST_TMP/second-preflight"; }; install_curl(){ :; }; install_docker(){ :; }; prepare_install_dir(){ :; }; prepare_runtime_env(){ :; }; validate_compose(){ :; }; start_bootstrap(){ :; }; main --non-interactive' _ "$ROOT_DIR/scripts/install.sh" "$tmp" >/dev/null 2>&1; second=$?; set -e
+  set +e; bash -c 'source "$1"; TEST_TMP="$2"; INSTALL_DIR="$TEST_TMP/install"; STATE_DIR="$INSTALL_DIR/.state"; STATE_FILE="$STATE_DIR/install-state"; LOCK_DIR="$STATE_DIR/install.lock"; DEPLOYLITE_OS_RELEASE_FILE="$TEST_TMP/os-release"; as_root(){ "$@"; }; install_log_setup(){ :; }; preflight(){ : >"$TEST_TMP/second-preflight"; }; install_curl(){ :; }; install_docker(){ :; }; prepare_install_dir(){ :; }; validate_compose(){ :; }; main --non-interactive' _ "$ROOT_DIR/scripts/install.sh" "$tmp" >/dev/null 2>&1; second=$?; set -e
   [[ "$second" -ne 0 && ! -e "$tmp/second-preflight" ]] || return 1; : >"$tmp/release"; wait "$first"; [[ ! -e "$tmp/install/.state/install.lock" ]] || return 1; rm -rf "$tmp"
 )
 
 test_main_flow_signal_does_not_mark_active_step() {
   local signal="$1" tmp status
   tmp="$(mktemp -d)"; printf 'ID=ubuntu\nVERSION_ID="22.04"\n' >"$tmp/os-release"
-  set +e; bash -c 'source "$1"; SIGNAL="$3"; INSTALL_DIR="$2/install"; STATE_DIR="$INSTALL_DIR/.state"; STATE_FILE="$STATE_DIR/install-state"; LOCK_DIR="$STATE_DIR/install.lock"; DEPLOYLITE_OS_RELEASE_FILE="$2/os-release"; mkdir -p "$INSTALL_DIR"; as_root(){ "$@"; }; install_log_setup(){ :; }; preflight(){ :; }; install_curl(){ :; }; install_docker(){ kill -s "$SIGNAL" "$$"; }; prepare_install_dir(){ :; }; prepare_runtime_env(){ :; }; validate_compose(){ :; }; start_bootstrap(){ :; }; main --non-interactive' _ "$ROOT_DIR/scripts/install.sh" "$tmp" "$signal" >/dev/null 2>&1; status=$?; set -e
+  set +e; bash -c 'source "$1"; SIGNAL="$3"; INSTALL_DIR="$2/install"; STATE_DIR="$INSTALL_DIR/.state"; STATE_FILE="$STATE_DIR/install-state"; LOCK_DIR="$STATE_DIR/install.lock"; DEPLOYLITE_OS_RELEASE_FILE="$2/os-release"; mkdir -p "$INSTALL_DIR"; as_root(){ "$@"; }; install_log_setup(){ :; }; preflight(){ :; }; install_curl(){ :; }; install_docker(){ kill -s "$SIGNAL" "$$"; }; prepare_install_dir(){ :; }; validate_compose(){ :; }; main --non-interactive' _ "$ROOT_DIR/scripts/install.sh" "$tmp" "$signal" >/dev/null 2>&1; status=$?; set -e
   [[ "$status" -eq 130 || "$status" -eq 143 ]] || return 1
   [[ "$(<"$tmp/install/.state/install-state")" != *install-docker* && ! -e "$tmp/install/.state/install.lock" ]] || return 1; rm -rf "$tmp"
 }
@@ -584,13 +514,9 @@ run_test 'explicit noninteractive mode disables TUI' test_parse_args_supports_ex
 run_test 'prompt_value returns piped value in interactive no-tty mode' test_prompt_value_returns_piped_value_in_interactive_no_tty_mode
 run_test 'prompt_value returns default when piped empty in interactive no-tty mode' test_prompt_value_returns_default_when_piped_empty_in_interactive_no_tty_mode
 run_test 'redact_stream removes postgres passwords and key=value secrets' test_redact_stream_removes_postgres_passwords_and_key_value_secrets
-run_test 'validates the bootstrap Compose profile' test_validate_compose_omits_runtime_profile
-run_test 'generates silent restricted internal runtime secrets' test_prepare_runtime_env_uses_restricted_file_without_secret_output
-run_test 'generates a valid URL-safe database URL' test_prepare_runtime_env_generates_a_url_safe_database_url
-run_test 'rejects stale or inconsistent runtime secrets' test_prepare_runtime_env_rejects_stale_or_inconsistent_values
-run_test 'rejects malformed runtime secret values' test_prepare_runtime_env_rejects_malformed_secret_values
-run_test 'verifies local DNS and HTTPS response markers' test_verify_local_reachability_checks_dns_header_and_body
-run_test 'pulls, builds, and starts only the bounded bootstrap control plane' test_start_bootstrap_is_bounded_and_never_activates_runtime
+run_test 'validates base and TLS Compose without a runtime profile' test_validate_compose_uses_base_and_tls_overlay_without_profiles
+run_test 'retires runtime generation and orchestration functions' test_runtime_generation_and_orchestration_are_not_callable
+run_test 'hands off after prerequisites without secrets or runtime commands' test_main_hands_off_without_secrets_or_runtime_commands
 run_test 'check mode succeeds using read-only probes' test_check_mode_succeeds_with_read_only_probes
 run_test 'check mode reports missing prerequisites deterministically' test_check_mode_reports_missing_prerequisite_deterministically
 run_test 'check mode reports unsupported platforms' test_check_mode_reports_unsupported_platform

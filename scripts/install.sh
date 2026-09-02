@@ -5,13 +5,11 @@ INSTALL_DIR="${DEPLOYLITE_INSTALL_DIR:-/opt/deploylite}"
 REPO_ROOT="${DEPLOYLITE_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
 TLS_COMPOSE_FILE="${INSTALL_DIR}/compose.tls.yml"
-RUNTIME_ENV_FILE="${INSTALL_DIR}/.env"
 STATE_DIR="${INSTALL_DIR}/.state"
 DEFAULT_LOG_FILE="/var/log/deploylite/install.log"
 INSTALL_LOG="${DEPLOYLITE_INSTALL_LOG:-$DEFAULT_LOG_FILE}"
 INSTALL_LOG_DIR="${DEPLOYLITE_INSTALL_LOG_DIR:-$(dirname "$INSTALL_LOG")}"
 APT_TIMEOUT_SECONDS="${DEPLOYLITE_APT_TIMEOUT_SECONDS:-180}"
-COMPOSE_TIMEOUT_SECONDS="${DEPLOYLITE_COMPOSE_TIMEOUT_SECONDS:-600}"
 STATE_SCHEMA_VERSION=1
 STATE_FILE="${STATE_DIR}/install-state"
 LOCK_DIR="${STATE_DIR}/install.lock"
@@ -23,7 +21,6 @@ INTERACTIVE=1
 NOOP=0
 CHECK=0
 CHANGED_STEPS=()
-CREATED_RUNTIME=0
 
 log() { printf '[%s] %s\n' "$1" "$(redact "${2:-}")"; }
 info() { log INFO "$1"; }
@@ -56,11 +53,7 @@ redact_stream() {
 
 on_error() {
   local code=$?
-  warn "Install failed. Changed steps: ${CHANGED_STEPS[*]:-none}. Preserving ${INSTALL_DIR}/.env and Docker volumes."
-  if [[ "$CREATED_RUNTIME" == "1" ]]; then
-    warn "Stopping containers created by this run; volumes and config are preserved."
-    compose_down_safe || true
-  fi
+  warn "Install failed. Changed steps: ${CHANGED_STEPS[*]:-none}. Preserving installed prerequisites and Compose templates."
   exit "$code"
 }
 trap on_error ERR
@@ -279,7 +272,6 @@ Environment:
   DEPLOYLITE_PUBLIC_HOST=<hostname>    Installation host (default: deploylite.com).
   DEPLOYLITE_EXPECTED_PUBLIC_IP=<IPv4>  Override the detected local public IP for DNS verification.
   DEPLOYLITE_APT_TIMEOUT_SECONDS=<n>    Bound apt operations (default: 180).
-  DEPLOYLITE_COMPOSE_TIMEOUT_SECONDS=<n> Bound Compose pull/build/up operations (default: 600).
   DEPLOYLITE_INSTALL_DIR=<path>        Install directory (default: /opt/deploylite).
   DEPLOYLITE_INSTALL_LOG=<path>        Install log file (default: /var/log/deploylite/install.log).
   DEPLOYLITE_INSTALL_LOG_DIR=<path>    Install log directory (default: parent of DEPLOYLITE_INSTALL_LOG).
@@ -613,7 +605,7 @@ preflight() {
   if [[ "${EUID}" -ne 0 ]] && ! command_exists sudo; then
     fail "Root or sudo is required. Re-run as root or install sudo." 2
   fi
-  command_exists timeout || fail "timeout is required to bound apt and Compose operations." 2
+  command_exists timeout || fail "timeout is required to bound apt operations." 2
   port_available_or_owned_by_deploylite_traefik 80 || fail "Port 80 is already in use by a service other than this install's DeployLite Traefik container. Stop the conflicting service before installing." 2
   port_available_or_owned_by_deploylite_traefik 443 || fail "Port 443 is already in use by a service other than this install's DeployLite Traefik container. Stop the conflicting service before installing." 2
 }
@@ -712,138 +704,10 @@ apt_bounded() {
 }
 
 compose() { as_root docker compose -f "$COMPOSE_FILE" -f "$TLS_COMPOSE_FILE" --project-directory "$INSTALL_DIR" "$@"; }
-compose_bounded() {
-  local status
-  if as_root timeout --foreground "${COMPOSE_TIMEOUT_SECONDS}s" docker compose -f "$COMPOSE_FILE" -f "$TLS_COMPOSE_FILE" --project-directory "$INSTALL_DIR" "$@"; then
-    return 0
-  else
-    status=$?
-  fi
-  if [[ "$status" -eq 124 || "$status" -eq 137 ]]; then
-    fail "Timed out after ${COMPOSE_TIMEOUT_SECONDS}s during docker compose $*." 1
-  fi
-  fail "docker compose $* failed with status ${status}." "$status"
-}
-compose_down_safe() { compose_bounded down --remove-orphans; }
 
 validate_compose() {
-  info "Validating the secure bootstrap Compose profile."
-  compose_bounded --profile bootstrap config --no-interpolate >/dev/null
-}
-
-generate_secret() {
-  command_exists openssl || fail "openssl is required to generate internal runtime secrets." 2
-  openssl rand -base64 48 | tr -d '\n'
-}
-
-database_url_for_password() {
-  local password="$1" encoded_password
-  # Compose does not URL-encode interpolated values. Keep the PostgreSQL
-  # password raw, but percent-encode URL-reserved characters for pg.
-  encoded_password="$(printf '%s' "$password" | sed -e 's/%/%25/g' -e 's/+/%2B/g' -e 's#/#%2F#g' -e 's/:/%3A/g' -e 's/@/%40/g')"
-  printf 'postgres://%s:%s@postgres:5432/%s' "${POSTGRES_USER:-deploylite}" "$encoded_password" "${POSTGRES_DB:-deploylite}"
-}
-
-ensure_runtime_database_url() {
-  local database_password database_url tmp
-  database_password="$(read_runtime_env_value POSTGRES_PASSWORD)"
-  database_url="$(database_url_for_password "$database_password")"
-  tmp="$(mktemp)"
-  awk -v database_url="$database_url" '
-    /^DATABASE_URL=/ {
-      if (!written++) print "DATABASE_URL=" database_url
-      next
-    }
-    { print }
-    END { if (!written) print "DATABASE_URL=" database_url }
-  ' "$RUNTIME_ENV_FILE" >"$tmp"
-  as_root install -m 600 "$tmp" "$RUNTIME_ENV_FILE"
-  rm -f "$tmp"
-}
-
-prepare_runtime_env() {
-  local tmp host database_password database_url secret_key
-  if [[ -f "$RUNTIME_ENV_FILE" ]]; then
-    as_root chmod 600 "$RUNTIME_ENV_FILE"
-    validate_runtime_env
-    ensure_runtime_database_url
-    info "Existing internal runtime secrets validated and preserved."
-    return 0
-  fi
-  host="${DEPLOYLITE_PUBLIC_HOST:-deploylite.com}"
-  [[ "$host" =~ ^[A-Za-z0-9.-]+$ ]] || fail "DEPLOYLITE_PUBLIC_HOST must be a hostname." 2
-  database_password="$(generate_secret)"
-  database_url="$(database_url_for_password "$database_password")"
-  secret_key="$(generate_secret)"
-  tmp="$(mktemp)"
-  umask 077
-  printf 'DEPLOYLITE_PUBLIC_HOST=%s\nPOSTGRES_PASSWORD=%s\nDATABASE_URL=%s\nDEPLOYLITE_SECRET_KEY=%s\n' "$host" "$database_password" "$database_url" "$secret_key" >"$tmp"
-  as_root install -m 600 "$tmp" "$RUNTIME_ENV_FILE"
-  rm -f "$tmp"
-  record_change "internal-runtime-secrets-generated"
-  info "Generated internal runtime secrets with restricted permissions."
-}
-
-read_runtime_env_value() {
-  local key="$1" value
-  value="$(awk -F= -v key="$key" '$0 ~ "^" key "=" { count++; sub("^[^=]*=", ""); print } END { if (count != 1) exit 1 }' "$RUNTIME_ENV_FILE")" \
-    || fail "${RUNTIME_ENV_FILE} must contain exactly one ${key}= value." 2
-  [[ -n "$value" ]] || fail "${RUNTIME_ENV_FILE} contains an empty ${key} value." 2
-  printf '%s' "$value"
-}
-
-validate_runtime_env() {
-  local host expected_host database_password secret_key
-  host="$(read_runtime_env_value DEPLOYLITE_PUBLIC_HOST)"
-  expected_host="${DEPLOYLITE_PUBLIC_HOST:-$host}"
-  [[ "$host" == "$expected_host" ]] || fail "Existing ${RUNTIME_ENV_FILE} host does not match DEPLOYLITE_PUBLIC_HOST." 2
-  [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || fail "DEPLOYLITE_PUBLIC_HOST must be a hostname." 2
-  database_password="$(read_runtime_env_value POSTGRES_PASSWORD)"
-  secret_key="$(read_runtime_env_value DEPLOYLITE_SECRET_KEY)"
-  [[ "$database_password" =~ ^[A-Za-z0-9+/]{64}$ ]] || fail "Existing POSTGRES_PASSWORD has an invalid generated-secret format." 2
-  [[ "$secret_key" =~ ^[A-Za-z0-9+/]{64}$ ]] || fail "Existing DEPLOYLITE_SECRET_KEY has an invalid generated-secret format." 2
-}
-
-verify_local_reachability() {
-  local host expected_ip resolved_ips headers body
-  host="${DEPLOYLITE_PUBLIC_HOST:-deploylite.com}"
-  expected_ip="${DEPLOYLITE_EXPECTED_PUBLIC_IP:-}"
-  if [[ -z "$expected_ip" ]]; then
-    expected_ip="$(curl --fail --silent --show-error --ipv4 --connect-timeout 5 --max-time 15 https://api.ipify.org)" \
-      || fail "Could not determine this host's public IP for DNS verification." 1
-  fi
-  [[ "$expected_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || fail "Expected local public IP is malformed." 2
-  command_exists getent || fail "getent is required to verify DNS for ${host}." 2
-  resolved_ips="$(getent ahostsv4 "$host" | awk '{print $1}' | sort -u)" \
-    || fail "DNS lookup failed for ${host}." 1
-  [[ "\n${resolved_ips}\n" == *"\n${expected_ip}\n"* ]] \
-    || fail "DNS for ${host} does not resolve to this host's expected public IP." 1
-
-  headers="$(mktemp)"
-  body="$(mktemp)"
-  if ! curl --fail --silent --show-error --location --connect-timeout 10 --max-time 120 \
-    --dump-header "$headers" --output "$body" "https://${host}/"; then
-    rm -f "$headers" "$body"
-    fail "HTTPS bootstrap page did not become reachable for ${host}." 1
-  fi
-  grep -Eiq '^x-deploylite-bootstrap:[[:space:]]*ready[[:space:]]*$' "$headers" \
-    || { rm -f "$headers" "$body"; fail "HTTPS response for ${host} did not contain the local bootstrap marker header." 1; }
-  grep -Fqi 'DeployLite' "$body" \
-    || { rm -f "$headers" "$body"; fail "HTTPS response for ${host} did not contain the local bootstrap marker body." 1; }
-  rm -f "$headers" "$body"
-}
-
-start_bootstrap() {
-  CREATED_RUNTIME=1
-  info "Pulling bootstrap images; timeout is ${COMPOSE_TIMEOUT_SECONDS}s."
-  compose_bounded --profile bootstrap pull --ignore-buildable
-  info "Building bootstrap images; timeout is ${COMPOSE_TIMEOUT_SECONDS}s."
-  compose_bounded --profile bootstrap build
-  info "Starting the secure bootstrap control plane; timeout is ${COMPOSE_TIMEOUT_SECONDS}s."
-  compose_bounded --profile bootstrap up -d --wait --wait-timeout 120
-  info "Verifying local DNS and the HTTPS first-owner response."
-  verify_local_reachability
-  info "Bootstrap control plane is running behind HTTPS. Create the first owner at https://${DEPLOYLITE_PUBLIC_HOST:-deploylite.com}."
+  info "Validating base Compose plus the Traefik overlay without interpolation or profiles."
+  compose config --no-interpolate >/dev/null
 }
 
 main() {
@@ -864,7 +728,7 @@ main() {
     info "Running in explicit non-interactive mode."
   fi
   if [[ "${NOOP}" == "1" ]]; then
-    info "Noop mode: skipping preflight, Docker install, and runtime."
+   info "Noop mode: skipping preflight, Docker install, and Compose preparation."
     return 0
   fi
   state_prepare_dir
@@ -875,10 +739,9 @@ main() {
   run_durable_step install-curl install_curl || return $?
   run_durable_step install-docker install_docker || return $?
   run_durable_step prepare-install-dir prepare_install_dir || return $?
-  prepare_runtime_env
   validate_compose
-  start_bootstrap
-  info "First-owner setup and web configuration are available only through the HTTPS control plane. Runtime activation remains an explicit admin action."
+  info "P0 prerequisite setup complete. No runtime secrets were generated or persisted, and no services were started."
+  info "Handoff: P0 prerequisite setup is complete; runtime setup was not executed, and the supported runtime/web handoff is deferred to tracked P1 work #233."
 }
 
 if [[ "${DEPLOYLITE_INSTALL_TESTING:-0}" != "1" ]]; then
