@@ -798,12 +798,21 @@ main() {
    run_progress_step 3 "Docker/Compose" run_install_docker_step || return $?
    run_progress_step 4 "Install directory and overlay copy" run_prepare_install_dir_step || return $?
    run_progress_step 5 "Config validation" validate_compose || return $?
-   run_progress_step 6 "P1 handoff" p1_handoff || return $?
+    run_progress_step 6 "P1 handoff" p1_handoff || return $?
  }
 
 p1_handoff() {
-  info "P0 prerequisite setup complete. No runtime secrets were generated or persisted, and no services were started."
-  info "Handoff: P0 prerequisite setup is complete; runtime setup was not executed, and the supported runtime/web handoff is deferred to tracked P1 work #233."
+  install_runtime_handoff
+  info "P0 prerequisite setup is complete; runtime setup was not executed by P0. No runtime secrets were generated or persisted, and no services were started."
+  info "Runtime command: sudo /opt/deploylite/runtime-handoff.sh --env-file <operator-file>"
+  info "Limits: operator must provide a root-owned 0600 env file; DNS must resolve to this host and HTTPS/ACME must be verified externally."
+}
+
+install_runtime_handoff() {
+  local source="${REPO_ROOT}/scripts/runtime-handoff.sh"
+  [[ -f "$source" ]] || fail "Installer source contract is missing: ${source}." 2
+  as_root install -m 0755 -o 0 -g 0 "$source" "${INSTALL_DIR}/runtime-handoff.sh"
+  info "Refreshed runtime entrypoint at ${INSTALL_DIR}/runtime-handoff.sh."
 }
 
 run_install_curl_step() { run_durable_step install-curl install_curl; }
