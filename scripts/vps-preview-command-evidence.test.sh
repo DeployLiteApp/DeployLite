@@ -64,7 +64,17 @@ captured="$(<"$capture")"
 [[ "$captured" == *"VPS_MIGRATION_COMMAND=$expected_migration_q"* ]]
 [[ "$captured" == *"VPS_COMPOSE_COMMAND=$expected_compose_q"* ]]
 [[ "$captured" == *"VPS_HEALTH_COMMAND=$expected_health_q"* ]]
+if grep -Eq 'VPS_HEALTH_(TIMEOUT|INTERVAL)=' <<<"$captured"; then exit 1; fi
 if grep -Fq 'scp' <<<"$captured"; then exit 1; fi
+health_timeout=180
+health_interval=5
+explicit_output="$("${base[@]}" VPS_HEALTH_TIMEOUT="$health_timeout" VPS_HEALTH_INTERVAL="$health_interval" bash "$script" migration-only --source "$source_repo" --commit "$commit" --tree "$tree" --id explicit-health)"
+[[ "$explicit_output" == *'READY:'* ]]
+captured="$(<"$capture")"
+printf -v expected_health_timeout_q '%q' "$health_timeout"
+printf -v expected_health_interval_q '%q' "$health_interval"
+[[ "$captured" == *"VPS_HEALTH_TIMEOUT=$expected_health_timeout_q"* ]]
+[[ "$captured" == *"VPS_HEALTH_INTERVAL=$expected_health_interval_q"* ]]
 assert_ssh_options() {
   local batch_mode="$1"
   local other_batch_mode=yes
@@ -90,7 +100,8 @@ printf -v expected_cleanup_q '%q' "$compose_text"
 [[ "$cleanup_captured" == *"VPS_COMPOSE_COMMAND=$expected_cleanup_q"* ]]
 if grep -Fq 'VPS_SOURCE_URL=' <<<"$cleanup_captured" || grep -Fq 'VPS_COMMIT=' <<<"$cleanup_captured" ||
   grep -Fq 'VPS_TREE=' <<<"$cleanup_captured" || grep -Fq 'VPS_MIGRATION_COMMAND=' <<<"$cleanup_captured" ||
-  grep -Fq 'VPS_HEALTH_COMMAND=' <<<"$cleanup_captured"; then exit 1; fi
+  grep -Fq 'VPS_HEALTH_COMMAND=' <<<"$cleanup_captured" || grep -Fq 'VPS_HEALTH_TIMEOUT=' <<<"$cleanup_captured" ||
+  grep -Fq 'VPS_HEALTH_INTERVAL=' <<<"$cleanup_captured"; then exit 1; fi
 set +e
 for envelope_mode in absent empty incomplete; do
   evidence_file="$work/$envelope_mode-evidence"
