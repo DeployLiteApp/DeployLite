@@ -72,7 +72,7 @@ run_case remote-six-digit 3 "${envbase[@]}" VPS_REMOTE_ROOT="$six_digit_root" VP
 [[ ! -e "$six_digit_root" ]]
 pass_through_id="pass-through-$RANDOM"; pass_through_root="/var/tmp/deploylite-preview/$pass_through_id"; pass_through_log="$work/pass-through.log"
 # shellcheck disable=SC2016
-"${envbase[@]}" VPS_REMOTE_ROOT="$pass_through_root" VPS_LOOPBACK_PORTS='127.0.0.1:01543,127.0.0.1:18080,127.0.0.1:18443' VPS_MIGRATION_COMMAND='printf "%s\n" "$VPS_LOOPBACK_PORTS" > "$PASS_THROUGH_LOG"; printf "pass-through migration\n"' PASS_THROUGH_LOG="$pass_through_log" bash "$script" migration-only "$pass_through_id" >"$work/pass-through-output" 2>&1
+"${envbase[@]}" VPS_REMOTE_ROOT="$pass_through_root" VPS_LOOPBACK_PORTS='127.0.0.1:01543,127.0.0.1:18080,127.0.0.1:18443' VPS_MIGRATION_COMMAND='printf "%s\n" "$VPS_LOOPBACK_PORTS" > "$PASS_THROUGH_LOG"; printf "pass-through migration\n"' PASS_THROUGH_LOG="$pass_through_log" bash "$script" migration-only "$pass_through_id" >"$work/pass-through-output" 2>&1 || { cat "$work/pass-through-output" >&2; exit 1; }
 [[ "$(<"$pass_through_log")" == '127.0.0.1:01543,127.0.0.1:18080,127.0.0.1:18443' && ! -e "$pass_through_root" ]]
 output="$("${envbase[@]}" bash "$script" migration-only "$preview_id")"; [[ "$output" == *'EVIDENCE: migration_rc=0'* && "$output" == *'PASS: migration-only'* ]]
 printf '%s\n' "$output" > "$work/success"
@@ -135,7 +135,12 @@ cat > "$work/native-docker" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 if [[ "${1:-}" == compose ]]; then printf 'compose %s\n' "$*" >> "${NATIVE_LOG:?}"; printf 'native compose\n'; [[ "$*" == *' ps -q '* ]] && printf 'native-container\n'; exit 0; fi
-if [[ "${1:-}" == inspect ]]; then n=0; [[ -f "$NATIVE_COUNT" ]] && n="$(<"$NATIVE_COUNT")"; n=$((n + 1)); printf '%s\n' "$n" > "${NATIVE_COUNT:?}"; (( n > 2 )) && printf 'healthy\n' || printf 'starting\n'; exit 0; fi
+if [[ "${1:-}" == inspect ]]; then
+  if [[ "${3:-}" == *Config.Labels* ]]; then printf '%s\n' "${NATIVE_PROJECT:?}"; exit 0; fi
+  n=0; [[ -f "$NATIVE_COUNT" ]] && n="$(<"$NATIVE_COUNT")"; n=$((n + 1)); printf '%s\n' "$n" > "${NATIVE_COUNT:?}"
+  if [[ -n "${NATIVE_ALWAYS_FAIL:-}" ]]; then printf '%s\n' 'running|unhealthy|42|true|3'; elif (( n > 2 )); then printf '%s\n' 'running|healthy|0|false|0'; else printf '%s\n' 'running|starting|0|false|0'; fi
+  exit 0
+fi
 if [[ "${1:-}" == image && "${2:-}" == inspect ]]; then grep -Fqx "${3:?}" "${NATIVE_IMAGE_STATE:?}"; exit $?; fi
 if [[ "${1:-}" == image && "${2:-}" == rm ]]; then tag="${4:?}"; grep -Fvx "$tag" "${NATIVE_IMAGE_STATE:?}" > "${NATIVE_IMAGE_STATE}.tmp" || :; mv "${NATIVE_IMAGE_STATE}.tmp" "$NATIVE_IMAGE_STATE"; printf '%s\n' "$tag" >> "${NATIVE_IMAGE_RM:?}"; exit 0; fi
 case "${1:-}" in container|network|volume|image) exit 0;; esac
@@ -148,7 +153,7 @@ n=0; [[ -f "$NATIVE_CURL_COUNT" ]] && n="$(<"$NATIVE_CURL_COUNT")"; n=$((n + 1))
 EOF
 chmod +x "$work/native-docker" "$work/curl"
 native_output="$work/native-output"
-set +e; env -i PATH="$work:$PATH" NATIVE_LOG="$native_log" NATIVE_COUNT="$work/native-count" NATIVE_CURL_COUNT="$work/curl-count" \
+set +e; env -i PATH="$work:$PATH" NATIVE_LOG="$native_log" NATIVE_PROJECT="deploylite-preview-$native_id" NATIVE_COUNT="$work/native-count" NATIVE_CURL_COUNT="$work/curl-count" \
   VPS_DOCKER_BIN="$work/native-docker" VPS_SOURCE_URL="$source_repo" VPS_COMMIT="$commit" VPS_TREE="$tree" VPS_REMOTE_ROOT="$native_root" \
   VPS_LOOPBACK_PORTS='127.0.0.1:15432,127.0.0.1:18080,127.0.0.1:18443' VPS_HEALTH_TIMEOUT=5 VPS_HEALTH_INTERVAL=1 VPS_KEEP_PREVIEW=1 \
   bash "$script" preview "$native_id" >"$native_output" 2>&1; native_status=$?; set -e
@@ -159,19 +164,69 @@ build_line="$(awk '/compose .* build migrate api web/{print NR; exit}' "$native_
 grep -Fq '127.0.0.1:15432:5432' "$native_root/preview.override.yml"; grep -Fq '127.0.0.1:18080:3000' "$native_root/preview.override.yml"; grep -Fq '127.0.0.1:18443:3001' "$native_root/preview.override.yml"
 grep -Fq 'deploylite-preview-' "$native_root/preview.override.yml"; file_mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }; [[ "$(file_mode "$native_root/.env")" == 600 ]]; grep -Fq 'POSTGRES_PASSWORD' "$native_output" && exit 1
 image_rm_log="$work/native-image-rm"; image_state="$work/native-image-state"; for service in migrate api web; do printf 'deploylite-preview-%s-%s:%s\n' "$native_id" "$service" "$commit"; done > "$image_state"
-env -i PATH="$work:$PATH" VPS_DOCKER_BIN="$work/native-docker" NATIVE_LOG="$native_log" NATIVE_IMAGE_RM="$image_rm_log" NATIVE_IMAGE_STATE="$image_state" VPS_REMOTE_ROOT="$native_root" bash "$script" cleanup "$native_id" >/dev/null
+env -i PATH="$work:$PATH" VPS_DOCKER_BIN="$work/native-docker" NATIVE_PROJECT="deploylite-preview-$native_id" NATIVE_LOG="$native_log" NATIVE_IMAGE_RM="$image_rm_log" NATIVE_IMAGE_STATE="$image_state" VPS_REMOTE_ROOT="$native_root" bash "$script" cleanup "$native_id" >/dev/null
 [[ ! -e "$native_root" ]]
 [[ "$(wc -l < "$image_rm_log")" -eq 3 && ! -s "$image_state" ]]; for service in migrate api web; do grep -Eq "^deploylite-preview-${native_id}-${service}:[0-9a-f]{40}$" "$image_rm_log"; done
+recovery_id="recovery-$RANDOM"; recovery_root="/var/tmp/deploylite-preview/$recovery_id"; recovery_log="$work/recovery.log"; recovery_rm="$work/recovery-rm"; recovery_state="$work/recovery-state"
+mkdir -p "$recovery_root"; printf 'deploylite-preview-owner\n%s\ndeploylite-preview-%s\n' "$recovery_id" "$recovery_id" > "$recovery_root/.deploylite-preview-owner"
+printf '%s\n' 'services:' '  migrate:' "    image: deploylite-preview-${recovery_id}-migrate:${commit}" '  api:' "    image: deploylite-preview-${recovery_id}-api:${commit}" '  web:' "    image: deploylite-preview-${recovery_id}-web:${commit}" > "$recovery_root/preview.override.yml"; : > "$recovery_root/.env"
+cat > "$work/recovery-docker" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "${1:-}" == compose ]]; then
+  if [[ "$*" == *' down '* ]]; then
+    n=0; [[ -f "$RECOVERY_STATE" ]] && n="$(<"$RECOVERY_STATE")"; n=$((n + 1)); printf '%s\n' "$n" > "$RECOVERY_STATE"
+    if (( n == 1 )); then printf '%s\n' 'down1:network-in-use' >> "$RECOVERY_LOG"; exit 1; fi
+    printf '%s\n' 'down2:success-network-volume-zero' >> "$RECOVERY_LOG"; printf '0\n' > "$RECOVERY_NETWORK"; printf '0\n' > "$RECOVERY_VOLUME"
+  fi
+  exit 0
+fi
+if [[ "${1:-}" == container && "${2:-}" == ls ]]; then
+  if [[ "$(<"$RECOVERY_CONTAINER")" == 1 ]]; then printf '%s\n' 'enumerate:container-owned' >> "$RECOVERY_LOG"; printf '%s\n' 'abc123'; else printf '%s\n' 'verify:container-zero' >> "$RECOVERY_LOG"; fi
+  exit 0
+fi
+if [[ "${1:-}" == inspect && "${3:-}" == *Config.Labels* ]]; then printf '%s\n' 'inspect:project-label' >> "$RECOVERY_LOG"; printf '%s\n' "${RECOVERY_PROJECT:?}"; exit 0; fi
+if [[ "${1:-}" == container && "${2:-}" == rm ]]; then printf '%s\n' 'remove:exact-container' >> "$RECOVERY_LOG"; printf '0\n' > "$RECOVERY_CONTAINER"; : > "$RECOVERY_RM"; exit 0; fi
+if [[ "${1:-}" == image && "${2:-}" == inspect ]]; then (( $(<"$RECOVERY_IMAGES") > 0 )); exit $?; fi
+if [[ "${1:-}" == image && "${2:-}" == rm ]]; then printf '%s\n' 'remove:exact-image' >> "$RECOVERY_LOG"; n="$(<"$RECOVERY_IMAGES")"; printf '%s\n' "$((n - 1))" > "$RECOVERY_IMAGES"; exit 0; fi
+case "${1:-}" in
+  network) [[ "$(<"$RECOVERY_NETWORK")" == 0 ]] && printf '%s\n' 'verify:network-zero' >> "$RECOVERY_LOG"; exit 0;;
+  volume) [[ "$(<"$RECOVERY_VOLUME")" == 0 ]] && printf '%s\n' 'verify:volume-zero' >> "$RECOVERY_LOG"; exit 0;;
+  image) [[ "$(<"$RECOVERY_IMAGES")" == 0 ]] && printf '%s\n' 'verify:image-zero' >> "$RECOVERY_LOG"; exit 0;;
+esac
+exit 1
+EOF
+chmod +x "$work/recovery-docker"
+printf '0\n' > "$recovery_state"; printf '1\n' > "$recovery_root/container-state"; printf '1\n' > "$recovery_root/network-state"; printf '1\n' > "$recovery_root/volume-state"; printf '3\n' > "$recovery_root/image-state"
+env -i PATH="$work:$PATH" VPS_DOCKER_BIN="$work/recovery-docker" RECOVERY_PROJECT="deploylite-preview-$recovery_id" RECOVERY_LOG="$recovery_log" RECOVERY_RM="$recovery_rm" RECOVERY_STATE="$recovery_state" RECOVERY_CONTAINER="$recovery_root/container-state" RECOVERY_NETWORK="$recovery_root/network-state" RECOVERY_VOLUME="$recovery_root/volume-state" RECOVERY_IMAGES="$recovery_root/image-state" VPS_REMOTE_ROOT="$recovery_root" bash "$script" cleanup "$recovery_id" >/dev/null
+assert_order "$recovery_log" 'down1:network-in-use' 'inspect:project-label' 'remove:exact-container' 'down2:success-network-volume-zero' 'verify:container-zero' 'verify:network-zero' 'verify:volume-zero' 'verify:image-zero'
+[[ ! -e "$recovery_root" && -f "$recovery_rm" ]]
+wrong_id="wrong-label-$RANDOM"; wrong_root="/var/tmp/deploylite-preview/$wrong_id"; mkdir -p "$wrong_root"; printf 'deploylite-preview-owner\n%s\ndeploylite-preview-%s\n' "$wrong_id" "$wrong_id" > "$wrong_root/.deploylite-preview-owner"
+printf '%s\n' 'services:' '  migrate:' "    image: deploylite-preview-${wrong_id}-migrate:${commit}" '  api:' "    image: deploylite-preview-${wrong_id}-api:${commit}" '  web:' "    image: deploylite-preview-${wrong_id}-web:${commit}" > "$wrong_root/preview.override.yml"
+printf '%s\n' 'x' > "$wrong_root/.env"
+cat > "$work/wrong-label-docker" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "${1:-}" == compose ]]; then exit 1; fi
+if [[ "${1:-}" == container && "${2:-}" == ls ]]; then printf '%s\n' 'abc123'; exit 0; fi
+if [[ "${1:-}" == inspect ]]; then printf '%s\n' 'unrelated-project'; exit 0; fi
+if [[ "${1:-}" == container && "${2:-}" == rm ]]; then : > "$WRONG_RM"; exit 0; fi
+exit 0
+EOF
+chmod +x "$work/wrong-label-docker"
+wrong_rm="$work/wrong-rm"; run_case wrong-label-fails-closed 1 env -i PATH="$work:$PATH" WRONG_RM="$wrong_rm" VPS_DOCKER_BIN="$work/wrong-label-docker" VPS_REMOTE_ROOT="$wrong_root" bash "$script" cleanup "$wrong_id"
+[[ -e "$wrong_root" && ! -e "$wrong_rm" ]]
+rm -rf -- "$wrong_root"
 invalid_interval_id="invalid-interval-$RANDOM"; invalid_interval_root="/var/tmp/deploylite-preview/$invalid_interval_id"; invalid_interval_output="$work/invalid-interval-output"; started="$(date +%s)"
-set +e; env -i PATH="$work:$PATH" NATIVE_LOG="$native_log" NATIVE_IMAGE_RM="$work/invalid-image-rm" NATIVE_COUNT="$work/invalid-count" NATIVE_CURL_COUNT="$work/invalid-curl-count" \
+set +e; env -i PATH="$work:$PATH" NATIVE_LOG="$native_log" NATIVE_PROJECT="deploylite-preview-$invalid_interval_id" NATIVE_IMAGE_RM="$work/invalid-image-rm" NATIVE_COUNT="$work/invalid-count" NATIVE_CURL_COUNT="$work/invalid-curl-count" \
   VPS_DOCKER_BIN="$work/native-docker" VPS_SOURCE_URL="$source_repo" VPS_COMMIT="$commit" VPS_TREE="$tree" VPS_REMOTE_ROOT="$invalid_interval_root" VPS_HEALTH_TIMEOUT=30 VPS_HEALTH_INTERVAL=invalid \
   bash "$script" preview "$invalid_interval_id" >"$invalid_interval_output" 2>&1; invalid_interval_status=$?; set -e
 elapsed=$(( $(date +%s) - started )); [[ "$invalid_interval_status" -eq 11 && "$elapsed" -le 3 && ! -e "$invalid_interval_root" ]]; grep -Fq 'VPS_HEALTH_INTERVAL must be an integer' "$invalid_interval_output"; grep -Fq 'PHASE: cleanup complete status=0' "$invalid_interval_output"
 timeout_id="timeout-native-$RANDOM"; timeout_root="/var/tmp/deploylite-preview/$timeout_id"; timeout_output="$work/timeout-native-output"
-set +e; env -i PATH="$work:$PATH" NATIVE_LOG="$native_log" NATIVE_IMAGE_RM="$work/timeout-image-rm" NATIVE_COUNT="$work/timeout-count" NATIVE_CURL_COUNT="$work/timeout-curl-count" NATIVE_ALWAYS_FAIL=1 \
+set +e; env -i PATH="$work:$PATH" NATIVE_LOG="$native_log" NATIVE_PROJECT="deploylite-preview-$timeout_id" NATIVE_IMAGE_RM="$work/timeout-image-rm" NATIVE_COUNT="$work/timeout-count" NATIVE_CURL_COUNT="$work/timeout-curl-count" NATIVE_ALWAYS_FAIL=1 \
   VPS_DOCKER_BIN="$work/native-docker" VPS_SOURCE_URL="$source_repo" VPS_COMMIT="$commit" VPS_TREE="$tree" VPS_REMOTE_ROOT="$timeout_root" VPS_HEALTH_TIMEOUT=2 VPS_HEALTH_INTERVAL=1 \
   bash "$script" preview "$timeout_id" >"$timeout_output" 2>&1; timeout_status=$?; set -e
-[[ "$timeout_status" -eq 11 && ! -e "$timeout_root" ]]; grep -Fq 'READINESS: timeout' "$timeout_output"; grep -Fq 'PHASE: cleanup complete status=0' "$timeout_output"
+[[ "$timeout_status" -eq 11 && ! -e "$timeout_root" ]]; grep -Fq 'READINESS: timeout' "$timeout_output"; grep -Fq 'READINESS_EVIDENCE: status=timeout attempts=' "$timeout_output"; grep -Fq 'diagnostic service=api state=running health=unhealthy exit_code=42 oom=true restart_count=3' "$timeout_output"; grep -Fq 'diagnostic service=postgres' "$timeout_output"; grep -Fq 'diagnostic service=web' "$timeout_output"; if grep -Eiq 'native-container|secret|token|postgres://' "$timeout_output"; then exit 1; fi; grep -Fq 'PHASE: cleanup complete status=0' "$timeout_output"
 partial_id="partial-$RANDOM"; run_case partial-custom 1 "${envbase[@]}" VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$partial_id" VPS_MIGRATION_COMMAND=true bash "$script" preview "$partial_id"
 known_id="known-$RANDOM"; known_output="$work/known-secret"
 "${envbase[@]}" VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$known_id" VPS_DB_PASSWORD=known-db-password \

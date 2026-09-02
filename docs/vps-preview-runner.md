@@ -30,7 +30,14 @@ succeeds. Migration, Compose, and health commands are forwarded as one
 shell-quoted value each, preserving spaces and quotes without exposing
 credentials. Migration, preview startup, and cleanup execute under the same
 preview-specific Compose project; canonical or default project fallback is
-forbidden.
+forbidden. Native cleanup retries boundedly after a failed `compose down` or
+remaining project containers, verifies each container's exact Compose project
+label, removes only those containers, retries Compose volume/network cleanup,
+and removes only exact commit-tagged image tags parsed from the owned override.
+The root is removed only after exact project resource counts reach zero;
+unrelated labels and consumers fail closed. Native readiness failures report
+only service state, health, exit code, OOM status, and restart count for
+PostgreSQL, API, and web, plus bounded attempts and elapsed time.
 
 For `preview`, `VPS_LOOPBACK_PORTS` optionally overrides the three comma-separated
 host mappings in this order: `PostgreSQL,web,API` (for example,

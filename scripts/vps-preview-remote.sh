@@ -19,6 +19,7 @@ env_file="$root/.env"
 custom_mode=0
 lifecycle_mode='native'
 build_status='not-applicable'
+readiness_status='not-run'; readiness_attempts=0; readiness_elapsed=0
 
 blocked() { printf 'BLOCKED: %s\n' "$*" >&2; exit 3; }
 require_loopback_ports() {
@@ -76,23 +77,26 @@ EOF
 }
 native_health() {
   local timeout_seconds="${VPS_HEALTH_TIMEOUT:-30}" interval_seconds="${VPS_HEALTH_INTERVAL:-1}"
-  local started elapsed remaining sleep_for service container status ready
+  local started elapsed remaining sleep_for service container ready
   validate_native_timeout "$timeout_seconds" 'VPS_HEALTH_TIMEOUT' || return 11
   validate_native_timeout "$interval_seconds" 'VPS_HEALTH_INTERVAL' || return 11
   started="$(date +%s)"; health_attempts=0
   while :; do
     elapsed=$(( $(date +%s) - started ))
     if (( elapsed >= timeout_seconds )); then
+      readiness_status='timeout'; readiness_attempts="$health_attempts"; readiness_elapsed="$elapsed"
       printf 'READINESS: timeout attempts=%s elapsed=%ss category=timeout\n' "$health_attempts" "$elapsed"
+      native_readiness_diagnostics
       return 1
     fi
     health_attempts=$((health_attempts + 1)); ready=1
     for service in postgres api web; do
-      container="$(compose ps -q "$service" 2>/dev/null || true)"; status=''
-      [[ -n "$container" ]] && status="$($docker_bin inspect -f '{{.State.Health.Status}}' "$container" 2>/dev/null || true)"
-      [[ "$status" == healthy ]] || ready=0
+      container="$(compose ps -q "$service" 2>/dev/null || true)"
+      native_service_snapshot "$container"
+      [[ "$service_health" == healthy ]] || ready=0
     done
     if (( ready == 1 )) && curl --fail --silent --output /dev/null "http://127.0.0.1:${api_port}/api/v1/health" && curl --fail --silent --output /dev/null "http://127.0.0.1:${web_port}/"; then
+      readiness_status='healthy'; readiness_attempts="$health_attempts"; readiness_elapsed="$elapsed"
       printf 'READINESS: success attempts=%s elapsed=%ss category=healthy\n' "$health_attempts" "$elapsed"
       return 0
     fi
@@ -100,6 +104,27 @@ native_health() {
     (( remaining > 0 )) || continue
     sleep_for="$interval_seconds"; (( sleep_for > remaining )) && sleep_for="$remaining"
     sleep "$sleep_for"
+  done
+}
+native_service_snapshot() {
+  local container="$1" snapshot
+  service_state='exited'; service_health='missing'; service_exit_code='unknown'; service_oom='false'; service_restart_count=0
+  [[ -n "$container" ]] || return 0
+  snapshot="$($docker_bin inspect -f '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.State.ExitCode}}|{{.State.OOMKilled}}|{{.RestartCount}}' "$container" 2>/dev/null || true)"
+  IFS='|' read -r service_state service_health service_exit_code service_oom service_restart_count <<< "$snapshot"
+  [[ "$service_state" == running || "$service_state" == exited ]] || service_state='exited'
+  [[ "$service_health" =~ ^(healthy|unhealthy|starting|none|missing)$ ]] || service_health='unknown'
+  [[ "$service_exit_code" =~ ^[0-9]+$ ]] || service_exit_code='unknown'
+  [[ "$service_oom" == true ]] || service_oom='false'
+  [[ "$service_restart_count" =~ ^[0-9]+$ ]] || service_restart_count=0
+}
+native_readiness_diagnostics() {
+  local service container
+  for service in postgres api web; do
+    container="$(compose ps -q "$service" 2>/dev/null || true)"
+    native_service_snapshot "$container"
+    printf 'READINESS: diagnostic service=%s state=%s health=%s exit_code=%s oom=%s restart_count=%s\n' \
+      "$service" "$service_state" "$service_health" "$service_exit_code" "$service_oom" "$service_restart_count"
   done
 }
 native_image_tags() {
@@ -209,6 +234,10 @@ phase_evidence() {
   printf 'EVIDENCE: migration_rc=%s\n' "$rc"
   cat "$evidence/summary"
 }
+record_readiness_evidence() {
+  printf 'READINESS_EVIDENCE: status=%s attempts=%s elapsed=%ss\n' "$readiness_status" "$readiness_attempts" "$readiness_elapsed" >> "$evidence/summary"
+  printf 'READINESS_EVIDENCE: status=%s attempts=%s elapsed=%ss\n' "$readiness_status" "$readiness_attempts" "$readiness_elapsed"
+}
 phase_cleanup() {
   require_safe_resource
   [[ -f "$marker" ]] || failed 'cleanup marker is missing; refusing rollback.'
@@ -216,14 +245,32 @@ phase_cleanup() {
   if ! command -v "$docker_bin" >/dev/null 2>&1; then failed 'validated Docker bin is unavailable.'; return 1; fi
   if [[ "${VPS_CLEANUP_FAIL:-0}" == 1 ]]; then failed 'injected cleanup failure.'; return 1; fi
   if [[ "$custom_mode" -eq 0 && -f "$override_file" && -f "$env_file" ]]; then
-    compose down --volumes --remove-orphans || return 1
+    native_image_tags
+    local down_rc=0 project_container_ids container_count container_id label
+    compose down --volumes --remove-orphans || down_rc=$?
+    project_container_ids="$("$docker_bin" container ls -aq --filter "label=com.docker.compose.project=$project")" || { failed 'cannot enumerate project containers.'; return 1; }
+    if [[ "$down_rc" -ne 0 || -n "$project_container_ids" ]]; then
+      container_count=0
+      [[ -z "$project_container_ids" ]] || container_count="$(printf '%s\n' "$project_container_ids" | awk 'NF { n++ } END { print n+0 }')"
+      (( container_count <= 32 )) || { failed 'project container cleanup exceeded the bounded recovery limit.'; return 1; }
+      while IFS= read -r container_id; do
+        [[ -n "$container_id" ]] || continue
+        [[ "$container_id" =~ ^[a-f0-9]+$ ]] || { failed 'project container identity is invalid.'; return 1; }
+        label="$("$docker_bin" inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$container_id" 2>/dev/null || true)"
+        [[ "$label" == "$project" ]] || { failed 'project container ownership verification failed; refusing recovery.'; return 1; }
+      done <<< "$project_container_ids"
+      while IFS= read -r container_id; do
+        [[ -n "$container_id" ]] || continue
+        "$docker_bin" container rm --force "$container_id" >/dev/null || { failed 'cannot remove an exactly owned project container.'; return 1; }
+      done <<< "$project_container_ids"
+      compose down --volumes --remove-orphans || return 1
+    fi
   elif [[ -n "${VPS_COMPOSE_COMMAND:-}" ]]; then
     COMPOSE_PROJECT_NAME="$project" bash -c "$VPS_COMPOSE_COMMAND down --volumes --remove-orphans" </dev/null || return 1
   elif [[ -x "${VPS_COMPOSE_WRAPPER:-}" ]]; then
     "$VPS_COMPOSE_WRAPPER" --project-name "$project" down --volumes --remove-orphans </dev/null || return 1
   fi
   if [[ -f "$override_file" && "$custom_mode" -eq 0 ]]; then
-    native_image_tags
     local tag
     for tag in "${native_tags[@]}"; do
       if "$docker_bin" image inspect "$tag" >/dev/null 2>&1; then
@@ -235,13 +282,13 @@ phase_cleanup() {
   for resource in container network volume image; do
     ids="$("$docker_bin" "$resource" ls -q --filter "label=com.docker.compose.project=$project")" || { failed "cannot inspect project $resource resources."; return 1; }
     if [[ -n "$ids" ]]; then
-      if [[ "$resource" == image ]]; then
+      if [[ "$resource" == image && ! -f "$override_file" ]]; then
         while IFS= read -r id; do
           [[ -n "$id" ]] || continue
-          "$docker_bin" image rm --force "$id" || { failed "cannot remove project image $id."; return 1; }
+          "$docker_bin" image rm --force "$id" >/dev/null || { failed 'cannot remove custom project image.'; return 1; }
         done <<< "$ids"
       else
-        failed "project $resource cleanup left resources: $ids"; return 1
+        failed "project $resource cleanup left resources."; return 1
       fi
     fi
   done
@@ -287,7 +334,8 @@ if [[ "$mode" == preview ]]; then
     "$VPS_COMPOSE_WRAPPER" --project-name "$project" up -d postgres api web </dev/null
   fi
   if [[ "$custom_mode" -eq 0 ]]; then
-    native_health || exit 11
+    native_health || { record_readiness_evidence; exit 11; }
+    record_readiness_evidence
   else
     [[ -n "${VPS_HEALTH_COMMAND:-}" ]] || failed 'health command is required for preview.'
     timeout "${VPS_HEALTH_TIMEOUT:-30s}" bash -c "$VPS_HEALTH_COMMAND" </dev/null || exit 11
