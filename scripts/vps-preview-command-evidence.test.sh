@@ -14,6 +14,7 @@ set -Eeuo pipefail
 printf '%s\n' "$@" > "${ARGV_CAPTURE:?}"
 printf '%s\n' "${*: -1}" > "${CAPTURE:?}"
 cat >/dev/null
+[[ -z "${VPS_SSH_IDENTITY_FILE:-}" ]] || printf 'identity=%s\n' "$VPS_SSH_IDENTITY_FILE"
 if [[ "${ENVELOPE_MODE:-valid}" == absent ]]; then
   printf '%s\n' 'password=secret' 'Authorization: Bearer secret'
   exit "${SSH_STATUS:-0}"
@@ -80,7 +81,7 @@ assert_ssh_options() {
   local other_batch_mode=yes
   [[ "$batch_mode" == yes ]] && other_batch_mode=no
   count_arg() { awk -v expected="$1" '$0 == expected { count++ } END { print count + 0 }' "$argv_capture"; }
-  [[ "$(count_arg '-o')" -eq 6 ]]
+  [[ "$(count_arg '-o')" -eq "${EXPECTED_SSH_OPTION_COUNT:-6}" ]]
   [[ "$(count_arg 'ConnectTimeout=10')" -eq 1 ]]
   [[ "$(count_arg 'ServerAliveInterval=15')" -eq 1 ]]
   [[ "$(count_arg 'ServerAliveCountMax=4')" -eq 1 ]]
@@ -90,6 +91,52 @@ assert_ssh_options() {
   ! grep -Eq "StrictHostKeyChecking=(no|accept-new)|UserKnownHostsFile=/dev/null|ServerAliveInterval=0|BatchMode=$other_batch_mode" "$argv_capture"
 }
 assert_ssh_options yes
+identity_file="$work/id_ed25519"
+ssh-keygen -q -t ed25519 -N '' -f "$identity_file"
+chmod 600 "$identity_file"
+identity_output="$("${base[@]}" VPS_SSH_IDENTITY_FILE="$identity_file" VPS_LOCAL_EVIDENCE_FILE="$work/identity-evidence" bash "$script" migration-only --source "$source_repo" --commit "$commit" --tree "$tree" --id identity-check 2>"$work/identity-error")"
+[[ "$identity_output" == *'SSH options: '*'-i [IDENTITY_FILE] -o IdentitiesOnly=yes'* ]]
+if grep -Fq "$identity_file" "$work/identity-error" || grep -Fq "$identity_file" <<<"$identity_output"; then exit 1; fi
+if grep -Fq "$identity_file" "$work/identity-evidence"; then exit 1; fi
+grep -Fxq -- '-i' "$argv_capture"
+grep -Fxq -- "$identity_file" "$argv_capture"
+grep -Fxq -- 'IdentitiesOnly=yes' "$argv_capture"
+if grep -Fq "$identity_file" "$capture"; then exit 1; fi
+EXPECTED_SSH_OPTION_COUNT=7 assert_ssh_options yes
+relative_identity='relative-id'
+printf '%s\n' 'not-a-key' > "$work/$relative_identity"
+chmod 600 "$work/$relative_identity"
+set +e
+"${base[@]}" VPS_SSH_IDENTITY_FILE="$relative_identity" bash "$script" migration-only --source "$source_repo" --commit "$commit" --tree "$tree" --id relative-id >"$work/relative-output" 2>&1
+identity_status=$?
+set -e
+[[ "$identity_status" -eq 3 ]] && ! grep -Fq "$relative_identity" "$work/relative-output"
+ln -s "$identity_file" "$work/id-symlink"
+set +e
+"${base[@]}" VPS_SSH_IDENTITY_FILE="$work/id-symlink" bash "$script" migration-only --source "$source_repo" --commit "$commit" --tree "$tree" --id symlink-id >"$work/symlink-output" 2>&1
+identity_status=$?
+set -e
+[[ "$identity_status" -eq 3 ]] && ! grep -Fq "$work/id-symlink" "$work/symlink-output"
+chmod 640 "$identity_file"
+set +e
+"${base[@]}" VPS_SSH_IDENTITY_FILE="$identity_file" bash "$script" migration-only --source "$source_repo" --commit "$commit" --tree "$tree" --id unsafe-id >"$work/unsafe-output" 2>&1
+identity_status=$?
+set -e
+[[ "$identity_status" -eq 3 ]] && ! grep -Fq "$identity_file" "$work/unsafe-output"
+chmod 600 "$identity_file"
+set +e
+"${base[@]}" SSHPASS=secret VPS_SSH_IDENTITY_FILE="$identity_file" bash "$script" migration-only --source "$source_repo" --commit "$commit" --tree "$tree" --id password-identity >"$work/conflict-output" 2>&1
+identity_status=$?
+set -e
+[[ "$identity_status" -eq 3 ]] && ! grep -Fq "$identity_file" "$work/conflict-output"
+newline_identity="$work/id"$'\n''ed25519'
+printf '%s\n' 'not-a-key' > "$newline_identity"
+chmod 600 "$newline_identity"
+set +e
+"${base[@]}" VPS_SSH_IDENTITY_FILE="$newline_identity" bash "$script" migration-only --source "$source_repo" --commit "$commit" --tree "$tree" --id newline-id >"$work/newline-output" 2>&1
+identity_status=$?
+set -e
+[[ "$identity_status" -eq 3 ]] && ! grep -Fq 'ed25519' "$work/newline-output"
 password_output="$("${base[@]}" SSHPASS=secret VPS_LOCAL_EVIDENCE_FILE="$work/password-evidence" bash "$script" migration-only --source "$source_repo" --commit "$commit" --tree "$tree" --id password-check)"
 [[ "$password_output" == *'READY:'* ]]
 assert_ssh_options no

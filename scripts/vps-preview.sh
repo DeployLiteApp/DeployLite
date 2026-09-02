@@ -35,6 +35,7 @@ persist_local_evidence() {
 mode="${1:-}"; [[ "$mode" == migration-only || "$mode" == preview || "$mode" == cleanup ]] || { usage >&2; exit 3; }; shift
 source_dir=""; expected_commit=""; expected_tree=""; preview_id=""
 remote_host="${VPS_HOST:-}"; remote_user="${VPS_USER:-deploylite}"; remote_root="${VPS_REMOTE_ROOT:-}"
+identity_file="${VPS_SSH_IDENTITY_FILE:-}"
 while (($#)); do
   case "$1" in
     --source) source_dir="${2:-}"; shift 2 ;;
@@ -69,6 +70,18 @@ remote_root="${remote_root:-/var/tmp/deploylite-preview/$preview_id}"
 [[ "$remote_host" != *:* && "$remote_host" != */* ]] || blocked 'host must be a hostname, not a URL or path.'
 [[ "$remote_host" != production* && "$remote_host" != canonical* && "$remote_host" != deploylite* ]] || blocked 'canonical and production hosts are forbidden.'
 [[ "$remote_user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || blocked 'invalid remote user.'
+if [[ -n "$identity_file" ]]; then
+  [[ "$identity_file" == /* && "$identity_file" != *$'\n'* ]] || blocked 'VPS_SSH_IDENTITY_FILE must be an absolute path without newlines.'
+  [[ -f "$identity_file" && ! -L "$identity_file" && -r "$identity_file" ]] || blocked 'VPS_SSH_IDENTITY_FILE must be a readable regular non-symlink file.'
+  if stat -c '%a' "$identity_file" >/dev/null 2>&1; then
+    identity_mode="$(stat -c '%a' "$identity_file")"
+  else
+    identity_mode="$(stat -f '%Lp' "$identity_file")"
+  fi
+  [[ "$identity_mode" =~ ^[0-7]{3,4}$ ]] || blocked 'VPS_SSH_IDENTITY_FILE mode could not be read.'
+  identity_mode="${identity_mode: -3}"
+  (( 8#$identity_mode & 077 )) && blocked 'VPS_SSH_IDENTITY_FILE must not grant group or other permissions.'
+fi
 if [[ "$mode" != cleanup ]]; then
   vps_source_provenance "$source_dir" "$expected_commit" "$expected_tree" >/dev/null || exit $?
   source_url="${VPS_SOURCE_URL:-$(git -C "$source_dir" remote get-url origin)}"
@@ -80,6 +93,7 @@ fi
 [[ -n "${VPS_KNOWN_HOSTS_FILE:-}" && -r "$VPS_KNOWN_HOSTS_FILE" ]] || blocked 'VPS_KNOWN_HOSTS_FILE is required for strict host verification.'
 [[ -s "$VPS_KNOWN_HOSTS_FILE" ]] || blocked 'VPS_KNOWN_HOSTS_FILE must not be empty.'
 if [[ -n "${SSHPASS:-}" ]]; then
+  [[ -z "$identity_file" ]] || blocked 'VPS_SSH_IDENTITY_FILE cannot be combined with SSHPASS.'
   command -v sshpass >/dev/null 2>&1 || blocked 'SSHPASS requires sshpass.'
   ssh_cmd=(sshpass -e ssh)
 else
@@ -120,6 +134,9 @@ if [[ -n "${SSHPASS:-}" ]]; then
   ssh_opts+=(-o BatchMode=no)
 else
   ssh_opts+=(-o BatchMode=yes)
+fi
+if [[ -n "$identity_file" ]]; then
+  ssh_opts+=(-i "$identity_file" -o IdentitiesOnly=yes)
 fi
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/vps-preview.XXXXXX")"
@@ -189,5 +206,11 @@ fi
 
 printf 'READY: mode=%s id=%s commit=%s tree=%s\n' "$mode" "$preview_id" "$expected_commit" "$expected_tree"
 printf 'SSH: strict host verification enabled; fingerprint supplied out-of-band.\n'
-printf 'SSH options: %s\n' "${ssh_opts[*]}"
+display_ssh_opts=("${ssh_opts[@]}")
+if [[ -n "$identity_file" ]]; then
+  for option_index in "${!display_ssh_opts[@]}"; do
+    [[ "${display_ssh_opts[option_index]}" == "$identity_file" ]] && display_ssh_opts[option_index]='[IDENTITY_FILE]'
+  done
+fi
+printf 'SSH options: %s\n' "${display_ssh_opts[*]}"
 printf 'EXECUTION: remote phases are delegated to scripts/vps-preview-remote.sh; no credentials are printed.\n'

@@ -5,7 +5,10 @@
 require a clean checkout plus exact
 commit and tree IDs, and uses only strict SSH host verification. Passwords
 must be supplied through `SSHPASS` (consumed with `sshpass -e`) or an SSH key
-agent; credentials are never command arguments, files, or output. With no
+agent; credentials are never command arguments, files, or output. An optional
+local-only `VPS_SSH_IDENTITY_FILE` may select one absolute, readable private key
+file with no group/other permissions; it adds `-i` and `IdentitiesOnly=yes` and
+cannot be combined with `SSHPASS`. With no
 custom lifecycle commands, preview creates a mode-600 environment and
 deterministic commit-tagged images, explicitly builds `migrate`, `api`, and
 `web`, then starts and polls only the isolated project without Traefik. Custom

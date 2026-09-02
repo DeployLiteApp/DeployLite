@@ -50,7 +50,7 @@ vps_redact() {
   # Keep output bounded and redact both values and common assignment/URL forms.
   local input secret name
   input="$(LC_ALL=C head -c "${VPS_MAX_EVIDENCE_BYTES:-65536}")"
-  for name in SSHPASS VPS_DB_PASSWORD VPS_API_TOKEN VPS_AUTHORIZATION DATABASE_URL; do
+  for name in SSHPASS VPS_DB_PASSWORD VPS_API_TOKEN VPS_AUTHORIZATION DATABASE_URL VPS_SSH_IDENTITY_FILE; do
     secret="${!name:-}"
     [[ -n "$secret" ]] && input="${input//"$secret"/[REDACTED]}"
   done
