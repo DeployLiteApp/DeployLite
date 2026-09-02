@@ -21,6 +21,10 @@ INTERACTIVE=1
 NOOP=0
 CHECK=0
 CHANGED_STEPS=()
+PROGRESS_TOTAL=6
+PROGRESS_INDEX=0
+PROGRESS_LABEL=""
+STEP_RESULT=pass
 
 log() { printf '[%s] %s\n' "$1" "$(redact "${2:-}")"; }
 info() { log INFO "$1"; }
@@ -30,7 +34,16 @@ info() { log INFO "$1"; }
 # because it is the normal "this worked" channel and the installer's
 # `exec > >(tee ...)` redirect is the one that copies it to the log.
 warn() { printf '[%s] %s\n' "$1" "$(redact "${2:-}")" >&2; }
-fail() { printf '[%s] %s\n' "$1" "$(redact "${2:-}")" >&2; exit "${2:-1}"; }
+fail() {
+  if [[ -n "$PROGRESS_LABEL" && "$PROGRESS_INDEX" -gt 0 ]]; then
+    ACTIVE_STEP="$PROGRESS_LABEL"
+    progress_result fail "${1:-installation error}"
+    warn "Install failed during ${ACTIVE_STEP}."
+    warn "Resume: re-run this installer; durable progress is stored at ${STATE_FILE}."
+  fi
+  printf '[%s] %s\n' "$1" "$(redact "${2:-}")" >&2
+  exit "${2:-1}"
+}
 
 redact() {
   local value="${1:-}"
@@ -53,14 +66,19 @@ redact_stream() {
 
 on_error() {
   local code=$?
-  warn "Install failed. Changed steps: ${CHANGED_STEPS[*]:-none}. Preserving installed prerequisites and Compose templates."
+  warn "Install failed during ${ACTIVE_STEP:-admission checks}. Changed steps: ${CHANGED_STEPS[*]:-none}. Preserving installed prerequisites and Compose templates."
+  warn "Resume: re-run this installer; durable progress is stored at ${STATE_FILE}."
   exit "$code"
 }
 trap on_error ERR
 
 on_signal() {
   local code="$1"
+  if [[ -n "$ACTIVE_STEP" && "$PROGRESS_INDEX" -gt 0 ]]; then
+    progress_result fail "interrupted"
+  fi
   warn "Install interrupted during ${ACTIVE_STEP:-admission checks}. Completed steps are preserved; the active step was not recorded."
+  warn "Resume: re-run this installer; durable progress is stored at ${STATE_FILE}."
   exit "$code"
 }
 trap 'on_signal 130' INT
@@ -240,6 +258,7 @@ run_durable_step() {
     *) warn "Unknown installer step: ${step}."; return 2 ;;
   esac
   if state_has_step "$step"; then
+    STEP_RESULT=skip
     info "Skipping completed installer step: ${step}."
     return 0
   fi
@@ -255,6 +274,42 @@ run_durable_step() {
   state_write
   ACTIVE_STEP=""
   return 0
+}
+
+progress_start() {
+  PROGRESS_INDEX="$1"
+  ACTIVE_STEP="$2"
+  PROGRESS_LABEL="$2"
+  info "[${PROGRESS_INDEX}/${PROGRESS_TOTAL}] ${ACTIVE_STEP}: RUNNING"
+}
+
+progress_result() {
+  local status="$1" detail="${2:-}"
+  case "$status" in
+    pass) status=PASS ;;
+    skip) status=SKIP ;;
+    fail) status=FAIL ;;
+    *) ;;
+  esac
+  info "[${PROGRESS_INDEX}/${PROGRESS_TOTAL}] ${ACTIVE_STEP}: ${status}${detail:+ — ${detail}}"
+}
+
+run_progress_step() {
+  local index="$1" label="$2" runner="$3" status=0
+  progress_start "$index" "$label"
+  STEP_RESULT=pass
+  if "$runner"; then
+    ACTIVE_STEP="$label"
+    progress_result "$STEP_RESULT"
+    ACTIVE_STEP=""
+    PROGRESS_LABEL=""
+    return 0
+  else
+    status=$?
+  fi
+  ACTIVE_STEP="$label"
+  progress_result fail
+  return "$status"
 }
 
 print_usage() {
@@ -612,10 +667,12 @@ preflight() {
 
 install_docker() {
   if [[ "${DEPLOYLITE_SKIP_DOCKER_INSTALL:-0}" == "1" ]]; then
+    STEP_RESULT=skip
     info "Skipping Docker install (DEPLOYLITE_SKIP_DOCKER_INSTALL=1)."
     return 0
   fi
   if command_exists docker && as_root docker compose version >/dev/null 2>&1; then
+    STEP_RESULT=skip
     info "Docker Engine and Compose plugin already installed; skipping apt install."
     return
   fi
@@ -631,6 +688,7 @@ install_docker() {
 
 install_curl() {
   if command_exists curl; then
+    STEP_RESULT=skip
     info "curl is available for local reachability checks."
     return 0
   fi
@@ -734,14 +792,27 @@ main() {
   state_prepare_dir
   acquire_state_lock || return $?
   trap release_state_lock EXIT
-  preflight
-  state_load
-  run_durable_step install-curl install_curl || return $?
-  run_durable_step install-docker install_docker || return $?
-  run_durable_step prepare-install-dir prepare_install_dir || return $?
-  validate_compose
+   run_progress_step 1 "Host preflight" preflight || return $?
+   load_installer_state
+   run_progress_step 2 "curl" run_install_curl_step || return $?
+   run_progress_step 3 "Docker/Compose" run_install_docker_step || return $?
+   run_progress_step 4 "Install directory and overlay copy" run_prepare_install_dir_step || return $?
+   run_progress_step 5 "Config validation" validate_compose || return $?
+   run_progress_step 6 "P1 handoff" p1_handoff || return $?
+ }
+
+p1_handoff() {
   info "P0 prerequisite setup complete. No runtime secrets were generated or persisted, and no services were started."
   info "Handoff: P0 prerequisite setup is complete; runtime setup was not executed, and the supported runtime/web handoff is deferred to tracked P1 work #233."
+}
+
+run_install_curl_step() { run_durable_step install-curl install_curl; }
+run_install_docker_step() { run_durable_step install-docker install_docker; }
+run_prepare_install_dir_step() { run_durable_step prepare-install-dir prepare_install_dir; }
+load_installer_state() {
+  ACTIVE_STEP="installer state load/validation"
+  state_load
+  ACTIVE_STEP=""
 }
 
 if [[ "${DEPLOYLITE_INSTALL_TESTING:-0}" != "1" ]]; then
