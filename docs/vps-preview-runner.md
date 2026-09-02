@@ -5,7 +5,12 @@
 require a clean checkout plus exact
 commit and tree IDs, and uses only strict SSH host verification. Passwords
 must be supplied through `SSHPASS` (consumed with `sshpass -e`) or an SSH key
-agent; credentials are never command arguments, files, or output.
+agent; credentials are never command arguments, files, or output. With no
+custom lifecycle commands, preview creates a mode-600 environment and
+deterministic commit-tagged images, explicitly builds `migrate`, `api`, and
+`web`, then starts and polls only the isolated project without Traefik. Custom
+migration, Compose, and health commands remain supported as an all-or-none
+compatibility mode.
 
 The local checkout must be clean at the requested full commit and tree. The
 runner derives its `origin` URL (or accepts `VPS_SOURCE_URL`) and only permits

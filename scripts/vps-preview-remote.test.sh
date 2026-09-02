@@ -130,6 +130,49 @@ cleanup_streamed_output="$work/cleanup-streamed-output"
 grep -Fq 'PASS: cleanup' "$cleanup_streamed_output"
 grep -Fq -- '--project-name deploylite-preview-'"$cleanup_streamed_id"' down --volumes --remove-orphans' "$preview_streamed_log"
 [[ ! -e "$cleanup_streamed_root" ]]
+native_id="native-$RANDOM"; native_root="/var/tmp/deploylite-preview/$native_id"; native_log="$work/native.log"
+cat > "$work/native-docker" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "${1:-}" == compose ]]; then printf 'compose %s\n' "$*" >> "${NATIVE_LOG:?}"; printf 'native compose\n'; [[ "$*" == *' ps -q '* ]] && printf 'native-container\n'; exit 0; fi
+if [[ "${1:-}" == inspect ]]; then n=0; [[ -f "$NATIVE_COUNT" ]] && n="$(<"$NATIVE_COUNT")"; n=$((n + 1)); printf '%s\n' "$n" > "${NATIVE_COUNT:?}"; (( n > 2 )) && printf 'healthy\n' || printf 'starting\n'; exit 0; fi
+if [[ "${1:-}" == image && "${2:-}" == inspect ]]; then grep -Fqx "${3:?}" "${NATIVE_IMAGE_STATE:?}"; exit $?; fi
+if [[ "${1:-}" == image && "${2:-}" == rm ]]; then tag="${4:?}"; grep -Fvx "$tag" "${NATIVE_IMAGE_STATE:?}" > "${NATIVE_IMAGE_STATE}.tmp" || :; mv "${NATIVE_IMAGE_STATE}.tmp" "$NATIVE_IMAGE_STATE"; printf '%s\n' "$tag" >> "${NATIVE_IMAGE_RM:?}"; exit 0; fi
+case "${1:-}" in container|network|volume|image) exit 0;; esac
+exit 1
+EOF
+cat > "$work/curl" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+n=0; [[ -f "$NATIVE_CURL_COUNT" ]] && n="$(<"$NATIVE_CURL_COUNT")"; n=$((n + 1)); printf '%s\n' "$n" > "${NATIVE_CURL_COUNT:?}"; [[ -n "${NATIVE_ALWAYS_FAIL:-}" ]] && exit 1; (( n > 1 ))
+EOF
+chmod +x "$work/native-docker" "$work/curl"
+native_output="$work/native-output"
+set +e; env -i PATH="$work:$PATH" NATIVE_LOG="$native_log" NATIVE_COUNT="$work/native-count" NATIVE_CURL_COUNT="$work/curl-count" \
+  VPS_DOCKER_BIN="$work/native-docker" VPS_SOURCE_URL="$source_repo" VPS_COMMIT="$commit" VPS_TREE="$tree" VPS_REMOTE_ROOT="$native_root" \
+  VPS_LOOPBACK_PORTS='127.0.0.1:15432,127.0.0.1:18080,127.0.0.1:18443' VPS_HEALTH_TIMEOUT=5 VPS_HEALTH_INTERVAL=1 VPS_KEEP_PREVIEW=1 \
+  bash "$script" preview "$native_id" >"$native_output" 2>&1; native_status=$?; set -e
+[[ "$native_status" -eq 0 ]] || { cat "$native_output" >&2; exit 1; }
+grep -Fq 'BUILD: complete' "$native_output"; grep -Fq 'READINESS: success attempts=' "$native_output"; grep -Fq 'lifecycle_mode=native' "$native_output"
+build_line="$(awk '/compose .* build migrate api web/{print NR; exit}' "$native_log")"; postgres_line="$(awk '/compose .* up -d postgres/{print NR; exit}' "$native_log")"; migration_line="$(awk '/compose .* up migrate/{print NR; exit}' "$native_log")"; up_line="$(awk '/compose .* up -d api web/{print NR; exit}' "$native_log")"; [[ "$build_line" -lt "$postgres_line" && "$postgres_line" -lt "$migration_line" && "$migration_line" -lt "$up_line" ]]
+[[ "$(<"$work/native-count")" -gt 6 && "$(<"$work/curl-count")" -gt 1 ]]
+grep -Fq '127.0.0.1:15432:5432' "$native_root/preview.override.yml"; grep -Fq '127.0.0.1:18080:3000' "$native_root/preview.override.yml"; grep -Fq '127.0.0.1:18443:3001' "$native_root/preview.override.yml"
+grep -Fq 'deploylite-preview-' "$native_root/preview.override.yml"; file_mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }; [[ "$(file_mode "$native_root/.env")" == 600 ]]; grep -Fq 'POSTGRES_PASSWORD' "$native_output" && exit 1
+image_rm_log="$work/native-image-rm"; image_state="$work/native-image-state"; for service in migrate api web; do printf 'deploylite-preview-%s-%s:%s\n' "$native_id" "$service" "$commit"; done > "$image_state"
+env -i PATH="$work:$PATH" VPS_DOCKER_BIN="$work/native-docker" NATIVE_LOG="$native_log" NATIVE_IMAGE_RM="$image_rm_log" NATIVE_IMAGE_STATE="$image_state" VPS_REMOTE_ROOT="$native_root" bash "$script" cleanup "$native_id" >/dev/null
+[[ ! -e "$native_root" ]]
+[[ "$(wc -l < "$image_rm_log")" -eq 3 && ! -s "$image_state" ]]; for service in migrate api web; do grep -Eq "^deploylite-preview-${native_id}-${service}:[0-9a-f]{40}$" "$image_rm_log"; done
+invalid_interval_id="invalid-interval-$RANDOM"; invalid_interval_root="/var/tmp/deploylite-preview/$invalid_interval_id"; invalid_interval_output="$work/invalid-interval-output"; started="$(date +%s)"
+set +e; env -i PATH="$work:$PATH" NATIVE_LOG="$native_log" NATIVE_IMAGE_RM="$work/invalid-image-rm" NATIVE_COUNT="$work/invalid-count" NATIVE_CURL_COUNT="$work/invalid-curl-count" \
+  VPS_DOCKER_BIN="$work/native-docker" VPS_SOURCE_URL="$source_repo" VPS_COMMIT="$commit" VPS_TREE="$tree" VPS_REMOTE_ROOT="$invalid_interval_root" VPS_HEALTH_TIMEOUT=30 VPS_HEALTH_INTERVAL=invalid \
+  bash "$script" preview "$invalid_interval_id" >"$invalid_interval_output" 2>&1; invalid_interval_status=$?; set -e
+elapsed=$(( $(date +%s) - started )); [[ "$invalid_interval_status" -eq 11 && "$elapsed" -le 3 && ! -e "$invalid_interval_root" ]]; grep -Fq 'VPS_HEALTH_INTERVAL must be an integer' "$invalid_interval_output"; grep -Fq 'PHASE: cleanup complete status=0' "$invalid_interval_output"
+timeout_id="timeout-native-$RANDOM"; timeout_root="/var/tmp/deploylite-preview/$timeout_id"; timeout_output="$work/timeout-native-output"
+set +e; env -i PATH="$work:$PATH" NATIVE_LOG="$native_log" NATIVE_IMAGE_RM="$work/timeout-image-rm" NATIVE_COUNT="$work/timeout-count" NATIVE_CURL_COUNT="$work/timeout-curl-count" NATIVE_ALWAYS_FAIL=1 \
+  VPS_DOCKER_BIN="$work/native-docker" VPS_SOURCE_URL="$source_repo" VPS_COMMIT="$commit" VPS_TREE="$tree" VPS_REMOTE_ROOT="$timeout_root" VPS_HEALTH_TIMEOUT=2 VPS_HEALTH_INTERVAL=1 \
+  bash "$script" preview "$timeout_id" >"$timeout_output" 2>&1; timeout_status=$?; set -e
+[[ "$timeout_status" -eq 11 && ! -e "$timeout_root" ]]; grep -Fq 'READINESS: timeout' "$timeout_output"; grep -Fq 'PHASE: cleanup complete status=0' "$timeout_output"
+partial_id="partial-$RANDOM"; run_case partial-custom 1 "${envbase[@]}" VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$partial_id" VPS_MIGRATION_COMMAND=true bash "$script" preview "$partial_id"
 known_id="known-$RANDOM"; known_output="$work/known-secret"
 "${envbase[@]}" VPS_REMOTE_ROOT="/var/tmp/deploylite-preview/$known_id" VPS_DB_PASSWORD=known-db-password \
   VPS_MIGRATION_COMMAND='printf "value=known-db-password\n"' bash "$script" migration-only "$known_id" >"$known_output" 2>&1
