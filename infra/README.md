@@ -62,4 +62,6 @@ sudo bash scripts/install.sh
 
 The installer supports Ubuntu 20.04/22.04/24.04 and Debian 11/12 on x86_64 or arm64. It requires root or sudo, verifies ports `80` and `443`, installs/verifies Docker Engine and the Compose plugin through `apt`, copies both Compose files, validates the merged files with `config --no-interpolate`, and prints the P1/#233 handoff. The web, API, and Postgres are not running when this command completes.
 
+During a normal install, the same six-step progress contract is printed in interactive and noninteractive modes: host preflight, curl, Docker/Compose, install-directory and overlay copy, config validation, and P1 handoff. Each stage first emits a numbered `[current/6] ...: RUNNING` transition, then exactly one numbered terminal status ending in `PASS`, `SKIP`, or `FAIL`. The optional whiptail UI only enhances the prerequisite confirmation prompt. A failed or interrupted run reports the active step and the protected state path. Re-run the installer to resume: only the durable curl, Docker, and install-directory steps are skipped when their state is already complete, while checks and validation run again.
+
 This contract does not configure a custom public domain, ACME identity, firewall, backups, upgrades, uninstall/reset, Dokploy, or a deployment agent/server Docker socket.

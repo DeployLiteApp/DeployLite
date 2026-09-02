@@ -500,6 +500,63 @@ test_state_uses_root_model_for_nonroot_operations() (
   rm -rf "$tmp"
 )
 
+test_progress_reports_ordered_plan_and_statuses() {
+  local output
+  output="$( { progress_start 1 'Host preflight'; progress_result pass; progress_start 2 curl; progress_result skip; progress_start 3 'Docker/Compose'; progress_result fail; } 2>&1 )"
+  assert_contains "$output" '[1/6] Host preflight: PASS' || return 1
+  assert_contains "$output" '[2/6] curl: SKIP' || return 1
+  assert_contains "$output" '[3/6] Docker/Compose: FAIL' || return 1
+  [[ "${output%%$'\n'*}" == *'[1/6]'* ]] || return 1
+}
+
+test_progress_contract_is_identical_for_interactive_and_noninteractive_modes() {
+  local mode output
+  run_progress_mode() (
+    local selected_mode="$1" tmp
+    tmp="$(mktemp -d)"; state_test_setup "$tmp"; release_state_lock
+    prompt_value() { printf 'yes'; }
+    install_log_setup() { :; }; preflight() { :; }; install_curl() { :; }
+    install_docker() { :; }; prepare_install_dir() { :; }; validate_compose() { :; }
+    if [[ "$selected_mode" == interactive ]]; then main --interactive; else main --non-interactive; fi
+    rm -rf "$tmp"
+  )
+  for mode in interactive noninteractive; do
+    output="$(run_progress_mode "$mode")"
+    for expected in \
+      '[1/6] Host preflight: PASS' \
+      '[2/6] curl: PASS' \
+      '[3/6] Docker/Compose: PASS' \
+      '[4/6] Install directory and overlay copy: PASS' \
+      '[5/6] Config validation: PASS' \
+      '[6/6] P1 handoff: PASS'; do
+      assert_contains "$output" "$expected" || return 1
+    done
+  done
+}
+
+test_error_diagnostic_names_active_step_and_state_without_secret() (
+  local tmp output status
+  tmp="$(mktemp -d)"; INSTALL_DIR="$tmp/install"; STATE_DIR="$INSTALL_DIR/.state"; STATE_FILE="$STATE_DIR/install-state"; mkdir -p "$STATE_DIR"
+  ACTIVE_STEP='Config validation'; PROGRESS_INDEX=5
+  set +e; output="$(on_error 1 2>&1)"; status=$?; set -e
+  [[ "$status" -eq 0 ]] || return 1
+  assert_contains "$output" 'Install failed during Config validation' || return 1
+  assert_contains "$output" 'Resume: re-run this installer' || return 1
+  rm -rf "$tmp"
+)
+
+test_state_load_failure_diagnostic_identifies_state_validation() (
+  local tmp output status
+  tmp="$(mktemp -d)"; state_test_setup "$tmp"; release_state_lock
+  install_log_setup() { :; }; preflight() { :; }; state_load() { return 2; }
+  set +e; output="$(main --non-interactive 2>&1)"; status=$?; set -e
+  [[ "$status" -eq 2 ]] || return 1
+  assert_contains "$output" 'Install failed during installer state load/validation' || return 1
+  assert_contains "$output" "${tmp}/install/.state/install-state" || return 1
+  assert_contains "$output" 'Resume: re-run this installer' || return 1
+  rm -rf "$tmp"
+)
+
 run_test 'redaction masks secrets' test_redaction_masks_database_url_and_secret_assignments
 run_test 'unsupported host fails before mutation' test_unsupported_host_fails_without_mutation
 run_test 'occupied port fails actionably' test_occupied_port_fails_actionably
@@ -533,6 +590,10 @@ run_test 'main flow blocks concurrent runs before side effects' test_main_flow_b
 run_test 'INT preserves prior state and does not mark active step' test_main_flow_signal_int
 run_test 'TERM preserves prior state and does not mark active step' test_main_flow_signal_term
 run_test 'state uses root model for non-root operations' test_state_uses_root_model_for_nonroot_operations
+run_test 'progress reports ordered plan and explicit statuses' test_progress_reports_ordered_plan_and_statuses
+run_test 'progress contract is shared by interactive and noninteractive modes' test_progress_contract_is_identical_for_interactive_and_noninteractive_modes
+run_test 'error diagnostics identify active step and safe resume state' test_error_diagnostic_names_active_step_and_state_without_secret
+run_test 'state load failure identifies state validation and resume path' test_state_load_failure_diagnostic_identifies_state_validation
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
