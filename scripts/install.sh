@@ -12,6 +12,13 @@ INSTALL_LOG="${DEPLOYLITE_INSTALL_LOG:-$DEFAULT_LOG_FILE}"
 INSTALL_LOG_DIR="${DEPLOYLITE_INSTALL_LOG_DIR:-$(dirname "$INSTALL_LOG")}"
 APT_TIMEOUT_SECONDS="${DEPLOYLITE_APT_TIMEOUT_SECONDS:-180}"
 COMPOSE_TIMEOUT_SECONDS="${DEPLOYLITE_COMPOSE_TIMEOUT_SECONDS:-600}"
+STATE_SCHEMA_VERSION=1
+STATE_FILE="${STATE_DIR}/install-state"
+LOCK_DIR="${STATE_DIR}/install.lock"
+LOCK_HELD=0
+STATE_CONTEXT_FINGERPRINT=""
+COMPLETED_STEPS=()
+ACTIVE_STEP=""
 INTERACTIVE=1
 NOOP=0
 CHECK=0
@@ -58,9 +65,204 @@ on_error() {
 }
 trap on_error ERR
 
+on_signal() {
+  local code="$1"
+  warn "Install interrupted during ${ACTIVE_STEP:-admission checks}. Completed steps are preserved; the active step was not recorded."
+  exit "$code"
+}
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+
 record_change() { CHANGED_STEPS+=("$1"); }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 run() { "$@"; }
+
+sha256_text() {
+  if command_exists sha256sum; then
+    sha256sum | awk '{print $1}'
+  elif command_exists shasum; then
+    shasum -a 256 | awk '{print $1}'
+  else
+    fail "sha256sum or shasum is required for installer state." 2
+  fi
+}
+
+sha256_file() {
+  local path="$1"
+  [[ -f "$path" ]] || fail "Installer source contract is missing: ${path}." 2
+  if command_exists sha256sum; then
+    sha256sum "$path" | awk '{print $1}'
+  elif command_exists shasum; then
+    shasum -a 256 "$path" | awk '{print $1}'
+  else
+    fail "sha256sum or shasum is required for installer state." 2
+  fi
+}
+
+canonical_install_dir() {
+  ( cd -P "$INSTALL_DIR" && pwd -P )
+}
+
+installer_context_fingerprint() {
+  local os_file="${DEPLOYLITE_OS_RELEASE_FILE:-/etc/os-release}" os_id="" os_version="" key value
+  [[ -r "$os_file" ]] || fail "Cannot fingerprint installer context: ${os_file} is unreadable." 2
+  while IFS='=' read -r key value; do
+    case "$key" in
+      ID) os_id="${value%\"}"; os_id="${os_id#\"}" ;;
+      VERSION_ID) os_version="${value%\"}"; os_version="${os_version#\"}" ;;
+    esac
+  done <"$os_file"
+  {
+    printf 'schema=%s\n' "$STATE_SCHEMA_VERSION"
+    printf 'os=%s:%s\n' "$os_id" "$os_version"
+    printf 'architecture=%s\n' "$(uname_machine)"
+    printf 'install_dir=%s\n' "$(canonical_install_dir)"
+    printf 'public_host=%s\n' "${DEPLOYLITE_PUBLIC_HOST:-deploylite.com}"
+    printf 'skip_docker=%s\n' "${DEPLOYLITE_SKIP_DOCKER_INSTALL:-0}"
+    printf 'repo_root=%s\n' "$(cd -P "$REPO_ROOT" && pwd -P)"
+    printf 'compose=%s\n' "$(sha256_file "${REPO_ROOT}/infra/vps/compose.yml")"
+    printf 'compose_tls=%s\n' "$(sha256_file "${REPO_ROOT}/infra/vps/compose.tls.yml")"
+    printf 'installer=%s\n' "$(sha256_file "${REPO_ROOT}/scripts/install.sh")"
+  } | sha256_text
+}
+
+state_owner_is_safe() {
+  local path="$1" owner=""
+  owner="$(as_root stat -c '%u' "$path" 2>/dev/null || as_root stat -f '%u' "$path" 2>/dev/null)" || return 1
+  [[ "$owner" == "0" || "$owner" == "${EUID}" ]]
+}
+
+state_mode_is_safe() {
+  local path="$1" mode=""
+  mode="$(as_root stat -c '%a' "$path" 2>/dev/null || as_root stat -f '%Lp' "$path" 2>/dev/null)" || return 1
+  [[ "$mode" == "600" ]]
+}
+
+acquire_state_lock() {
+  [[ "$LOCK_HELD" -eq 0 ]] || return 0
+  if ! as_root mkdir "$LOCK_DIR" 2>/dev/null; then
+    warn "Another DeployLite installer is using ${STATE_DIR}; refusing to steal the lock. Remove ${LOCK_DIR} only after confirming no installer is running."
+    return 1
+  fi
+  LOCK_HELD=1
+  trap release_state_lock EXIT
+  as_root chmod 700 "$LOCK_DIR"
+}
+
+release_state_lock() {
+  if [[ "$LOCK_HELD" -eq 1 ]]; then
+    as_root rmdir "$LOCK_DIR" 2>/dev/null || true
+    LOCK_HELD=0
+  fi
+}
+
+recover_malformed_state() {
+  local reason="$1" archive_dir
+  archive_dir="$(as_root mktemp -d "${STATE_DIR}/.install-state.invalid.XXXXXX")" || fail "Cannot create a collision-safe installer state archive." 2
+  if ! as_root mv "$STATE_FILE" "${archive_dir}/state"; then
+    as_root rmdir "$archive_dir" 2>/dev/null || true
+    fail "Cannot archive malformed installer state safely (${reason})." 2
+  fi
+  warn "Recovered malformed installer state (${reason}); archived under ${archive_dir}."
+  COMPLETED_STEPS=()
+  state_write
+}
+
+state_prepare_dir() {
+  if [[ -L "$INSTALL_DIR" || -L "$STATE_DIR" || ( -e "$STATE_DIR" && ! -d "$STATE_DIR" ) ]]; then
+    fail "Installer state path is unsafe: ${STATE_DIR}." 2
+  fi
+  as_root mkdir -p "$STATE_DIR"
+  as_root chmod 700 "$STATE_DIR"
+}
+
+state_load() {
+  local schema fingerprint steps line_count=0
+  local line1 line2 line3
+  [[ "$LOCK_HELD" -eq 1 ]] || fail "Installer state lock is not held." 2
+  COMPLETED_STEPS=()
+  STATE_CONTEXT_FINGERPRINT="$(installer_context_fingerprint)"
+  [[ -e "$STATE_FILE" || -L "$STATE_FILE" ]] || return 0
+  if [[ -L "$STATE_FILE" || ! -f "$STATE_FILE" ]] || ! state_owner_is_safe "$STATE_FILE" || ! state_mode_is_safe "$STATE_FILE"; then
+    warn "Installer state is unsafe (path, ownership, or mode): ${STATE_FILE}."
+    warn "Manual recovery: remove or replace ${STATE_FILE} only after confirming its ownership and target are safe."
+    return 2
+  fi
+  line_count="$(as_root awk 'END {print NR}' "$STATE_FILE")" || { recover_malformed_state "unreadable state"; return 0; }
+  if [[ "$line_count" -ne 3 ]]; then recover_malformed_state "invalid line count"; return 0; fi
+  line1="$(as_root sed -n '1p' "$STATE_FILE")"
+  line2="$(as_root sed -n '2p' "$STATE_FILE")"
+  line3="$(as_root sed -n '3p' "$STATE_FILE")"
+  if [[ ! "$line1" =~ ^schema_version=([0-9]+)$ ]]; then recover_malformed_state "invalid schema line"; return 0; fi
+  schema="${BASH_REMATCH[1]}"
+  if [[ ! "$line2" =~ ^context_fingerprint=([0-9a-f]{64})$ ]]; then recover_malformed_state "invalid context fingerprint line"; return 0; fi
+  fingerprint="${BASH_REMATCH[1]}"
+  if [[ ! "$line3" =~ ^completed_steps=(.*)$ ]]; then recover_malformed_state "invalid completion line"; return 0; fi
+  steps="${BASH_REMATCH[1]}"
+  if [[ "$schema" != "$STATE_SCHEMA_VERSION" ]]; then recover_malformed_state "unsupported schema"; return 0; fi
+  case "$steps" in
+    "") ;;
+    install-curl) COMPLETED_STEPS=(install-curl) ;;
+    install-curl,install-docker) COMPLETED_STEPS=(install-curl install-docker) ;;
+    install-curl,install-docker,prepare-install-dir) COMPLETED_STEPS=(install-curl install-docker prepare-install-dir) ;;
+    *) recover_malformed_state "invalid completion prefix"; return 0 ;;
+  esac
+  if [[ "$fingerprint" != "$STATE_CONTEXT_FINGERPRINT" ]]; then
+    COMPLETED_STEPS=()
+    state_write
+    return 0
+  fi
+}
+
+state_write() {
+  local tmp
+  local steps=""
+  [[ "$LOCK_HELD" -eq 1 ]] || fail "Installer state lock is not held." 2
+  if ((${#COMPLETED_STEPS[@]} > 0)); then
+    steps="$(IFS=,; printf '%s' "${COMPLETED_STEPS[*]}")"
+  fi
+  tmp="$(as_root mktemp "${STATE_DIR}/.install-state.XXXXXX")" || fail "Cannot create durable installer state temporary file." 2
+  if ! printf 'schema_version=%s\ncontext_fingerprint=%s\ncompleted_steps=%s\n' "$STATE_SCHEMA_VERSION" "$STATE_CONTEXT_FINGERPRINT" "$steps" | as_root tee "$tmp" >/dev/null; then
+    as_root rm -f "$tmp" || true
+    fail "Cannot write durable installer state." 2
+  fi
+  as_root chmod 600 "$tmp"
+  as_root sync -f "$tmp" || { as_root rm -f "$tmp" || true; fail "Cannot sync durable installer state." 2; }
+  as_root mv "$tmp" "$STATE_FILE" || { as_root rm -f "$tmp" || true; fail "Cannot atomically install durable installer state." 2; }
+  as_root sync -f "$STATE_DIR" || fail "Cannot sync installer state directory." 2
+}
+
+state_has_step() {
+  local step="$1" completed
+  for completed in ${COMPLETED_STEPS[@]+"${COMPLETED_STEPS[@]}"}; do
+    [[ "$completed" == "$step" ]] && return 0
+  done
+  return 1
+}
+
+run_durable_step() {
+  local step="$1" runner="$2" status
+  case "$step" in
+    install-curl|install-docker|prepare-install-dir) ;;
+    *) warn "Unknown installer step: ${step}."; return 2 ;;
+  esac
+  if state_has_step "$step"; then
+    info "Skipping completed installer step: ${step}."
+    return 0
+  fi
+  ACTIVE_STEP="$step"
+  info "Running installer step: ${step}."
+  status=0
+  "$runner" || status=$?
+  if [[ "$status" -ne 0 ]]; then
+    ACTIVE_STEP=""
+    return "$status"
+  fi
+  COMPLETED_STEPS+=("$step")
+  state_write
+  ACTIVE_STEP=""
+  return 0
+}
 
 print_usage() {
   cat <<'USAGE'
@@ -665,10 +867,14 @@ main() {
     info "Noop mode: skipping preflight, Docker install, and runtime."
     return 0
   fi
+  state_prepare_dir
+  acquire_state_lock || return $?
+  trap release_state_lock EXIT
   preflight
-  install_curl
-  install_docker
-  prepare_install_dir
+  state_load
+  run_durable_step install-curl install_curl || return $?
+  run_durable_step install-docker install_docker || return $?
+  run_durable_step prepare-install-dir prepare_install_dir || return $?
   prepare_runtime_env
   validate_compose
   start_bootstrap
