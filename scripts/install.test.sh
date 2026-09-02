@@ -239,6 +239,7 @@ test_main_hands_off_without_secrets_or_runtime_commands() (
   state_test_setup "$tmp"
   release_state_lock
   install_log_setup() { :; }
+  install_runtime_handoff() { :; }
   preflight() { :; }
   install_curl() { :; }
   install_docker() { :; }
@@ -250,11 +251,20 @@ test_main_hands_off_without_secrets_or_runtime_commands() (
   for forbidden in pull build up down run migrate health; do
     assert_not_contains "$(<"$calls_file")" "$forbidden" || return 1
   done
-  assert_contains "$output" 'P0 prerequisite setup complete' || return 1
+  assert_contains "$output" 'P0 prerequisite setup is complete' || return 1
   assert_contains "$output" 'No runtime secrets were generated or persisted' || return 1
   assert_contains "$output" 'P0 prerequisite setup is complete' || return 1
   assert_contains "$output" 'runtime setup was not executed' || return 1
-  assert_contains "$output" 'tracked P1 work #233' || return 1
+  assert_contains "$output" 'Runtime command: sudo /opt/deploylite/runtime-handoff.sh --env-file <operator-file>' || return 1
+  rm -rf "$tmp"
+)
+
+test_runtime_entrypoint_copy_is_root_owned_and_executable() (
+  local tmp calls=()
+  tmp="$(mktemp -d)"; INSTALL_DIR="$tmp/install"; mkdir -p "$INSTALL_DIR"
+  as_root() { calls+=("$*"); }
+  install_runtime_handoff
+  [[ "${calls[*]}" == *'install -m 0755 -o 0 -g 0'* ]] || return 1
   rm -rf "$tmp"
 )
 
@@ -376,7 +386,7 @@ test_state_first_run_markers_and_repeat_noop() (
 test_state_failure_then_resume() (
   local tmp status attempts=0 durable=()
   tmp="$(mktemp -d)"; state_test_setup "$tmp"; release_state_lock; set +e
-  install_log_setup() { :; }; preflight() { :; }; install_curl() { durable+=(curl); }
+  install_log_setup() { :; }; install_runtime_handoff() { transient+=(entrypoint); }; preflight() { :; }; install_curl() { durable+=(curl); }
   install_docker() { durable+=(docker); attempts=$((attempts + 1)); [[ "$attempts" -gt 1 ]]; }
   prepare_install_dir() { durable+=(dir); }; validate_compose() { :; }
   main --non-interactive >/dev/null 2>&1; status=$?; [[ "$status" -ne 0 ]] || return 1; release_state_lock
@@ -462,12 +472,12 @@ test_state_fingerprint_dimensions_reset_without_secrets() (
 test_main_flow_replays_only_transient_work() (
   local tmp calls=() durable=() transient=()
   tmp="$(mktemp -d)"; state_test_setup "$tmp"; release_state_lock
-  install_log_setup() { :; }; preflight() { transient+=(preflight); }; install_curl() { durable+=(curl); }
+  install_log_setup() { :; }; install_runtime_handoff() { transient+=(entrypoint); }; preflight() { transient+=(preflight); }; install_curl() { durable+=(curl); }
   install_docker() { durable+=(docker); }; prepare_install_dir() { durable+=(dir); }
   validate_compose() { transient+=(compose); }
   main --non-interactive; release_state_lock; main --non-interactive
   [[ "${durable[*]}" == "curl docker dir" ]] || return 1
-  [[ "${transient[*]}" == "preflight compose preflight compose" ]] || return 1
+  [[ "${transient[*]}" == "preflight compose entrypoint preflight compose entrypoint" ]] || return 1
   rm -rf "$tmp"
 )
 
@@ -515,7 +525,7 @@ test_progress_contract_is_identical_for_interactive_and_noninteractive_modes() {
     local selected_mode="$1" tmp
     tmp="$(mktemp -d)"; state_test_setup "$tmp"; release_state_lock
     prompt_value() { printf 'yes'; }
-    install_log_setup() { :; }; preflight() { :; }; install_curl() { :; }
+     install_log_setup() { :; }; install_runtime_handoff() { :; }; preflight() { :; }; install_curl() { :; }
     install_docker() { :; }; prepare_install_dir() { :; }; validate_compose() { :; }
     if [[ "$selected_mode" == interactive ]]; then main --interactive; else main --non-interactive; fi
     rm -rf "$tmp"
@@ -574,6 +584,7 @@ run_test 'redact_stream removes postgres passwords and key=value secrets' test_r
 run_test 'validates base and TLS Compose without a runtime profile' test_validate_compose_uses_base_and_tls_overlay_without_profiles
 run_test 'retires runtime generation and orchestration functions' test_runtime_generation_and_orchestration_are_not_callable
 run_test 'hands off after prerequisites without secrets or runtime commands' test_main_hands_off_without_secrets_or_runtime_commands
+run_test 'copies runtime entrypoint root-owned and executable' test_runtime_entrypoint_copy_is_root_owned_and_executable
 run_test 'check mode succeeds using read-only probes' test_check_mode_succeeds_with_read_only_probes
 run_test 'check mode reports missing prerequisites deterministically' test_check_mode_reports_missing_prerequisite_deterministically
 run_test 'check mode reports unsupported platforms' test_check_mode_reports_unsupported_platform
