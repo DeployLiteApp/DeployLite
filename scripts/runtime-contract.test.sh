@@ -50,4 +50,7 @@ for dockerfile in apps/api/Dockerfile apps/web/Dockerfile; do
   grep -Fq "pnpm install --frozen-lockfile" "${dockerfile}" || fail "${dockerfile} must use a frozen pnpm install"
 done
 
+grep -Fqx 'ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0' apps/web/Dockerfile || \
+  fail 'apps/web/Dockerfile must bind the standalone server to 0.0.0.0:3000'
+
 printf 'Runtime contract passed: Node %s, pnpm %s, lock %s\n' "${EXPECTED_NODE_VERSION}" "${EXPECTED_PNPM_VERSION}" "${lock_sha256}"
