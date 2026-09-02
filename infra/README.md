@@ -1,9 +1,9 @@
 # DeployLite Infrastructure
 
-This directory contains local-development infrastructure and the first reviewable VPS runtime contract used by `scripts/bootstrap.sh` and `scripts/install.sh`.
+This directory contains local-development infrastructure and the first reviewable VPS prerequisite contract used by `scripts/bootstrap.sh` and `scripts/install.sh`.
 
 - No production Traefik, ACME, DNS, or certificate mutation is performed here.
-- No Docker socket path or host shell command is required by these templates.
+- No host source-tree bind mount or host shell command is required by these templates. The Traefik overlay intentionally mounts `/var/run/docker.sock` read-only so Traefik can discover labeled services.
 - Future infrastructure changes must stay behind explicit review and real environment configuration.
 
 ## Local PostgreSQL
@@ -12,15 +12,15 @@ This directory contains local-development infrastructure and the first reviewabl
 
 ## VPS installer contract
 
-The installer installs Docker prerequisites, generates installation-local internal secrets in `/opt/deploylite/.env` with mode `0600`, and starts only the `bootstrap` control-plane profile. It does not prompt for a domain, ACME email, or functional runtime configuration.
+The installer installs Docker prerequisites, copies the base Compose file and Traefik overlay to `/opt/deploylite`, and validates their merged structure. It does not generate or persist runtime secrets, activate a Compose profile, or start the web, API, database, migrations, or any other container.
 
 - `postgres` uses `postgres:16-alpine` with a durable named volume.
-- `migrate` runs the existing hand-authored SQL migrations once before the API starts.
+- `migrate` remains a runtime-profile service and is not executed by the installer.
 - Traefik is the sole host listener on ports `80` and `443`; API and web have no host ports.
-- The `bootstrap` profile is TLS-only: HTTP redirects to HTTPS and ACME state persists in `traefik-acme`.
+- The Traefik overlay describes HTTPS and persistent ACME state, but the installer does not activate the `bootstrap` or `runtime` profile.
 - Traefik is pinned to `v3.6.7`. Its Docker v28.3.3 client uses Docker API `1.51`, so the Docker provider can discover the labeled API and web routers on Docker 29 (API `>=1.40`) instead of failing with the obsolete API `1.24` client error. This is observed Docker 29 compatibility only, not proof of support, lifecycle, provenance, supply-chain integrity, or upgrade readiness; see the [platform support policy](../docs/support-policy.md).
-- API CORS and the web API URLs derive from `https://${DEPLOYLITE_PUBLIC_HOST}`.
-- Health checks gate API/Web startup where Compose supports dependency conditions.
+- API CORS and the web API URLs remain Compose runtime configuration; the installer does not resolve or apply them.
+- Health checks remain Compose runtime conditions; the installer does not wait for container health.
 
 For local review, render the installer-safe base and Traefik overlay without starting services or enabling the runtime profile:
 
@@ -28,7 +28,7 @@ For local review, render the installer-safe base and Traefik overlay without sta
 docker compose -f infra/vps/compose.yml -f infra/vps/compose.tls.yml config --no-interpolate
 ```
 
-`deploylite.com` is the non-prompt, installation-specific bootstrap host. DNS for that host must resolve to the VPS before installation so ACME can provision TLS. ACME contact email is optional to Traefik and is not prompted. After the first owner signs in over HTTPS, the owner must set the operational contact and functional runtime configuration through the web surface. The generated database password and encryption key are internal control-plane secrets, never printed, and are not deployment configuration. No deployment or agent execution is started; runtime activation remains an explicit capability-gated admin action.
+The installer does not claim a public host, perform DNS or ACME checks, or make the web surface available. P0 prerequisite setup is complete when it exits; runtime setup was not executed, and the supported runtime/web handoff is deferred to tracked P1 work [#233](https://github.com/CoreFoundryTech/DeployLite/issues/233). The installer does not request, generate, or persist runtime secrets.
 
 ## VPS installer runbook
 
@@ -60,6 +60,6 @@ Alternatively, run from a reviewed source checkout:
 sudo bash scripts/install.sh
 ```
 
-The installer supports Ubuntu 20.04/22.04/24.04 and Debian 11/12 on x86_64 or arm64. It requires root or sudo, verifies ports `80` and `443`, installs/verifies Docker Engine and the Compose plugin through `apt`, copies both Compose files, generates restricted internal secrets, validates the merged `bootstrap` profile, then starts it with a 120-second health-check bound. The first-owner page is routed only through Traefik HTTPS; API, web, and Postgres have no host ports.
+The installer supports Ubuntu 20.04/22.04/24.04 and Debian 11/12 on x86_64 or arm64. It requires root or sudo, verifies ports `80` and `443`, installs/verifies Docker Engine and the Compose plugin through `apt`, copies both Compose files, validates the merged files with `config --no-interpolate`, and prints the P1/#233 handoff. The web, API, and Postgres are not running when this command completes.
 
 This contract does not configure a custom public domain, ACME identity, firewall, backups, upgrades, uninstall/reset, Dokploy, or a deployment agent/server Docker socket.
