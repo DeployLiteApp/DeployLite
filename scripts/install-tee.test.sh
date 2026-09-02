@@ -10,6 +10,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 PASS=0
 FAIL=0
+stat_mode() { local value; if value="$(stat -c '%a' "$1" 2>/dev/null)" && [[ "$value" =~ ^[0-9]+$ ]]; then printf '%s' "$value"; else stat -f '%Lp' "$1" 2>/dev/null; fi; }
 
 assert_contains() {
   local haystack="$1" needle="$2"
@@ -101,7 +102,7 @@ test_log_file_permissions_are_not_world_readable() {
   tmp="$(mktemp -d)"
   runner="$(build_runner "$tmp")"
   "$runner" --noop >/dev/null 2>&1 || true
-  mode="$(stat -f '%Lp' "${tmp}/install.log" 2>/dev/null || stat -c '%a' "${tmp}/install.log")"
+  mode="$(stat_mode "${tmp}/install.log")"
   # The umask used by the install wrapper is 027 which yields 0640. On filesystems
   # or umask variations the test still enforces a safe mode (no 'other' read).
   case "$mode" in
@@ -375,7 +376,7 @@ test_log_file_mode_is_repaired_on_rerun() {
     rm -rf "$tmp"
     return 1
   fi
-  mode="$(stat -f '%Lp' "${tmp}/install.log" 2>/dev/null || stat -c '%a' "${tmp}/install.log")"
+  mode="$(stat_mode "${tmp}/install.log")"
   case "$mode" in
     640|600) ;;
     *)
@@ -423,7 +424,7 @@ test_log_file_safe_mode_is_not_changed_on_rerun() {
   touch "${tmp}/install.log"
   chmod 0640 "${tmp}/install.log"
   "$runner" --noop >/dev/null 2>&1 || true
-  mode="$(stat -f '%Lp' "${tmp}/install.log" 2>/dev/null || stat -c '%a' "${tmp}/install.log")"
+  mode="$(stat_mode "${tmp}/install.log")"
   [[ "$mode" == "640" ]] || { printf 'expected safe mode to remain 0640, got %s\n' "$mode"; rm -rf "$tmp"; return 1; }
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     [[ -s "${tmp}/install.log" ]] && break

@@ -44,6 +44,14 @@ DeployLite is a TypeScript monorepo with separate control-plane and agent bounda
 - `packages/db`: PostgreSQL schema, migrations, and repositories
 - `packages/domain`: domain ports and use-case types
 
+## VPS source handoff boundary
+
+The exact-SHA bootstrap validates the GitHub tarball before extraction and passes only its verified source bundle and non-secret repository, commit, archive, and digest metadata to the installer. The installer stages that bundle atomically at `/opt/deploylite/source`, writes a root-owned provenance marker, and uses stable `./source` Compose build contexts. Direct invocation from an arbitrary checkout never persists that checkout and reports runtime handoff as unavailable. Runtime handoff rechecks the marker, required Dockerfiles/workspace inputs, entry types, and tree identity before any Docker mutation; an installed handoff works without network access.
+
+The bootstrap requires GNU tar on supported Ubuntu/Debian hosts. macOS local tests explicitly skip GNU-tar-only real archive fixtures when neither `gtar` nor GNU `tar` is installed; Linux tests fail instead of silently skipping them.
+
+The existing runtime-contract path-case behavior is pre-existing and intentionally outside the #241 source-bundle hardening scope; it remains covered by its unchanged contract test.
+
 ## Validate changes
 
 Run the workspace checks before submitting a change:
