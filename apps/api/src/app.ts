@@ -1048,7 +1048,7 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
   app.post(`${API_PREFIX}/projects`, { preHandler: [requireAuth, requireMutationRole] }, async (request) => {
     const body = parseBody(projectCreateRequestSchema, request.body);
     const project: Project = {
-      id: `project_${createRequestId()}`,
+      id: createRequestId(),
       name: body.name,
       repoUrl: body.repoUrl,
       defaultBranch: body.defaultBranch,

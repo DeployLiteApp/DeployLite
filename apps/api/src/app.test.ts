@@ -582,7 +582,7 @@ describe("DeployLite API scaffold", () => {
     expect(JSON.stringify(body)).not.toContain("dl_");
   });
 
-  it("creates a project with build/run/port, fetches it back, and rejects when port is out of range", async () => {
+  it("creates a PostgreSQL-compatible project ID, records its audit, fetches it back, and rejects when port is out of range", async () => {
     const { app } = await authFixture();
     const cookie = await loginCookie(app);
 
@@ -595,6 +595,9 @@ describe("DeployLite API scaffold", () => {
     const created = create.json();
     expect(create.statusCode).toBe(200);
     expect(created.data.project).toMatchObject({ name: "Demo API", buildCommand: "pnpm install", runCommand: "node server.js", port: 4000 });
+    expect(created.data.project.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    expect(created.data.project.id).not.toMatch(/^project_/);
+    expect(created.data.audit).toMatchObject({ action: "project.create", targetType: "project", targetId: created.data.project.id });
 
     const detail = await app.inject({ method: "GET", url: `/api/v1/projects/${created.data.project.id}`, headers: { cookie } });
     expect(detail.statusCode).toBe(200);
