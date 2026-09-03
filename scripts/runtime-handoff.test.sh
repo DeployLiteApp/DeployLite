@@ -14,12 +14,14 @@ run_as_root() { "$@"; }
 new_fixture() {
   FIXTURE="$(mktemp -d)"; mkdir -p "$FIXTURE/install" "$FIXTURE/bin" "$FIXTURE/tmp"
   cp "$ROOT_DIR/infra/vps/compose.yml" "$FIXTURE/install/compose.yml"; cp "$ROOT_DIR/infra/vps/compose.tls.yml" "$FIXTURE/install/compose.tls.yml"
-  mkdir -p "$FIXTURE/install/source/apps/api" "$FIXTURE/install/source/apps/web" "$FIXTURE/install/source/scripts"
-  cp "$ROOT_DIR/apps/api/Dockerfile" "$FIXTURE/install/source/apps/api/Dockerfile"; cp "$ROOT_DIR/apps/web/Dockerfile" "$FIXTURE/install/source/apps/web/Dockerfile"
-  cp "$ROOT_DIR/package.json" "$ROOT_DIR/pnpm-lock.yaml" "$ROOT_DIR/.node-version" "$FIXTURE/install/source/"
-  cp "$ROOT_DIR/scripts/runtime-handoff.sh" "$FIXTURE/install/source/scripts/runtime-handoff.sh"; chmod 0755 "$FIXTURE/install/source/scripts/runtime-handoff.sh"
-  digest="$(fixture_manifest_sha "$FIXTURE/install/source")"
-  printf 'schema=2\nrepository=CoreFoundryTech/DeployLite\ncommit=fccff176a9cefa4e92ec9ebd23f94d85dc36c431\narchive_sha256=%064d\nmanifest_sha256=%s\n' 0 "$digest" >"$FIXTURE/install/source/.deploylite-source"; chmod 0644 "$FIXTURE/install/source/.deploylite-source"
+  mkdir -p "$FIXTURE/install/.sources/source-version/apps/api" "$FIXTURE/install/.sources/source-version/apps/web" "$FIXTURE/install/.sources/source-version/scripts"
+  cp "$ROOT_DIR/apps/api/Dockerfile" "$FIXTURE/install/.sources/source-version/apps/api/Dockerfile"; cp "$ROOT_DIR/apps/web/Dockerfile" "$FIXTURE/install/.sources/source-version/apps/web/Dockerfile"
+  cp "$ROOT_DIR/package.json" "$ROOT_DIR/pnpm-lock.yaml" "$ROOT_DIR/.node-version" "$FIXTURE/install/.sources/source-version/"
+  cp "$ROOT_DIR/scripts/runtime-handoff.sh" "$FIXTURE/install/.sources/source-version/scripts/runtime-handoff.sh"; chmod 0755 "$FIXTURE/install/.sources/source-version/scripts/runtime-handoff.sh"
+  digest="$(fixture_manifest_sha "$FIXTURE/install/.sources/source-version")"
+  mv "$FIXTURE/install/.sources/source-version" "$FIXTURE/install/.sources/$digest"; chmod 0700 "$FIXTURE/install/.sources"
+  printf 'schema=2\nrepository=CoreFoundryTech/DeployLite\ncommit=fccff176a9cefa4e92ec9ebd23f94d85dc36c431\narchive_sha256=%064d\nmanifest_sha256=%s\n' 0 "$digest" >"$FIXTURE/install/.sources/$digest/.deploylite-source"; chmod 0644 "$FIXTURE/install/.sources/$digest/.deploylite-source"
+  ln -s ".sources/$digest" "$FIXTURE/install/source"
   cat >"$FIXTURE/bin/docker" <<'DOCKER'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$FAKE_DOCKER_LOG"
@@ -72,9 +74,15 @@ test_failure_preserves_resources_and_exit_code() {
 test_initial_ps_error_fails_closed() { new_fixture; if FAKE_PS_INITIAL_STATUS=7 invoke >/dev/null 2>&1; then return 1; fi; [[ "$(<"$FIXTURE/docker.log")" != *'compose '* && ! -s "$FIXTURE/rollback.log" ]]; }
 test_initial_network_error_fails_closed() { new_fixture; if FAKE_NETWORK_INITIAL_STATUS=7 invoke >/dev/null 2>&1; then return 1; fi; [[ "$(<"$FIXTURE/docker.log")" != *'compose '* && ! -s "$FIXTURE/rollback.log" ]]; }
 test_missing_source_fails_before_docker() { new_fixture; rm -rf -- "$FIXTURE/install/source"; if invoke >/dev/null 2>&1; then return 1; fi; [[ ! -s "$FIXTURE/docker.log" ]]; }
+test_rejects_unsafe_versioned_source_layouts() {
+  new_fixture; rm -f "$FIXTURE/install/source"; rm -rf -- "$FIXTURE/install/.sources"; ln -s "$FIXTURE/tmp" "$FIXTURE/install/.sources"; if invoke >/dev/null 2>&1; then return 1; fi
+  new_fixture; digest="$(basename "$(readlink "$FIXTURE/install/source")")"; ln -s "$digest" "$FIXTURE/install/.sources/chained"; rm -f "$FIXTURE/install/source"; ln -s '.sources/chained' "$FIXTURE/install/source"; if invoke >/dev/null 2>&1; then return 1; fi
+  new_fixture; rm -f "$FIXTURE/install/source"; ln -s "$FIXTURE/install/.sources/$digest" "$FIXTURE/install/source"; if invoke >/dev/null 2>&1; then return 1; fi
+  new_fixture; rm -f "$FIXTURE/install/source"; ln -s '.sources/../.sources/'"$digest" "$FIXTURE/install/source"; if invoke >/dev/null 2>&1; then return 1; fi
+}
 test_empty_baseline_removes_only_new_labeled() { new_fixture; local status; FAKE_RESOURCES=1 FAKE_UP_STATUS=23 invoke >/dev/null 2>&1 && status=0 || status=$?; [[ "$status" -eq 23 && "$(<"$FIXTURE/rollback.log")" == *'new'* && "$(<"$FIXTURE/rollback.log")" != *'old'* ]]; }
 test_post_failure_discovery_error_preserves_resources() { new_fixture; local status; FAKE_RESOURCES=1 FAKE_UP_STATUS=23 FAKE_PS_POST_STATUS=7 invoke >/dev/null 2>&1 && status=0 || status=$?; [[ "$status" -eq 23 && ! -s "$FIXTURE/rollback.log" ]]; }
 test_err_exit_rollback_runs_once_and_preserves_code() { new_fixture; local status count; FAKE_RESOURCES=1 FAKE_UP_STATUS=23 invoke >/dev/null 2>&1 && status=0 || status=$?; count=$(wc -l <"$FIXTURE/rollback.log"); [[ "$status" -eq 23 && "$count" -eq 1 ]]; }
 test_root_gate() { [[ "$(id -u)" == 0 ]] || ! env DEPLOYLITE_INSTALL_DIR=/tmp bash "$SCRIPT" --env-file /no/such/file >/dev/null 2>&1; }
-for test in test_success_order_and_redaction test_rejects_duplicate_and_bad_permissions test_rejects_unknown_missing_malformed_crlf_and_symlink test_rejects_foreign_owner_and_cleans_snapshot test_xtrace_and_docker_errors_are_redacted test_failure_preserves_resources_and_exit_code test_initial_ps_error_fails_closed test_initial_network_error_fails_closed test_missing_source_fails_before_docker test_empty_baseline_removes_only_new_labeled test_post_failure_discovery_error_preserves_resources test_err_exit_rollback_runs_once_and_preserves_code test_root_gate; do if "$test"; then ok "$test"; else bad "$test"; fi; done
+for test in test_success_order_and_redaction test_rejects_duplicate_and_bad_permissions test_rejects_unknown_missing_malformed_crlf_and_symlink test_rejects_foreign_owner_and_cleans_snapshot test_xtrace_and_docker_errors_are_redacted test_failure_preserves_resources_and_exit_code test_initial_ps_error_fails_closed test_initial_network_error_fails_closed test_missing_source_fails_before_docker test_rejects_unsafe_versioned_source_layouts test_empty_baseline_removes_only_new_labeled test_post_failure_discovery_error_preserves_resources test_err_exit_rollback_runs_once_and_preserves_code test_root_gate; do if "$test"; then ok "$test"; else bad "$test"; fi; done
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"; [[ "$FAIL" -eq 0 ]]

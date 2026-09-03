@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 INSTALL_DIR="${DEPLOYLITE_INSTALL_DIR:-/opt/deploylite}"
+SOURCES_DIR="${INSTALL_DIR}/.sources"
 REPO_ROOT="${DEPLOYLITE_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
 TLS_COMPOSE_FILE="${INSTALL_DIR}/compose.tls.yml"
@@ -116,16 +117,26 @@ sha256_file() {
 
 executable_source_path() { case "$1" in */scripts/bootstrap.sh|*/scripts/bootstrap.test.sh|*/scripts/install.sh|*/scripts/install.test.sh|*/scripts/install-tee.test.sh|*/scripts/runtime-contract.test.sh|*/scripts/runtime-handoff.sh|*/scripts/runtime-handoff.test.sh|*/scripts/support-policy.test.sh|*/scripts/vps-preview-contract.test.sh|*/scripts/vps-preview-failure-matrix.test.sh|*/scripts/vps-preview-full.test.sh|*/scripts/vps-preview-lib.sh|*/scripts/vps-preview-remote.sh|*/scripts/vps-preview-remote.test.sh|*/scripts/vps-preview.sh) return 0 ;; *) return 1 ;; esac; }
 portable_stat() { local gnu_format="$1" bsd_format="$2" path="$3" pattern="$4" value; if value="$(stat -c "$gnu_format" "$path" 2>/dev/null)" && [[ "$value" =~ $pattern ]]; then printf '%s' "$value"; return 0; fi; value="$(stat -f "$bsd_format" "$path" 2>/dev/null)" && [[ "$value" =~ $pattern ]] || return 1; printf '%s' "$value"; }
-source_manifest() { local root="$1" base="${2:-$1}" path relative mode hash; for path in "$root"/* "$root"/.[!.]* "$root"/..?*; do [[ -e "$path" || -L "$path" ]] || continue; [[ "$path" != "$base/.deploylite-source" ]] || continue; relative="${path#"$base"/}"; if [[ -d "$path" ]]; then printf 'owner=0:0|type=directory|mode=0755|path=%s|sha256=-\n' "$relative"; elif [[ -f "$path" ]]; then mode=0644; executable_source_path "$path" && mode=0755; hash="$(sha256_file "$path")"; printf 'owner=0:0|type=file|mode=%s|path=%s|sha256=%s\n' "$mode" "$relative" "$hash"; else return 1; fi; [[ -d "$path" && ! -L "$path" ]] && source_manifest "$path" "$base"; done | LC_ALL=C sort; }
-validate_installed_tree() { local root="$1" path mode inode; [[ "$(portable_stat '%u:%g' '%u:%g' "$root" '^[0-9]+:[0-9]+$')" == 0:0 && "$(portable_stat '%a' '%Lp' "$root" '^[0-9]+$')" == 755 ]] || return 1; for path in "$root"/* "$root"/.[!.]* "$root"/..?*; do [[ -e "$path" || -L "$path" ]] || continue; [[ ! -L "$path" && ( -d "$path" || -f "$path" ) ]] || return 1; [[ "$path" != */.git* && "$path" != */node_modules* && "$path" != */.env* ]] || return 1; [[ "$(portable_stat '%u:%g' '%u:%g' "$path" '^[0-9]+:[0-9]+$')" == 0:0 ]] || return 1; if [[ -d "$path" ]]; then mode=755; else mode=644; executable_source_path "$path" && mode=755; inode="$(portable_stat '%d:%i' '%d:%i' "$path" '^[0-9]+:[0-9]+$')"; [[ "${SOURCE_INODES:-|}" != *"|$inode|"* ]] || return 1; SOURCE_INODES="${SOURCE_INODES:-|}${inode}|"; fi; [[ "$(portable_stat '%a' '%Lp' "$path" '^[0-9]+$')" == "$mode" ]] || return 1; if [[ -d "$path" && ! -L "$path" ]]; then validate_installed_tree "$path" || return 1; fi; done; }
+is_dotenv_basename() { case "${1##*/}" in .env|.env.*) return 0 ;; *) return 1 ;; esac; }
+is_runtime_forbidden_basename() { case "${1##*/}" in .git|node_modules) return 0 ;; *) return 1 ;; esac; }
+validate_installed_tree() { local root="$1" path mode inode; [[ "$(portable_stat '%u:%g' '%u:%g' "$root" '^[0-9]+:[0-9]+$')" == 0:0 && "$(portable_stat '%a' '%Lp' "$root" '^[0-9]+$')" == 755 ]] || return 1; for path in "$root"/* "$root"/.[!.]* "$root"/..?*; do [[ -e "$path" || -L "$path" ]] || continue; [[ ! -L "$path" && ( -d "$path" || -f "$path" ) ]] || return 1; is_dotenv_basename "$path" && return 1; is_runtime_forbidden_basename "$path" && return 1; [[ "$(portable_stat '%u:%g' '%u:%g' "$path" '^[0-9]+:[0-9]+$')" == 0:0 ]] || return 1; if [[ -d "$path" ]]; then mode=755; else mode=644; executable_source_path "$path" && mode=755; inode="$(portable_stat '%d:%i' '%d:%i' "$path" '^[0-9]+:[0-9]+$')"; [[ "${SOURCE_INODES:-|}" != *"|$inode|"* ]] || return 1; SOURCE_INODES="${SOURCE_INODES:-|}${inode}|"; fi; [[ "$(portable_stat '%a' '%Lp' "$path" '^[0-9]+$')" == "$mode" ]] || return 1; if [[ -d "$path" && ! -L "$path" ]]; then validate_installed_tree "$path" || return 1; fi; done; }
 source_is_valid() {
-  local root marker key value schema repository commit archive manifest path mode actual
+  local root marker key value schema repository commit archive manifest path mode actual target target_root sources_root
   root="${INSTALL_DIR}/source"; marker="$root/.deploylite-source"
-  [[ -d "$root" && ! -L "$root" && -f "$marker" && ! -L "$marker" ]] || return 1
+  [[ -L "$root" && -f "$marker" && ! -L "$marker" && -d "$SOURCES_DIR" && ! -L "$SOURCES_DIR" ]] || return 1
+  [[ "$(portable_stat '%u:%g' '%u:%g' "$SOURCES_DIR" '^[0-9]+:[0-9]+$')" == 0:0 && "$(portable_stat '%a' '%Lp' "$SOURCES_DIR" '^[0-9]+$')" == 700 ]] || return 1
+  sources_root="$(cd -P "$SOURCES_DIR" 2>/dev/null && pwd -P)" || return 1
+  target="$(readlink "$root")" || return 1
+  [[ "$target" =~ ^\.sources/[0-9A-Fa-f]{64}(\.[0-9A-Fa-f]{64}\.[0-9]+\.[0-9]+)?$ ]] || return 1
+  target_root="$(cd -P "$(dirname "$root")/$target" 2>/dev/null && pwd -P)" || return 1
+  [[ "$target_root" == "$sources_root"/* && "$target_root" != "$sources_root" ]] || return 1
+  [[ -d "$target_root" && ! -L "$target_root" ]] || return 1
+  root="$target_root"; marker="$root/.deploylite-source"
   [[ "$(portable_stat '%u' '%u' "$marker" '^[0-9]+$')" == 0 && "$(portable_stat '%a' '%Lp' "$marker" '^[0-9]+$')" == 644 ]] || return 1
   [[ "$(awk 'END {print NR}' "$marker")" == 5 ]] || return 1
   while IFS='=' read -r key value; do case "$key" in schema) schema="$value" ;; repository) repository="$value" ;; commit) commit="$value" ;; archive_sha256) archive="$value" ;; manifest_sha256) manifest="$value" ;; *) return 1 ;; esac; done <"$marker"
   [[ "$schema" == 2 && "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && "$commit" =~ ^[0-9a-fA-F]{40}$ && "$archive" =~ ^[0-9a-fA-F]{64}$ && "$manifest" =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+  [[ "$(basename "$root")" == "$manifest" || "$(basename "$root")" == "$manifest."* ]] || return 1
   SOURCE_INODES='|'; validate_installed_tree "$root" || return 1
   for path in apps/api/Dockerfile apps/web/Dockerfile package.json pnpm-lock.yaml .node-version infra/vps/compose.yml infra/vps/compose.tls.yml scripts/runtime-handoff.sh; do [[ -f "$root/$path" && ! -L "$root/$path" ]] || return 1; done
   actual="$(source_manifest "$root")" || return 1; [[ "$(printf '%s' "$actual" | sha256_text)" == "$manifest" ]]

@@ -15,6 +15,7 @@ TAR_BIN=""
 BOOTSTRAP_BASHPID="${BASHPID:-$$}"
 INSTALL_DIR="${DEPLOYLITE_INSTALL_DIR:-/opt/deploylite}"
 SOURCE_INSTALL_DIR="${INSTALL_DIR}/source"
+SOURCES_DIR="${INSTALL_DIR}/.sources"
 
 log() { printf '[%s] %s\n' "$1" "${2:-}"; }
 info() { log INFO "$1"; }
@@ -104,10 +105,39 @@ extract_source() {
   [[ -d "$SOURCE_DIR" && ! -L "$SOURCE_DIR" ]] || fail "Downloaded archive does not contain a top-level directory." 1
   validate_extracted_tree "$SOURCE_DIR" || fail "Downloaded archive contains unsafe filesystem entries." 1
   if command_exists sha256sum; then SOURCE_ARCHIVE_SHA256="$(sha256sum "$TARBALL_PATH" | awk '{print $1}')"; else SOURCE_ARCHIVE_SHA256="$(shasum -a 256 "$TARBALL_PATH" | awk '{print $1}')"; fi
+  remove_dotenv_entries "$SOURCE_DIR" || fail "Downloaded archive source staging cleanup failed." 1
   normalize_tree "$SOURCE_DIR"
   validate_tree "$SOURCE_DIR" || fail "Downloaded archive contains an unsupported filesystem entry." 1
   validate_required_inputs "$SOURCE_DIR" || fail "Downloaded archive is missing required workspace inputs." 1
   [[ -x "$SOURCE_DIR/scripts/install.sh" || -f "$SOURCE_DIR/scripts/install.sh" ]] || fail "Downloaded archive is missing scripts/install.sh." 1
+}
+
+is_dotenv_basename() {
+  case "${1##*/}" in
+    .env|.env.*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+remove_dotenv_entries() {
+  local root="$1" path
+  [[ -d "$root" && ! -L "$root" ]] || return 1
+  while IFS= read -r -d '' path; do
+    if is_dotenv_basename "$path"; then
+      rm -rf -- "$path"
+    fi
+  done < <(find -P "$root" -xdev -depth -mindepth 1 -print0)
+}
+
+replace_source_pointer() {
+  local pointer="$1"
+  if mv --help 2>&1 | grep -q -- '-T'; then
+    mv -Tf -- "$pointer" "$SOURCE_INSTALL_DIR"
+  elif command_exists perl; then
+    perl -e 'rename $ARGV[0], $ARGV[1] or die "$!\n"' "$pointer" "$SOURCE_INSTALL_DIR"
+  else
+    return 1
+  fi
 }
 
 validate_extracted_tree() {
@@ -135,12 +165,12 @@ normalize_tree() {
   done
 }
 cleanup_source_staging() {
-  local path mode="${1:-}"
+  local path mode="${1:-}" sources_root="${INSTALL_DIR:-}/.sources"
   # EXIT traps also run in command-substitution subshells. Never let those
   # cleanup hooks remove a staging directory still being built by the parent.
   [[ "$mode" != --exit || "${BASHPID:-$$}" == "${BOOTSTRAP_BASHPID:-}" ]] || return 0
   [[ -n "${INSTALL_DIR:-}" ]] || return 0
-  for path in "$INSTALL_DIR"/.source.staging.*; do
+  for path in "$sources_root"/.source.staging.*; do
     [[ -e "$path" || -L "$path" ]] || continue
     rm -rf -- "$path"
   done
@@ -164,6 +194,7 @@ validate_tree() {
   for path in "$root"/* "$root"/.[!.]* "$root"/..?*; do
     [[ -e "$path" || -L "$path" ]] || continue
     [[ ! -L "$path" && ( -d "$path" || -f "$path" ) ]] || return 1
+    is_dotenv_basename "$path" && return 1
     [[ "$(owner_group "$path")" == 0:0 ]] || return 1
     mode=644; [[ -d "$path" ]] && mode=755; executable_path "$path" && mode=755
     [[ "$(portable_stat '%a' '%Lp' "$path" '^[0-9]+$')" == "$mode" ]] || return 1
@@ -191,34 +222,67 @@ manifest() {
 sha256_file_local() { if command_exists sha256sum; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi; }
 source_manifest_sha() { manifest "$1" | if command_exists sha256sum; then sha256sum | awk '{print $1}'; else shasum -a 256 | awk '{print $1}'; fi; }
 install_source_bundle() {
-  local stage backup digest marker
+  local stage digest marker versioned pointer_tmp legacy_backup
   SOURCE_ARCHIVE_SHA256="${SOURCE_ARCHIVE_SHA256:?archive digest is required}"
-  mkdir -p "$INSTALL_DIR"; chmod 0700 "$INSTALL_DIR"
+  SOURCES_DIR="${INSTALL_DIR}/.sources"
+  [[ ! -L "$SOURCES_DIR" && ( ! -e "$SOURCES_DIR" || -d "$SOURCES_DIR" ) ]] || fail "Installed source versions directory is unsafe." 1
+  mkdir -p "$INSTALL_DIR" "$SOURCES_DIR"; chmod 0700 "$INSTALL_DIR" "$SOURCES_DIR"
+  [[ "$(owner_group "$SOURCES_DIR")" == 0:0 && "$(portable_stat '%a' '%Lp' "$SOURCES_DIR" '^[0-9]+$')" == 700 ]] || fail "Installed source versions directory ownership or mode is unsafe." 1
   if [[ -f "$SOURCE_INSTALL_DIR/.deploylite-source" ]] && existing_source_valid; then return 0; fi
-  stage="$(mktemp -d "$INSTALL_DIR/.source.staging.XXXXXX")"; chmod 0700 "$stage"
-  "${TAR_BIN:-tar}" -C "$SOURCE_DIR" -cf - . | "${TAR_BIN:-tar}" -C "$stage" -xf - --no-same-owner --no-same-permissions
-  normalize_tree "$stage"; validate_tree "$stage" || fail "Staged source bundle validation failed." 1
+  stage="$(mktemp -d "$SOURCES_DIR/.source.staging.XXXXXX")"; chmod 0700 "$stage"
+  if ! "${TAR_BIN:-tar}" -C "$SOURCE_DIR" -cf - . | "${TAR_BIN:-tar}" -C "$stage" -xf - --no-same-owner --no-same-permissions; then
+    rm -rf -- "$stage"
+    fail "Staged source bundle extraction failed." 1
+  fi
+  if ! remove_dotenv_entries "$stage" || ! normalize_tree "$stage" || ! validate_tree "$stage"; then
+    rm -rf -- "$stage"
+    fail "Staged source bundle validation failed." 1
+  fi
   digest="$(source_manifest_sha "$stage")"
   marker="$stage/.deploylite-source"
   printf 'schema=2\nrepository=%s\ncommit=%s\narchive_sha256=%s\nmanifest_sha256=%s\n' "$DEPLOYLITE_REPO" "$DEPLOYLITE_VERSION" "$SOURCE_ARCHIVE_SHA256" "$digest" >"$marker"
   chmod 0644 "$marker"; chown 0:0 "$marker"
-  backup="$(mktemp -d "$INSTALL_DIR/.source.previous.XXXXXX")"
-  if [[ -L "$SOURCE_INSTALL_DIR" ]]; then rm -rf -- "$stage" "$backup"; fail "Installed source path is a symlink; refusing replacement." 1; fi
-  if [[ -e "$SOURCE_INSTALL_DIR" ]]; then mv "$SOURCE_INSTALL_DIR" "$backup/source"; fi
-  if ! mv "$stage" "$SOURCE_INSTALL_DIR"; then [[ -e "$backup/source" ]] && mv "$backup/source" "$SOURCE_INSTALL_DIR"; rm -rf -- "$stage"; fail "Source replacement failed; previous source preserved." 1; fi
-  rm -rf -- "$backup"
+  versioned="$SOURCES_DIR/$digest"
+  if [[ -e "$versioned" || -L "$versioned" ]]; then
+    versioned="$SOURCES_DIR/${digest}.${SOURCE_ARCHIVE_SHA256}.${BASHPID:-$$}.${RANDOM}"
+    while [[ -e "$versioned" || -L "$versioned" ]]; do versioned="$SOURCES_DIR/${digest}.${SOURCE_ARCHIVE_SHA256}.${BASHPID:-$$}.${RANDOM}"; done
+  fi
+  if ! mv "$stage" "$versioned"; then rm -rf -- "$stage"; fail "Versioned source installation failed; previous source preserved." 1; fi
+  pointer_tmp="$INSTALL_DIR/.source.pointer.${BASHPID:-$$}.${RANDOM}"
+  ln -s ".sources/${versioned##*/}" "$pointer_tmp"
+  legacy_backup=""
+  if [[ -e "$SOURCE_INSTALL_DIR" && ! -L "$SOURCE_INSTALL_DIR" ]]; then
+    legacy_backup="$SOURCES_DIR/.legacy-source-backup.${BASHPID:-$$}.${RANDOM}"
+    if ! mv "$SOURCE_INSTALL_DIR" "$legacy_backup"; then rm -f "$pointer_tmp"; fail "Legacy source migration failed; previous source preserved." 1; fi
+  fi
+  if ! replace_source_pointer "$pointer_tmp"; then
+    rm -f "$pointer_tmp"
+    if [[ -n "$legacy_backup" && -e "$legacy_backup" ]]; then mv "$legacy_backup" "$SOURCE_INSTALL_DIR" || true; fi
+    fail "Source pointer replacement failed; previous source preserved." 1
+  fi
 }
 existing_source_valid() {
-  local marker key value schema='' repository='' commit='' archive='' manifest='' actual
+  local marker key value schema='' repository='' commit='' archive='' manifest='' actual target target_path target_root sources_root
+  SOURCES_DIR="${INSTALL_DIR}/.sources"
   marker="$SOURCE_INSTALL_DIR/.deploylite-source"
-  [[ -d "$SOURCE_INSTALL_DIR" && ! -L "$SOURCE_INSTALL_DIR" && -f "$marker" && ! -L "$marker" ]] || return 1
+  [[ -L "$SOURCE_INSTALL_DIR" && -f "$marker" && ! -L "$marker" ]] || return 1
+  target="$(readlink "$SOURCE_INSTALL_DIR")" || return 1
+  [[ "$target" =~ ^\.sources/[0-9A-Fa-f]{64}(\.[0-9A-Fa-f]{64}\.[0-9]+\.[0-9]+)?$ ]] || return 1
+  sources_root="$(cd -P "$SOURCES_DIR" 2>/dev/null && pwd -P)" || return 1
+  target_path="$(dirname "$SOURCE_INSTALL_DIR")/$target"
+  [[ -d "$target_path" && ! -L "$target_path" ]] || return 1
+  target_root="$(cd -P "$target_path" 2>/dev/null && pwd -P)" || return 1
+  [[ "$target_root" == "$sources_root"/* && "$target_root" != "$sources_root" ]] || return 1
+  [[ "$(owner_group "$SOURCE_INSTALL_DIR")" == 0:0 && "$(owner_group "$target_root")" == 0:0 ]] || return 1
+  marker="$target_root/.deploylite-source"
   [[ "$(owner_group "$marker")" == 0:0 && "$(portable_stat '%a' '%Lp' "$marker" '^[0-9]+$')" == 644 ]] || return 1
   [[ "$(awk 'END {print NR}' "$marker")" == 5 ]] || return 1
   while IFS='=' read -r key value; do case "$key" in schema) schema="$value" ;; repository) repository="$value" ;; commit) commit="$value" ;; archive_sha256) archive="$value" ;; manifest_sha256) manifest="$value" ;; *) return 1 ;; esac; done <"$marker"
   [[ "$schema" == 2 && "$repository" == "$DEPLOYLITE_REPO" && "$commit" == "$DEPLOYLITE_VERSION" && "$archive" == "$SOURCE_ARCHIVE_SHA256" && "$manifest" =~ ^[0-9a-fA-F]{64}$ ]] || return 1
-  validate_tree "$SOURCE_INSTALL_DIR" || return 1
-  validate_required_inputs "$SOURCE_INSTALL_DIR" || return 1
-  actual="$(source_manifest_sha "$SOURCE_INSTALL_DIR")" || return 1
+  validate_tree "$target_root" || return 1
+  validate_required_inputs "$target_root" || return 1
+  [[ "$(basename "$target_root")" == "$manifest" || "$(basename "$target_root")" == "$manifest."* ]] || return 1
+  actual="$(source_manifest_sha "$target_root")" || return 1
   [[ "$actual" == "$manifest" ]]
 }
 
