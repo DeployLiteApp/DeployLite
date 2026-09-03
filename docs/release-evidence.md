@@ -39,3 +39,12 @@ This validates the trusted public HTTPS runtime slice only. Renewal remains unve
 ## Current boundary
 
 Hosted quality, PostgreSQL integration, Compose/supply-chain, and aggregate baseline gates are implemented. The Compose/supply-chain gate runs filesystem and API/web image Trivy scans, generates CycloneDX SBOMs, records image and Compose digest evidence, and builds hardened small runtime images. The release record still does not prove image provenance or signing, production deployment, infrastructure mutation, Traefik/ACME production routing, or VPS smoke. Aggregate release approval remains pending, so DeployLite is not production-ready.
+
+## ACME renewal integration command semantics
+
+After a successful periodic renewal run, the ACME integration harness supports two explicit modes:
+
+- `pnpm test:acme-renewal` defaults to `DEPLOYLITE_ACME_TEST_MODE=startup` and exercises the fast restart-driven renewal path.
+- `pnpm test:acme-renewal:periodic` sets `DEPLOYLITE_ACME_TEST_MODE=periodic` and waits up to 100 seconds for Traefik's natural renewal ticker. The periodic path does not restart, recreate, or kill Traefik between the initial and renewed certificates, and requires at least 55 seconds before accepting replacement.
+
+The periodic command is an opt-in integration check and is not part of baseline CI.
