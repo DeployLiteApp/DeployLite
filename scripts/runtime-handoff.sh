@@ -6,8 +6,10 @@ readonly INSTALL_DIR="${DEPLOYLITE_INSTALL_DIR:-/opt/deploylite}"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
 readonly TLS_COMPOSE_FILE="${INSTALL_DIR}/compose.tls.yml"
 readonly KEYS='DEPLOYLITE_PUBLIC_HOST POSTGRES_PASSWORD DATABASE_URL DEPLOYLITE_SECRET_KEY'
+readonly SOURCE_DIR="${INSTALL_DIR}/source"
+readonly SOURCE_MARKER="${SOURCE_DIR}/.deploylite-source"
 ENV_FILE=''; SNAPSHOT_FILE=''; WORK=''; NORMALIZED=''; PUBLIC_HOST=''
-SNAPSHOT_VALID=0; ROLLBACK_ATTEMPTED=0
+SNAPSHOT_VALID=0; ROLLBACK_ATTEMPTED=0; ROLLBACK_SAFE=0
 
 # Never allow xtrace to observe argument handling, file contents, or Compose calls.
 case "$-" in *x*) set +x ;; esac
@@ -22,8 +24,27 @@ parse_args() {
   [[ "$ENV_FILE" == /* && "$ENV_FILE" != *$'\n'* && "$ENV_FILE" != *$'\r'* ]] || fail 'env-file path must be absolute and single-line' 2
 }
 is_root() { [[ "${EUID}" -eq 0 ]]; }
-stat_value() { stat -c "$1" "$3" 2>/dev/null || stat -f "$2" "$3" 2>/dev/null; }
+stat_value() { local gnu_format="$1" bsd_format="$2" path="$3" value pattern='^[0-9]+$'; [[ "$gnu_format" == *:* ]] && pattern='^[0-9]+:[0-9]+$'; if value="$(stat -c "$gnu_format" "$path" 2>/dev/null)" && [[ "$value" =~ $pattern ]]; then printf '%s' "$value"; return 0; fi; value="$(stat -f "$bsd_format" "$path" 2>/dev/null)" && [[ "$value" =~ $pattern ]] || return 1; printf '%s' "$value"; }
 canonical_path() { local dir; dir=$(cd -P "$(dirname "$1")" 2>/dev/null && pwd -P) || return 1; printf '%s/%s\n' "$dir" "$(basename "$1")"; }
+sha256_text_runtime() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}'; else shasum -a 256 | awk '{print $1}'; fi; }
+sha256_file_runtime() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi; }
+executable_source_path_runtime() { case "$1" in */scripts/bootstrap.sh|*/scripts/bootstrap.test.sh|*/scripts/install.sh|*/scripts/install.test.sh|*/scripts/install-tee.test.sh|*/scripts/runtime-contract.test.sh|*/scripts/runtime-handoff.sh|*/scripts/runtime-handoff.test.sh|*/scripts/support-policy.test.sh|*/scripts/vps-preview-contract.test.sh|*/scripts/vps-preview-failure-matrix.test.sh|*/scripts/vps-preview-full.test.sh|*/scripts/vps-preview-lib.sh|*/scripts/vps-preview-remote.sh|*/scripts/vps-preview-remote.test.sh|*/scripts/vps-preview.sh) return 0 ;; *) return 1 ;; esac; }
+source_manifest_runtime() { local root="$1" base="${2:-$1}" path relative mode hash; for path in "$root"/* "$root"/.[!.]* "$root"/..?*; do [[ -e "$path" || -L "$path" ]] || continue; [[ "$path" != "$base/.deploylite-source" ]] || continue; relative="${path#"$base"/}"; if [[ -d "$path" ]]; then printf 'owner=0:0|type=directory|mode=0755|path=%s|sha256=-\n' "$relative"; elif [[ -f "$path" ]]; then mode=0644; executable_source_path_runtime "$path" && mode=0755; hash="$(sha256_file_runtime "$path")"; printf 'owner=0:0|type=file|mode=%s|path=%s|sha256=%s\n' "$mode" "$relative" "$hash"; else return 1; fi; [[ -d "$path" && ! -L "$path" ]] && source_manifest_runtime "$path" "$base"; done | LC_ALL=C sort; }
+sha256_tree() { source_manifest_runtime "$1" | sha256_text_runtime; }
+validate_source_tree_runtime() { local root="$1" path inode mode; [[ "$(stat_value '%u:%g' '%u:%g' "$root")" == 0:0 && "$(stat_value '%a' '%Lp' "$root")" == 755 ]] || return 1; for path in "$root"/* "$root"/.[!.]* "$root"/..?*; do [[ -e "$path" || -L "$path" ]] || continue; [[ ! -L "$path" && ( -d "$path" || -f "$path" ) ]] || return 1; [[ "$path" != */.git* && "$path" != */node_modules* && "$path" != */.env* ]] || return 1; [[ "$(stat_value '%u:%g' '%u:%g' "$path")" == 0:0 ]] || return 1; if [[ -d "$path" ]]; then mode=755; else mode=644; executable_source_path_runtime "$path" && mode=755; inode="$(stat_value '%d:%i' '%d:%i' "$path")"; [[ "$SOURCE_INODES" != *"|$inode|"* ]] || return 1; SOURCE_INODES="${SOURCE_INODES}${inode}|"; fi; [[ "$(stat_value '%a' '%Lp' "$path")" == "$mode" ]] || return 1; if [[ -d "$path" ]]; then validate_source_tree_runtime "$path" || return 1; fi; done; }
+validate_source() {
+  local schema repository commit archive_sha manifest key value marker_digest
+  [[ -d "$SOURCE_DIR" && ! -L "$SOURCE_DIR" && -f "$SOURCE_MARKER" && ! -L "$SOURCE_MARKER" ]] || fail 'installed source bundle is missing or symlinked' 2
+  [[ "$(stat_value '%u' '%u' "$SOURCE_MARKER")" == 0 && "$(stat_value '%a' '%Lp' "$SOURCE_MARKER")" == 644 ]] || fail 'installed source marker ownership or mode is unsafe' 2
+  [[ "$(awk 'END {print NR}' "$SOURCE_MARKER")" == 5 ]] || fail 'source marker must contain exactly five fields' 2
+  while IFS='=' read -r key value; do
+    case "$key" in schema) schema="$value" ;; repository) repository="$value" ;; commit) commit="$value" ;; archive_sha256) archive_sha="$value" ;; manifest_sha256) manifest="$value" ;; *) fail 'source marker contains an unexpected field' 2 ;; esac
+  done <"$SOURCE_MARKER"
+  [[ "$schema" == 2 && "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && "$commit" =~ ^[0-9a-fA-F]{40}$ && "$archive_sha" =~ ^[0-9a-fA-F]{64}$ && "$manifest" =~ ^[0-9a-fA-F]{64}$ ]] || fail 'source marker identity is invalid' 2
+  SOURCE_INODES='|'; validate_source_tree_runtime "$SOURCE_DIR" || fail 'installed source bundle failed integrity validation' 2
+  for key in apps/api/Dockerfile apps/web/Dockerfile package.json pnpm-lock.yaml .node-version; do [[ -f "$SOURCE_DIR/$key" && ! -L "$SOURCE_DIR/$key" ]] || fail 'installed source bundle is incomplete' 2; done
+  marker_digest="$(sha256_tree "$SOURCE_DIR")"; [[ "$marker_digest" == "$manifest" ]] || fail 'installed source bundle integrity check failed' 2
+}
 
 snapshot_env_file() {
   local canonical before after snapshot_dir
@@ -92,11 +113,12 @@ snapshot_resources() {
   if ! ids ps -aq --filter label=com.docker.compose.project=deploylite >"$containers"; then fail 'initial resource snapshot failed' 2; fi
   if ! ids network ls -q --filter label=com.docker.compose.project=deploylite >"$networks"; then fail 'initial resource snapshot failed' 2; fi
   if ! ids volume ls -q --filter label=com.docker.compose.project=deploylite >"$volumes"; then fail 'initial resource snapshot failed' 2; fi
+  [[ ! -s "$containers" && ! -s "$networks" ]] && ROLLBACK_SAFE=1
   SNAPSHOT_VALID=1
 }
 rollback() {
   local id label containers_after networks_after containers_remove networks_remove
-  [[ "$SNAPSHOT_VALID" -eq 1 && "$ROLLBACK_ATTEMPTED" -eq 0 ]] || return 0
+  [[ "$SNAPSHOT_VALID" -eq 1 && "$ROLLBACK_SAFE" -eq 1 && "$ROLLBACK_ATTEMPTED" -eq 0 ]] || { [[ "$SNAPSHOT_VALID" -eq 1 && "$ROLLBACK_SAFE" -eq 0 ]] && printf 'runtime handoff failed; pre-existing containers or networks detected, destructive rollback disabled\n' >&2; return 0; }
   ROLLBACK_ATTEMPTED=1
   containers_after="$WORK/containers.after"; networks_after="$WORK/networks.after"
   containers_remove="$WORK/containers.remove"; networks_remove="$WORK/networks.remove"
@@ -126,7 +148,7 @@ on_signal() { local status=$1; rollback; exit "$status"; }
 trap on_error ERR; trap on_exit EXIT; trap 'on_signal 130' INT; trap 'on_signal 143' TERM
 
 main() {
-  parse_args "$@"; snapshot_env_file; scan_keys
+  parse_args "$@"; validate_source; snapshot_env_file; scan_keys
   [[ -f "$COMPOSE_FILE" && -f "$TLS_COMPOSE_FILE" ]] || fail 'installed Compose files are missing' 2
   command -v docker >/dev/null 2>&1 || fail 'docker is required' 2
   snapshot_resources; run_compose_or_rollback config --no-interpolate || return $?

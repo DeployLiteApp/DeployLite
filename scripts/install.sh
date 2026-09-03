@@ -110,6 +110,23 @@ sha256_file() {
   fi
 }
 
+executable_source_path() { case "$1" in */scripts/bootstrap.sh|*/scripts/bootstrap.test.sh|*/scripts/install.sh|*/scripts/install.test.sh|*/scripts/install-tee.test.sh|*/scripts/runtime-contract.test.sh|*/scripts/runtime-handoff.sh|*/scripts/runtime-handoff.test.sh|*/scripts/support-policy.test.sh|*/scripts/vps-preview-contract.test.sh|*/scripts/vps-preview-failure-matrix.test.sh|*/scripts/vps-preview-full.test.sh|*/scripts/vps-preview-lib.sh|*/scripts/vps-preview-remote.sh|*/scripts/vps-preview-remote.test.sh|*/scripts/vps-preview.sh) return 0 ;; *) return 1 ;; esac; }
+portable_stat() { local gnu_format="$1" bsd_format="$2" path="$3" pattern="$4" value; if value="$(stat -c "$gnu_format" "$path" 2>/dev/null)" && [[ "$value" =~ $pattern ]]; then printf '%s' "$value"; return 0; fi; value="$(stat -f "$bsd_format" "$path" 2>/dev/null)" && [[ "$value" =~ $pattern ]] || return 1; printf '%s' "$value"; }
+source_manifest() { local root="$1" base="${2:-$1}" path relative mode hash; for path in "$root"/* "$root"/.[!.]* "$root"/..?*; do [[ -e "$path" || -L "$path" ]] || continue; [[ "$path" != "$base/.deploylite-source" ]] || continue; relative="${path#"$base"/}"; if [[ -d "$path" ]]; then printf 'owner=0:0|type=directory|mode=0755|path=%s|sha256=-\n' "$relative"; elif [[ -f "$path" ]]; then mode=0644; executable_source_path "$path" && mode=0755; hash="$(sha256_file "$path")"; printf 'owner=0:0|type=file|mode=%s|path=%s|sha256=%s\n' "$mode" "$relative" "$hash"; else return 1; fi; [[ -d "$path" && ! -L "$path" ]] && source_manifest "$path" "$base"; done | LC_ALL=C sort; }
+validate_installed_tree() { local root="$1" path mode inode; [[ "$(portable_stat '%u:%g' '%u:%g' "$root" '^[0-9]+:[0-9]+$')" == 0:0 && "$(portable_stat '%a' '%Lp' "$root" '^[0-9]+$')" == 755 ]] || return 1; for path in "$root"/* "$root"/.[!.]* "$root"/..?*; do [[ -e "$path" || -L "$path" ]] || continue; [[ ! -L "$path" && ( -d "$path" || -f "$path" ) ]] || return 1; [[ "$path" != */.git* && "$path" != */node_modules* && "$path" != */.env* ]] || return 1; [[ "$(portable_stat '%u:%g' '%u:%g' "$path" '^[0-9]+:[0-9]+$')" == 0:0 ]] || return 1; if [[ -d "$path" ]]; then mode=755; else mode=644; executable_source_path "$path" && mode=755; inode="$(portable_stat '%d:%i' '%d:%i' "$path" '^[0-9]+:[0-9]+$')"; [[ "${SOURCE_INODES:-|}" != *"|$inode|"* ]] || return 1; SOURCE_INODES="${SOURCE_INODES:-|}${inode}|"; fi; [[ "$(portable_stat '%a' '%Lp' "$path" '^[0-9]+$')" == "$mode" ]] || return 1; if [[ -d "$path" && ! -L "$path" ]]; then validate_installed_tree "$path" || return 1; fi; done; }
+source_is_valid() {
+  local root marker key value schema repository commit archive manifest path mode actual
+  root="${INSTALL_DIR}/source"; marker="$root/.deploylite-source"
+  [[ -d "$root" && ! -L "$root" && -f "$marker" && ! -L "$marker" ]] || return 1
+  [[ "$(portable_stat '%u' '%u' "$marker" '^[0-9]+$')" == 0 && "$(portable_stat '%a' '%Lp' "$marker" '^[0-9]+$')" == 644 ]] || return 1
+  [[ "$(awk 'END {print NR}' "$marker")" == 5 ]] || return 1
+  while IFS='=' read -r key value; do case "$key" in schema) schema="$value" ;; repository) repository="$value" ;; commit) commit="$value" ;; archive_sha256) archive="$value" ;; manifest_sha256) manifest="$value" ;; *) return 1 ;; esac; done <"$marker"
+  [[ "$schema" == 2 && "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && "$commit" =~ ^[0-9a-fA-F]{40}$ && "$archive" =~ ^[0-9a-fA-F]{64}$ && "$manifest" =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+  SOURCE_INODES='|'; validate_installed_tree "$root" || return 1
+  for path in apps/api/Dockerfile apps/web/Dockerfile package.json pnpm-lock.yaml .node-version infra/vps/compose.yml infra/vps/compose.tls.yml scripts/runtime-handoff.sh; do [[ -f "$root/$path" && ! -L "$root/$path" ]] || return 1; done
+  actual="$(source_manifest "$root")" || return 1; [[ "$(printf '%s' "$actual" | sha256_text)" == "$manifest" ]]
+}
+
 canonical_install_dir() {
   ( cd -P "$INSTALL_DIR" && pwd -P )
 }
@@ -139,13 +156,13 @@ installer_context_fingerprint() {
 
 state_owner_is_safe() {
   local path="$1" owner=""
-  owner="$(as_root stat -c '%u' "$path" 2>/dev/null || as_root stat -f '%u' "$path" 2>/dev/null)" || return 1
+  owner="$(as_root portable_stat '%u' '%u' "$path" '^[0-9]+$')" || return 1
   [[ "$owner" == "0" || "$owner" == "${EUID}" ]]
 }
 
 state_mode_is_safe() {
   local path="$1" mode=""
-  mode="$(as_root stat -c '%a' "$path" 2>/dev/null || as_root stat -f '%Lp' "$path" 2>/dev/null)" || return 1
+  mode="$(as_root portable_stat '%a' '%Lp' "$path" '^[0-9]+$')" || return 1
   [[ "$mode" == "600" ]]
 }
 
@@ -390,7 +407,7 @@ install_log_setup() {
   # started yet at this point in the function.
   if [[ -f "$log_file" ]]; then
     local current_mode=""
-    current_mode="$(stat -c '%a' "$log_file" 2>/dev/null || stat -f '%Lp' "$log_file" 2>/dev/null || echo "")"
+    current_mode="$(portable_stat '%a' '%Lp' "$log_file" '^[0-9]+$' 2>/dev/null || echo "")"
     case "$current_mode" in
       600|640) ;;
       "")
@@ -736,12 +753,14 @@ prepare_install_dir() {
 
 install_compose_file() {
   local tmp tls_tmp
+  local template_root="$REPO_ROOT"
+  source_is_valid && template_root="${INSTALL_DIR}/source"
   tmp="$(mktemp)"
   tls_tmp="$(mktemp)"
-  sed "s#context: ../..#context: ${REPO_ROOT}#g" "${REPO_ROOT}/infra/vps/compose.yml" >"$tmp"
-  sed "s#context: ../..#context: ${REPO_ROOT}#g" "${REPO_ROOT}/infra/vps/compose.tls.yml" >"$tls_tmp"
-  as_root install -m 644 "$tmp" "$COMPOSE_FILE"
-  as_root install -m 644 "$tls_tmp" "$TLS_COMPOSE_FILE"
+  sed 's#context: ../..#context: ./source#g' "${template_root}/infra/vps/compose.yml" >"$tmp"
+  sed 's#context: ../..#context: ./source#g' "${template_root}/infra/vps/compose.tls.yml" >"$tls_tmp"
+  if [[ ! -f "$COMPOSE_FILE" ]] || ! cmp -s "$tmp" "$COMPOSE_FILE"; then as_root install -m 644 "$tmp" "$COMPOSE_FILE"; fi
+  if [[ ! -f "$TLS_COMPOSE_FILE" ]] || ! cmp -s "$tls_tmp" "$TLS_COMPOSE_FILE"; then as_root install -m 644 "$tls_tmp" "$TLS_COMPOSE_FILE"; fi
   rm -f "$tmp" "$tls_tmp"
 }
 
@@ -793,10 +812,11 @@ main() {
   acquire_state_lock || return $?
   trap release_state_lock EXIT
    run_progress_step 1 "Host preflight" preflight || return $?
-   load_installer_state
+    load_installer_state
+    repair_installed_artifacts
    run_progress_step 2 "curl" run_install_curl_step || return $?
    run_progress_step 3 "Docker/Compose" run_install_docker_step || return $?
-   run_progress_step 4 "Install directory and overlay copy" run_prepare_install_dir_step || return $?
+    run_progress_step 4 "Install directory and overlay copy" run_prepare_install_dir_step || return $?
    run_progress_step 5 "Config validation" validate_compose || return $?
     run_progress_step 6 "P1 handoff" p1_handoff || return $?
  }
@@ -804,20 +824,27 @@ main() {
 p1_handoff() {
   install_runtime_handoff
   info "P0 prerequisite setup is complete; runtime setup was not executed by P0. No runtime secrets were generated or persisted, and no services were started."
-  info "Runtime command: sudo /opt/deploylite/runtime-handoff.sh --env-file <operator-file>"
+  if source_is_valid; then info "Runtime command: sudo /opt/deploylite/runtime-handoff.sh --env-file <operator-file>"; else info "Runtime handoff unavailable; run the exact-SHA bootstrap to install a verified source bundle."; fi
   info "Limits: operator must provide a root-owned 0600 env file; DNS must resolve to this host and HTTPS/ACME must be verified externally."
 }
 
 install_runtime_handoff() {
-  local source="${REPO_ROOT}/scripts/runtime-handoff.sh"
+  local source="$REPO_ROOT/scripts/runtime-handoff.sh"
+  source_is_valid && source="${INSTALL_DIR}/source/scripts/runtime-handoff.sh"
   [[ -f "$source" ]] || fail "Installer source contract is missing: ${source}." 2
-  as_root install -m 0755 -o 0 -g 0 "$source" "${INSTALL_DIR}/runtime-handoff.sh"
+  if [[ ! -f "${INSTALL_DIR}/runtime-handoff.sh" ]] || ! cmp -s "$source" "${INSTALL_DIR}/runtime-handoff.sh"; then as_root install -m 0755 -o 0 -g 0 "$source" "${INSTALL_DIR}/runtime-handoff.sh"; fi
   info "Refreshed runtime entrypoint at ${INSTALL_DIR}/runtime-handoff.sh."
 }
 
 run_install_curl_step() { run_durable_step install-curl install_curl; }
 run_install_docker_step() { run_durable_step install-docker install_docker; }
 run_prepare_install_dir_step() { run_durable_step prepare-install-dir prepare_install_dir; }
+repair_installed_artifacts() {
+  state_has_step prepare-install-dir || return 0
+  source_is_valid || return 0
+  install_compose_file
+  install_runtime_handoff
+}
 load_installer_state() {
   ACTIVE_STEP="installer state load/validation"
   state_load

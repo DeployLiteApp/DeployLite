@@ -31,7 +31,7 @@ services:
   migrate:
     profiles: [bootstrap, runtime]
     build:
-      context: ../..
+      context: ./source
       dockerfile: apps/api/Dockerfile
       target: migration
     image: deploylite-migration:local
@@ -48,7 +48,7 @@ services:
   api:
     profiles: [bootstrap, runtime]
     build:
-      context: ../..
+      context: ./source
       dockerfile: apps/api/Dockerfile
       target: runtime
     image: deploylite-api:local
@@ -81,7 +81,7 @@ services:
   web:
     profiles: [bootstrap, runtime]
     build:
-      context: ../..
+      context: ./source
       dockerfile: apps/web/Dockerfile
     image: deploylite-web:local
     restart: unless-stopped

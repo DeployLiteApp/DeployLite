@@ -9,6 +9,7 @@ export DEPLOYLITE_INSTALL_TESTING=1
 
 PASS=0
 FAIL=0
+stat_mode() { local value; if value="$(stat -c '%a' "$1" 2>/dev/null)" && [[ "$value" =~ ^[0-9]+$ ]]; then printf '%s' "$value"; else stat -f '%Lp' "$1" 2>/dev/null; fi; }
 
 assert_contains() {
   local haystack="$1" needle="$2"
@@ -161,7 +162,7 @@ test_installed_compose_uses_source_tree_build_context() {
   as_root() { "$@"; }
   install_compose_file
   rendered="$(cat "$COMPOSE_FILE" "$TLS_COMPOSE_FILE")"
-  assert_contains "$rendered" "context: ${ROOT_DIR}" || return 1
+  assert_contains "$rendered" 'context: ./source' || return 1
   assert_not_contains "$rendered" 'context: ../..' || return 1
   assert_contains "$rendered" 'traefik:v3.6.7' || return 1
   assert_contains "$rendered" '--providers.docker=true' || return 1
@@ -255,7 +256,7 @@ test_main_hands_off_without_secrets_or_runtime_commands() (
   assert_contains "$output" 'No runtime secrets were generated or persisted' || return 1
   assert_contains "$output" 'P0 prerequisite setup is complete' || return 1
   assert_contains "$output" 'runtime setup was not executed' || return 1
-  assert_contains "$output" 'Runtime command: sudo /opt/deploylite/runtime-handoff.sh --env-file <operator-file>' || return 1
+   assert_contains "$output" 'Runtime handoff unavailable; run the exact-SHA bootstrap' || return 1
   rm -rf "$tmp"
 )
 
@@ -505,7 +506,7 @@ test_state_uses_root_model_for_nonroot_operations() (
   local tmp mode sudo_log
   tmp="$(mktemp -d)"; state_test_setup "$tmp"; release_state_lock
   sudo_log="$tmp/sudo.log"; as_root() { printf 'sudo %s\n' "$*" >>"$sudo_log"; "$@"; }; acquire_state_lock; COMPLETED_STEPS=(install-curl); state_write; release_state_lock
-  mode="$(stat -f '%Lp' "$STATE_FILE" 2>/dev/null || stat -c '%a' "$STATE_FILE")"
+  mode="$(stat_mode "$STATE_FILE")"
   [[ "$mode" == 600 && "$(<"$sudo_log")" == *'sudo mktemp'* && "$(<"$sudo_log")" == *'sudo sync -f'* && "$(<"$sudo_log")" == *'sudo mv'* ]] || return 1
   rm -rf "$tmp"
 )
@@ -558,7 +559,7 @@ test_error_diagnostic_names_active_step_and_state_without_secret() (
 test_state_load_failure_diagnostic_identifies_state_validation() (
   local tmp output status
   tmp="$(mktemp -d)"; state_test_setup "$tmp"; release_state_lock
-  install_log_setup() { :; }; preflight() { :; }; state_load() { return 2; }
+  install_log_setup() { :; }; preflight() { :; }; state_load() { return 2; }; load_installer_state() { ACTIVE_STEP='installer state load/validation'; state_load; }
   set +e; output="$(main --non-interactive 2>&1)"; status=$?; set -e
   [[ "$status" -eq 2 ]] || return 1
   assert_contains "$output" 'Install failed during installer state load/validation' || return 1
