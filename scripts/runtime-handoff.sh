@@ -25,7 +25,8 @@ parse_args() {
   [[ "$ENV_FILE" == /* && "$ENV_FILE" != *$'\n'* && "$ENV_FILE" != *$'\r'* ]] || fail 'env-file path must be absolute and single-line' 2
 }
 is_root() { [[ "${EUID}" -eq 0 ]]; }
-stat_value() { local gnu_format="$1" bsd_format="$2" path="$3" value pattern='^[0-9]+$'; [[ "$gnu_format" == *:* ]] && pattern='^[0-9]+:[0-9]+$'; if value="$(stat -c "$gnu_format" "$path" 2>/dev/null)" && [[ "$value" =~ $pattern ]]; then printf '%s' "$value"; return 0; fi; value="$(stat -f "$bsd_format" "$path" 2>/dev/null)" && [[ "$value" =~ $pattern ]] || return 1; printf '%s' "$value"; }
+stat_value() { local gnu_format="$1" bsd_format="$2" path="$3" pattern="${4:-^[0-9]+$}" value; if value="$(stat -c "$gnu_format" "$path" 2>/dev/null)" && [[ "$value" =~ $pattern ]]; then printf '%s' "$value"; return 0; fi; if value="$(stat -f "$bsd_format" "$path" 2>/dev/null)" && [[ "$value" =~ $pattern ]]; then printf '%s' "$value"; return 0; fi; return 1; }
+stat_identity_runtime() { stat_value '%d:%i:%s:%Y:%a:%u' '%d:%i:%z:%m:%Lp:%u' "$1" '^[0-9]+(:[0-9]+){5}$'; }
 canonical_path() { local dir; dir=$(cd -P "$(dirname "$1")" 2>/dev/null && pwd -P) || return 1; printf '%s/%s\n' "$dir" "$(basename "$1")"; }
 sha256_text_runtime() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}'; else shasum -a 256 | awk '{print $1}'; fi; }
 sha256_file_runtime() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi; }
@@ -68,7 +69,7 @@ snapshot_env_file() {
   [[ "$canonical" == "$ENV_FILE" ]] || fail 'env-file path must be canonical (no symlinked parent)' 2
   [[ "$(stat_value '%u' '%u' "$ENV_FILE")" == 0 ]] || fail 'env-file must be owned by root' 2
   [[ "$(stat_value '%a' '%Lp' "$ENV_FILE")" == 600 ]] || fail 'env-file mode must be exactly 0600' 2
-  before=$(stat_value '%d:%i:%s:%Y:%a:%u' '%d:%i:%z:%m:%Lp:%u' "$ENV_FILE") || fail 'cannot inspect env-file identity' 2
+  before=$(stat_identity_runtime "$ENV_FILE") || fail 'cannot inspect env-file identity' 2
   snapshot_dir=$(mktemp -d "${TMPDIR:-/tmp}/deploylite-runtime.XXXXXX") || fail 'cannot create private runtime snapshot directory' 2
   chmod 700 "$snapshot_dir"
   WORK="$snapshot_dir"; SNAPSHOT_FILE="${snapshot_dir}/env"
@@ -77,7 +78,7 @@ snapshot_env_file() {
   [[ -f "$SNAPSHOT_FILE" && ! -L "$SNAPSHOT_FILE" ]] || fail 'runtime snapshot is not a regular file' 2
   [[ "$(stat_value '%u' '%u' "$SNAPSHOT_FILE")" == 0 ]] || fail 'runtime snapshot owner is unsafe' 2
   [[ "$(stat_value '%a' '%Lp' "$SNAPSHOT_FILE")" == 600 ]] || fail 'runtime snapshot mode is unsafe' 2
-  after=$(stat_value '%d:%i:%s:%Y:%a:%u' '%d:%i:%z:%m:%Lp:%u' "$ENV_FILE") || fail 'cannot recheck env-file identity' 2
+  after=$(stat_identity_runtime "$ENV_FILE") || fail 'cannot recheck env-file identity' 2
   [[ "$before" == "$after" ]] || fail 'env-file changed while creating the runtime snapshot' 2
 }
 
