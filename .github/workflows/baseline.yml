@@ -28,7 +28,7 @@ jobs:
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: pnpm runtime:contract
-      - run: shellcheck -x scripts/vps-preview.sh scripts/vps-preview-lib.sh scripts/vps-preview-remote.sh scripts/*vps-preview*.test.sh
+      - run: shellcheck -x scripts/acme-renewal.test.sh scripts/vps-preview.sh scripts/vps-preview-lib.sh scripts/vps-preview-remote.sh scripts/*vps-preview*.test.sh
       - run: pnpm test:vps-preview
       - run: bash scripts/vps-preview-failure-matrix.test.sh
       - run: pnpm test:docker-dry-run
@@ -78,6 +78,7 @@ jobs:
         with: { node-version: 24.20.0, cache: pnpm }
       - run: corepack enable && pnpm install --frozen-lockfile
       - run: pnpm ci:evidence:check && bash scripts/compose.test.sh
+      - run: pnpm test:acme-renewal
       - run: pnpm test:migration-image
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
         with: { scan-type: fs, scan-ref: ., severity: "HIGH,CRITICAL", exit-code: "1", ignore-unfixed: "false" }
