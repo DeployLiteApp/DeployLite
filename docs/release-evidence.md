@@ -28,6 +28,12 @@ On 2026-09-02, the prerequisite installer at commit `dbdc463157ed6ff80ad24379d13
 
 This is partial P0 acceptance evidence, not a complete release record. Validation on a second supported VPS image remains required before P0 can be declared complete. Host, operator, credential, and private infrastructure identifiers are intentionally excluded.
 
+## VPS handoff validation (2026-09-03)
+
+The 2026-09-03 handoff was validated against the full merge commit `478627340ddde32e9b37d8fa789ec044660df8a3`. The exact bootstrap and source selfheal completed successfully, followed by the `env0600` step, build, and migration with exit code 0. Traefik, PostgreSQL, API, and web were healthy; API and web exposed no host ports, while the proxy exposed ports 80 and 443. A local Host/resolve diagnostic over TLS with `-k` exercised the API, bootstrap, web, and first-admin routes. A rerun preserved the same run IDs, volumes, and environment; no secrets were present in the captured evidence, and the runtime was left healthy.
+
+This validates the VPS handoff slice only. It is explicitly not evidence of DNS, ACME issuance, or a publicly trusted certificate. No admin was created. Validation on a second supported P0 installer image remains pending, so DeployLite is not release-ready.
+
 ## Current boundary
 
 Hosted quality, PostgreSQL integration, Compose/supply-chain, and aggregate baseline gates are implemented. The Compose/supply-chain gate runs filesystem and API/web image Trivy scans, generates CycloneDX SBOMs, records image and Compose digest evidence, and builds hardened small runtime images. The release record still does not prove image provenance or signing, production deployment, infrastructure mutation, Traefik/ACME production routing, or VPS smoke. Aggregate release approval remains pending, so DeployLite is not production-ready.
