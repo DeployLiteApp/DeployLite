@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-readonly DEFAULT_REPO="CoreFoundryTech/DeployLite"
+readonly DEFAULT_REPO="DeployLiteApp/DeployLite"
 
 DEPLOYLITE_REPO="${DEPLOYLITE_REPO:-$DEFAULT_REPO}"
 DEPLOYLITE_VERSION="${DEPLOYLITE_VERSION:-}"
@@ -12,6 +12,7 @@ TARBALL_PATH=""
 SOURCE_DIR=""
 SOURCE_ARCHIVE_SHA256=""
 TAR_BIN=""
+BOOTSTRAP_BASHPID="${BASHPID:-$$}"
 INSTALL_DIR="${DEPLOYLITE_INSTALL_DIR:-/opt/deploylite}"
 SOURCE_INSTALL_DIR="${INSTALL_DIR}/source"
 
@@ -20,6 +21,7 @@ info() { log INFO "$1"; }
 fail() { log ERROR "$1"; exit "${2:-1}"; }
 
 cleanup() {
+  cleanup_source_staging --exit
   if [[ -n "$TMP_ROOT" && -d "$TMP_ROOT" ]]; then
     rm -rf "$TMP_ROOT"
   fi
@@ -28,6 +30,7 @@ trap cleanup EXIT
 
 on_error() {
   local code=$?
+  cleanup_source_staging
   log ERROR "Bootstrap failed. Temporary files were cleaned up. No secrets were printed."
   exit "$code"
 }
@@ -76,30 +79,50 @@ download_tarball() {
 }
 
 extract_source() {
-  local member top=""
-  while IFS= read -r -d '' member; do
-    [[ -n "$member" && "$member" != /* && "$member" != *$'\r'* ]] || fail "Downloaded archive contains an unsafe path." 1
-    [[ "/$member/" != */../* ]] || fail "Downloaded archive contains a traversal path." 1
-    if [[ "$member" == */* ]]; then
-      if [[ -z "$top" ]]; then top="${member%%/*}"; elif [[ "$top" != "${member%%/*}" ]]; then fail "Downloaded archive must contain exactly one top-level directory." 1; fi
+  local tar_output status=0 entries=() path sentinel sentinel_value
+  # Do not use a textual or column-based tar parser. Extract into a fresh,
+  # private staging directory, then inspect the filesystem using NUL-delimited
+  # find output.
+  # GNU tar defaults to stripping absolute names; these flags keep it from
+  # honoring archive ownership or modes, and prevent an archived directory
+  # symlink from becoming a traversal point during extraction.
+  sentinel="$TMP_ROOT/escape-sentinel"; sentinel_value="deploylite-bootstrap-sentinel"
+  printf '%s\n' "$sentinel_value" >"$sentinel"
+  tar_output="$({ "${TAR_BIN:-tar}" --extract --gzip --file "$TARBALL_PATH" --directory "$TMP_ROOT/source" --no-same-owner --no-same-permissions --keep-directory-symlink --no-overwrite-dir; } 2>&1)" || status=$?
+  if [[ "$status" -ne 0 ]]; then
+    if [[ "$tar_output" == *"gzip:"* || "$tar_output" == *"Unexpected EOF"* || "$tar_output" == *"This does not look like a tar archive"* ]]; then
+      fail "Downloaded archive is invalid or corrupt." 1
     fi
-  done < <("${TAR_BIN:-tar}" --null --list --file "$TARBALL_PATH")
-  [[ -n "$top" ]] || fail "Downloaded archive did not contain one source directory." 1
-  while IFS= read -r -d '' member; do
-    [[ "$member" == "$top" || "$member" == "$top/"* ]] || fail "Downloaded archive contains an unexpected top-level member." 1
-  done < <("${TAR_BIN:-tar}" --null --list --file "$TARBALL_PATH")
+    fail "Downloaded archive contains unsafe members and was not extracted." 1
+  fi
+  [[ -z "$tar_output" ]] || fail "Downloaded archive contains unsafe members." 1
+  [[ -f "$sentinel" && ! -L "$sentinel" && "$(<"$sentinel")" == "$sentinel_value" ]] || fail "Downloaded archive escaped its staging directory." 1
+  while IFS= read -r -d '' path; do entries+=("$path"); done < <(find "$TMP_ROOT/source" -mindepth 1 -maxdepth 1 -print0)
+  if [[ "${#entries[@]}" -eq 0 ]]; then fail "Downloaded archive is missing its source directory." 1; fi
+  [[ "${#entries[@]}" -eq 1 ]] || fail "Downloaded archive contains a sibling top-level root." 1
+  SOURCE_DIR="${entries[0]}"
+  [[ -d "$SOURCE_DIR" && ! -L "$SOURCE_DIR" ]] || fail "Downloaded archive does not contain a top-level directory." 1
+  validate_extracted_tree "$SOURCE_DIR" || fail "Downloaded archive contains unsafe filesystem entries." 1
   if command_exists sha256sum; then SOURCE_ARCHIVE_SHA256="$(sha256sum "$TARBALL_PATH" | awk '{print $1}')"; else SOURCE_ARCHIVE_SHA256="$(shasum -a 256 "$TARBALL_PATH" | awk '{print $1}')"; fi
-  "${TAR_BIN:-tar}" --extract --gzip --file "$TARBALL_PATH" --directory "$TMP_ROOT/source" --no-absolute-names --no-same-owner --no-same-permissions --keep-directory-symlink
-  SOURCE_DIR="$TMP_ROOT/source/$top"
-  [[ -d "$SOURCE_DIR" && ! -L "$SOURCE_DIR" ]] || fail "Downloaded archive did not contain a safe source directory." 1
   normalize_tree "$SOURCE_DIR"
   validate_tree "$SOURCE_DIR" || fail "Downloaded archive contains an unsupported filesystem entry." 1
   validate_required_inputs "$SOURCE_DIR" || fail "Downloaded archive is missing required workspace inputs." 1
   [[ -x "$SOURCE_DIR/scripts/install.sh" || -f "$SOURCE_DIR/scripts/install.sh" ]] || fail "Downloaded archive is missing scripts/install.sh." 1
 }
 
+validate_extracted_tree() {
+  local root="$1" path links
+  while IFS= read -r -d '' path; do
+    [[ ! -L "$path" && ( -d "$path" || -f "$path" ) ]] || return 1
+    if [[ -f "$path" ]]; then
+      links="$(portable_stat '%h' '%l' "$path" '^[0-9]+$')" || return 1
+      [[ "$links" == 1 ]] || return 1
+    fi
+  done < <(find -P "$root" -xdev -print0)
+}
+
 normalize_tree() {
-  local root="$1" path mode
+  local root="$1" path
   [[ -d "$root" && ! -L "$root" ]] || return 1
   chown 0:0 "$root"; chmod 0755 "$root"
   for path in "$root"/* "$root"/.[!.]* "$root"/..?*; do
@@ -108,8 +131,18 @@ normalize_tree() {
     [[ ! -L "$path" && ( -d "$path" || -f "$path" ) ]] || return 1
     chown 0:0 "$path"
     if [[ -d "$path" ]]; then chmod 0755 "$path"; normalize_tree "$path"; continue; fi
-    mode="$(portable_stat '%a' '%Lp' "$path" '^[0-9]+$')"
     if executable_path "$path"; then chmod 0755 "$path"; else chmod 0644 "$path"; fi
+  done
+}
+cleanup_source_staging() {
+  local path mode="${1:-}"
+  # EXIT traps also run in command-substitution subshells. Never let those
+  # cleanup hooks remove a staging directory still being built by the parent.
+  [[ "$mode" != --exit || "${BASHPID:-$$}" == "${BOOTSTRAP_BASHPID:-}" ]] || return 0
+  [[ -n "${INSTALL_DIR:-}" ]] || return 0
+  for path in "$INSTALL_DIR"/.source.staging.*; do
+    [[ -e "$path" || -L "$path" ]] || continue
+    rm -rf -- "$path"
   done
 }
 executable_path() {
@@ -120,8 +153,8 @@ executable_path() {
 }
 portable_stat() {
   local gnu_format="$1" bsd_format="$2" path="$3" pattern="$4" value
-  if value="$(stat -c "$gnu_format" "$path" 2>/dev/null)" && [[ "$value" =~ $pattern ]]; then printf '%s' "$value"; return 0; fi
-  value="$(stat -f "$bsd_format" "$path" 2>/dev/null)" && [[ "$value" =~ $pattern ]] || return 1
+  if value="$(stat -c "$gnu_format" "$path" 2>/dev/null || true)" && [[ "$value" =~ $pattern ]]; then printf '%s' "$value"; return 0; fi
+  value="$(stat -f "$bsd_format" "$path" 2>/dev/null || true)" && [[ "$value" =~ $pattern ]] || return 1
   printf '%s' "$value"
 }
 owner_group() { portable_stat '%u:%g' '%u:%g' "$1" '^[0-9]+:[0-9]+$'; }
@@ -130,7 +163,6 @@ validate_tree() {
   [[ "$(owner_group "$root")" == 0:0 && "$(portable_stat '%a' '%Lp' "$root" '^[0-9]+$')" == 755 ]] || return 1
   for path in "$root"/* "$root"/.[!.]* "$root"/..?*; do
     [[ -e "$path" || -L "$path" ]] || continue
-    [[ "$path" != *$'\n'* && "$path" != *$'\r'* ]] || return 1
     [[ ! -L "$path" && ( -d "$path" || -f "$path" ) ]] || return 1
     [[ "$(owner_group "$path")" == 0:0 ]] || return 1
     mode=644; [[ -d "$path" ]] && mode=755; executable_path "$path" && mode=755

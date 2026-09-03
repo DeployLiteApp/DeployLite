@@ -65,7 +65,11 @@ redact_stream() {
 }
 
 on_error() {
-  local code=$?
+  _report_error "$?"
+}
+
+_report_error() {
+  local code="$1"
   warn "Install failed during ${ACTIVE_STEP:-admission checks}. Changed steps: ${CHANGED_STEPS[*]:-none}. Preserving installed prerequisites and Compose templates."
   warn "Resume: re-run this installer; durable progress is stored at ${STATE_FILE}."
   exit "$code"
@@ -812,7 +816,7 @@ main() {
   acquire_state_lock || return $?
   trap release_state_lock EXIT
    run_progress_step 1 "Host preflight" preflight || return $?
-    load_installer_state
+     load_installer_state || { local state_status=$?; ACTIVE_STEP="installer state load/validation"; _report_error "$state_status"; }
     repair_installed_artifacts
    run_progress_step 2 "curl" run_install_curl_step || return $?
    run_progress_step 3 "Docker/Compose" run_install_docker_step || return $?
