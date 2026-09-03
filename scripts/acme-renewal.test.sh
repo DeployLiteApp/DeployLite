@@ -11,6 +11,7 @@ TRAEFIK_TLS_PORT="${TRAEFIK_TLS_PORT:-54443}"
 PEBBLE_API_PORT="${PEBBLE_API_PORT:-51400}"
 PEBBLE_MGMT_PORT="${PEBBLE_MGMT_PORT:-51500}"
 FAIL_AT="${DEPLOYLITE_ACME_TEST_FAIL_AT:-}"
+TEST_MODE="${DEPLOYLITE_ACME_TEST_MODE:-startup}"
 ACTIVE_PID=""
 CLEANUP_ATTEMPTED=0
 
@@ -114,6 +115,11 @@ inject_failure() {
   return 97
 }
 
+periodic_elapsed_is_valid() {
+  local elapsed="$1"
+  (( elapsed >= 55 && elapsed <= 100 ))
+}
+
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
@@ -124,8 +130,8 @@ expiry_epoch() {
 }
 
 certificate_snapshot() {
-  local details issuer="" serial="" value key
-  details="$(run_bounded 10 certificate_details)" || return 1
+  local timeout="${1:-10}" details issuer="" serial="" value key
+  details="$(run_bounded "$timeout" certificate_details)" || return 1
   while IFS='=' read -r key value; do
     case "$key" in
       issuer) issuer="$value" ;;
@@ -159,12 +165,21 @@ curl_probe() {
 }
 
 case "$FAIL_AT" in
-  ""|after-project|after-initial-issuance) ;;
+  ""|after-project|after-initial-issuance|periodic-boundary) ;;
   *) printf 'DEPLOYLITE_ACME_TEST_FAIL_AT is not an allowed test-only point\n' >&2; exit 2 ;;
 esac
 production_containers_before="$(run_bounded 10 docker ps -aq --filter name='^deploylite-')"
 production_volumes_before="$(run_bounded 10 docker volume ls -q --filter name='^deploylite_')"
+case "$TEST_MODE" in
+  startup|periodic) ;;
+  *) printf 'DEPLOYLITE_ACME_TEST_MODE must be startup or periodic\n' >&2; exit 2 ;;
+esac
 production_guard
+if [[ "$FAIL_AT" == periodic-boundary ]]; then
+  periodic_elapsed_is_valid 55 && periodic_elapsed_is_valid 100 && ! periodic_elapsed_is_valid 54 && ! periodic_elapsed_is_valid 101
+  printf 'Periodic elapsed boundary helper passed (accepted=55,100; rejected=54,101)\n'
+  exit 0
+fi
 inject_failure after-project
 
 install -m 600 /dev/null "$TEST_DIR/acme.json"
@@ -186,30 +201,57 @@ chmod 0644 "$TEST_DIR/pebble.minica.pem"
 run_bounded 10 openssl x509 -in "$TEST_DIR/pebble.minica.pem" -noout >/dev/null
 run_bounded 60 docker compose --project-name "$PROJECT" -f "$ROOT_DIR/infra/acme-test/compose.yml" up -d --wait traefik >/dev/null
 initial="$(wait_for_certificate)"
+initial_observed_seconds="$SECONDS"
 initial_serial="${initial%%|*}"
 initial_expiry="${initial##*|}"
 initial_hash="$(sha256_file "$TEST_DIR/acme.json")"
 curl_probe
 inject_failure after-initial-issuance
 
-# Traefik's periodic interval is one minute for this test duration. Restarting
-# invokes its normal startup renewal check deterministically; it does not
-# call ACME directly or alter the certificate/storage fixtures.
-run_bounded 60 docker compose --project-name "$PROJECT" -f "$ROOT_DIR/infra/acme-test/compose.yml" restart traefik >/dev/null
-deadline=$((SECONDS + 180))
+if [[ "$TEST_MODE" == startup ]]; then
+  # Restarting invokes Traefik's normal startup renewal check deterministically;
+  # it does not call ACME directly or alter the certificate/storage fixtures.
+  run_bounded 60 docker compose --project-name "$PROJECT" -f "$ROOT_DIR/infra/acme-test/compose.yml" restart traefik >/dev/null
+  deadline=$((SECONDS + 180))
+else
+  # Traefik's periodic interval is one minute for this test duration. Do not
+  # restart, recreate, or kill Traefik: the ticker must perform the renewal.
+  deadline=$((initial_observed_seconds + 100))
+fi
 renewed=''
+renewed_serial=''
+renewed_expiry=''
+renewed_hash=''
+renewed_elapsed=''
 while (( SECONDS < deadline )); do
-  if renewed="$(certificate_snapshot 2>/dev/null)"; then
+  remaining_seconds=$((deadline - SECONDS))
+  snapshot_timeout=$((remaining_seconds < 10 ? remaining_seconds : 10))
+  if renewed="$(certificate_snapshot "$snapshot_timeout" 2>/dev/null)"; then
+    renewed_observed_seconds="$SECONDS"
+    renewed_elapsed=$((renewed_observed_seconds - initial_observed_seconds))
     renewed_serial="${renewed%%|*}"
     renewed_expiry="${renewed##*|}"
     renewed_hash="$(sha256_file "$TEST_DIR/acme.json")"
-    if [[ "$renewed_serial" != "$initial_serial" && "$renewed_hash" != "$initial_hash" ]] && (( renewed_expiry > initial_expiry )); then break; fi
+    if [[ "$renewed_serial" != "$initial_serial" && "$renewed_hash" != "$initial_hash" ]]; then
+      if [[ "$TEST_MODE" == periodic ]] && ! periodic_elapsed_is_valid "$renewed_elapsed"; then
+        printf 'periodic renewal observed outside the 55..100 second boundary (elapsed=%ss)\n' "$renewed_elapsed" >&2
+        exit 1
+      fi
+      if (( renewed_expiry > initial_expiry )); then break; fi
+    fi
   fi
   sleep 2
 done
 [[ -n "$renewed" && "$renewed_serial" != "$initial_serial" && "$renewed_hash" != "$initial_hash" ]] || { printf 'ACME renewal did not replace the stored certificate\n' >&2; exit 1; }
 (( renewed_expiry > initial_expiry )) || { printf 'renewed certificate does not expire later\n' >&2; exit 1; }
+if [[ "$TEST_MODE" == periodic ]]; then
+  periodic_elapsed_is_valid "$renewed_elapsed" || { printf 'periodic renewal was observed outside the 55..100 second boundary\n' >&2; exit 1; }
+fi
 curl_probe
 final="$(certificate_snapshot)"
 [[ "${final%%|*}" == "$renewed_serial" ]] || { printf 'served certificate is not the renewed certificate\n' >&2; exit 1; }
-printf 'ACME TLS-ALPN renewal integration passed in %ss (startup renewal path; periodic ticker not exercised)\n' "$((SECONDS - start_seconds))"
+if [[ "$TEST_MODE" == startup ]]; then
+  printf 'ACME TLS-ALPN renewal integration passed in %ss (mode=startup; limitation=restart-driven renewal, periodic ticker not exercised)\n' "$((SECONDS - start_seconds))"
+else
+  printf 'ACME TLS-ALPN renewal integration passed in %ss (mode=periodic; limitation=natural ticker only, Traefik not restarted/recreated/killed between certificates)\n' "$((SECONDS - start_seconds))"
+fi

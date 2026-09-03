@@ -19,6 +19,7 @@
     "ci:local:evidence:test": "node --test scripts/ci/local-evidence/*.test.mjs",
     "runtime:contract": "bash scripts/runtime-contract.test.sh",
     "test:acme-renewal": "bash scripts/acme-renewal.test.sh",
+    "test:acme-renewal:periodic": "DEPLOYLITE_ACME_TEST_MODE=periodic bash scripts/acme-renewal.test.sh",
     "test:vps-preview": "bash scripts/vps-preview-contract.test.sh && bash scripts/vps-preview-remote.test.sh && bash scripts/vps-preview-full.test.sh && bash scripts/vps-preview-command-evidence.test.sh",
     "test:migration-image": "bash scripts/migration-image-contract.test.sh",
     "ci:evidence:check": "node scripts/ci/collect-evidence.mjs --check-only",
