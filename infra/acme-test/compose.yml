@@ -1,0 +1,47 @@
+name: deploylite-acme-test
+
+services:
+  pebble:
+    image: ghcr.io/letsencrypt/pebble:2.7.0@sha256:c156cabea562e43ed0060bddc03539c07de40e311b52c6b0e5ea710a496e56b8
+    command: ["-config", "/test/pebble-config.json", "-strict"]
+    environment:
+      PEBBLE_VA_NOSLEEP: "1"
+    ports:
+      - "${PEBBLE_API_PORT:-51400}:14000"
+      - "${PEBBLE_MGMT_PORT:-51500}:15000"
+    volumes:
+      - ./pebble-config.json:/test/pebble-config.json:ro
+    networks: [acme]
+
+  traefik:
+    image: traefik:v3.6.7@sha256:a9890c898f379c1905ee5b28342f6b408dc863f08db2dab20e46c267d1ff463a
+    command:
+      - --entrypoints.websecure.address=:443
+      - --api.insecure=true
+      - --providers.file.filename=/etc/traefik/dynamic.yml
+      - --certificatesresolvers.pebble.acme.caserver=https://pebble:14000/dir
+      - --certificatesresolvers.pebble.acme.email=acme-test@example.invalid
+      - --certificatesresolvers.pebble.acme.storage=/acme/acme.json
+      - --certificatesresolvers.pebble.acme.tlschallenge=true
+      - --certificatesresolvers.pebble.acme.certificatesduration=1
+      - --certificatesresolvers.pebble.acme.cacertificates=/run/test-ca/pebble.minica.pem
+      - --log.level=INFO
+    ports:
+      - "${TRAEFIK_TLS_PORT:-54443}:443"
+    volumes:
+      - ${ACME_TEST_DIR}/acme.json:/acme/acme.json
+      - ${ACME_TEST_DIR}/pebble.minica.pem:/run/test-ca/pebble.minica.pem:ro
+      - ./dynamic.yml:/etc/traefik/dynamic.yml:ro
+    networks:
+      acme:
+        aliases: [acme.test]
+
+  curl:
+    image: curlimages/curl:8.12.1@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6
+    volumes:
+      - ${ACME_TEST_DIR}/pebble.minica.pem:/run/test-ca/pebble.minica.pem:ro
+    networks: [acme]
+
+networks:
+  acme:
+    driver: bridge

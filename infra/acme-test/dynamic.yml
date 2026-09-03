@@ -1,0 +1,13 @@
+http:
+  routers:
+    acme-test:
+      rule: Host(`acme.test`)
+      entryPoints: [websecure]
+      service: traefik-api
+      tls:
+        certResolver: pebble
+  services:
+    traefik-api:
+      loadBalancer:
+        servers:
+          - url: http://traefik:8080
