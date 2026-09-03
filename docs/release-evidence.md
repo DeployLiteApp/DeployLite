@@ -28,11 +28,13 @@ On 2026-09-02, the prerequisite installer at commit `dbdc463157ed6ff80ad24379d13
 
 This is partial P0 acceptance evidence, not a complete release record. Validation on a second supported VPS image remains required before P0 can be declared complete. Host, operator, credential, and private infrastructure identifiers are intentionally excluded.
 
-## VPS handoff validation (2026-09-03)
+## Trusted public HTTPS validation (2026-09-03)
 
-The 2026-09-03 handoff was validated against the full merge commit `478627340ddde32e9b37d8fa789ec044660df8a3`. The exact bootstrap and source selfheal completed successfully, followed by the `env0600` step, build, and migration with exit code 0. Traefik, PostgreSQL, API, and web were healthy; API and web exposed no host ports, while the proxy exposed ports 80 and 443. A local Host/resolve diagnostic over TLS with `-k` exercised the API, bootstrap, web, and first-admin routes. A rerun preserved the same run IDs, volumes, and environment; no secrets were present in the captured evidence, and the runtime was left healthy.
+The 2026-09-03 runtime handoff was validated against the full merge commit `5e7f05fa5353a0628828cb6d8fd490f882be0dc4`. The exact bootstrap and source selfheal completed successfully, followed by the `env0600` step, build, and migration with exit code 0. Traefik, PostgreSQL, API, and web were healthy; API and web remained on private app ports, while Traefik provided public ingress on ports 80 and 443. HTTP redirected to HTTPS, and trusted external HTTPS checks exercised the API, bootstrap, and web routes without `-k` or any other certificate bypass. The trusted certificate issuer was Let's Encrypt, with `deploylite.com` in the SAN, and observed certificate dates of 2026-09-03..2026-12-02.
 
-This validates the VPS handoff slice only. It is explicitly not evidence of DNS, ACME issuance, or a publicly trusted certificate. No admin was created. Validation on a second supported P0 installer image remains pending, so DeployLite is not release-ready.
+ACME state persisted across a runtime restart, and a rerun remained idempotent while leaving the runtime healthy. The sanitized evidence contains no secrets or private infrastructure identifiers, and no admin account or administrative access was used or documented.
+
+This validates the trusted public HTTPS runtime slice only. Renewal remains unverified, and validation on a second supported P0 installer image remains pending. This evidence does not declare P0 complete or make DeployLite release-ready.
 
 ## Current boundary
 
