@@ -145,6 +145,26 @@ test_real_archive_accepts_spaces_and_newlines() {
   done
 }
 
+test_extract_removes_only_dotenv_basenames_from_source_staging() (
+  local tmp tar_bin name
+  if command -v gtar >/dev/null 2>&1; then tar_bin="$(command -v gtar)"; elif tar --version 2>/dev/null | grep -q 'GNU tar'; then tar_bin="$(command -v tar)"; else return 77; fi
+  tmp="$(mktemp -d)"; create_valid_source "$tmp/input"
+  mkdir -p "$tmp/input/top/nested/.env" "$tmp/input/top/nested/.env.example" "$tmp/input/top/nested/keep"
+  printf 'secret-one' >"$tmp/input/top/.env"
+  printf 'secret-two' >"$tmp/input/top/nested/.env.example/config"
+  printf 'secret-three' >"$tmp/input/top/nested/.env.local"
+  printf 'keep-exactly' >"$tmp/input/top/nested/.envish"
+  printf 'space-adjacent' >"$tmp/input/top/nested/space name"
+  name=$'line\nbreak'; printf 'newline-adjacent' >"$tmp/input/top/nested/$name"
+  "$tar_bin" -czf "$tmp/archive.tar.gz" -C "$tmp/input" top
+  TMP_ROOT="$tmp/sandbox"; TARBALL_PATH="$tmp/archive.tar.gz"; mkdir -p "$TMP_ROOT/source"; TAR_BIN="$tar_bin"; chown() { :; }; owner_group() { printf '0:0'; }
+  extract_source
+  [[ ! -e "$SOURCE_DIR/.env" && ! -e "$SOURCE_DIR/nested/.env" && ! -e "$SOURCE_DIR/nested/.env.example" && ! -e "$SOURCE_DIR/nested/.env.local" ]] || return 1
+  [[ "$(<"$SOURCE_DIR/nested/.envish")" == keep-exactly && "$(<"$SOURCE_DIR/nested/space name")" == space-adjacent && "$(<"$SOURCE_DIR/nested/$name")" == newline-adjacent ]] || return 1
+  [[ "$(find -P "$SOURCE_DIR" -type f -print0 | xargs -0 grep -l 'secret-one\|secret-two\|secret-three' 2>/dev/null || true)" == '' ]] || return 1
+  rm -rf "$tmp"
+)
+
 test_run_installer_preserves_deploylite_env_and_args() {
   local tmp captured
   tmp="$(mktemp -d)"
@@ -172,15 +192,15 @@ SCRIPT
   rm -rf "$tmp"
 }
 
-test_noop_revalidates_and_repairs_existing_bundle() {
-  local tmp inode_before inode_same inode_repaired
+test_noop_revalidates_and_repairs_existing_bundle() (
+  local tmp pointer_before pointer_same pointer_repaired
   tmp="$(mktemp -d)"; SOURCE_DIR="$tmp/source-input"; INSTALL_DIR="$tmp/install"; SOURCE_INSTALL_DIR="$INSTALL_DIR/source"; mkdir -p "$SOURCE_DIR/scripts" "$SOURCE_DIR/apps/api" "$SOURCE_DIR/apps/web" "$SOURCE_DIR/infra/vps"
   for file in apps/api/Dockerfile apps/web/Dockerfile package.json pnpm-lock.yaml .node-version infra/vps/compose.yml infra/vps/compose.tls.yml scripts/runtime-handoff.sh scripts/install.sh; do printf '%s\n' "$file" >"$SOURCE_DIR/$file"; done
   chmod 0755 "$SOURCE_DIR/scripts/install.sh" "$SOURCE_DIR/scripts/runtime-handoff.sh"; TAR_BIN="$(command -v gtar 2>/dev/null || command -v tar)"; SOURCE_ARCHIVE_SHA256="$(printf archive | (sha256sum 2>/dev/null || shasum -a 256) | awk '{print $1}')"; DEPLOYLITE_REPO='CoreFoundryTech/DeployLite'; DEPLOYLITE_VERSION='fccff176a9cefa4e92ec9ebd23f94d85dc36c431'
   chown() { :; }; owner_group() { printf '0:0'; }
-  install_source_bundle; inode_before="$(stat_inode "$SOURCE_INSTALL_DIR/package.json")"; install_source_bundle; inode_same="$(stat_inode "$SOURCE_INSTALL_DIR/package.json")"; [[ "$inode_before" == "$inode_same" ]] || { rm -rf "$tmp"; return 1; }
-  printf corrupted >"$SOURCE_INSTALL_DIR/package.json"; chmod 0644 "$SOURCE_INSTALL_DIR/scripts/install.sh"; install_source_bundle; inode_repaired="$(stat_inode "$SOURCE_INSTALL_DIR/package.json")"; [[ "$inode_repaired" != "$inode_same" && "$(<"$SOURCE_INSTALL_DIR/package.json")" == 'package.json' && "$(stat_mode "$SOURCE_INSTALL_DIR/scripts/install.sh")" == 755 ]] || { rm -rf "$tmp"; return 1; }; rm -rf "$tmp"
-}
+  install_source_bundle; pointer_before="$(readlink "$SOURCE_INSTALL_DIR")"; install_source_bundle; pointer_same="$(readlink "$SOURCE_INSTALL_DIR")"; [[ "$pointer_before" == "$pointer_same" ]] || { rm -rf "$tmp"; return 1; }
+   printf corrupted >"$SOURCE_INSTALL_DIR/package.json"; mkdir -p "$SOURCE_INSTALL_DIR/nested/.env.example"; printf leaked >"$SOURCE_INSTALL_DIR/nested/.env.example/secret"; chmod 0644 "$SOURCE_INSTALL_DIR/scripts/install.sh"; install_source_bundle; pointer_repaired="$(readlink "$SOURCE_INSTALL_DIR")"; [[ "$pointer_repaired" != "$pointer_same" && "$(<"$SOURCE_INSTALL_DIR/package.json")" == 'package.json' && ! -e "$SOURCE_INSTALL_DIR/nested/.env.example" && "$(stat_mode "$SOURCE_INSTALL_DIR/scripts/install.sh")" == 755 ]] || { rm -rf "$tmp"; return 1; }; rm -rf "$tmp"
+)
 
 test_source_bundle_failure_removes_staging_and_preserves_previous_source() (
   local tmp output status
@@ -191,7 +211,7 @@ test_source_bundle_failure_removes_staging_and_preserves_previous_source() (
   chown() { :; }; owner_group() { printf '0:0'; }
   set +e; output="$(install_source_bundle 2>&1)"; status=$?; set -e
   [[ "$status" -ne 0 && "$output" == *'Staged source bundle validation failed.'* && "$(<"$SOURCE_INSTALL_DIR/previous")" == previous ]]
-  if compgen -G "$INSTALL_DIR/.source.staging.*" >/dev/null; then
+   if compgen -G "$INSTALL_DIR/.sources/.source.staging.*" >/dev/null; then
     rm -rf "$tmp"
     return 1
   fi
@@ -239,6 +259,7 @@ run_test 'extract finds installer in a real GitHub-style archive' test_extract_f
 run_test 'extract rejects unsafe archive types before unpacking' test_extract_rejects_unsafe_archive_types_before_unpacking
 run_test 'real archives reject unsafe paths and entry types' test_real_archives_reject_paths_and_entry_types
 run_test 'real archives preserve spaces and newlines in names' test_real_archive_accepts_spaces_and_newlines
+run_test 'source staging removes exact dotenv basenames without leaking secrets' test_extract_removes_only_dotenv_basenames_from_source_staging
 run_test 'installer receives DEPLOYLITE env and args' test_run_installer_preserves_deploylite_env_and_args
 run_test 'matching marker is a validated no-op and corruption is repaired' test_noop_revalidates_and_repairs_existing_bundle
 run_test 'source bundle failures remove staging and preserve the previous source' test_source_bundle_failure_removes_staging_and_preserves_previous_source
