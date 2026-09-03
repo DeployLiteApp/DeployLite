@@ -28,7 +28,7 @@ For local review, render the installer-safe base and Traefik overlay without sta
 docker compose -f infra/vps/compose.yml -f infra/vps/compose.tls.yml config --no-interpolate
 ```
 
-The installer does not claim a public host, perform DNS or ACME checks, or make the web surface available. P0 prerequisite setup is complete when it exits; runtime setup was not executed. It prints `sudo /opt/deploylite/runtime-handoff.sh --env-file <operator-file>`. The operator file must be a canonical, root-owned regular file with mode exactly `0600` and exactly the four documented runtime keys; the handoff never prints secret values.
+The installer does not claim a public host, perform DNS or ACME checks, or make the web surface available. P0 prerequisite setup is complete when it exits; runtime setup was not executed. It prints `sudo /opt/deploylite/runtime-handoff.sh --env-file <operator-file>`. The operator file must be a canonical, root-owned regular file with mode exactly `0600` and exactly these five runtime keys: `DEPLOYLITE_PUBLIC_HOST`, `POSTGRES_PASSWORD`, `DATABASE_URL`, `DEPLOYLITE_SECRET_KEY`, and `DEPLOYLITE_ACME_EMAIL`. The handoff never prints secret values.
 
 ## VPS installer runbook
 
@@ -69,11 +69,12 @@ DEPLOYLITE_PUBLIC_HOST=app.example.com
 POSTGRES_PASSWORD=<strong-password>
 DATABASE_URL=postgres://deploylite:<url-safe-password>@postgres:5432/deploylite
 DEPLOYLITE_SECRET_KEY=<at-least-16-printable-characters>
+DEPLOYLITE_ACME_EMAIL=invalid@example.invalid
 ```
 
 Set that file to root ownership and mode `0600`, then run the printed command. The handoff validates both Compose files with `--no-interpolate`, starts the existing `bootstrap` profile in dependency order, waits using Compose readiness, runs the existing migration service, and starts API/web without host ports. It is safe to rerun and never removes volumes or runs `down --volumes` or global prune. Verify DNS, ACME, and HTTPS externally; the printed URL is tentative and does not assert availability.
 
-The env file follows Docker Compose dotenv semantics: blank lines, comments, quoted values, inline comments, `#`, and `=` are supported. The handoff scans only assignment names (without sourcing or evaluating values), snapshots the root-owned `0600` file into a private temporary directory, and asks Compose to normalize the snapshot. The original file is never used after the snapshot and the temporary directory is removed on every exit path.
+The env file follows Docker Compose dotenv semantics: blank lines, comments, quoted values, inline comments, `#`, and `=` are supported. The handoff scans only assignment names (without sourcing or evaluating values), snapshots the root-owned `0600` file into a private temporary directory, and asks Compose to normalize the snapshot. The normalized `DEPLOYLITE_ACME_EMAIL` is checked for a bounded practical email shape, valid domain labels, and placeholder/public-host values without displaying it. The original file is never used after the snapshot and the temporary directory is removed on every exit path.
 
 During a normal install, the same six-step progress contract is printed in interactive and noninteractive modes: host preflight, curl, Docker/Compose, install-directory and overlay copy, config validation, and P1 handoff. Each stage first emits a numbered `[current/6] ...: RUNNING` transition, then exactly one numbered terminal status ending in `PASS`, `SKIP`, or `FAIL`. The optional whiptail UI only enhances the prerequisite confirmation prompt. A failed or interrupted run reports the active step and the protected state path. Re-run the installer to resume: only the durable curl, Docker, and install-directory steps are skipped when their state is already complete, while checks and validation run again.
 

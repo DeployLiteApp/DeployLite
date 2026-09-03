@@ -5,11 +5,11 @@ IFS=$'\n\t'
 readonly INSTALL_DIR="${DEPLOYLITE_INSTALL_DIR:-/opt/deploylite}"
 readonly COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
 readonly TLS_COMPOSE_FILE="${INSTALL_DIR}/compose.tls.yml"
-readonly KEYS='DEPLOYLITE_PUBLIC_HOST POSTGRES_PASSWORD DATABASE_URL DEPLOYLITE_SECRET_KEY'
+readonly KEYS='DEPLOYLITE_PUBLIC_HOST POSTGRES_PASSWORD DATABASE_URL DEPLOYLITE_SECRET_KEY DEPLOYLITE_ACME_EMAIL'
 SOURCE_DIR="${INSTALL_DIR}/source"
 readonly SOURCES_DIR="${INSTALL_DIR}/.sources"
 SOURCE_MARKER="${SOURCE_DIR}/.deploylite-source"
-ENV_FILE=''; SNAPSHOT_FILE=''; WORK=''; NORMALIZED=''; PUBLIC_HOST=''
+ENV_FILE=''; SNAPSHOT_FILE=''; WORK=''; NORMALIZED=''; PUBLIC_HOST=''; ACME_EMAIL=''
 SNAPSHOT_VALID=0; ROLLBACK_SAFE=0; ROLLBACK_ARMED=0; COMMITTED=0; ROLLBACK_ATTEMPTED=0
 
 # Never allow xtrace to observe argument handling, file contents, or Compose calls.
@@ -102,10 +102,21 @@ scan_keys() {
       POSTGRES_PASSWORD) [[ "${PASSWORD_SEEN:-}" != 1 ]] || fail 'env-file contains a duplicate key' 2; PASSWORD_SEEN=1 ;;
       DATABASE_URL) [[ "${DATABASE_URL_SEEN:-}" != 1 ]] || fail 'env-file contains a duplicate key' 2; DATABASE_URL_SEEN=1 ;;
       DEPLOYLITE_SECRET_KEY) [[ "${SECRET_SEEN:-}" != 1 ]] || fail 'env-file contains a duplicate key' 2; SECRET_SEEN=1 ;;
+      DEPLOYLITE_ACME_EMAIL) [[ "${ACME_EMAIL_SEEN:-}" != 1 ]] || fail 'env-file contains a duplicate key' 2; ACME_EMAIL_SEEN=1 ;;
     esac
     count=$((count + 1))
   done <"$SNAPSHOT_FILE"
-  [[ "$count" -eq 4 && "${PUBLIC_HOST_SEEN:-}" == 1 && "${PASSWORD_SEEN:-}" == 1 && "${DATABASE_URL_SEEN:-}" == 1 && "${SECRET_SEEN:-}" == 1 ]] || fail 'env-file must contain exactly the four required keys' 2
+  local required
+  for required in DEPLOYLITE_PUBLIC_HOST POSTGRES_PASSWORD DATABASE_URL DEPLOYLITE_SECRET_KEY DEPLOYLITE_ACME_EMAIL; do
+    case "$required" in
+      DEPLOYLITE_PUBLIC_HOST) [[ "${PUBLIC_HOST_SEEN:-}" == 1 ]] ;;
+      POSTGRES_PASSWORD) [[ "${PASSWORD_SEEN:-}" == 1 ]] ;;
+      DATABASE_URL) [[ "${DATABASE_URL_SEEN:-}" == 1 ]] ;;
+      DEPLOYLITE_SECRET_KEY) [[ "${SECRET_SEEN:-}" == 1 ]] ;;
+      DEPLOYLITE_ACME_EMAIL) [[ "${ACME_EMAIL_SEEN:-}" == 1 ]] ;;
+    esac || fail "env-file is missing required key: ${required}" 2
+  done
+  [[ "$count" -eq 5 ]] || fail 'env-file must contain exactly the five required keys' 2
 }
 
 compose() { docker compose --env-file "$SNAPSHOT_FILE" -f "$COMPOSE_FILE" -f "$TLS_COMPOSE_FILE" "$@"; }
@@ -120,9 +131,25 @@ normalize_compose_environment() {
   if ! compose config --environment >"$NORMALIZED" 2>/dev/null; then rm -f "$NORMALIZED"; fail 'Compose env-file normalization failed' 2; fi
   PUBLIC_HOST=$(awk -F= '$1 == "DEPLOYLITE_PUBLIC_HOST" { print substr($0, index($0, "=") + 1); found=1 } END { exit(found ? 0 : 1) }' "$NORMALIZED") || fail 'normalized public host is missing' 2
   [[ "$PUBLIC_HOST" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]] || fail 'normalized public host is not a valid hostname' 2
+  ACME_EMAIL=$(awk -F= '$1 == "DEPLOYLITE_ACME_EMAIL" { print substr($0, index($0, "=") + 1); found=1 } END { exit(found ? 0 : 1) }' "$NORMALIZED") || fail 'normalized ACME email is missing' 2
+  validate_acme_email "$ACME_EMAIL" "$PUBLIC_HOST" || fail 'normalized ACME email is invalid' 2
   awk -F= 'BEGIN { bad=0 } $1 == "POSTGRES_PASSWORD" || $1 == "DATABASE_URL" || $1 == "DEPLOYLITE_SECRET_KEY" { value=substr($0,index($0,"=")+1); if (value == "" || tolower(value) ~ /^(placeholder|changeme|replace_me|example)$/) bad=1 } END { exit bad }' "$NORMALIZED" || fail 'normalized runtime values are missing or placeholders' 2
   awk -F= '$1 == "DATABASE_URL" { v=substr($0,index($0,"=")+1); ok=(v ~ /^postgres(ql)?:\/\/[^\/@:]+(:[^\/@]*)?@[^\/[:space:]]+\/.+$/) } END { exit(ok ? 0 : 1) }' "$NORMALIZED" || fail 'normalized DATABASE_URL is invalid' 2
   awk -F= '$1 == "DEPLOYLITE_SECRET_KEY" { v=substr($0,index($0,"=")+1); ok=(length(v) >= 16 && v ~ /^[A-Za-z0-9+\/=._-]+$/) } END { exit(ok ? 0 : 1) }' "$NORMALIZED" || fail 'normalized secret key is invalid' 2
+}
+validate_acme_email() {
+  local email="$1" public_host="$2" local_part domain lowered
+  [[ -n "$email" && ${#email} -le 254 && "$email" =~ ^[^@]+@[^@]+$ ]] || return 1
+  [[ "$email" != *[[:space:]]* && "$email" != *[[:cntrl:]]* ]] || return 1
+  local_part="${email%@*}"; domain="${email#*@}"; lowered="$(printf '%s' "$email" | tr '[:upper:]' '[:lower:]')"
+  [[ "$local_part" =~ ^[A-Za-z0-9.!#$%\&+/=?^_{}|~-]+$ ]] || return 1
+  [[ "$local_part" != .* && "$local_part" != *. && "$local_part" != *..* ]] || return 1
+  [[ "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]] || return 1
+  local lowered_domain lowered_host
+  lowered_domain="$(printf '%s' "$domain" | tr '[:upper:]' '[:lower:]')"; lowered_host="$(printf '%s' "$public_host" | tr '[:upper:]' '[:lower:]')"
+  [[ "$lowered_domain" != your-domain.tld && "$lowered_domain" != *.invalid && "$lowered_domain" != *.example && "$lowered_domain" != example.* && "$lowered_domain" != *.test && "$lowered_domain" != *.localhost && "$lowered_domain" != invalid && "$lowered_domain" != example && "$lowered_domain" != test && "$lowered_domain" != localhost ]] || return 1
+  [[ "$lowered_domain" != "$lowered_host" ]] || return 1
+  [[ "$lowered" != "$lowered_host" && "$lowered" != "http://${lowered_host}" && "$lowered" != "https://${lowered_host}" && "$lowered" != "${lowered_host}/" ]] || return 1
 }
 ids() { docker "$@" 2>/dev/null; }
 was_present() { local old; while IFS= read -r old; do [[ "$old" == "$2" ]] && return 0; done <"$1"; return 1; }
