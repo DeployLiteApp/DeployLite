@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 readonly EXPECTED_NODE_VERSION="24.20.0"
 readonly EXPECTED_PNPM_VERSION="9.15.4"
-readonly EXPECTED_LOCK_SHA256="1238ffdea787fa4badc9593f72147b7dd51100ce9f953170767b88de9a35811a"
+readonly EXPECTED_LOCK_SHA256="a285101aef7c7fed49bcca99b062da70071f82a6bae242698722c2968dccb6c5"
 readonly NODE_IMAGE="node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf"
 
 fail() {
@@ -18,7 +18,7 @@ require_file() {
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 root_dir="$(git -C "${script_dir}/.." rev-parse --show-toplevel 2>/dev/null)" || fail "script must run from a Git checkout"
 expected_script="${root_dir}/scripts/runtime-contract.test.sh"
-[[ "${script_dir}/runtime-contract.test.sh" == "${expected_script}" ]] || fail "script must be located at scripts/runtime-contract.test.sh inside the checkout"
+[[ "${script_dir}/runtime-contract.test.sh" -ef "${expected_script}" ]] || fail "script must be located at scripts/runtime-contract.test.sh inside the checkout"
 
 cd -- "${root_dir}"
 

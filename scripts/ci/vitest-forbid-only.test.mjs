@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { dirname, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -44,14 +44,15 @@ async function assertCommandCoverage() {
 }
 
 function runVitest(config, file) {
-  return spawnSync("pnpm", ["exec", "vitest", "run", "--allowOnly=false", "--root", dirname(config), "--config", config, file], {
+  return spawnSync("pnpm", ["exec", "vitest", "run", "--allowOnly=false", "--root", dirname(config), "--config", config, relative(dirname(config), file)], {
     cwd: root,
     encoding: "utf8"
   });
 }
 
 async function assertFixtureBehavior() {
-  const fixtureDir = await mkdtemp(join(tmpdir(), "deploylite-vitest-forbid-only-"));
+  const tempRoot = await realpath(tmpdir());
+  const fixtureDir = await mkdtemp(join(tempRoot, "deploylite-vitest-forbid-only-"));
   const config = join(fixtureDir, "vitest.config.mjs");
   const normal = join(fixtureDir, "normal.test.mjs");
   const focused = join(fixtureDir, "focused.test.mjs");
@@ -67,7 +68,7 @@ async function assertFixtureBehavior() {
     const focusedResult = runVitest(config, focused);
     assert(focusedResult.status !== 0, "focused Vitest fixture must fail with --allowOnly=false");
   } finally {
-    assert(relative(tmpdir(), fixtureDir) && !relative(tmpdir(), fixtureDir).startsWith(".."), "fixture cleanup must stay inside the OS temp directory");
+    assert(relative(tempRoot, fixtureDir) && !relative(tempRoot, fixtureDir).startsWith(".."), "fixture cleanup must stay inside the OS temp directory");
     await rm(fixtureDir, { recursive: true, force: true });
   }
 }
