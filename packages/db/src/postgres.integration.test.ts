@@ -10,6 +10,7 @@ import { DbAuthUserRepository, DbRoleRepository, DbSessionRepository } from "./r
 import { DbAgentRepository, DbDeploymentRepository, DbProjectRepository } from "./repositories/deployment-data.js";
 import { DbControlCommandRepository, DbControlGrantRepository } from "./repositories/control-plane.js";
 import { IdempotencyConflictError, createConfirmation, createControlCommand, digestControlInput } from "@deploylite/domain";
+import { createDeploymentSnapshot, createSourceIntent } from "@deploylite/contracts";
 
 const { Client } = pg;
 
@@ -178,6 +179,9 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
       startedAt: now,
       finishedAt: null
     });
+    const snapshot = createDeploymentSnapshot({ deploymentId, projectId, source: createSourceIntent({ sourceMode: "image", requestedReference: `registry.example.com/app@sha256:${"a".repeat(64)}` }, { policyVersion: "integration", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }), configRevision: "config-1", runtimeRevision: "runtime-1", runtimePort: 3000, secretRefs: [{ secretRefId: "DATABASE_URL", version: 1 }], policyVersion: "integration", schemaVersion: 1 }, { sha256: () => "b".repeat(64) });
+    await requireDbDeploymentRepository().saveSnapshot(snapshot);
+    await expect(client.query("SELECT snapshot_hash, snapshot_evidence FROM deployments WHERE id = $1", [deploymentId])).resolves.toMatchObject({ rows: [{ snapshot_hash: snapshot.hash, snapshot_evidence: snapshot.canonicalJson }] });
     await requireDbDeploymentRepository().appendLog({
       id: deploymentLogId,
       deploymentId,

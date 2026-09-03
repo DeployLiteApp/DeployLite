@@ -225,8 +225,11 @@ export const runtimeActivationSchema = z.object({
 
 export const deployRequestSchema = z.object({
   agentId: idSchema.optional(),
-  commitSha: z.string().regex(/^[a-f0-9]{7,40}$/).optional()
-});
+  commitSha: z.string().regex(/^[a-f0-9]{7,40}$/).optional(),
+  imageReference: z.string().min(1).optional(),
+  configRevision: z.string().min(1).optional(),
+  runtimeRevision: z.string().min(1).optional()
+}).strict();
 
 export const deploymentStatusSchema = z.enum(["queued", "running", "succeeded", "failed", "canceled"]);
 

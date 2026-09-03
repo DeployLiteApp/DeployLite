@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createAuditLogRecord, createCorrelationContext, createRequestId, parseDeployLiteEnv, redactSecrets, type DeployLiteEnv, createEnvSecretCipher, EnvSecretKeyInvalidError, EnvSecretKeyMissingError, ENCRYPTION_KEY_VERSION, loadEnvSecretKey, type EnvSecretCipher } from "@deploylite/config";
 import { materializeMockDeploy, redactEnvFileForLog, type EncryptedEnvRecord } from "@deploylite/agent";
 import {
@@ -25,7 +26,11 @@ import {
   type EnvVariableMetadata,
   type Project,
   type RuntimeActivation,
-  type RuntimeActivationCommand
+  type RuntimeActivationCommand,
+  createDeploymentSnapshot,
+  createSourceIntent,
+  type DeploymentSnapshotV1,
+  type ImageReferencePolicyV1
 } from "@deploylite/contracts";
 import { BcryptPasswordHasher, bootstrapInitialAdmin, closeDbPool, createDbClient, createDbPool, createOpaqueSessionToken, DbAgentRepository, DbAuditRepository, DbAuthUserRepository, DbControlCommandRepository, DbControlGrantRepository, DbDeploymentRepository, DbEnvSecretValueRepository, DbEnvVariableMetadataRepository, DbProjectRepository, DbSessionRepository, hashSessionToken, type DeployLiteDb } from "@deploylite/db";
 import {
@@ -66,6 +71,7 @@ import {
   type PasswordHasher,
   type AgentRepository,
   type DeploymentRepository,
+  type DeploymentSnapshotRepository,
   type ProjectRepository,
   type SafeAuthUser,
   type SessionRepository
@@ -147,6 +153,7 @@ type BuildApiAppOptions = {
   authConfig?: Partial<AuthConfig>;
   corsOrigin?: string | false;
   state?: Partial<PlatformRepositoryOptions>;
+  imagePolicy?: ImageReferencePolicyV1;
   db?: {
     pool?: DbPool;
     client?: DeployLiteDb;
@@ -452,6 +459,8 @@ type PlatformRepositoryOptions = {
   envSecretValues?: EnvSecretValueRepository;
   envSecretCipher?: EnvSecretCipher;
   runtimeActivationDispatcher?: RuntimeActivationDispatcher;
+  deploymentDispatcher?: DeploymentDispatcher;
+  snapshots?: DeploymentSnapshotRepository;
   controlDeletes?: ControlDeleteRepository;
   controlGrants?: ControlGrantRepository;
 };
@@ -463,9 +472,31 @@ type PlatformRepositories = PlatformRepositoryOptions & {
   envSecretCipher: EnvSecretCipher;
   deployRunner: DeployRunner;
   runtimeActivationDispatcher: RuntimeActivationDispatcher;
+  deploymentDispatcher: DeploymentDispatcher;
+  snapshots: DeploymentSnapshotRepository;
   controlDeletes: ControlDeleteRepository;
   controlGrants: ControlGrantRepository;
 };
+
+export type DeploymentDispatcher = {
+  available(): boolean;
+  dispatch(snapshot: DeploymentSnapshotV1, commandId: string): Promise<"dispatched">;
+};
+
+class UnavailableDeploymentDispatcher implements DeploymentDispatcher {
+  available(): boolean { return false; }
+  async dispatch(): Promise<"dispatched"> { throw new Error("deploy.execute capability unavailable"); }
+}
+
+class InMemorySnapshotRepository implements DeploymentSnapshotRepository {
+  readonly #snapshots = new Map<string, DeploymentSnapshotV1>();
+  async saveSnapshot(snapshot: DeploymentSnapshotV1): Promise<void> {
+    const existing = this.#snapshots.get(snapshot.hash);
+    if (existing && existing.canonicalJson !== snapshot.canonicalJson) throw new Error("snapshot hash collision");
+    this.#snapshots.set(snapshot.hash, structuredClone(snapshot));
+  }
+  async findByHash(hash: string): Promise<DeploymentSnapshotV1 | null> { const snapshot = this.#snapshots.get(hash); return snapshot ? structuredClone(snapshot) : null; }
+}
 
 export type RuntimeActivationDispatcher = {
   available(): boolean;
@@ -512,9 +543,11 @@ function createApiState(env: EnvSecretKeySource, overrides: Partial<PlatformRepo
   const envSecretValues = overrides.envSecretValues ?? new InMemoryEnvSecretValueRepository();
   const envSecretCipher = overrides.envSecretCipher ?? createLazyEnvSecretCipher(env);
   const runtimeActivationDispatcher = overrides.runtimeActivationDispatcher ?? new UnavailableRuntimeActivationDispatcher();
+  const deploymentDispatcher = overrides.deploymentDispatcher ?? new UnavailableDeploymentDispatcher();
+  const snapshots = overrides.snapshots ?? new InMemorySnapshotRepository();
   const agentStatus = new AgentStatusService(agents);
   const deployRunner = new DeployRunner(deployments, envMetadata, agentStatus, envSecretCipher);
-  return { agents, deployments, projects, envMetadata, envSecretValues, envSecretCipher, agentStatus, deployRunner, runtimeActivationDispatcher, controlDeletes: overrides.controlDeletes ?? new InMemoryControlDeleteRepository(projects, audit ?? new InMemoryAuditRepository()), controlGrants: overrides.controlGrants ?? new InMemoryControlGrantRepository() };
+  return { agents, deployments, projects, envMetadata, envSecretValues, envSecretCipher, agentStatus, deployRunner, runtimeActivationDispatcher, deploymentDispatcher, snapshots, controlDeletes: overrides.controlDeletes ?? new InMemoryControlDeleteRepository(projects, audit ?? new InMemoryAuditRepository()), controlGrants: overrides.controlGrants ?? new InMemoryControlGrantRepository() };
 }
 
 class InMemoryControlGrantRepository implements ControlGrantRepository {
@@ -773,6 +806,7 @@ function createDbAuthAdapters(env: DeployLiteEnv, options: BuildApiAppOptions): 
   const pool = options.db?.pool ?? (options.db?.createPool ?? createDbPool)(env.DATABASE_URL!);
   const db = options.db?.client ?? createDbClient(pool);
   const closePool = options.db?.closePool ?? closeDbPool;
+  const deployments = options.state?.deployments ?? new DbDeploymentRepository(db);
 
   return {
     auth: {
@@ -785,10 +819,11 @@ function createDbAuthAdapters(env: DeployLiteEnv, options: BuildApiAppOptions): 
     shouldSeedMockData: false,
     state: createApiState(env, {
       agents: options.state?.agents ?? new DbAgentRepository(db),
-      deployments: options.state?.deployments ?? new DbDeploymentRepository(db),
+      deployments,
       projects: options.state?.projects ?? new DbProjectRepository(db),
       envMetadata: options.state?.envMetadata ?? new DbEnvVariableMetadataRepository(db),
       envSecretValues: options.state?.envSecretValues ?? new DbEnvSecretValueRepository(db),
+      snapshots: options.state?.snapshots ?? (deployments instanceof DbDeploymentRepository ? deployments : new DbDeploymentRepository(db)),
       envSecretCipher: options.state?.envSecretCipher,
       controlDeletes: options.state?.controlDeletes ?? new DbControlCommandRepository(db),
       controlGrants: options.state?.controlGrants ?? new DbControlGrantRepository(db)
@@ -983,7 +1018,7 @@ function registerCoreHooks(app: FastifyInstance, corsOrigin: string | null): voi
   });
 }
 
-function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapters: AuthAdapters, authConfig: AuthConfig, confirmedDeleteEnabled: boolean): void {
+function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapters: AuthAdapters, authConfig: AuthConfig, confirmedDeleteEnabled: boolean, imagePolicy: ImageReferencePolicyV1): void {
   const requireAuth = createAuthPreHandler(adapters, authConfig);
   const requireMutationRole = createRolePreHandler(adapters, ["admin", "operator"]);
   const requireAdminRole = createRolePreHandler(adapters, ["admin"]);
@@ -1406,8 +1441,15 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
       return reply.code(409).send(errorEnvelope(request, "NO_AGENT_AVAILABLE", "No agent is online. Register an agent or bring one online before deploying."));
     }
     const commitSha = body.commitSha ?? "0000000";
+    const replayKey = body.imageReference === undefined ? null : getHeaderValue(request, "x-deployment-idempotency-key");
+    const deploymentId = replayKey ? `dep_${createHash("sha256").update(`${project.id}:${replayKey}`).digest("hex").slice(0, 32)}` : `dep_${createRequestId()}`;
+    const existing = await state.deployments.findById(deploymentId);
+    if (existing) {
+      await appendAudit(adapters.audit, request, { action: "deployment.replayed", targetType: "deployment", targetId: deploymentId, metadata: { projectId: project.id } });
+      return ok(request, { deployment: existing, replayed: true });
+    }
     const deployment: Deployment = {
-      id: `dep_${createRequestId()}`,
+      id: deploymentId,
       projectId: project.id,
       agentId,
       status: "queued",
@@ -1416,6 +1458,31 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
       finishedAt: null
     };
     await state.deployments.save(deployment);
+    if (body.imageReference !== undefined) {
+      let snapshot: DeploymentSnapshotV1;
+      try {
+        const source = createSourceIntent({ sourceMode: "image", requestedReference: body.imageReference }, imagePolicy);
+        if (source.sourceMode !== "image" || source.image.selector.kind !== "digest") throw new Error("digest-pinned image is required");
+        snapshot = createDeploymentSnapshot({ deploymentId: deployment.id, projectId: project.id, source, configRevision: body.configRevision ?? "default", runtimeRevision: body.runtimeRevision ?? "default", runtimePort: project.port, secretRefs: (await state.envMetadata.listByProject(project.id)).map((record) => ({ secretRefId: record.key, version: 1 })), policyVersion: imagePolicy.policyVersion, schemaVersion: 1 }, { sha256: (bytes) => createHash("sha256").update(bytes).digest("hex") });
+      } catch (error) {
+        await appendAudit(adapters.audit, request, { action: "deployment.requested.rejected", targetType: "deployment", targetId: deployment.id, metadata: { reason: error instanceof Error ? error.message : "invalid-image", projectId: project.id } });
+        return reply.code(400).send(errorEnvelope(request, "DIGEST_INPUT_INVALID", "A valid digest-pinned image is required."));
+      }
+      await state.snapshots.saveSnapshot(snapshot);
+      await appendAudit(adapters.audit, request, { action: "deployment.requested", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, snapshotHash: snapshot.hash, image: snapshot.source.sourceMode === "image" ? snapshot.source.image.redactedReference : "image" } });
+      if (!state.deploymentDispatcher.available()) {
+        await appendAudit(adapters.audit, request, { action: "deployment.dispatch.rejected", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, snapshotHash: snapshot.hash, reason: "deploy.execute-unavailable" } });
+        return reply.code(503).send(errorEnvelope(request, "DEPLOY_EXECUTE_UNAVAILABLE", "Digest deployment execution is unavailable."));
+      }
+      try {
+        await state.deploymentDispatcher.dispatch(snapshot, `deploy_${deployment.id}`);
+      } catch {
+        await appendAudit(adapters.audit, request, { action: "deployment.dispatch.rejected", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, snapshotHash: snapshot.hash, reason: "dispatch-failed" } });
+        return reply.code(502).send(errorEnvelope(request, "DEPLOY_DISPATCH_FAILED", "Digest deployment dispatch failed."));
+      }
+      await appendAudit(adapters.audit, request, { action: "deployment.dispatched", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, snapshotHash: snapshot.hash, capability: "deploy.execute" } });
+      return ok(request, { deployment, snapshotHash: snapshot.hash });
+    }
     const runnerResult = await state.deployRunner.start(deployment, project, request.correlationContext.requestId, request.correlationContext.correlationId);
     return ok(request, {
       deployment: runnerResult.deployment,
@@ -1507,7 +1574,7 @@ export async function buildApiApp(options: BuildApiAppOptions = {}): Promise<Fas
     await seedMockData(repositories.state);
   }
   registerCoreHooks(app, corsOrigin);
-  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE);
+  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE, options.imagePolicy ?? { policyVersion: "deployment-v1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true });
   app.addHook("onClose", () => {
     repositories.state.deployRunner.cancelTimers();
   });

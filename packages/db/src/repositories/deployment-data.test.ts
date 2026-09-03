@@ -12,6 +12,8 @@ function deploymentRow(overrides: Partial<DeploymentRow> = {}): DeploymentRow {
     agentId: "agent-1",
     status: "running",
     commitSha: "abcdef1",
+    snapshotHash: null,
+    snapshotEvidence: null,
     startedAt: now,
     finishedAt: null,
     metadata: {},
