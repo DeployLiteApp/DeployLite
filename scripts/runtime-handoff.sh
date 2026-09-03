@@ -25,8 +25,12 @@ parse_args() {
   [[ "$ENV_FILE" == /* && "$ENV_FILE" != *$'\n'* && "$ENV_FILE" != *$'\r'* ]] || fail 'env-file path must be absolute and single-line' 2
 }
 is_root() { [[ "${EUID}" -eq 0 ]]; }
-stat_value() { local gnu_format="$1" bsd_format="$2" path="$3" pattern="${4:-^[0-9]+$}" value; if value="$(stat -c "$gnu_format" "$path" 2>/dev/null)" && [[ "$value" =~ $pattern ]]; then printf '%s' "$value"; return 0; fi; if value="$(stat -f "$bsd_format" "$path" 2>/dev/null)" && [[ "$value" =~ $pattern ]]; then printf '%s' "$value"; return 0; fi; return 1; }
+stat_value() { [[ $# -eq 4 ]] || return 1; local gnu_format="$1" bsd_format="$2" path="$3" pattern="$4" value; if value="$(stat -c "$gnu_format" "$path" 2>/dev/null)" && [[ "$value" =~ $pattern ]]; then printf '%s' "$value"; return 0; fi; if value="$(stat -f "$bsd_format" "$path" 2>/dev/null)" && [[ "$value" =~ $pattern ]]; then printf '%s' "$value"; return 0; fi; return 1; }
+stat_owner_group() { stat_value '%u:%g' '%u:%g' "$1" '^[0-9]+:[0-9]+$'; }
+stat_device_inode() { stat_value '%d:%i' '%d:%i' "$1" '^[0-9]+:[0-9]+$'; }
 stat_identity_runtime() { stat_value '%d:%i:%s:%Y:%a:%u' '%d:%i:%z:%m:%Lp:%u' "$1" '^[0-9]+(:[0-9]+){5}$'; }
+stat_owner() { stat_value '%u' '%u' "$1" '^[0-9]+$'; }
+stat_mode() { stat_value '%a' '%Lp' "$1" '^[0-9]+$'; }
 canonical_path() { local dir; dir=$(cd -P "$(dirname "$1")" 2>/dev/null && pwd -P) || return 1; printf '%s/%s\n' "$dir" "$(basename "$1")"; }
 sha256_text_runtime() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}'; else shasum -a 256 | awk '{print $1}'; fi; }
 sha256_file_runtime() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi; }
@@ -35,12 +39,12 @@ source_manifest_runtime() { local root="$1" base="${2:-$1}" path relative mode h
 sha256_tree() { source_manifest_runtime "$1" | sha256_text_runtime; }
 is_dotenv_basename_runtime() { case "${1##*/}" in .env|.env.*) return 0 ;; *) return 1 ;; esac; }
 is_runtime_forbidden_basename_runtime() { case "${1##*/}" in .git|node_modules) return 0 ;; *) return 1 ;; esac; }
-validate_source_tree_runtime() { local root="$1" path inode mode; [[ "$(stat_value '%u:%g' '%u:%g' "$root")" == 0:0 && "$(stat_value '%a' '%Lp' "$root")" == 755 ]] || return 1; for path in "$root"/* "$root"/.[!.]* "$root"/..?*; do [[ -e "$path" || -L "$path" ]] || continue; [[ ! -L "$path" && ( -d "$path" || -f "$path" ) ]] || return 1; is_dotenv_basename_runtime "$path" && return 1; is_runtime_forbidden_basename_runtime "$path" && return 1; [[ "$(stat_value '%u:%g' '%u:%g' "$path")" == 0:0 ]] || return 1; if [[ -d "$path" ]]; then mode=755; else mode=644; executable_source_path_runtime "$path" && mode=755; inode="$(stat_value '%d:%i' '%d:%i' "$path")"; [[ "$SOURCE_INODES" != *"|$inode|"* ]] || return 1; SOURCE_INODES="${SOURCE_INODES}${inode}|"; fi; [[ "$(stat_value '%a' '%Lp' "$path")" == "$mode" ]] || return 1; if [[ -d "$path" ]]; then validate_source_tree_runtime "$path" || return 1; fi; done; }
+validate_source_tree_runtime() { local root="$1" path inode mode; [[ "$(stat_owner_group "$root")" == 0:0 && "$(stat_mode "$root")" == 755 ]] || return 1; for path in "$root"/* "$root"/.[!.]* "$root"/..?*; do [[ -e "$path" || -L "$path" ]] || continue; [[ ! -L "$path" && ( -d "$path" || -f "$path" ) ]] || return 1; is_dotenv_basename_runtime "$path" && return 1; is_runtime_forbidden_basename_runtime "$path" && return 1; [[ "$(stat_owner_group "$path")" == 0:0 ]] || return 1; if [[ -d "$path" ]]; then mode=755; else mode=644; executable_source_path_runtime "$path" && mode=755; inode="$(stat_device_inode "$path")"; [[ "$SOURCE_INODES" != *"|$inode|"* ]] || return 1; SOURCE_INODES="${SOURCE_INODES}${inode}|"; fi; [[ "$(stat_mode "$path")" == "$mode" ]] || return 1; if [[ -d "$path" ]]; then validate_source_tree_runtime "$path" || return 1; fi; done; }
 validate_source() {
   local schema repository commit archive_sha manifest key value marker_digest
   local target target_path target_root sources_root
   [[ -L "$SOURCE_DIR" && -f "$SOURCE_MARKER" && ! -L "$SOURCE_MARKER" && -d "$SOURCES_DIR" && ! -L "$SOURCES_DIR" ]] || fail 'installed source pointer is missing or unsafe' 2
-  [[ "$(stat_value '%u:%g' '%u:%g' "$SOURCES_DIR")" == 0:0 && "$(stat_value '%a' '%Lp' "$SOURCES_DIR")" == 700 ]] || fail 'installed source versions directory ownership or mode is unsafe' 2
+  [[ "$(stat_owner_group "$SOURCES_DIR")" == 0:0 && "$(stat_mode "$SOURCES_DIR")" == 700 ]] || fail 'installed source versions directory ownership or mode is unsafe' 2
   sources_root=$(cd -P "$SOURCES_DIR" 2>/dev/null && pwd -P) || fail 'installed source versions directory is inaccessible' 2
   target=$(readlink "$SOURCE_DIR") || fail 'installed source pointer cannot be read' 2
   [[ "$target" =~ ^\.sources/[0-9A-Fa-f]{64}(\.[0-9A-Fa-f]{64}\.[0-9]+\.[0-9]+)?$ ]] || fail 'installed source pointer format is unsafe' 2
@@ -49,7 +53,7 @@ validate_source() {
   target_root=$(cd -P "$target_path" 2>/dev/null && pwd -P) || fail 'installed source pointer target is inaccessible' 2
   [[ "$target_root" == "$sources_root"/* && "$target_root" != "$sources_root" ]] || fail 'installed source pointer target is outside .sources' 2
   SOURCE_DIR="$target_root"; SOURCE_MARKER="$SOURCE_DIR/.deploylite-source"
-  [[ "$(stat_value '%u' '%u' "$SOURCE_MARKER")" == 0 && "$(stat_value '%a' '%Lp' "$SOURCE_MARKER")" == 644 ]] || fail 'installed source marker ownership or mode is unsafe' 2
+  [[ "$(stat_owner "$SOURCE_MARKER")" == 0 && "$(stat_mode "$SOURCE_MARKER")" == 644 ]] || fail 'installed source marker ownership or mode is unsafe' 2
   [[ "$(awk 'END {print NR}' "$SOURCE_MARKER")" == 5 ]] || fail 'source marker must contain exactly five fields' 2
   while IFS='=' read -r key value; do
     case "$key" in schema) schema="$value" ;; repository) repository="$value" ;; commit) commit="$value" ;; archive_sha256) archive_sha="$value" ;; manifest_sha256) manifest="$value" ;; *) fail 'source marker contains an unexpected field' 2 ;; esac
@@ -67,8 +71,8 @@ snapshot_env_file() {
   [[ -f "$ENV_FILE" && ! -L "$ENV_FILE" ]] || fail 'env-file must be a regular non-symlink file' 2
   canonical=$(canonical_path "$ENV_FILE") || fail 'env-file parent is not accessible' 2
   [[ "$canonical" == "$ENV_FILE" ]] || fail 'env-file path must be canonical (no symlinked parent)' 2
-  [[ "$(stat_value '%u' '%u' "$ENV_FILE")" == 0 ]] || fail 'env-file must be owned by root' 2
-  [[ "$(stat_value '%a' '%Lp' "$ENV_FILE")" == 600 ]] || fail 'env-file mode must be exactly 0600' 2
+  [[ "$(stat_owner "$ENV_FILE")" == 0 ]] || fail 'env-file must be owned by root' 2
+  [[ "$(stat_mode "$ENV_FILE")" == 600 ]] || fail 'env-file mode must be exactly 0600' 2
   before=$(stat_identity_runtime "$ENV_FILE") || fail 'cannot inspect env-file identity' 2
   snapshot_dir=$(mktemp -d "${TMPDIR:-/tmp}/deploylite-runtime.XXXXXX") || fail 'cannot create private runtime snapshot directory' 2
   chmod 700 "$snapshot_dir"
@@ -76,8 +80,8 @@ snapshot_env_file() {
   cp -P "$ENV_FILE" "$SNAPSHOT_FILE" || fail 'cannot snapshot env-file safely' 2
   chmod 600 "$SNAPSHOT_FILE"
   [[ -f "$SNAPSHOT_FILE" && ! -L "$SNAPSHOT_FILE" ]] || fail 'runtime snapshot is not a regular file' 2
-  [[ "$(stat_value '%u' '%u' "$SNAPSHOT_FILE")" == 0 ]] || fail 'runtime snapshot owner is unsafe' 2
-  [[ "$(stat_value '%a' '%Lp' "$SNAPSHOT_FILE")" == 600 ]] || fail 'runtime snapshot mode is unsafe' 2
+  [[ "$(stat_owner "$SNAPSHOT_FILE")" == 0 ]] || fail 'runtime snapshot owner is unsafe' 2
+  [[ "$(stat_mode "$SNAPSHOT_FILE")" == 600 ]] || fail 'runtime snapshot mode is unsafe' 2
   after=$(stat_identity_runtime "$ENV_FILE") || fail 'cannot recheck env-file identity' 2
   [[ "$before" == "$after" ]] || fail 'env-file changed while creating the runtime snapshot' 2
 }

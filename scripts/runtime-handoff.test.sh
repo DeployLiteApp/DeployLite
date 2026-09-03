@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016,SC2034,SC2329
+# shellcheck disable=SC1091,SC2016,SC2034,SC2329
 set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 SCRIPT="$ROOT_DIR/scripts/runtime-handoff.sh"
@@ -122,5 +122,38 @@ STAT
   rm -rf -- "$dir"
   [[ "$status" -ne 0 && "$output" == *'cannot inspect env-file identity'* && "$output" != *'do-not-print'* ]]
 }
-for test in test_success_order_and_redaction test_rejects_duplicate_and_bad_permissions test_rejects_unknown_missing_malformed_crlf_and_symlink test_rejects_foreign_owner_and_cleans_snapshot test_xtrace_and_docker_errors_are_redacted test_failure_preserves_resources_and_exit_code test_initial_ps_error_fails_closed test_initial_network_error_fails_closed test_missing_source_fails_before_docker test_rejects_unsafe_versioned_source_layouts test_empty_baseline_removes_only_new_labeled test_post_failure_discovery_error_preserves_resources test_err_exit_rollback_runs_once_and_preserves_code test_root_gate test_stat_identity_uses_exact_numeric_tuple test_stat_identity_rejects_partial_without_secret_leak; do if "$test"; then ok "$test"; else bad "$test"; fi; done
+test_stat_helpers_use_real_platform_metadata() {
+  local dir file expected_owner_group
+  dir="$(mktemp -d)"; file="$dir/file"; printf 'metadata\n' >"$file"; chmod 600 "$file"
+  expected_owner_group="$(id -u):$(id -g)"
+  [[ "$(bash -c 'source "$1"; stat_owner_group "$2"' _ "$SCRIPT" "$file")" == "$expected_owner_group" ]] || { rm -rf -- "$dir"; return 1; }
+  [[ "$(bash -c 'source "$1"; stat_device_inode "$2"' _ "$SCRIPT" "$file")" =~ ^[0-9]+:[0-9]+$ ]] || { rm -rf -- "$dir"; return 1; }
+  [[ "$(bash -c 'source "$1"; stat_identity_runtime "$2"' _ "$SCRIPT" "$file")" =~ ^[0-9]+(:[0-9]+){5}$ ]] || { rm -rf -- "$dir"; return 1; }
+  [[ "$(bash -c 'source "$1"; stat_owner "$2"' _ "$SCRIPT" "$file")" == "$(id -u)" ]] || { rm -rf -- "$dir"; return 1; }
+  [[ "$(bash -c 'source "$1"; stat_mode "$2"' _ "$SCRIPT" "$file")" == 600 ]] || { rm -rf -- "$dir"; return 1; }
+  rm -rf -- "$dir"
+}
+test_stat_value_requires_explicit_pattern() {
+  if bash -c 'source "$1"; stat_value "%u" "%u" "$2"' _ "$SCRIPT" /etc/passwd >/dev/null 2>&1; then return 1; fi
+}
+test_ubuntu24_real_metadata_path() {
+  local output before after real_path
+  [[ "$(id -u)" == 0 ]] || return 0
+  [[ -r /etc/os-release ]] || return 0
+  # This is a real-metadata integration check on its target platform; other
+  # hosts retain the isolated tests above without requiring Ubuntu fixtures.
+  . /etc/os-release
+  [[ "${ID:-}" == ubuntu && "${VERSION_ID:-}" == 24.04 ]] || return 0
+  new_fixture
+  mv "$FIXTURE/bin/docker" "$FIXTURE/docker.pending"
+  real_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  before="$(env PATH="$real_path" bash -c 'source "$1"; stat_identity_runtime "$2"' _ "$SCRIPT" "$FIXTURE/env")" || return 1
+  env TMPDIR="$FIXTURE/tmp" PATH="$real_path" DEPLOYLITE_INSTALL_DIR="$FIXTURE/install" bash -c 'source "$1"; is_root(){ :; }; parse_args --env-file "$2"; validate_source; before=$(stat_identity_runtime "$2"); snapshot_env_file; after=$(stat_identity_runtime "$2"); [[ "$before" == "$after" ]]; scan_keys' _ "$SCRIPT" "$(cd -P "$(dirname "$FIXTURE/env")" && pwd -P)/env" >/dev/null 2>&1 || return 1
+  after="$(env PATH="$real_path" bash -c 'source "$1"; stat_identity_runtime "$2"' _ "$SCRIPT" "$FIXTURE/env")" || return 1
+  [[ "$before" == "$after" ]] || return 1
+  mv "$FIXTURE/docker.pending" "$FIXTURE/bin/docker"; chmod 755 "$FIXTURE/bin/docker"
+  output="$(env TMPDIR="$FIXTURE/tmp" "PATH=$FIXTURE/bin:$real_path" FAKE_DOCKER_LOG="$FIXTURE/docker.log" FAKE_ROLLBACK_LOG="$FIXTURE/rollback.log" FAKE_ORIGINAL="$FIXTURE/env" FAKE_RESOURCE_MARK="$FIXTURE/resource.mark" DEPLOYLITE_INSTALL_DIR="$FIXTURE/install" bash -c 'source "$1"; is_root(){ :; }; main --env-file "$2"' _ "$SCRIPT" "$(cd -P "$(dirname "$FIXTURE/env")" && pwd -P)/env" 2>&1)" || return 1
+  [[ "$output" == *'https://app.example.com/'* && "$output" != *'failed:'* ]]
+}
+for test in test_success_order_and_redaction test_rejects_duplicate_and_bad_permissions test_rejects_unknown_missing_malformed_crlf_and_symlink test_rejects_foreign_owner_and_cleans_snapshot test_xtrace_and_docker_errors_are_redacted test_failure_preserves_resources_and_exit_code test_initial_ps_error_fails_closed test_initial_network_error_fails_closed test_missing_source_fails_before_docker test_rejects_unsafe_versioned_source_layouts test_empty_baseline_removes_only_new_labeled test_post_failure_discovery_error_preserves_resources test_err_exit_rollback_runs_once_and_preserves_code test_root_gate test_stat_identity_uses_exact_numeric_tuple test_stat_identity_rejects_partial_without_secret_leak test_stat_helpers_use_real_platform_metadata test_stat_value_requires_explicit_pattern test_ubuntu24_real_metadata_path; do if "$test"; then ok "$test"; else bad "$test"; fi; done
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"; [[ "$FAIL" -eq 0 ]]
