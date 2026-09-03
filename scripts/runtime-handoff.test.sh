@@ -84,5 +84,43 @@ test_empty_baseline_removes_only_new_labeled() { new_fixture; local status; FAKE
 test_post_failure_discovery_error_preserves_resources() { new_fixture; local status; FAKE_RESOURCES=1 FAKE_UP_STATUS=23 FAKE_PS_POST_STATUS=7 invoke >/dev/null 2>&1 && status=0 || status=$?; [[ "$status" -eq 23 && ! -s "$FIXTURE/rollback.log" ]]; }
 test_err_exit_rollback_runs_once_and_preserves_code() { new_fixture; local status count; FAKE_RESOURCES=1 FAKE_UP_STATUS=23 invoke >/dev/null 2>&1 && status=0 || status=$?; count=$(wc -l <"$FIXTURE/rollback.log"); [[ "$status" -eq 23 && "$count" -eq 1 ]]; }
 test_root_gate() { [[ "$(id -u)" == 0 ]] || ! env DEPLOYLITE_INSTALL_DIR=/tmp bash "$SCRIPT" --env-file /no/such/file >/dev/null 2>&1; }
-for test in test_success_order_and_redaction test_rejects_duplicate_and_bad_permissions test_rejects_unknown_missing_malformed_crlf_and_symlink test_rejects_foreign_owner_and_cleans_snapshot test_xtrace_and_docker_errors_are_redacted test_failure_preserves_resources_and_exit_code test_initial_ps_error_fails_closed test_initial_network_error_fails_closed test_missing_source_fails_before_docker test_rejects_unsafe_versioned_source_layouts test_empty_baseline_removes_only_new_labeled test_post_failure_discovery_error_preserves_resources test_err_exit_rollback_runs_once_and_preserves_code test_root_gate; do if "$test"; then ok "$test"; else bad "$test"; fi; done
+test_stat_identity_uses_exact_numeric_tuple() {
+  local dir file before after replacement output
+  dir="$(mktemp -d)"; file="$dir/secret.env"
+  printf 'POSTGRES_PASSWORD=do-not-print\n' >"$file"; chmod 600 "$file"
+  before="$(bash -c 'source "$1"; stat_identity_runtime "$2"' _ "$SCRIPT" "$file")" || { rm -rf -- "$dir"; return 1; }
+  [[ "$before" =~ ^[0-9]+(:[0-9]+){5}$ ]] || { rm -rf -- "$dir"; return 1; }
+  printf 'POSTGRES_PASSWORD=changed-value-with-new-size\n' >"$file"
+  after="$(bash -c 'source "$1"; stat_identity_runtime "$2"' _ "$SCRIPT" "$file")" || { rm -rf -- "$dir"; return 1; }
+  replacement="$dir/replacement"; printf 'POSTGRES_PASSWORD=changed-value-with-new-size\n' >"$replacement"; chmod 600 "$replacement"
+  [[ "$before" != "$after" && "$(bash -c 'source "$1"; stat_identity_runtime "$2"' _ "$SCRIPT" "$replacement")" != "$before" ]] || { rm -rf -- "$dir"; return 1; }
+  mkdir "$dir/bin"
+  cat >"$dir/bin/stat" <<'STAT'
+#!/usr/bin/env bash
+if [[ "${1:-}" == -c ]]; then exit 1; fi
+printf '1:2:3:4:600:5\n'
+STAT
+  chmod 755 "$dir/bin/stat"
+  [[ "$(PATH="$dir/bin:/usr/bin:/bin" bash -c 'source "$1"; stat_identity_runtime "$2"' _ "$SCRIPT" "$file")" == 1:2:3:4:600:5 ]] || { rm -rf -- "$dir"; return 1; }
+  rm -rf -- "$dir"
+}
+test_stat_identity_rejects_partial_without_secret_leak() {
+  local dir file canonical output status
+  dir="$(mktemp -d)"; file="$dir/secret.env"; printf 'POSTGRES_PASSWORD=do-not-print\n' >"$file"; chmod 600 "$file"
+  canonical="$(cd -P "$dir" && pwd -P)/secret.env"
+  mkdir "$dir/bin"
+  cat >"$dir/bin/stat" <<'STAT'
+#!/usr/bin/env bash
+case "${2:-}" in
+  *%u*) printf '0\n' ;;
+  *%a*) printf '600\n' ;;
+  *) printf '1:2:3\n' ;;
+esac
+STAT
+  chmod 755 "$dir/bin/stat"
+  output="$(PATH="$dir/bin:/usr/bin:/bin" bash -c 'source "$1"; ENV_FILE="$2"; is_root(){ :; }; snapshot_env_file' _ "$SCRIPT" "$canonical" 2>&1)" && status=0 || status=$?
+  rm -rf -- "$dir"
+  [[ "$status" -ne 0 && "$output" == *'cannot inspect env-file identity'* && "$output" != *'do-not-print'* ]]
+}
+for test in test_success_order_and_redaction test_rejects_duplicate_and_bad_permissions test_rejects_unknown_missing_malformed_crlf_and_symlink test_rejects_foreign_owner_and_cleans_snapshot test_xtrace_and_docker_errors_are_redacted test_failure_preserves_resources_and_exit_code test_initial_ps_error_fails_closed test_initial_network_error_fails_closed test_missing_source_fails_before_docker test_rejects_unsafe_versioned_source_layouts test_empty_baseline_removes_only_new_labeled test_post_failure_discovery_error_preserves_resources test_err_exit_rollback_runs_once_and_preserves_code test_root_gate test_stat_identity_uses_exact_numeric_tuple test_stat_identity_rejects_partial_without_secret_leak; do if "$test"; then ok "$test"; else bad "$test"; fi; done
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"; [[ "$FAIL" -eq 0 ]]
