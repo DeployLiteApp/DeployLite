@@ -138,18 +138,16 @@ normalize_compose_environment() {
   awk -F= '$1 == "DEPLOYLITE_SECRET_KEY" { v=substr($0,index($0,"=")+1); ok=(length(v) >= 16 && v ~ /^[A-Za-z0-9+\/=._-]+$/) } END { exit(ok ? 0 : 1) }' "$NORMALIZED" || fail 'normalized secret key is invalid' 2
 }
 validate_acme_email() {
-  local email="$1" public_host="$2" local_part domain lowered
+  local email="$1" local_part domain
   [[ -n "$email" && ${#email} -le 254 && "$email" =~ ^[^@]+@[^@]+$ ]] || return 1
   [[ "$email" != *[[:space:]]* && "$email" != *[[:cntrl:]]* ]] || return 1
-  local_part="${email%@*}"; domain="${email#*@}"; lowered="$(printf '%s' "$email" | tr '[:upper:]' '[:lower:]')"
+  local_part="${email%@*}"; domain="${email#*@}"
   [[ "$local_part" =~ ^[A-Za-z0-9.!#$%\&+/=?^_{}|~-]+$ ]] || return 1
   [[ "$local_part" != .* && "$local_part" != *. && "$local_part" != *..* ]] || return 1
   [[ "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]] || return 1
-  local lowered_domain lowered_host
-  lowered_domain="$(printf '%s' "$domain" | tr '[:upper:]' '[:lower:]')"; lowered_host="$(printf '%s' "$public_host" | tr '[:upper:]' '[:lower:]')"
+  local lowered_domain
+  lowered_domain="$(printf '%s' "$domain" | tr '[:upper:]' '[:lower:]')"
   [[ "$lowered_domain" != your-domain.tld && "$lowered_domain" != *.invalid && "$lowered_domain" != *.example && "$lowered_domain" != example.* && "$lowered_domain" != *.test && "$lowered_domain" != *.localhost && "$lowered_domain" != invalid && "$lowered_domain" != example && "$lowered_domain" != test && "$lowered_domain" != localhost ]] || return 1
-  [[ "$lowered_domain" != "$lowered_host" ]] || return 1
-  [[ "$lowered" != "$lowered_host" && "$lowered" != "http://${lowered_host}" && "$lowered" != "https://${lowered_host}" && "$lowered" != "${lowered_host}/" ]] || return 1
 }
 ids() { docker "$@" 2>/dev/null; }
 was_present() { local old; while IFS= read -r old; do [[ "$old" == "$2" ]] && return 0; done <"$1"; return 1; }
