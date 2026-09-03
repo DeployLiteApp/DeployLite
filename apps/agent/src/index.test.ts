@@ -10,6 +10,9 @@ import {
   verifyMockOnlyCapability
 } from "./index.js";
 import { SafeRuntimeExecutor, renderControlledRuntimePlan } from "./executor.js";
+import { createDeploymentSnapshot, createSourceIntent } from "@deploylite/contracts";
+import { FakeDockerImageTransport, InMemoryProtocolTransport } from "@deploylite/domain";
+import { DigestDeploymentDispatcher } from "./deployment-dispatcher.js";
 
 const SECRET_KEY = "test_fixture_agent_secret_key_1234567890abcdef";
 const cipher = createEnvSecretCipher(loadEnvSecretKey(SECRET_KEY));
@@ -20,6 +23,35 @@ const encrypted = (key: string, plaintext: string) => ({
   encryptedValue: Buffer.from(cipher.encrypt(plaintext), "base64"),
   valueFingerprint: cipher.fingerprint(plaintext),
   keyVersion: 1
+});
+
+describe("DigestDeploymentDispatcher", () => {
+  it("hands a persisted digest snapshot to the Docker executor and returns its terminal receipt", async () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    const snapshot = createDeploymentSnapshot({ deploymentId: "dep_dispatch", projectId: "project_dispatch", source: createSourceIntent({ sourceMode: "image", requestedReference: `registry.example.com/team/app@${digest}` }, { policyVersion: "p1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }), configRevision: "c1", runtimeRevision: "r1", runtimePort: 3000, secretRefs: [], policyVersion: "p1", schemaVersion: 1 }, { sha256: () => "b".repeat(64) });
+    const protocol = new InMemoryProtocolTransport({ clock: { now: () => 1 }, leasePolicy: { ttlMs: 100 }, retryPolicy: { maxAttempts: 1, deadlineMs: 0, backoffMs: () => 0 }, capabilities: ["deploy.execute"] });
+    const transport = new FakeDockerImageTransport();
+    const receipt = await new DigestDeploymentDispatcher({ protocol, transport, trustedHosts: ["registry.example.com"] }).dispatch(snapshot, "deploy_dispatch");
+    expect(receipt.terminalStatus).toBe("succeeded");
+    expect(transport.calls).toEqual(["start", "health", "promote"]);
+    expect(protocol.getAck(snapshot.deploymentId)?.kind).toBe("terminal-ack");
+  });
+
+  it("reports unavailable when deploy.execute is not negotiated", () => {
+    const dispatcher = new DigestDeploymentDispatcher({ protocol: new InMemoryProtocolTransport({ clock: { now: () => 1 }, leasePolicy: { ttlMs: 100 }, retryPolicy: { maxAttempts: 1, deadlineMs: 0, backoffMs: () => 0 }, capabilities: [] }), transport: new FakeDockerImageTransport(), trustedHosts: [] });
+    expect(dispatcher.available()).toBe(false);
+  });
+
+  it("turns dispatcher timeout cancellation into a terminal canceled receipt and cleanup", async () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    const snapshot = createDeploymentSnapshot({ deploymentId: "dep_timeout", projectId: "project_timeout", source: createSourceIntent({ sourceMode: "image", requestedReference: `registry.example.com/team/app@${digest}` }, { policyVersion: "p1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }), configRevision: "c1", runtimeRevision: "r1", runtimePort: 3000, secretRefs: [], policyVersion: "p1", schemaVersion: 1 }, { sha256: () => "b".repeat(64) });
+    const protocol = new InMemoryProtocolTransport({ clock: { now: () => 1 }, leasePolicy: { ttlMs: 100 }, retryPolicy: { maxAttempts: 1, deadlineMs: 0, backoffMs: () => 0 }, capabilities: ["deploy.execute"] });
+    const calls: string[] = [];
+    const transport = { async startCandidate() { calls.push("start"); }, async checkHealth(_candidate: unknown, signal: AbortSignal) { calls.push("health"); return new Promise<boolean>((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true })); }, async promoteCandidate() {}, async restorePrior() {}, async discardCandidate() { calls.push("discard"); } };
+    const receipt = await new DigestDeploymentDispatcher({ protocol, transport, trustedHosts: ["registry.example.com"], timeoutMs: 1 }).dispatch(snapshot, "deploy_timeout");
+    expect(receipt.terminalStatus).toBe("canceled");
+    expect(calls).toEqual(["start", "health", "discard"]);
+  });
 });
 
 describe("mock agent boundary", () => {

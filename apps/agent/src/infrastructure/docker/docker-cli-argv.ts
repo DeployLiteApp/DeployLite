@@ -1,7 +1,7 @@
 import type { DockerImageCandidateV1 } from "@deploylite/domain";
 
 const DIGEST_IMAGE = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[1-9][0-9]{0,4})?\/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[0-9a-f]{64}$/;
-const IDENTIFIER = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const IDENTIFIER = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const NETWORK = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 const TMPFS = ["/tmp", "/var/cache/nginx", "/var/run"] as const;
 const TMPFS_OPTIONS = "rw,noexec,nosuid,nodev";

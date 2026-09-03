@@ -96,6 +96,9 @@ export function verifyMockOnlyCapability(envelope: SafeCommandEnvelope, capabili
   return true;
 }
 
+export { DigestDeploymentDispatcher } from "./deployment-dispatcher.js";
+export type { DigestDeploymentDispatcherOptions } from "./deployment-dispatcher.js";
+
 // =====================================================================
 // Deploy-time materialization (mock / dry-run only).
 //
