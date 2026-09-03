@@ -4,10 +4,11 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runtime_env="$(mktemp)"
 trap 'rm -f "$runtime_env"' EXIT
-printf 'POSTGRES_PASSWORD=%s\nDATABASE_URL=%s\nDEPLOYLITE_SECRET_KEY=%s\n' \
+printf 'POSTGRES_PASSWORD=%s\nDATABASE_URL=%s\nDEPLOYLITE_SECRET_KEY=%s\nDEPLOYLITE_ACME_EMAIL=%s\n' \
   'placeholder' \
   'postgres://deploylite:base%2Bplus%2Fslash@postgres:5432/deploylite' \
-  'placeholder' >"$runtime_env"
+  'placeholder' \
+  'operator@acme.co' >"$runtime_env"
 base_rendered="$(docker compose -f "$ROOT_DIR/infra/vps/compose.yml" config --no-interpolate)"
 rendered="$(docker compose -f "$ROOT_DIR/infra/vps/compose.yml" -f "$ROOT_DIR/infra/vps/compose.tls.yml" config --no-interpolate)"
 merged_rendered="$(docker compose --env-file "$runtime_env" -f "$ROOT_DIR/infra/vps/compose.yml" -f "$ROOT_DIR/infra/vps/compose.tls.yml" --profile bootstrap config)"
@@ -22,6 +23,7 @@ contains 'bootstrap'
 contains "DEPLOYLITE_SECRET_KEY: \${DEPLOYLITE_SECRET_KEY:?DEPLOYLITE_SECRET_KEY is required}"
 contains -- '--providers.docker=true'
 contains -- '--providers.docker.exposedbydefault=false'
+contains "--certificatesresolvers.le.acme.email=\${DEPLOYLITE_ACME_EMAIL}"
 contains 'source: /var/run/docker.sock'
 contains 'target: /var/run/docker.sock'
 contains 'read_only: true'
@@ -58,8 +60,8 @@ if [[ "$rendered" == *'"3001:3001"'* || "$rendered" == *'"80:3000"'* ]]; then
   printf 'API or web must not publish host ports\n'
   exit 1
 fi
-if [[ "$rendered" == *'DEPLOYLITE_ACME_EMAIL'* || "$rendered" == *'"5432:5432"'* ]]; then
-  printf 'ACME email must remain optional and Postgres internal\n'
+if [[ "$rendered" != *'DEPLOYLITE_ACME_EMAIL'* || "$rendered" == *'--certificatesresolvers.le.acme.email=operator@acme.co'* ]]; then
+  printf 'ACME email must be required by reference and not rendered from the fixture in no-interpolate output\n'
   exit 1
 fi
 printf 'compose TLS contract passed\n'

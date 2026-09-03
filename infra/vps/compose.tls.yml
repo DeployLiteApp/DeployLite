@@ -8,6 +8,7 @@ services:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
       - --certificatesresolvers.le.acme.tlschallenge=true
+      - --certificatesresolvers.le.acme.email=${DEPLOYLITE_ACME_EMAIL}
       - --certificatesresolvers.le.acme.storage=/acme/acme.json
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
