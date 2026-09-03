@@ -72,6 +72,7 @@ import {
   type AgentRepository,
   type DeploymentRepository,
   type DeploymentSnapshotRepository,
+  type DockerImageExecutionReceiptV1,
   type ProjectRepository,
   type SafeAuthUser,
   type SessionRepository
@@ -480,7 +481,7 @@ type PlatformRepositories = PlatformRepositoryOptions & {
 
 export type DeploymentDispatcher = {
   available(): boolean;
-  dispatch(snapshot: DeploymentSnapshotV1, commandId: string): Promise<"dispatched">;
+  dispatch(snapshot: DeploymentSnapshotV1, commandId: string): Promise<"dispatched" | DockerImageExecutionReceiptV1>;
 };
 
 class UnavailableDeploymentDispatcher implements DeploymentDispatcher {
@@ -1474,14 +1475,27 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
         await appendAudit(adapters.audit, request, { action: "deployment.dispatch.rejected", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, snapshotHash: snapshot.hash, reason: "deploy.execute-unavailable" } });
         return reply.code(503).send(errorEnvelope(request, "DEPLOY_EXECUTE_UNAVAILABLE", "Digest deployment execution is unavailable."));
       }
+      const running: Deployment = { ...deployment, status: "running" };
+      await state.deployments.save(running);
+      await state.deployments.appendLog({ id: `log_${createRequestId()}`, deploymentId: deployment.id, sequence: 1, level: "info", message: "Agent accepted digest snapshot and started execution.", timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId });
       try {
-        await state.deploymentDispatcher.dispatch(snapshot, `deploy_${deployment.id}`);
+        const result = await state.deploymentDispatcher.dispatch(snapshot, `deploy_${deployment.id}`);
+        if (typeof result !== "string") {
+          const terminal: Deployment = { ...running, status: result.terminalStatus, finishedAt: new Date().toISOString() };
+          await state.deployments.save(terminal);
+          await state.deployments.appendLog({ id: `log_${createRequestId()}`, deploymentId: deployment.id, sequence: 2, level: result.terminalStatus === "succeeded" ? "info" : "error", message: `Agent execution ${result.terminalStatus}.`, timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId });
+          await appendAudit(adapters.audit, request, { action: `deployment.${result.terminalStatus}`, targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, snapshotHash: snapshot.hash, health: result.health, rollback: result.rollback } });
+          return ok(request, { deployment: terminal, snapshotHash: snapshot.hash, execution: result });
+        }
       } catch {
+        const failed: Deployment = { ...running, status: "failed", finishedAt: new Date().toISOString() };
+        await state.deployments.save(failed);
+        await state.deployments.appendLog({ id: `log_${createRequestId()}`, deploymentId: deployment.id, sequence: 2, level: "error", message: "Agent execution failed before a terminal receipt was returned.", timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId });
         await appendAudit(adapters.audit, request, { action: "deployment.dispatch.rejected", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, snapshotHash: snapshot.hash, reason: "dispatch-failed" } });
         return reply.code(502).send(errorEnvelope(request, "DEPLOY_DISPATCH_FAILED", "Digest deployment dispatch failed."));
       }
       await appendAudit(adapters.audit, request, { action: "deployment.dispatched", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, snapshotHash: snapshot.hash, capability: "deploy.execute" } });
-      return ok(request, { deployment, snapshotHash: snapshot.hash });
+      return ok(request, { deployment: running, snapshotHash: snapshot.hash });
     }
     const runnerResult = await state.deployRunner.start(deployment, project, request.correlationContext.requestId, request.correlationContext.correlationId);
     return ok(request, {
@@ -1543,10 +1557,13 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
     const params = z.object({ deploymentId: z.string().min(1) }).parse(request.params);
     const lastEventId = Number.parseInt(getHeaderValue(request, "last-event-id") ?? "-1", 10);
     const logs = await state.deployments.listLogs(params.deploymentId, Number.isFinite(lastEventId) ? lastEventId : -1);
+    const deployment = await state.deployments.findById(params.deploymentId);
     const body = logs
       .map((log) => `id: ${log.sequence}\nevent: deployment.log\ndata: ${JSON.stringify({ ...log, audit: { action: "deployment.log.stream", targetType: "deployment", targetId: params.deploymentId, ...request.correlationContext } })}\n`)
       .join("\n");
-    return reply.header("content-type", "text/event-stream; charset=utf-8").header("cache-control", "no-cache").send(body.length > 0 ? `${body}\n` : "");
+    const lastSequence = logs.at(-1)?.sequence ?? (Number.isFinite(lastEventId) ? lastEventId : -1);
+    const terminal = deployment && ["succeeded", "failed", "canceled"].includes(deployment.status) ? `id: ${lastSequence + 1}\nevent: deployment.status\ndata: ${JSON.stringify({ deployment, ...request.correlationContext })}\n\n` : "";
+    return reply.header("content-type", "text/event-stream; charset=utf-8").header("cache-control", "no-cache").send(body.length > 0 ? `${body}\n${terminal}` : terminal);
   });
   app.post(`${API_PREFIX}/deployments`, { preHandler: [requireAuth, requireMutationRole] }, async (request) => {
     const body = parseBody(deploymentSchema.omit({ id: true, startedAt: true, finishedAt: true }), request.body);

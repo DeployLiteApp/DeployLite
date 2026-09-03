@@ -8,6 +8,7 @@ import {
   type AuthUserRepository,
   type CreateInitialAdminInput,
   type DeploymentRepository,
+  type DockerImageExecutionReceiptV1,
   type EnvVariableMetadataRecord,
   type EnvVariableMetadataRepository,
   type ProjectRepository
@@ -871,6 +872,27 @@ describe("DeployLite API scaffold", () => {
     await app.inject({ method: "POST", url: `/api/v1/agents/${agent.id}/heartbeat`, headers: { ...contentHeaders, cookie }, payload: { observedAt: "2026-01-01T00:00:00.000Z", resourceSnapshot: { cpuLoad: 0.1, memoryUsedBytes: 1, memoryTotalBytes: 2, diskUsedBytes: 1, diskTotalBytes: 2 } } });
     const unavailable = await app.inject({ method: "POST", url: `/api/v1/projects/${project.id}/deployments`, headers: { ...contentHeaders, cookie }, payload: { imageReference: `registry.example.com/team/app@sha256:${"a".repeat(64)}` } });
     expect(unavailable.statusCode).toBe(503);
+    await app.close();
+  });
+
+  it("persists the agent terminal receipt, publishes it after logs, and replays without dispatching twice", async () => {
+    let dispatches = 0;
+    const dispatcher: DeploymentDispatcher = { available: () => true, async dispatch(snapshot, commandId): Promise<DockerImageExecutionReceiptV1> { dispatches++; return { deploymentId: snapshot.deploymentId, effectiveImage: snapshot.source.sourceMode === "image" ? snapshot.source.image.reference : "registry.example.com/team/app@sha256:" + "a".repeat(64), runtimePort: snapshot.runtimePort!, health: "passed", terminalStatus: "succeeded", rollback: { target: null, result: "not-required" }, proven: true }; } };
+    const { app } = await authFixture({ state: { deploymentDispatcher: dispatcher } });
+    const cookie = await loginCookie(app);
+    const project = (await app.inject({ method: "POST", url: "/api/v1/projects", headers: { ...contentHeaders, cookie }, payload: { name: "Digest", repoUrl: "https://github.com/example/digest", defaultBranch: "main", port: 3000 } })).json().data.project;
+    const agent = (await app.inject({ method: "POST", url: "/api/v1/agents/register", headers: { ...contentHeaders, cookie }, payload: { name: "Digest agent", endpoint: "https://agent.example.test" } })).json().data.agent;
+    await app.inject({ method: "POST", url: `/api/v1/agents/${agent.id}/heartbeat`, headers: { ...contentHeaders, cookie }, payload: { observedAt: "2026-01-01T00:00:00.000Z", resourceSnapshot: { cpuLoad: 0.1, memoryUsedBytes: 1, memoryTotalBytes: 2, diskUsedBytes: 1, diskTotalBytes: 2 } } });
+    const headers = { ...contentHeaders, cookie, "x-deployment-idempotency-key": "digest-replay" };
+    const payload = { imageReference: `registry.example.com/team/app@sha256:${"a".repeat(64)}` };
+    const first = await app.inject({ method: "POST", url: `/api/v1/projects/${project.id}/deployments`, headers, payload });
+    const replay = await app.inject({ method: "POST", url: `/api/v1/projects/${project.id}/deployments`, headers, payload });
+    expect(first.json().data.deployment.status).toBe("succeeded");
+    expect(replay.json().data.replayed).toBe(true);
+    expect(dispatches).toBe(1);
+    const stream = await app.inject({ method: "GET", url: `/api/v1/deployments/${first.json().data.deployment.id}/logs/stream`, headers: { cookie } });
+    expect(stream.body.indexOf("event: deployment.log")).toBeLessThan(stream.body.indexOf("event: deployment.status"));
+    expect(stream.body).not.toContain("secret=");
     await app.close();
   });
 
