@@ -169,12 +169,13 @@ inject_failure after-project
 
 install -m 600 /dev/null "$TEST_DIR/acme.json"
 cp "$ROOT_DIR/infra/acme-test/pebble.minica.pem" "$TEST_DIR/pebble.minica.pem"
+chmod 0644 "$TEST_DIR/pebble.minica.pem"
 export ACME_TEST_DIR="$TEST_DIR" TRAEFIK_TLS_PORT PEBBLE_API_PORT PEBBLE_MGMT_PORT
 
 start_seconds=$SECONDS
 run_bounded 60 docker compose --project-name "$PROJECT" -f "$ROOT_DIR/infra/acme-test/compose.yml" up -d --wait pebble >/dev/null
 deadline=$((SECONDS + 30))
-while ! curl --connect-timeout 3 --max-time 10 --silent --show-error --fail --insecure "https://127.0.0.1:${PEBBLE_MGMT_PORT}/roots/0" >"$TEST_DIR/pebble-generated.pem"; do
+while ! curl --connect-timeout 3 --max-time 10 --silent --show-error --fail --cacert "$TEST_DIR/pebble.minica.pem" --resolve "pebble:${PEBBLE_MGMT_PORT}:127.0.0.1" "https://pebble:${PEBBLE_MGMT_PORT}/roots/0" >"$TEST_DIR/pebble-generated.pem"; do
   (( SECONDS < deadline )) || { printf 'Pebble management API did not provide its generated CA\n' >&2; exit 1; }
   sleep 1
 done
