@@ -31,9 +31,12 @@ watchdog() {
   local seconds="$2"
   local sleeper_pid=""
   local grace_pid=""
-  # shellcheck disable=SC2329
+  # These callbacks are invoked indirectly by the TERM/INT/EXIT trap.
+  # shellcheck disable=SC2329 # callback is invoked indirectly by trap.
   stop_sleeper() {
+    # shellcheck disable=SC2317
     if [[ -n "$sleeper_pid" ]]; then kill "$sleeper_pid" 2>/dev/null || true; wait "$sleeper_pid" 2>/dev/null || true; fi
+    # shellcheck disable=SC2317
     if [[ -n "$grace_pid" ]]; then kill "$grace_pid" 2>/dev/null || true; wait "$grace_pid" 2>/dev/null || true; fi
   }
   trap stop_sleeper TERM INT EXIT
@@ -177,7 +180,9 @@ while ! curl --connect-timeout 3 --max-time 10 --silent --show-error --fail --in
 done
 cat "$TEST_DIR/pebble.minica.pem" "$TEST_DIR/pebble-generated.pem" >"$TEST_DIR/pebble-ca-bundle.pem"
 mv "$TEST_DIR/pebble-ca-bundle.pem" "$TEST_DIR/pebble.minica.pem"
-chmod 600 "$TEST_DIR/pebble.minica.pem"
+chmod 0644 "$TEST_DIR/pebble.minica.pem"
+[[ -f "$TEST_DIR/pebble.minica.pem" && -r "$TEST_DIR/pebble.minica.pem" ]]
+run_bounded 10 openssl x509 -in "$TEST_DIR/pebble.minica.pem" -noout >/dev/null
 run_bounded 60 docker compose --project-name "$PROJECT" -f "$ROOT_DIR/infra/acme-test/compose.yml" up -d --wait traefik >/dev/null
 initial="$(wait_for_certificate)"
 initial_serial="${initial%%|*}"
