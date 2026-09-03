@@ -10,7 +10,7 @@ SOURCE_DIR="${INSTALL_DIR}/source"
 readonly SOURCES_DIR="${INSTALL_DIR}/.sources"
 SOURCE_MARKER="${SOURCE_DIR}/.deploylite-source"
 ENV_FILE=''; SNAPSHOT_FILE=''; WORK=''; NORMALIZED=''; PUBLIC_HOST=''
-SNAPSHOT_VALID=0; ROLLBACK_ATTEMPTED=0; ROLLBACK_SAFE=0
+SNAPSHOT_VALID=0; ROLLBACK_SAFE=0; ROLLBACK_ARMED=0; COMMITTED=0; ROLLBACK_ATTEMPTED=0
 
 # Never allow xtrace to observe argument handling, file contents, or Compose calls.
 case "$-" in *x*) set +x ;; esac
@@ -135,10 +135,19 @@ snapshot_resources() {
   [[ ! -s "$containers" && ! -s "$networks" ]] && ROLLBACK_SAFE=1
   SNAPSHOT_VALID=1
 }
+arm_rollback() {
+  [[ "$SNAPSHOT_VALID" -eq 1 && "$ROLLBACK_SAFE" -eq 1 ]] || return 0
+  ROLLBACK_ARMED=1
+}
+commit_transaction() {
+  COMMITTED=1
+  ROLLBACK_ARMED=0
+}
 rollback() {
   local id label containers_after networks_after containers_remove networks_remove
-  [[ "$SNAPSHOT_VALID" -eq 1 && "$ROLLBACK_SAFE" -eq 1 && "$ROLLBACK_ATTEMPTED" -eq 0 ]] || { [[ "$SNAPSHOT_VALID" -eq 1 && "$ROLLBACK_SAFE" -eq 0 ]] && printf 'runtime handoff failed; pre-existing containers or networks detected, destructive rollback disabled\n' >&2; return 0; }
+  [[ "$SNAPSHOT_VALID" -eq 1 && "$ROLLBACK_SAFE" -eq 1 && "$ROLLBACK_ARMED" -eq 1 && "$COMMITTED" -eq 0 && "$ROLLBACK_ATTEMPTED" -eq 0 ]] || { [[ "$SNAPSHOT_VALID" -eq 1 && "$ROLLBACK_SAFE" -eq 0 ]] && printf 'runtime handoff failed; pre-existing containers or networks detected, destructive rollback disabled\n' >&2; return 0; }
   ROLLBACK_ATTEMPTED=1
+  ROLLBACK_ARMED=0
   containers_after="$WORK/containers.after"; networks_after="$WORK/networks.after"
   containers_remove="$WORK/containers.remove"; networks_remove="$WORK/networks.remove"
   if ! ids ps -aq --filter label=com.docker.compose.project=deploylite >"$containers_after"; then printf 'runtime handoff failed; resource discovery was incomplete; existing resources were preserved\n' >&2; return 0; fi
@@ -162,7 +171,7 @@ rollback() {
   while IFS= read -r id; do [[ -z "$id" ]] || docker network rm "$id" >/dev/null 2>&1 || printf 'runtime handoff failed; cleanup was incomplete; existing resources were preserved\n' >&2; done <"$networks_remove"
 }
 on_error() { local status=$?; rollback; printf 'runtime handoff failed; no volumes or pre-existing resources were removed\n' >&2; exit "$status"; }
-on_exit() { local status=$?; trap - EXIT; rollback; cleanup; exit "$status"; }
+on_exit() { local status=$?; trap - EXIT; if [[ "$status" -ne 0 || ( "$ROLLBACK_ARMED" -eq 1 && "$COMMITTED" -eq 0 ) ]]; then rollback; [[ "$status" -ne 0 ]] || status=1; fi; cleanup; exit "$status"; }
 on_signal() { local status=$1; rollback; exit "$status"; }
 trap on_error ERR; trap on_exit EXIT; trap 'on_signal 130' INT; trap 'on_signal 143' TERM
 
@@ -172,9 +181,12 @@ main() {
   command -v docker >/dev/null 2>&1 || fail 'docker is required' 2
   snapshot_resources; run_compose_or_rollback config --no-interpolate || return $?
   normalize_compose_environment || return $?
+  arm_rollback
   run_compose_or_rollback --profile bootstrap up -d --wait --wait-timeout 180 traefik postgres || return $?
   run_compose_or_rollback --profile bootstrap run --rm --no-deps migrate || return $?
   run_compose_or_rollback --profile bootstrap up -d --wait --wait-timeout 180 api web || return $?
+  commit_transaction
+  printf '%s\n' 'runtime handoff transaction committed'
   printf 'Runtime handoff completed for %s. Tentative URL: https://%s/\n' "$PUBLIC_HOST" "$PUBLIC_HOST"
   printf 'Verify DNS, ACME issuance, and end-to-end HTTPS externally; this command does not assert public availability.\n'
 }
