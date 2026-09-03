@@ -142,6 +142,8 @@ export const deployments = pgTable(
     agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null", onUpdate: "cascade" }),
     status: text("status").notNull().default("queued"),
     commitSha: text("commit_sha").notNull(),
+    snapshotHash: text("snapshot_hash"),
+    snapshotEvidence: text("snapshot_evidence"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     metadata: jsonObject("metadata"),

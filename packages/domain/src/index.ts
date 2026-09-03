@@ -1,4 +1,5 @@
 import type { Agent, AgentHeartbeat, Deployment, EnvSecretValue, EnvVariableMetadata, LogEvent, Project, ScaffoldUser } from "@deploylite/contracts";
+import type { DeploymentSnapshotV1 } from "@deploylite/contracts";
 import { redactLogMessage } from "@deploylite/config";
 export { InMemorySnapshotStore } from "./deployment-contract/snapshot-memory.js";
 export { InMemoryProtocolTransport } from "./deployment-contract/protocol-memory.js";
@@ -114,6 +115,11 @@ export type DeploymentRepository = {
   list(): Promise<Deployment[]>;
   appendLog(event: LogEvent): Promise<LogEvent>;
   listLogs(deploymentId: string, afterSequence?: number): Promise<LogEvent[]>;
+};
+
+export type DeploymentSnapshotRepository = {
+  saveSnapshot(snapshot: DeploymentSnapshotV1): Promise<void>;
+  findByHash(hash: string): Promise<DeploymentSnapshotV1 | null>;
 };
 
 export type ProjectRepository = {

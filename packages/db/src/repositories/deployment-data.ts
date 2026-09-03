@@ -1,7 +1,7 @@
 import { asc, eq, isNotNull } from "drizzle-orm";
 import { redactLogMessage } from "@deploylite/config";
-import type { Agent, Deployment, LogEvent, Project } from "@deploylite/contracts";
-import type { AgentRepository, DeploymentRepository, ProjectRepository } from "@deploylite/domain";
+import type { Agent, Deployment, DeploymentSnapshotV1, LogEvent, Project } from "@deploylite/contracts";
+import type { AgentRepository, DeploymentRepository, DeploymentSnapshotRepository, ProjectRepository } from "@deploylite/domain";
 
 import type { DeployLiteDb } from "../client.js";
 import { agents, deploymentLogs, deployments, projects } from "../schema.js";
@@ -116,7 +116,7 @@ function toProject(row: typeof projects.$inferSelect): Project {
   };
 }
 
-export class DbDeploymentRepository implements DeploymentRepository {
+export class DbDeploymentRepository implements DeploymentRepository, DeploymentSnapshotRepository {
   constructor(private readonly db: DeployLiteDb) {}
 
   async save(deployment: Deployment): Promise<Deployment> {
@@ -137,6 +137,18 @@ export class DbDeploymentRepository implements DeploymentRepository {
     const saved = toDeployment(row);
     if (!saved) throw new Error("Failed to save attached deployment");
     return saved;
+  }
+
+  async saveSnapshot(snapshot: DeploymentSnapshotV1): Promise<void> {
+    const result = await this.db.update(deployments).set({ snapshotHash: snapshot.hash, snapshotEvidence: snapshot.canonicalJson, updatedAt: new Date() }).where(eq(deployments.id, snapshot.deploymentId)).returning({ id: deployments.id });
+    if (!result.length) throw new Error("Deployment does not exist for snapshot");
+  }
+
+  async findByHash(hash: string): Promise<DeploymentSnapshotV1 | null> {
+    const [row] = await this.db.select({ evidence: deployments.snapshotEvidence }).from(deployments).where(eq(deployments.snapshotHash, hash)).limit(1);
+    if (!row?.evidence) return null;
+    const snapshot = JSON.parse(row.evidence) as DeploymentSnapshotV1;
+    return { ...snapshot, canonicalBytes: new TextEncoder().encode(snapshot.canonicalJson) };
   }
 
   async findById(id: string): Promise<Deployment | null> {

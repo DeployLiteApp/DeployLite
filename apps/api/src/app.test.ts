@@ -14,7 +14,7 @@ import {
 } from "@deploylite/domain";
 import { createEnvSecretCipher, loadEnvSecretKey } from "@deploylite/config";
 import { describe, expect, it } from "vitest";
-import { buildApiApp, createRuntimeRepositories, InMemoryAuditRepository, InMemoryAuthUserRepository, InMemorySessionRepository } from "./app.js";
+import { buildApiApp, createRuntimeRepositories, InMemoryAuditRepository, InMemoryAuthUserRepository, InMemorySessionRepository, type DeploymentDispatcher } from "./app.js";
 
 const contentHeaders = { "content-type": "application/json" };
 const password = "test_fixture_password_primary";
@@ -841,6 +841,37 @@ describe("DeployLite API scaffold", () => {
     });
     expect(trigger.statusCode).toBe(409);
     expect(trigger.json().error.code).toBe("NO_AGENT_AVAILABLE");
+  });
+
+  it("persists and dispatches an explicit digest snapshot without simulated timers", async () => {
+    const calls: string[] = [];
+    const dispatcher: DeploymentDispatcher = { available: () => true, async dispatch(snapshot, commandId) { calls.push(`${commandId}:${snapshot.hash}`); return "dispatched"; } };
+    const { app, audit } = await authFixture({ state: { deploymentDispatcher: dispatcher } });
+    const cookie = await loginCookie(app);
+    const project = (await app.inject({ method: "POST", url: "/api/v1/projects", headers: { ...contentHeaders, cookie }, payload: { name: "Digest", repoUrl: "https://github.com/example/digest", defaultBranch: "main", port: 3000 } })).json().data.project;
+    const agent = (await app.inject({ method: "POST", url: "/api/v1/agents/register", headers: { ...contentHeaders, cookie }, payload: { name: "Digest agent", endpoint: "https://agent.example.test" } })).json().data.agent;
+    await app.inject({ method: "POST", url: `/api/v1/agents/${agent.id}/heartbeat`, headers: { ...contentHeaders, cookie }, payload: { observedAt: "2026-01-01T00:00:00.000Z", resourceSnapshot: { cpuLoad: 0.1, memoryUsedBytes: 1, memoryTotalBytes: 2, diskUsedBytes: 1, diskTotalBytes: 2 } } });
+    const response = await app.inject({ method: "POST", url: `/api/v1/projects/${project.id}/deployments`, headers: { ...contentHeaders, cookie }, payload: { imageReference: `registry.example.com/team/app@sha256:${"a".repeat(64)}` } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data.snapshotHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(calls).toHaveLength(1);
+    expect(audit.inputs.map((entry) => entry.action)).toContain("deployment.requested");
+    expect(audit.inputs.map((entry) => entry.action)).toContain("deployment.dispatched");
+    await app.close();
+  });
+
+  it("rejects digest deployment before dispatch when capability is unavailable or input is a tag", async () => {
+    const dispatcher: DeploymentDispatcher = { available: () => false, async dispatch() { throw new Error("must not dispatch"); } };
+    const { app } = await authFixture({ state: { deploymentDispatcher: dispatcher } });
+    const cookie = await loginCookie(app);
+    const project = (await app.inject({ method: "POST", url: "/api/v1/projects", headers: { ...contentHeaders, cookie }, payload: { name: "Digest", repoUrl: "https://github.com/example/digest", defaultBranch: "main" } })).json().data.project;
+    const invalid = await app.inject({ method: "POST", url: `/api/v1/projects/${project.id}/deployments`, headers: { ...contentHeaders, cookie }, payload: { imageReference: "registry.example.com/team/app:latest" } });
+    expect(invalid.statusCode).toBe(400);
+    const agent = (await app.inject({ method: "POST", url: "/api/v1/agents/register", headers: { ...contentHeaders, cookie }, payload: { name: "Digest agent", endpoint: "https://agent.example.test" } })).json().data.agent;
+    await app.inject({ method: "POST", url: `/api/v1/agents/${agent.id}/heartbeat`, headers: { ...contentHeaders, cookie }, payload: { observedAt: "2026-01-01T00:00:00.000Z", resourceSnapshot: { cpuLoad: 0.1, memoryUsedBytes: 1, memoryTotalBytes: 2, diskUsedBytes: 1, diskTotalBytes: 2 } } });
+    const unavailable = await app.inject({ method: "POST", url: `/api/v1/projects/${project.id}/deployments`, headers: { ...contentHeaders, cookie }, payload: { imageReference: `registry.example.com/team/app@sha256:${"a".repeat(64)}` } });
+    expect(unavailable.statusCode).toBe(503);
+    await app.close();
   });
 
   it("persists a project description on create and returns it in detail and audit metadata", async () => {
