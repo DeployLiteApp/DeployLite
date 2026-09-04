@@ -26,7 +26,7 @@ The baseline records CI evidence for quality, PostgreSQL integration, and Compos
 
 The current runtime path remains non-executing by default. Its `runtimePort` contract bounds and validates a requested port, while the Docker dry-run spawns no process, opens no network connection, reads no secret source, and mutates no infrastructure. Hardened transport foundations exist, but the default runtime capability returns `capability_unavailable`; production activation remains a separate concern.
 
-The following capabilities are not shipped on `main`: real Docker execution, privileged host mutation, production routing, certificate issuance or renewal, VPS smoke, production hardening, provenance or signing, and release approval. Existing Traefik, ACME, and certificate metadata are configuration and data foundations, not proof of a working production path.
+The following capabilities are not shipped on `main`: privileged host mutation, production routing, VPS smoke, production hardening, provenance or signing, and release approval. Existing Traefik, ACME, and certificate metadata are configuration and data foundations, except for the verified HTTPS and periodic renewal evidence described below; that evidence is not proof of a working production path.
 
 ## Build toward the Dokploy-class goal
 
@@ -37,6 +37,14 @@ The installer must not ask for application configuration. The web UI and shared 
 ## Follow the planned phases
 
 Each phase has an outcome and a short acceptance boundary. A phase is not complete until its boundary is met on a supported environment and the result has evidence.
+
+## Current phase evidence
+
+The current status separates verified slices from full phase completion and release approval:
+
+- **P0 partial**: The prerequisite installer has isolated validation on Ubuntu 24.04 x86_64. Validation on a second supported VPS image remains pending.
+- **P1 acceptance boundary evidenced and completed**: The trusted HTTPS slice covers public proxy ingress, HTTP redirect, Let’s Encrypt issuance, persistent ACME state, and the supported-runtime domain smoke. Merged [PR #269](https://github.com/DeployLiteApp/DeployLite/pull/269) also proves natural periodic renewal without restarting, recreating, or killing Traefik. The periodic check is opt-in and is not baseline CI; aggregate release readiness remains pending.
+- **P2 first digest-pinned execution slice**: On `main` at [`1a306c6f3d214432c86fb1ea29ebb145c0064644`](https://github.com/DeployLiteApp/DeployLite/commit/1a306c6f3d214432c86fb1ea29ebb145c0064644), [#270](https://github.com/DeployLiteApp/DeployLite/issues/270) and its children [#271](https://github.com/DeployLiteApp/DeployLite/issues/271), [#273](https://github.com/DeployLiteApp/DeployLite/issues/273), [#274](https://github.com/DeployLiteApp/DeployLite/issues/274), and [#276](https://github.com/DeployLiteApp/DeployLite/issues/276) complete immutable snapshots, capability and authenticated transport, the real agent Docker path, real status and log evidence, and durable replay and audit. Full P2 remains incomplete because safe stop, redeploy, and user-facing rollback remain planned and unverified.
 
 | Phase | Planned outcome | Acceptance boundary |
 | --- | --- | --- |

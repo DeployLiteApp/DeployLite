@@ -34,7 +34,13 @@ The 2026-09-03 runtime handoff was validated against the full merge commit `5e7f
 
 ACME state persisted across a runtime restart, and a rerun remained idempotent while leaving the runtime healthy. The sanitized evidence contains no secrets or private infrastructure identifiers, and no admin account or administrative access was used or documented.
 
-This validates the trusted public HTTPS runtime slice only. Renewal remains unverified, and validation on a second supported P0 installer image remains pending. This evidence does not declare P0 complete or make DeployLite release-ready.
+This validates the trusted public HTTPS runtime slice and the issuance portion of the P1 boundary. Periodic renewal is covered separately below, while validation on a second supported P0 installer image remains pending. This evidence does not declare P0 complete or make DeployLite release-ready.
+
+## Periodic ACME renewal evidence (2026-09-03)
+
+Merged [PR #269](https://github.com/DeployLiteApp/DeployLite/pull/269) passed `pnpm test:acme-renewal:periodic` in 65s using Traefik’s natural renewal ticker. The certificate replacement occurred without restarting, recreating, or killing Traefik, which proves the periodic renewal path exercised by the integration harness.
+
+This proves the tested integration behavior only. It does not prove production readiness, P0 completion, or aggregate release approval. The periodic command remains opt-in and is not part of baseline CI.
 
 ## Current boundary
 
