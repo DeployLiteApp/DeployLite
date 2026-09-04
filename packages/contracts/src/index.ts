@@ -98,6 +98,7 @@ export const agentSchema = z.object({
   lastHeartbeatAt: isoDateSchema.nullable(),
   resourceSnapshot: resourceSnapshotSchema.nullable()
 });
+export * from "./deployment-contract/agent-transport.js";
 
 export const projectSchema = z.object({
   id: idSchema,

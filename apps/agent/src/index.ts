@@ -98,6 +98,10 @@ export function verifyMockOnlyCapability(envelope: SafeCommandEnvelope, capabili
 
 export { DigestDeploymentDispatcher } from "./deployment-dispatcher.js";
 export type { DigestDeploymentDispatcherOptions } from "./deployment-dispatcher.js";
+export { AuthenticatedAgentCommandReceiver, createAgentExecutionHandler } from "./agent-transport.js";
+export { startAgentServer } from "./server.js";
+export type { AgentReplayStore } from "./agent-transport.js";
+export type { AgentServerOptions } from "./server.js";
 
 // =====================================================================
 // Deploy-time materialization (mock / dry-run only).
