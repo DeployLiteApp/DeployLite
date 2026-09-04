@@ -73,7 +73,7 @@ export async function runDockerContractDryRun(scenario: DryRunScenario = "succes
     const candidate = renderDockerImageCandidate(input, policy.trustedHosts, ["deploylite"]);
     const reconciliation = new DockerReconciliation("agent-dry-run");
     const reconciled = reconciliation.reconcile(s.deploymentId, "candidate-1", []);
-    const argv = buildDockerRunArgv({ candidate, containerName: reconciled.candidateName, hostPort: reconciled.hostPort, containerPort: s.runtimePort!, owner: "agent-dry-run", allowedNetworks: ["deploylite"], networkName: "deploylite" });
+    const argv = buildDockerRunArgv({ candidate, projectId: s.projectId, containerName: reconciled.candidateName, hostPort: reconciled.hostPort, containerPort: s.runtimePort!, owner: "agent-dry-run", allowedNetworks: ["deploylite"], networkName: "deploylite" });
     return report(scenario, s, plan, result, argv, reconciled, p.getAck(s.deploymentId), transport.calls);
   } catch (error) {
     return {

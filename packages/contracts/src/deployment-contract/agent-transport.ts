@@ -1,11 +1,12 @@
 import { z } from "zod";
 const id = z.string().min(1).max(256);
 const requestContextSchema = z.object({ requestId: id, correlationId: id });
+const leaseSchema = z.object({ leaseId: id, deploymentId: id, fence: z.number().int().positive(), expiresAt: z.number().finite() }).strict();
 
 export const agentExecutionCommandSchema = z.object({
   schemaVersion: z.literal(1), agentId: id, commandId: id, deploymentId: id, projectId: id, snapshot: z.record(z.unknown()),
   snapshotHash: z.string().regex(/^[a-f0-9]{64}$/), requiredCapabilities: z.array(z.string().min(1).max(128)).max(8),
-  lease: z.object({ leaseId: id, deploymentId: id, fence: z.number().int().positive(), expiresAt: z.number().finite() }).strict(),
+  lease: leaseSchema,
   context: requestContextSchema, timeoutMs: z.number().int().positive().max(300_000), cancellationRequested: z.boolean()
 }).strict();
 export type AgentExecutionCommand = z.infer<typeof agentExecutionCommandSchema>;
@@ -25,3 +26,19 @@ export const dockerImageExecutionReceiptSchema = z.object({
 export type DockerImageExecutionReceipt = z.infer<typeof dockerImageExecutionReceiptSchema>;
 export const agentExecutionReceiptSchema = z.object({ schemaVersion: z.literal(1), commandId: id, deploymentId: id, terminalStatus: z.enum(["succeeded", "failed", "canceled"]), health: z.enum(["passed", "failed"]), redacted: z.literal(true), receipt: dockerImageExecutionReceiptSchema }).strict();
 export type AgentExecutionReceipt = z.infer<typeof agentExecutionReceiptSchema>;
+
+export const deploymentStopAgentCommandSchema = z.object({
+  schemaVersion: z.literal(1), action: z.literal("deployment.stop"), agentId: id, commandId: id,
+  projectId: id, deploymentId: id, candidateId: id, effectiveImage: digestImage,
+  requiredCapabilities: z.array(z.literal("deployment.stop")).length(1), lease: leaseSchema,
+  context: requestContextSchema, timeoutMs: z.number().int().positive().max(300_000), cancellationRequested: z.boolean()
+}).strict();
+export type DeploymentStopAgentCommand = z.infer<typeof deploymentStopAgentCommandSchema>;
+
+export const deploymentStopAgentReceiptSchema = z.object({
+  schemaVersion: z.literal(1), action: z.literal("deployment.stop"), agentId: id, commandId: id,
+  projectId: id, deploymentId: id, candidateId: id, effectiveImage: digestImage,
+  status: z.enum(["stopped", "already-stopped", "absent", "failed", "canceled"]), redacted: z.literal(true),
+  correlationId: id, reason: z.string().max(512).nullable()
+}).strict();
+export type DeploymentStopAgentReceipt = z.infer<typeof deploymentStopAgentReceiptSchema>;
