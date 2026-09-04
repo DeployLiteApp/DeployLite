@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { signAgentTransport } from "@deploylite/config";
-import { createDeploymentSnapshot, createSourceIntent } from "@deploylite/contracts";
+import { createDeploymentSnapshot, createSourceIntent, TransportCanceledError } from "@deploylite/contracts";
 import { FakeDockerImageTransport } from "@deploylite/domain";
 import { AuthenticatedAgentCommandReceiver } from "./agent-transport.js";
 import { DigestDeploymentDispatcher } from "./deployment-dispatcher.js";
@@ -9,6 +9,7 @@ import { InMemoryProtocolTransport } from "@deploylite/domain";
 
 const digest = `sha256:${"a".repeat(64)}`;
 function command() { const snapshot = createDeploymentSnapshot({ deploymentId: "dep_receiver", projectId: "project_receiver", source: createSourceIntent({ sourceMode: "image", requestedReference: `registry.example.com/team/app@${digest}` }, { policyVersion: "p1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }), configRevision: "c1", runtimeRevision: "r1", runtimePort: 3000, secretRefs: [], policyVersion: "p1", schemaVersion: 1 }, { sha256: (bytes) => createHash("sha256").update(bytes).digest("hex") }); const body = { schemaVersion: 1 as const, agentId: "agent-1", commandId: "cmd-1", deploymentId: snapshot.deploymentId, projectId: snapshot.projectId, snapshot: { ...snapshot, canonicalBytes: undefined }, snapshotHash: snapshot.hash, requiredCapabilities: ["deploy.execute"], lease: { leaseId: "lease-1", deploymentId: snapshot.deploymentId, fence: 1, expiresAt: 10_000 }, context: { requestId: "req-1", correlationId: "corr-1" }, timeoutMs: 1000, cancellationRequested: false }; return body; }
+function stopCommand(overrides: Record<string, unknown> = {}) { return { schemaVersion: 1 as const, action: "deployment.stop" as const, agentId: "agent-1", commandId: "stop-1", projectId: "project-1", deploymentId: "dep-1", candidateId: "dep-1:candidate:cmd-1", effectiveImage: `registry.example.com/team/app@${digest}`, requiredCapabilities: ["deployment.stop" as const], lease: { leaseId: "stop-lease-1", deploymentId: "dep-1", fence: 1, expiresAt: 10_000 }, context: { requestId: "stop-req-1", correlationId: "stop-corr-1" }, timeoutMs: 1000, cancellationRequested: false, ...overrides }; }
 
 describe("agent command receiver", () => {
     it("authenticates, executes once, and replays the settled receipt", async () => {
@@ -28,5 +29,23 @@ describe("agent command receiver", () => {
     const body = command(); let completed = 0; const replayStore = { claim: async () => ({ claimed: true, claimToken: "claim-1" }), wait: async () => { throw new Error("unexpected wait"); }, complete: async () => { completed++; }, release: async () => {} };
     const receiver = new AuthenticatedAgentCommandReceiver({ agentId: "agent-1", trustKey: "transport_test_key_123", capabilities: ["deploy.execute"], dispatcher: { dispatch: async () => ({ deploymentId: "other", effectiveImage: `registry.example.com/app@sha256:${"a".repeat(64)}`, runtimePort: 3000, health: "passed", terminalStatus: "succeeded", rollback: { target: null, result: "not-required" }, proven: true } as never) }, replayStore: replayStore as never, now: () => 1 });
     await expect(receiver.receive(body, signAgentTransport(JSON.stringify(body), "transport_test_key_123"))).rejects.toThrow("deployment scope"); expect(completed).toBe(0);
+  });
+
+  it("validates stop authority before Docker and returns one replayed terminal receipt", async () => {
+    const body = stopCommand(); const calls: string[] = []; const records = new Map<string, any>(); const replayStore = { claim: async (id: string, fingerprint: string) => { const prior = records.get(id); if (prior && prior.fingerprint !== fingerprint) throw new Error("payload conflict"); if (prior) return { claimed: false, receipt: prior.receipt }; return { claimed: true, claimToken: "stop-claim" }; }, wait: async () => { throw new Error("unexpected wait"); }, complete: async (id: string, value: any) => { records.set(id, value); }, release: async () => {} };
+    const receiver = new AuthenticatedAgentCommandReceiver({ agentId: "agent-1", trustKey: "transport_test_key_123", capabilities: ["deployment.stop"], dispatcher: { dispatch: async () => { throw new Error("must not execute"); } }, stopDispatcher: { stop: async (input, signal) => { calls.push(`${input.projectId}:${input.deploymentId}`); expect(signal?.aborted).toBe(false); return "stopped"; } }, replayStore, now: () => 1 });
+    const signed = signAgentTransport(JSON.stringify(body), "transport_test_key_123"); const first = await receiver.receive(body, signed); const second = await receiver.receive(body, signed); expect(first.status).toBe("stopped"); expect(second).toEqual(first); expect(calls).toEqual(["project-1:dep-1"]);
+  });
+
+  it("fails closed for an already-aborted stop without claiming replay or invoking the dispatcher", async () => {
+    const body = stopCommand(); let claims = 0; let stops = 0; let completions = 0; let additions = 0; let removals = 0; const signal = { aborted: true, addEventListener: () => { additions++; }, removeEventListener: () => { removals++; } } as unknown as AbortSignal;
+    const receiver = new AuthenticatedAgentCommandReceiver({ agentId: "agent-1", trustKey: "transport_test_key_123", capabilities: ["deployment.stop"], dispatcher: { dispatch: async () => { throw new Error("must not execute"); } }, stopDispatcher: { stop: async () => { stops++; return "canceled" as const; } }, replayStore: { claim: async () => { claims++; throw new Error("must not claim"); }, wait: async () => { throw new Error("must not wait"); }, complete: async () => { completions++; }, release: async () => {} }, now: () => 1 });
+    await expect(receiver.receive(body, signAgentTransport(JSON.stringify(body), "transport_test_key_123"), signal)).rejects.toBeInstanceOf(TransportCanceledError); expect({ claims, stops, completions, additions, removals }).toEqual({ claims: 0, stops: 0, completions: 0, additions: 0, removals: 0 });
+  });
+
+  it.each([
+    ["wrong agent", { agentId: "agent-2" }], ["wrong scope", { projectId: "project-2" }], ["wrong capability", { requiredCapabilities: ["deploy.execute"] }], ["expired lease", { lease: { leaseId: "stop-lease-1", deploymentId: "dep-1", fence: 1, expiresAt: 0 } }]
+  ])("rejects stop %s before dispatch", async (_name, overrides) => {
+    const body = stopCommand(overrides); const stop = { stop: async () => { throw new Error("must not stop"); } }; const receiver = new AuthenticatedAgentCommandReceiver({ agentId: "agent-1", trustKey: "transport_test_key_123", capabilities: ["deployment.stop"], dispatcher: { dispatch: async () => { throw new Error("must not execute"); } }, stopDispatcher: stop, replayStore: { claim: async () => ({ claimed: true, claimToken: "x" }), wait: async () => { throw new Error("must not wait"); }, complete: async () => {}, release: async () => {} }, now: () => 1 }); const signed = signAgentTransport(JSON.stringify(body), "transport_test_key_123"); await expect(receiver.receive(body, signed)).rejects.toThrow();
   });
 });

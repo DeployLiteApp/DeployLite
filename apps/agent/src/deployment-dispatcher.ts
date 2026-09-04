@@ -15,6 +15,8 @@ export type DigestDeploymentDispatcherOptions = Readonly<{
   networkName?: string;
   timeoutMs?: number;
 }>;
+export type OwnedStopInput = Readonly<{ projectId: string; deploymentId: string; candidateId: string; effectiveImage: string }>;
+export type OwnedStopTransport = { stopOwned(input: OwnedStopInput, signal: AbortSignal): Promise<"stopped" | "already-stopped" | "absent" | "failed" | "canceled"> };
 
 function scopedSignal(parent: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; dispose: () => void } {
   const controller = new AbortController();
@@ -56,5 +58,11 @@ export class DigestDeploymentDispatcher {
     } finally {
       scoped.dispose();
     }
+  }
+
+  async stop(input: OwnedStopInput, parentSignal?: AbortSignal): Promise<"stopped" | "already-stopped" | "absent" | "failed" | "canceled"> {
+    if (!(this.#transport && "stopOwned" in this.#transport)) throw new Error("deployment.stop capability unavailable");
+    const scoped = scopedSignal(parentSignal, this.#timeoutMs);
+    try { return await (this.#transport as DockerImageTransport & OwnedStopTransport).stopOwned(input, scoped.signal); } finally { scoped.dispose(); }
   }
 }
