@@ -378,6 +378,41 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
     await expect(repo.consume(expired, expiredConfirmation)).resolves.toMatchObject({ accepted: false, reason: "confirmation_rejected" });
   });
 
+  it("durably resolves deployment stop once and replays its completed result", async () => {
+    const client = requirePool();
+    const role = (await client.query<{ id: string }>("SELECT id FROM roles WHERE name = 'admin'")).rows[0];
+    if (!role) throw new Error("Canonical admin role was not seeded");
+    const actorId = randomUUID(); const projectId = randomUUID(); const deploymentId = randomUUID();
+    await client.query("INSERT INTO users (id, email, email_normalized, password_hash, role_id) VALUES ($1, $2, $2, $3, $4)", [actorId, `${actorId}@example.test`, "hash", role.id]);
+    const command = createControlCommand({ actorId, action: "deployment.stop", scope: { kind: "deployment", projectId, deploymentId }, input: { deploymentId }, idempotencyKey: "stop-key", correlationId: "corr-stop" });
+    const repo = new DbControlCommandRepository(requireDb());
+    const resolved = await Promise.all([repo.resolve(command), repo.resolve({ ...command, id: randomUUID() })]);
+    expect(resolved.filter((item) => item.created)).toHaveLength(1);
+    await expect(repo.resolve({ ...command, id: randomUUID(), inputDigest: digestControlInput({ deploymentId: "other" }) })).rejects.toBeInstanceOf(IdempotencyConflictError);
+    const confirmation = createConfirmation({ command, classification: "destructive" }); await repo.bind(confirmation);
+    const otherDeploymentId = randomUUID();
+    const otherCommand = createControlCommand({ actorId, action: "deployment.stop", scope: { kind: "deployment", projectId, deploymentId: otherDeploymentId }, input: { deploymentId: otherDeploymentId }, idempotencyKey: "other-stop-key", correlationId: "corr-other-stop" });
+    await repo.resolve(otherCommand);
+    await expect(repo.executeConfirmedDeploymentStop({ command: otherCommand, confirmation, requestId: "req-stop" })).resolves.toMatchObject({ accepted: false, reason: "confirmation_rejected" });
+    const admitted = await repo.executeConfirmedDeploymentStop({ command, confirmation, requestId: "req-stop" });
+    expect(admitted).toMatchObject({ accepted: true, result: { status: "eligible", deploymentId } });
+    const result = { ...admitted.result!, status: "completed" as const, reason: null };
+    await expect(repo.completeDeploymentStop(admitted.command, result)).resolves.toMatchObject({ status: "completed", result });
+    await expect(repo.executeConfirmedDeploymentStop({ command, confirmation, requestId: "req-stop" })).resolves.toMatchObject({ alreadyCompleted: true, result });
+  });
+
+  it("rejects a non-stop action before confirmation consumption", async () => {
+    const client = requirePool(); const role = (await client.query<{ id: string }>("SELECT id FROM roles WHERE name = 'admin'")).rows[0];
+    if (!role) throw new Error("Canonical admin role was not seeded");
+    const actorId = randomUUID(); const projectId = randomUUID();
+    await client.query("INSERT INTO users (id, email, email_normalized, password_hash, role_id) VALUES ($1, $2, $2, $3, $4)", [actorId, `${actorId}@example.test`, "hash", role.id]);
+    const command = createControlCommand({ actorId, action: "project.delete", scope: { kind: "project", projectId }, input: { projectId }, idempotencyKey: "wrong-action-key", correlationId: "corr-wrong-action" });
+    const confirmation = createConfirmation({ command, classification: "destructive" }); const repo = new DbControlCommandRepository(requireDb());
+    await repo.resolve(command); await repo.bind(confirmation);
+    await expect(repo.executeConfirmedDeploymentStop({ command, confirmation, requestId: "req-wrong-action" })).resolves.toMatchObject({ accepted: false, reason: "invalid_action" });
+    await expect(client.query("SELECT status FROM control_commands WHERE id = $1", [command.id])).resolves.toMatchObject({ rows: [{ status: "pending_confirmation" }] });
+  });
+
   it("claims replay once, detects payload conflicts, and replays a receipt after client restart", async () => {
     const commandId = randomUUID(); const lease = { leaseId: "lease-replay", deploymentId: randomUUID(), fence: 1, expiresAt: Date.now() + 30_000 };
     const receipt = { deploymentId: lease.deploymentId, effectiveImage: `registry.example.com/app@sha256:${"a".repeat(64)}`, runtimePort: 3000, health: "passed" as const, terminalStatus: "succeeded" as const, rollback: { target: null, result: "not-required" as const }, proven: true as const };

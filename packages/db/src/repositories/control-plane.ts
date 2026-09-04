@@ -1,5 +1,5 @@
-import { and, eq, gt, isNull } from "drizzle-orm";
-import type { ConfirmedProjectDeleteInput, ConfirmedProjectDeleteOutcome, ControlCommand, ControlCommandRepository, ControlConfirmation, ControlConfirmationRepository, ControlDeleteRepository, ControlGrant, ControlGrantRepository, ConfirmationOutcome } from "@deploylite/domain";
+import { and, eq, gt, isNull, lte } from "drizzle-orm";
+import type { ConfirmedDeploymentStopInput, ConfirmedDeploymentStopOutcome, ConfirmedProjectDeleteInput, ConfirmedProjectDeleteOutcome, ControlCommand, ControlCommandRepository, ControlConfirmation, ControlConfirmationRepository, ControlDeleteRepository, ControlGrant, ControlGrantRepository, ConfirmationOutcome, ControlStopRepository } from "@deploylite/domain";
 import { IdempotencyConflictError, scopeKey } from "@deploylite/domain";
 
 import type { DeployLiteDb } from "../client.js";
@@ -16,7 +16,7 @@ export class DbControlGrantRepository implements ControlGrantRepository {
 
 export type ControlDeleteFaultStage = "confirmation-consumed" | "project-deleted" | "command-completed" | "audit-recorded";
 
-export class DbControlCommandRepository implements ControlDeleteRepository, ControlConfirmationRepository {
+export class DbControlCommandRepository implements ControlDeleteRepository, ControlStopRepository, ControlConfirmationRepository {
   constructor(private readonly db: DeployLiteDb, private readonly injectFault?: (stage: ControlDeleteFaultStage) => void | Promise<void>) {}
 
   async resolve(command: ControlCommand): Promise<{ command: ControlCommand; created: boolean }> {
@@ -24,7 +24,7 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
     const [created] = await this.db.insert(controlCommands).values({
       id: command.id, actorUserId: command.actorId, action: command.action, scopeKind: command.scope.kind, scopeKey: key,
       inputDigest: command.inputDigest, idempotencyKey: command.idempotencyKey, correlationId: command.correlationId,
-      status: command.status, expiresAt: command.expiresAt
+      status: command.status, expiresAt: command.expiresAt, result: command.result ?? null
     }).onConflictDoNothing().returning();
     if (created) return { command: toCommand(created), created: true };
 
@@ -90,13 +90,52 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
     });
   }
 
+  async executeConfirmedDeploymentStop({ command, confirmation, now = new Date() }: ConfirmedDeploymentStopInput): Promise<ConfirmedDeploymentStopOutcome> {
+    return this.db.transaction(async (tx) => {
+      const [current] = await tx.select().from(controlCommands).where(eq(controlCommands.id, command.id)).limit(1);
+      if (!current) throw new Error("Control command was not found");
+      if (command.action !== "deployment.stop" || confirmation.action !== "deployment.stop" || current.action !== "deployment.stop") {
+        await tx.insert(controlCommandAudits).values({ commandId: command.id, confirmationId: confirmation.id, correlationId: command.correlationId, outcome: "rejected", reason: "invalid_action" });
+        return { command: toCommand(current), accepted: false, reason: "invalid_action", result: null, alreadyCompleted: false };
+      }
+      if (current.status === "completed") return { command: toCommand(current), accepted: true, reason: null, result: current.result as ConfirmedDeploymentStopOutcome["result"], alreadyCompleted: true };
+      if (current.status === "rejected") return { command: toCommand(current), accepted: false, reason: "command_rejected", result: stopResult(command, "rejected"), alreadyCompleted: false };
+      const [consumed] = await tx.update(controlCommandConfirmations).set({ consumedAt: now }).where(and(eq(controlCommandConfirmations.id, confirmation.id), eq(controlCommandConfirmations.commandId, command.id), eq(controlCommandConfirmations.actorUserId, command.actorId), eq(controlCommandConfirmations.action, command.action), eq(controlCommandConfirmations.scopeKind, command.scope.kind), eq(controlCommandConfirmations.scopeKey, scopeKey(command.scope)), eq(controlCommandConfirmations.inputDigest, command.inputDigest), eq(controlCommandConfirmations.classification, "destructive"), isNull(controlCommandConfirmations.consumedAt), gt(controlCommandConfirmations.expiresAt, now), lte(controlCommandConfirmations.expiresAt, current.expiresAt))).returning();
+      if (!consumed) {
+        const [rejected] = await tx.update(controlCommands).set({ status: "rejected", updatedAt: now }).where(and(eq(controlCommands.id, command.id), eq(controlCommands.status, "pending_confirmation"))).returning();
+        await tx.insert(controlCommandAudits).values({ commandId: command.id, confirmationId: confirmation.id, correlationId: command.correlationId, outcome: "rejected", reason: "confirmation_rejected" });
+        return { command: toCommand(rejected ?? current), accepted: false, reason: "confirmation_rejected", result: stopResult(command, "rejected"), alreadyCompleted: false };
+      }
+      const [eligible] = await tx.update(controlCommands).set({ status: "eligible", updatedAt: now }).where(and(eq(controlCommands.id, command.id), eq(controlCommands.status, "pending_confirmation"))).returning();
+      if (!eligible) throw new Error("Control command was not eligible");
+      await tx.insert(controlCommandAudits).values({ commandId: command.id, confirmationId: confirmation.id, correlationId: command.correlationId, outcome: "accepted", reason: null });
+      return { command: toCommand(eligible), accepted: true, reason: null, result: stopResult(command, "eligible"), alreadyCompleted: false };
+    });
+  }
+
+  async completeDeploymentStop(command: ControlCommand, result: Parameters<ControlStopRepository["completeDeploymentStop"]>[1]): Promise<ControlCommand> {
+    if (result.commandId !== command.id || result.action !== "deployment.stop" || result.correlationId !== command.correlationId || command.scope.kind !== "deployment" || result.projectId !== command.scope.projectId || result.deploymentId !== command.scope.deploymentId || result.status !== "completed") throw new Error("Deployment stop result does not match command");
+    const [completed] = await this.db.update(controlCommands).set({ status: "completed", result, updatedAt: new Date() }).where(and(eq(controlCommands.id, command.id), eq(controlCommands.status, "eligible"))).returning();
+    if (completed) return toCommand(completed);
+    const [current] = await this.db.select().from(controlCommands).where(eq(controlCommands.id, command.id)).limit(1);
+    if (!current) throw new Error("Control command was not found");
+    return toCommand(current);
+  }
+
   private async fault(stage: ControlDeleteFaultStage): Promise<void> { await this.injectFault?.(stage); }
 }
 
 function toCommand(row: ControlCommandRow): ControlCommand {
-  return { id: row.id, actorId: row.actorUserId, action: row.action as ControlCommand["action"], scope: row.scopeKind === "platform" ? { kind: "platform" } : { kind: "project", projectId: row.scopeKey }, inputDigest: row.inputDigest, idempotencyKey: row.idempotencyKey, correlationId: row.correlationId, status: row.status as ControlCommand["status"], expiresAt: row.expiresAt };
+  const scope = row.scopeKind === "platform" ? { kind: "platform" as const } : row.scopeKind === "deployment" ? (() => { const [projectId, deploymentId] = JSON.parse(row.scopeKey) as [string, string]; return { kind: "deployment" as const, projectId, deploymentId }; })() : { kind: "project" as const, projectId: row.scopeKey };
+  return { id: row.id, actorId: row.actorUserId, action: row.action as ControlCommand["action"], scope, inputDigest: row.inputDigest, idempotencyKey: row.idempotencyKey, correlationId: row.correlationId, status: row.status as ControlCommand["status"], expiresAt: row.expiresAt, ...(row.result ? { result: row.result as never } : {}) };
+}
+
+function stopResult(command: ControlCommand, status: "eligible" | "rejected") {
+  if (command.scope.kind !== "deployment") throw new Error("Deployment stop requires deployment scope");
+  return { commandId: command.id, action: "deployment.stop" as const, projectId: command.scope.projectId, deploymentId: command.scope.deploymentId, status, correlationId: command.correlationId, reason: status === "rejected" ? "confirmation_rejected" : null };
 }
 
 function toGrant(row: ControlGrantRow): ControlGrant {
-  return { id: row.id, actorId: row.actorUserId, action: row.action as ControlGrant["action"], scope: row.scopeKind === "platform" ? { kind: "platform" } : { kind: "project", projectId: row.scopeKey } };
+  const scope = row.scopeKind === "platform" ? { kind: "platform" as const } : row.scopeKind === "deployment" ? (() => { const [projectId, deploymentId] = JSON.parse(row.scopeKey) as [string, string]; return { kind: "deployment" as const, projectId, deploymentId }; })() : { kind: "project" as const, projectId: row.scopeKey };
+  return { id: row.id, actorId: row.actorUserId, action: row.action as ControlGrant["action"], scope };
 }

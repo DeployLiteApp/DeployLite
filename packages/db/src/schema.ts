@@ -253,14 +253,15 @@ export const controlCommands = pgTable(
     idempotencyKey: text("idempotency_key").notNull(),
     correlationId: text("correlation_id").notNull(),
     status: text("status").notNull().default("pending"),
+    result: jsonb("result").$type<Record<string, unknown> | null>(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     ...timestamps
   },
   (table) => [
     uniqueIndex("control_commands_idempotency_unique").on(table.actorUserId, table.action, table.scopeKey, table.idempotencyKey),
     index("control_commands_actor_user_id_idx").on(table.actorUserId),
-    check("control_commands_action_valid", sql`${table.action} in ('project.delete', 'project.deploy', 'project.update', 'platform.agent.register')`),
-    check("control_commands_scope_valid", sql`${table.scopeKind} in ('platform', 'project')`),
+    check("control_commands_action_valid", sql`${table.action} in ('project.delete', 'project.deploy', 'project.update', 'deployment.stop', 'platform.agent.register')`),
+    check("control_commands_scope_valid", sql`${table.scopeKind} in ('platform', 'project', 'deployment')`),
     check("control_commands_status_valid", sql`${table.status} in ('pending_confirmation', 'eligible', 'rejected', 'completed')`)
   ]
 );
