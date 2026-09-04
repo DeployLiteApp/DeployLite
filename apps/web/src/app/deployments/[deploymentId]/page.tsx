@@ -1,6 +1,7 @@
 import Link from "next/link";
 import React from "react";
 import { loadRequestAuthSession, loadRequestDeploymentLogMetadata } from "../../../lib/server-auth";
+import { getAuthApiBaseUrl } from "../../../lib/auth-boundary";
 import { AppShell } from "@/components/app-shell";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -8,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { DeploymentLogInspector } from "./deployment-log-inspector";
+import { DeploymentStopControl } from "./deployment-stop-control";
 
 export const dynamic = "force-dynamic";
 
@@ -158,6 +160,8 @@ export default async function DeploymentLogsPage({ params }: { params: Promise<{
             ) : null}
 
             <Separator />
+
+            <DeploymentStopControl deployment={deployment} role={auth.user.role} apiBaseUrl={getAuthApiBaseUrl()} />
 
             <div className="flex flex-wrap gap-2" data-testid="deployment-next-actions">
               <Link href={`/projects/${deployment.projectId}`}>

@@ -51,6 +51,7 @@ export const metadataApiPaths = {
   deployments: "/api/v1/deployments",
   deployment: (deploymentId: string) => `/api/v1/deployments/${encodeURIComponent(deploymentId)}`,
   deploymentLogs: (deploymentId: string) => `/api/v1/deployments/${encodeURIComponent(deploymentId)}/logs`,
+  deploymentStop: (deploymentId: string) => `/api/v1/deployments/${encodeURIComponent(deploymentId)}/stop`,
   auditEvents: "/api/v1/audit-events"
 } as const;
 
