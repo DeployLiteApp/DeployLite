@@ -47,9 +47,9 @@ export class DigestDeploymentDispatcher {
     return this.#transport !== undefined && this.#protocol.hasCapability("deploy.execute");
   }
 
-  async dispatch(snapshot: DeploymentSnapshotV1, commandId: string, parentSignal?: AbortSignal): Promise<DockerImageExecutionReceiptV1> {
+  async dispatch(snapshot: DeploymentSnapshotV1, commandId: string, parentSignal?: AbortSignal, suppliedLease?: { leaseId: string; deploymentId: string; fence: number; expiresAt: number }): Promise<DockerImageExecutionReceiptV1> {
     if (!this.available()) throw new Error("deploy.execute capability unavailable");
-    const lease = this.#protocol.claimLease(snapshot.deploymentId);
+    const lease = suppliedLease ?? this.#protocol.claimLease(snapshot.deploymentId);
     const scoped = scopedSignal(parentSignal, this.#timeoutMs);
     try {
       return await new DockerImageExecutor({ protocol: this.#protocol, transport: this.#transport!, trustedHosts: this.#trustedHosts, allowedNetworks: this.#allowedNetworks }).execute({ snapshot, commandId, lease, networkName: this.#networkName, signal: scoped.signal });

@@ -77,7 +77,9 @@ import {
   type SafeAuthUser,
   type SessionRepository
 } from "@deploylite/domain";
+import { ProtocolError } from "@deploylite/contracts";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import { AuthenticatedAgentDeploymentTransport, type AgentDispatchContext } from "./agent-transport.js";
 import { z } from "zod";
 
 declare module "fastify" {
@@ -481,7 +483,7 @@ type PlatformRepositories = PlatformRepositoryOptions & {
 
 export type DeploymentDispatcher = {
   available(): boolean;
-  dispatch(snapshot: DeploymentSnapshotV1, commandId: string): Promise<"dispatched" | DockerImageExecutionReceiptV1>;
+  dispatch(snapshot: DeploymentSnapshotV1, commandId: string, context?: AgentDispatchContext): Promise<"dispatched" | DockerImageExecutionReceiptV1>;
 };
 
 class UnavailableDeploymentDispatcher implements DeploymentDispatcher {
@@ -544,7 +546,7 @@ function createApiState(env: EnvSecretKeySource, overrides: Partial<PlatformRepo
   const envSecretValues = overrides.envSecretValues ?? new InMemoryEnvSecretValueRepository();
   const envSecretCipher = overrides.envSecretCipher ?? createLazyEnvSecretCipher(env);
   const runtimeActivationDispatcher = overrides.runtimeActivationDispatcher ?? new UnavailableRuntimeActivationDispatcher();
-  const deploymentDispatcher = overrides.deploymentDispatcher ?? new UnavailableDeploymentDispatcher();
+  const deploymentDispatcher = overrides.deploymentDispatcher ?? (typeof env.DEPLOYLITE_AGENT_URL === "string" && typeof env.DEPLOYLITE_AGENT_TRUST_KEY === "string" && typeof env.DEPLOYLITE_AGENT_ID === "string" ? new AuthenticatedAgentDeploymentTransport({ endpoint: env.DEPLOYLITE_AGENT_URL, trustKey: env.DEPLOYLITE_AGENT_TRUST_KEY, agentId: env.DEPLOYLITE_AGENT_ID, allowInsecureInternal: env.NODE_ENV !== "production" }) : new UnavailableDeploymentDispatcher());
   const snapshots = overrides.snapshots ?? new InMemorySnapshotRepository();
   const agentStatus = new AgentStatusService(agents);
   const deployRunner = new DeployRunner(deployments, envMetadata, agentStatus, envSecretCipher);
@@ -1479,7 +1481,13 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
       await state.deployments.save(running);
       await state.deployments.appendLog({ id: `log_${createRequestId()}`, deploymentId: deployment.id, sequence: 1, level: "info", message: "Agent accepted digest snapshot and started execution.", timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId });
       try {
-        const result = await state.deploymentDispatcher.dispatch(snapshot, `deploy_${deployment.id}`);
+        const abort = new AbortController(); const onAbort = () => abort.abort(); request.raw.once("aborted", onAbort); if (request.raw.aborted) abort.abort();
+        let result: "dispatched" | DockerImageExecutionReceiptV1;
+        try {
+          result = await state.deploymentDispatcher.dispatch(snapshot, `deploy_${deployment.id}`, { agentId, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId, signal: abort.signal });
+        } finally {
+          request.raw.removeListener("aborted", onAbort);
+        }
         if (typeof result !== "string") {
           const terminal: Deployment = { ...running, status: result.terminalStatus, finishedAt: new Date().toISOString() };
           await state.deployments.save(terminal);
@@ -1487,11 +1495,12 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
           await appendAudit(adapters.audit, request, { action: `deployment.${result.terminalStatus}`, targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, snapshotHash: snapshot.hash, health: result.health, rollback: result.rollback } });
           return ok(request, { deployment: terminal, snapshotHash: snapshot.hash, execution: result });
         }
-      } catch {
+      } catch (error) {
+        const classification = error instanceof ProtocolError ? error.code : "transport-failed";
         const failed: Deployment = { ...running, status: "failed", finishedAt: new Date().toISOString() };
         await state.deployments.save(failed);
         await state.deployments.appendLog({ id: `log_${createRequestId()}`, deploymentId: deployment.id, sequence: 2, level: "error", message: "Agent execution failed before a terminal receipt was returned.", timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId });
-        await appendAudit(adapters.audit, request, { action: "deployment.dispatch.rejected", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, snapshotHash: snapshot.hash, reason: "dispatch-failed" } });
+        await appendAudit(adapters.audit, request, { action: "deployment.dispatch.rejected", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, snapshotHash: snapshot.hash, reason: classification } });
         return reply.code(502).send(errorEnvelope(request, "DEPLOY_DISPATCH_FAILED", "Digest deployment dispatch failed."));
       }
       await appendAudit(adapters.audit, request, { action: "deployment.dispatched", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, snapshotHash: snapshot.hash, capability: "deploy.execute" } });

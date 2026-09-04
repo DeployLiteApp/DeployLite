@@ -159,3 +159,19 @@ export function safeEqualFingerprint(expected: string, actual: string): boolean 
 
 export const ENCRYPTION_KEY_VERSION = 1;
 export const FINGERPRINT_LENGTH = FINGERPRINT_HEX_LENGTH;
+export const AGENT_TRANSPORT_KEY_MIN_LENGTH = 16;
+
+export function validateAgentTransportKey(trustKey: string): void {
+  if (typeof trustKey !== "string" || trustKey.trim().length < AGENT_TRANSPORT_KEY_MIN_LENGTH) throw new EnvSecretKeyInvalidError(`agent transport trust key must contain at least ${AGENT_TRANSPORT_KEY_MIN_LENGTH} characters`);
+}
+
+export function signAgentTransport(payload: string, trustKey: string): string {
+  validateAgentTransportKey(trustKey);
+  return createHmac("sha256", trustKey).update(payload, "utf8").digest("hex");
+}
+
+export function verifyAgentTransport(payload: string, signature: string | undefined, trustKey: string): boolean {
+  if (!signature) return false;
+  let expected: string; try { expected = signAgentTransport(payload, trustKey); } catch { return false; }
+  return expected.length === signature.length && timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+}
