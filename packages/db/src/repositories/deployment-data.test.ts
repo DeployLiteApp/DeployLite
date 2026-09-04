@@ -39,14 +39,15 @@ function logRow(sequence: number): DeploymentLogRow {
 
 describe("deployment metadata persistence mapping", () => {
   it("maps attached deployments without manufacturing empty agent IDs", () => {
-    expect(toDeployment(deploymentRow())).toEqual({
+    expect(toDeployment(deploymentRow({ snapshotHash: "a".repeat(64) }))).toEqual({
       id: "dep-1",
       projectId: "project-1",
       agentId: "agent-1",
       status: "running",
       commitSha: "abcdef1",
       startedAt: "2026-01-01T00:00:00.000Z",
-      finishedAt: null
+      finishedAt: null,
+      snapshotHash: "a".repeat(64)
     });
 
     expect(toDeployment(deploymentRow({ agentId: null }))).toBeNull();

@@ -1,17 +1,19 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { CanonicalRole, ConfirmationClassification, ControlCommandStatus, ControlPlaneAction, ControlPlaneScope, DeploymentStopCommandResult } from "@deploylite/contracts";
+import type { CanonicalRole, ConfirmationClassification, ControlCommandStatus, ControlPlaneAction, ControlPlaneScope, Deployment, DeploymentRedeployCommandResult, DeploymentStopCommandResult } from "@deploylite/contracts";
 
 export type ControlGrant = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope };
 export type ControlGrantRepository = { listForActor(actorId: string): Promise<ControlGrant[]> };
 export type PolicyRequest = { actorId: string; role: CanonicalRole; action: ControlPlaneAction; scope: ControlPlaneScope; correlationId: string; grants: ControlGrant[] };
 export type PolicyDecision = { allowed: true; grantId: string; correlationId: string } | { allowed: false; code: "FORBIDDEN" | "ROLE_DENIED" | "SCOPE_DENIED"; correlationId: string };
-export type ControlCommand = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; idempotencyKey: string; correlationId: string; status: ControlCommandStatus; expiresAt: Date; result?: DeploymentStopCommandResult };
+export type ControlCommand = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; idempotencyKey: string; correlationId: string; status: ControlCommandStatus; expiresAt: Date; result?: DeploymentStopCommandResult | DeploymentRedeployCommandResult };
 export type ControlConfirmation = { id: string; commandId: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; classification: ConfirmationClassification; expiresAt: Date; consumedAt: Date | null };
 export type ConfirmationOutcome = { command: ControlCommand; accepted: boolean; reason: string | null };
 export type ConfirmedProjectDeleteInput = { command: ControlCommand; confirmation: ControlConfirmation; projectId: string; requestId: string; now?: Date };
 export type ConfirmedProjectDeleteOutcome = ConfirmationOutcome & { removed: boolean; auditRecorded: boolean; alreadyCompleted: boolean };
 export type ConfirmedDeploymentStopInput = { command: ControlCommand; confirmation: ControlConfirmation; requestId: string; now?: Date };
 export type ConfirmedDeploymentStopOutcome = ConfirmationOutcome & { result: DeploymentStopCommandResult | null; alreadyCompleted: boolean };
+export type ConfirmedDeploymentRedeployInput = { command: ControlCommand; confirmation: ControlConfirmation; deployment: Deployment; requestId: string; snapshotHash: string; now?: Date };
+export type ConfirmedDeploymentRedeployOutcome = ConfirmationOutcome & { result: DeploymentRedeployCommandResult | null; deployment: Deployment | null; alreadyCompleted: boolean };
 
 const readOnlyRoles = new Set<CanonicalRole>(["read-only", "auditor"]);
 
@@ -68,6 +70,11 @@ export type ControlStopRepository = ControlCommandRepository & ControlConfirmati
   executeConfirmedDeploymentStop(input: ConfirmedDeploymentStopInput): Promise<ConfirmedDeploymentStopOutcome>;
   claimDeploymentStop(command: ControlCommand): Promise<{ command: ControlCommand; claimed: boolean }>;
   completeDeploymentStop(command: ControlCommand, result: DeploymentStopCommandResult): Promise<ControlCommand>;
+};
+export type ControlRedeployRepository = ControlCommandRepository & ControlConfirmationRepository & {
+  findByIdempotency(actorId: string, idempotencyKey: string): Promise<ControlCommand | null>;
+  executeConfirmedDeploymentRedeploy(input: ConfirmedDeploymentRedeployInput): Promise<ConfirmedDeploymentRedeployOutcome>;
+  completeDeploymentRedeploy(command: ControlCommand, result: DeploymentRedeployCommandResult): Promise<ControlCommand>;
 };
 
 export function scopeKey(scope: ControlPlaneScope): string { return scope.kind === "platform" ? "platform" : scope.kind === "project" ? scope.projectId : JSON.stringify([scope.projectId, scope.deploymentId]); }

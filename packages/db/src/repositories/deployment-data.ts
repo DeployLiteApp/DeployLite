@@ -120,7 +120,8 @@ export class DbDeploymentRepository implements DeploymentRepository, DeploymentS
   constructor(private readonly db: DeployLiteDb) {}
 
   async save(deployment: Deployment): Promise<Deployment> {
-    const metadata = deployment.stopTarget ? sql`coalesce(${deployments.metadata}, '{}'::jsonb) || jsonb_build_object('stopTarget', ${JSON.stringify(deployment.stopTarget)}::jsonb)` : undefined;
+    const metadataValue = { ...(deployment.sourceDeploymentId ? { sourceDeploymentId: deployment.sourceDeploymentId } : {}), ...(deployment.stopTarget ? { stopTarget: deployment.stopTarget } : {}) };
+    const metadata = Object.keys(metadataValue).length ? sql`coalesce(${deployments.metadata}, '{}'::jsonb) || ${JSON.stringify(metadataValue)}::jsonb` : undefined;
     const [row] = await this.db
       .insert(deployments)
       .values({
@@ -129,11 +130,12 @@ export class DbDeploymentRepository implements DeploymentRepository, DeploymentS
         agentId: deployment.agentId,
         status: deployment.status,
         commitSha: deployment.commitSha,
+        snapshotHash: deployment.snapshotHash ?? null,
         startedAt: new Date(deployment.startedAt),
         finishedAt: deployment.finishedAt ? new Date(deployment.finishedAt) : null,
-        ...(deployment.stopTarget ? { metadata: { stopTarget: deployment.stopTarget } } : {})
+        ...(Object.keys(metadataValue).length ? { metadata: metadataValue } : {})
       })
-        .onConflictDoUpdate({ target: deployments.id, set: { projectId: deployment.projectId, agentId: deployment.agentId, status: deployment.status, commitSha: deployment.commitSha, startedAt: new Date(deployment.startedAt), finishedAt: deployment.finishedAt ? new Date(deployment.finishedAt) : null, ...(metadata ? { metadata } : {}), updatedAt: new Date() } })
+        .onConflictDoUpdate({ target: deployments.id, set: { projectId: deployment.projectId, agentId: deployment.agentId, status: deployment.status, commitSha: deployment.commitSha, snapshotHash: deployment.snapshotHash ?? null, startedAt: new Date(deployment.startedAt), finishedAt: deployment.finishedAt ? new Date(deployment.finishedAt) : null, ...(metadata ? { metadata } : {}), updatedAt: new Date() } })
       .returning();
 
     if (!row) throw new Error("Failed to save deployment");
@@ -235,7 +237,9 @@ export function toDeployment(row: typeof deployments.$inferSelect): Deployment |
     commitSha: row.commitSha,
     startedAt: row.startedAt?.toISOString() ?? row.createdAt.toISOString(),
     finishedAt: row.finishedAt?.toISOString() ?? null,
-    ...(row.metadata && typeof row.metadata === "object" && row.metadata["stopTarget"] ? { stopTarget: row.metadata["stopTarget"] as Deployment["stopTarget"] } : {})
+    ...(row.metadata && typeof row.metadata === "object" && row.metadata["stopTarget"] ? { stopTarget: row.metadata["stopTarget"] as Deployment["stopTarget"] } : {}),
+    ...(row.metadata && typeof row.metadata === "object" && typeof row.metadata["sourceDeploymentId"] === "string" ? { sourceDeploymentId: row.metadata["sourceDeploymentId"] } : {}),
+    ...(row.snapshotHash ? { snapshotHash: row.snapshotHash } : {})
   };
 }
 

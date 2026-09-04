@@ -1,9 +1,9 @@
 import { and, eq, gt, isNull, lte, or } from "drizzle-orm";
-import type { ConfirmedDeploymentStopInput, ConfirmedDeploymentStopOutcome, ConfirmedProjectDeleteInput, ConfirmedProjectDeleteOutcome, ControlCommand, ControlCommandRepository, ControlConfirmation, ControlConfirmationRepository, ControlDeleteRepository, ControlGrant, ControlGrantRepository, ConfirmationOutcome, ControlStopRepository } from "@deploylite/domain";
+import type { ConfirmedDeploymentRedeployInput, ConfirmedDeploymentRedeployOutcome, ConfirmedDeploymentStopInput, ConfirmedDeploymentStopOutcome, ConfirmedProjectDeleteInput, ConfirmedProjectDeleteOutcome, ControlCommand, ControlCommandRepository, ControlConfirmation, ControlConfirmationRepository, ControlDeleteRepository, ControlGrant, ControlGrantRepository, ConfirmationOutcome, ControlRedeployRepository, ControlStopRepository } from "@deploylite/domain";
 import { IdempotencyConflictError, scopeKey } from "@deploylite/domain";
 
 import type { DeployLiteDb } from "../client.js";
-import { auditEvents, controlCommandAudits, controlCommandConfirmations, controlCommands, controlGrants, projects, type ControlCommandRow, type ControlGrantRow } from "../schema.js";
+import { auditEvents, controlCommandAudits, controlCommandConfirmations, controlCommands, controlGrants, deployments, projects, type ControlCommandRow, type ControlGrantRow } from "../schema.js";
 
 export class DbControlGrantRepository implements ControlGrantRepository {
   constructor(private readonly db: DeployLiteDb) {}
@@ -14,9 +14,9 @@ export class DbControlGrantRepository implements ControlGrantRepository {
   }
 }
 
-export type ControlDeleteFaultStage = "confirmation-consumed" | "project-deleted" | "command-completed" | "audit-recorded";
+export type ControlDeleteFaultStage = "confirmation-consumed" | "project-deleted" | "command-completed" | "audit-recorded" | "redeploy-deployment-inserted";
 
-export class DbControlCommandRepository implements ControlDeleteRepository, ControlStopRepository, ControlConfirmationRepository {
+export class DbControlCommandRepository implements ControlDeleteRepository, ControlStopRepository, ControlRedeployRepository, ControlConfirmationRepository {
   constructor(private readonly db: DeployLiteDb, private readonly injectFault?: (stage: ControlDeleteFaultStage) => void | Promise<void>) {}
 
   async resolve(command: ControlCommand): Promise<{ command: ControlCommand; created: boolean }> {
@@ -35,6 +35,11 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
     if (!existing) throw new Error("Idempotency command was not found after conflict");
     if (existing.inputDigest !== command.inputDigest) throw new IdempotencyConflictError();
     return { command: toCommand(existing), created: false };
+  }
+
+  async findByIdempotency(actorId: string, idempotencyKey: string): Promise<ControlCommand | null> {
+    const [row] = await this.db.select().from(controlCommands).where(and(eq(controlCommands.actorUserId, actorId), eq(controlCommands.action, "deployment.redeploy"), eq(controlCommands.idempotencyKey, idempotencyKey))).limit(1);
+    return row ? toCommand(row) : null;
   }
 
   async bind(confirmation: ControlConfirmation): Promise<void> {
@@ -131,6 +136,31 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
     return toCommand(current);
   }
 
+  async executeConfirmedDeploymentRedeploy({ command, confirmation, deployment, requestId, snapshotHash, now = new Date() }: ConfirmedDeploymentRedeployInput): Promise<ConfirmedDeploymentRedeployOutcome> {
+    return this.db.transaction(async (tx) => {
+      const [current] = await tx.select().from(controlCommands).where(eq(controlCommands.id, command.id)).limit(1);
+      if (!current) throw new Error("Control command was not found");
+      if (current.status === "completed") return { command: toCommand(current), accepted: true, reason: null, result: current.result as ConfirmedDeploymentRedeployOutcome["result"], deployment: null, alreadyCompleted: true };
+      if (current.status !== "pending_confirmation") return { command: toCommand(current), accepted: false, reason: "command_not_pending", result: redeployResult(command, "rejected", null, snapshotHash, "command_not_pending"), deployment: null, alreadyCompleted: false };
+      const [consumed] = await tx.update(controlCommandConfirmations).set({ consumedAt: now }).where(and(eq(controlCommandConfirmations.id, confirmation.id), eq(controlCommandConfirmations.commandId, command.id), eq(controlCommandConfirmations.actorUserId, command.actorId), eq(controlCommandConfirmations.action, "deployment.redeploy"), eq(controlCommandConfirmations.scopeKind, command.scope.kind), eq(controlCommandConfirmations.scopeKey, scopeKey(command.scope)), eq(controlCommandConfirmations.inputDigest, command.inputDigest), eq(controlCommandConfirmations.classification, "destructive"), isNull(controlCommandConfirmations.consumedAt), gt(controlCommandConfirmations.expiresAt, now), lte(controlCommandConfirmations.expiresAt, current.expiresAt))).returning();
+      if (!consumed) { await tx.update(controlCommands).set({ status: "rejected", updatedAt: now }).where(and(eq(controlCommands.id, command.id), eq(controlCommands.status, "pending_confirmation"))); await tx.insert(controlCommandAudits).values({ commandId: command.id, confirmationId: confirmation.id, correlationId: command.correlationId, outcome: "rejected", reason: "confirmation_rejected" }); return { command: toCommand(current), accepted: false, reason: "confirmation_rejected", result: redeployResult(command, "rejected", null, snapshotHash), deployment: null, alreadyCompleted: false }; }
+      await tx.insert(deployments).values({ id: deployment.id, projectId: deployment.projectId, agentId: deployment.agentId, status: deployment.status, commitSha: deployment.commitSha, snapshotHash, startedAt: new Date(deployment.startedAt), finishedAt: null, metadata: { sourceDeploymentId: deployment.sourceDeploymentId } });
+      await this.fault("redeploy-deployment-inserted");
+      const result = redeployResult(command, "completed", deployment.id, snapshotHash);
+      const [completed] = await tx.update(controlCommands).set({ status: "completed", result, updatedAt: now }).where(and(eq(controlCommands.id, command.id), eq(controlCommands.status, "pending_confirmation"))).returning();
+      if (!completed) throw new Error("Control command was not pending");
+      await tx.insert(controlCommandAudits).values({ commandId: command.id, confirmationId: confirmation.id, correlationId: command.correlationId, outcome: "completed", reason: null });
+      await tx.insert(auditEvents).values({ actorUserId: command.actorId, action: "deployment.redeploy.completed", targetType: "deployment", targetId: deployment.id, requestId, correlationId: command.correlationId, metadata: { projectId: deployment.projectId, sourceDeploymentId: deployment.sourceDeploymentId, snapshotHash } });
+      return { command: toCommand(completed), accepted: true, reason: null, result, deployment, alreadyCompleted: false };
+    });
+  }
+
+  async completeDeploymentRedeploy(command: ControlCommand, result: import("@deploylite/contracts").DeploymentRedeployCommandResult): Promise<ControlCommand> {
+    if (result.commandId !== command.id || result.action !== "deployment.redeploy" || result.correlationId !== command.correlationId) throw new Error("Deployment redeploy result does not match command");
+    const [completed] = await this.db.update(controlCommands).set({ status: "completed", result, updatedAt: new Date() }).where(and(eq(controlCommands.id, command.id), or(eq(controlCommands.status, "eligible"), eq(controlCommands.status, "dispatching")))).returning();
+    if (completed) return toCommand(completed); const [current] = await this.db.select().from(controlCommands).where(eq(controlCommands.id, command.id)).limit(1); if (!current) throw new Error("Control command was not found"); return toCommand(current);
+  }
+
   private async fault(stage: ControlDeleteFaultStage): Promise<void> { await this.injectFault?.(stage); }
 }
 
@@ -143,6 +173,7 @@ function stopResult(command: ControlCommand, status: "eligible" | "rejected") {
   if (command.scope.kind !== "deployment") throw new Error("Deployment stop requires deployment scope");
   return { commandId: command.id, action: "deployment.stop" as const, projectId: command.scope.projectId, deploymentId: command.scope.deploymentId, status, correlationId: command.correlationId, reason: status === "rejected" ? "confirmation_rejected" : null };
 }
+function redeployResult(command: ControlCommand, status: "eligible" | "rejected" | "completed", deploymentId: string | null = null, snapshotHash = "0".repeat(64), reason: string | null = null) { if (command.scope.kind !== "deployment") throw new Error("Deployment redeploy requires deployment scope"); return { commandId: command.id, action: "deployment.redeploy" as const, projectId: command.scope.projectId, sourceDeploymentId: command.scope.deploymentId, deploymentId, snapshotHash, status, correlationId: command.correlationId, reason: reason ?? (status === "rejected" ? "confirmation_rejected" : null) }; }
 
 function toGrant(row: ControlGrantRow): ControlGrant {
   const scope = row.scopeKind === "platform" ? { kind: "platform" as const } : row.scopeKind === "deployment" ? (() => { const [projectId, deploymentId] = JSON.parse(row.scopeKey) as [string, string]; return { kind: "deployment" as const, projectId, deploymentId }; })() : { kind: "project" as const, projectId: row.scopeKey };

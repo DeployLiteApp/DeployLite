@@ -5,12 +5,14 @@ export interface CanonicalHasher { sha256(bytes: Uint8Array): string; }
 export interface SecretReferenceV1 { readonly secretRefId: string; readonly version: number; }
 export interface DeploymentSnapshotInputV1 {
   readonly deploymentId: string; readonly projectId: string; readonly source: SourceIntentV1;
+  readonly agentId?: string; readonly commitSha?: string;
   readonly configRevision: string; readonly runtimeRevision: string; readonly runtimePort: number | null;
   readonly secretRefs: readonly SecretReferenceV1[]; readonly policyVersion: string; readonly schemaVersion: number;
   readonly resolvedDigest?: string; readonly secretValues?: unknown; readonly timestamp?: unknown; readonly random?: unknown;
 }
 export interface DeploymentSnapshotV1 {
   readonly schemaVersion: 1; readonly deploymentId: string; readonly projectId: string; readonly source: SourceIntentV1;
+  readonly agentId?: string; readonly commitSha?: string;
   readonly configRevision: string; readonly runtimeRevision: string; readonly runtimePort: number | null;
   readonly secretRefs: readonly SecretReferenceV1[]; readonly policyVersion: string; readonly sourceSchemaVersion: number;
   readonly resolvedDigest?: string; readonly canonicalJson: string; readonly canonicalBytes: Uint8Array; readonly hash: string;
@@ -26,7 +28,7 @@ function digest(value: string | undefined): string | undefined { if (value === u
 function canonical(value: unknown): unknown { if (value === undefined) return undefined; if (Array.isArray(value)) return value.map(canonical); if (value && typeof value === "object") { const result: Record<string, unknown> = {}; for (const key of Object.keys(value as Record<string, unknown>).sort()) { const item = canonical((value as Record<string, unknown>)[key]); if (item !== undefined) result[key] = item; } return result; } return value; }
 function refs(values: readonly SecretReferenceV1[]): readonly SecretReferenceV1[] { return values.map((ref) => ({ secretRefId: text(ref.secretRefId), version: ref.version })).sort((a, b) => a.secretRefId.localeCompare(b.secretRefId) || a.version - b.version); }
 export function createDeploymentSnapshot(input: DeploymentSnapshotInputV1, hasher: CanonicalHasher): DeploymentSnapshotV1 {
-  const data = { schemaVersion: 1 as const, deploymentId: text(input.deploymentId), projectId: text(input.projectId), source: clone(input.source), configRevision: text(input.configRevision), runtimeRevision: text(input.runtimeRevision), runtimePort: input.runtimePort, secretRefs: refs(input.secretRefs), policyVersion: text(input.policyVersion), sourceSchemaVersion: input.schemaVersion, resolvedDigest: digest(input.resolvedDigest) };
+  const data = { schemaVersion: 1 as const, deploymentId: text(input.deploymentId), projectId: text(input.projectId), source: clone(input.source), ...(input.agentId ? { agentId: text(input.agentId) } : {}), ...(input.commitSha ? { commitSha: text(input.commitSha) } : {}), configRevision: text(input.configRevision), runtimeRevision: text(input.runtimeRevision), runtimePort: input.runtimePort, secretRefs: refs(input.secretRefs), policyVersion: text(input.policyVersion), sourceSchemaVersion: input.schemaVersion, resolvedDigest: digest(input.resolvedDigest) };
   const canonicalJson = JSON.stringify(canonical(data)); const canonicalBytes = new TextEncoder().encode(canonicalJson); const hash = hasher.sha256(canonicalBytes);
   if (!/^[0-9a-f]{64}$/.test(hash)) throw new Error("snapshot hash must be a lowercase 64-hex SHA-256 digest");
   const snapshot = { ...data, canonicalJson, hash } as DeploymentSnapshotV1;
