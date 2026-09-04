@@ -260,7 +260,7 @@ export const controlCommands = pgTable(
   (table) => [
     uniqueIndex("control_commands_idempotency_unique").on(table.actorUserId, table.action, table.scopeKey, table.idempotencyKey),
     index("control_commands_actor_user_id_idx").on(table.actorUserId),
-    check("control_commands_action_valid", sql`${table.action} in ('project.delete', 'project.deploy', 'project.update', 'deployment.stop', 'platform.agent.register')`),
+    check("control_commands_action_valid", sql`${table.action} in ('project.delete', 'project.deploy', 'project.update', 'deployment.stop', 'deployment.redeploy', 'platform.agent.register')`),
     check("control_commands_scope_valid", sql`${table.scopeKind} in ('platform', 'project', 'deployment')`),
     check("control_commands_status_valid", sql`${table.status} in ('pending_confirmation', 'eligible', 'rejected', 'completed')`)
   ]
@@ -279,7 +279,7 @@ export const controlGrants = pgTable(
   (table) => [
     uniqueIndex("control_grants_actor_action_scope_unique").on(table.actorUserId, table.action, table.scopeKind, table.scopeKey),
     index("control_grants_actor_user_id_idx").on(table.actorUserId),
-    check("control_grants_action_valid", sql`${table.action} in ('project.delete', 'project.deploy', 'project.update', 'platform.agent.register')`),
+    check("control_grants_action_valid", sql`${table.action} in ('project.delete', 'project.deploy', 'project.update', 'deployment.stop', 'deployment.redeploy', 'platform.agent.register')`),
     check("control_grants_scope_valid", sql`${table.scopeKind} in ('platform', 'project')`)
   ]
 );

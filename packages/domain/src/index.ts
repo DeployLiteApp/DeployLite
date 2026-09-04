@@ -116,6 +116,7 @@ export type DeploymentRepository = {
   list(): Promise<Deployment[]>;
   appendLog(event: LogEvent): Promise<LogEvent>;
   listLogs(deploymentId: string, afterSequence?: number): Promise<LogEvent[]>;
+  remove?(id: string): Promise<boolean>;
 };
 
 export type DeploymentSnapshotRepository = {
@@ -298,6 +299,8 @@ export class InMemoryDeploymentRepository implements DeploymentRepository {
   async list(): Promise<Deployment[]> {
     return [...this.#deployments.values()];
   }
+
+  async remove(id: string): Promise<boolean> { return this.#deployments.delete(id); }
 
   async appendLog(event: LogEvent): Promise<LogEvent> {
     const safeEvent = { ...event, message: redactLogMessage(event.message), redactionApplied: true };

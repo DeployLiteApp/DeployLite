@@ -10,6 +10,7 @@ const envSecretValuesMigrationSql = readFileSync(
   "utf8"
 );
 const deploymentStopMigrationSql = readFileSync(new URL("../migrations/0012_deployment_stop_command.sql", import.meta.url), "utf8");
+const deploymentRedeployMigrationSql = readFileSync(new URL("../migrations/0014_deployment_redeploy_command.sql", import.meta.url), "utf8");
 
 describe("auth PostgreSQL schema foundation", () => {
   it("seeds only the canonical RBAC roles", () => {
@@ -96,6 +97,16 @@ describe("deployment stop control migration", () => {
     expect(deploymentStopMigrationSql).toContain("'deployment.stop'");
     expect(deploymentStopMigrationSql).toContain("'deployment'");
     expect(deploymentStopMigrationSql).not.toMatch(/DROP TABLE|TRUNCATE|RENAME/i);
+  });
+});
+
+describe("deployment redeploy control migration", () => {
+  it("adds redeploy to every control action constraint without destructive replacement", () => {
+    expect(deploymentRedeployMigrationSql.match(/deployment\.redeploy/g)?.length).toBe(3);
+    expect(deploymentRedeployMigrationSql).toContain("control_commands_action_valid");
+    expect(deploymentRedeployMigrationSql).toContain("control_grants_action_valid");
+    expect(deploymentRedeployMigrationSql).toContain("control_command_confirmations_action_valid");
+    expect(deploymentRedeployMigrationSql).not.toMatch(/DROP TABLE|TRUNCATE|RENAME/i);
   });
 });
 

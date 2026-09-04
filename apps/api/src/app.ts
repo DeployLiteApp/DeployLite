@@ -29,6 +29,7 @@ import {
   type RuntimeActivation,
   type RuntimeActivationCommand,
   createDeploymentSnapshot,
+  createDeploymentPlan,
   createSourceIntent,
   type DeploymentSnapshotV1,
   type ImageReferencePolicyV1
@@ -48,6 +49,7 @@ import {
   PolicyEvaluator,
   createConfirmation,
   createControlCommand,
+  digestControlInput,
   scopeKey,
   toSafeAuthUser,
   type AuditEvent,
@@ -62,6 +64,7 @@ import {
   type ControlCommandRepository,
   type ControlDeleteRepository,
   type ControlStopRepository,
+  type ControlRedeployRepository,
   type ControlConfirmation,
   type ControlConfirmationRepository,
   type ControlGrant,
@@ -468,6 +471,7 @@ type PlatformRepositoryOptions = {
   deploymentStopDispatcher?: DeploymentStopDispatcher;
   snapshots?: DeploymentSnapshotRepository;
   controlDeletes?: ControlDeleteRepository & ControlStopRepository;
+  controlRedeploy?: ControlRedeployRepository;
   controlGrants?: ControlGrantRepository;
 };
 
@@ -482,6 +486,7 @@ type PlatformRepositories = PlatformRepositoryOptions & {
   deploymentStopDispatcher: DeploymentStopDispatcher;
   snapshots: DeploymentSnapshotRepository;
   controlDeletes: ControlDeleteRepository & ControlStopRepository;
+  controlRedeploy: ControlRedeployRepository;
   controlGrants: ControlGrantRepository;
 };
 
@@ -564,9 +569,10 @@ function createApiState(env: EnvSecretKeySource, overrides: Partial<PlatformRepo
   const deploymentDispatcher = overrides.deploymentDispatcher ?? agentTransport ?? new UnavailableDeploymentDispatcher();
   const deploymentStopDispatcher = overrides.deploymentStopDispatcher ?? agentTransport ?? new UnavailableDeploymentStopDispatcher();
   const snapshots = overrides.snapshots ?? new InMemorySnapshotRepository();
+  const controlDeletes = overrides.controlDeletes ?? new InMemoryControlDeleteRepository(projects, audit ?? new InMemoryAuditRepository(), deployments);
   const agentStatus = new AgentStatusService(agents);
   const deployRunner = new DeployRunner(deployments, envMetadata, agentStatus, envSecretCipher);
-  return { agents, deployments, projects, envMetadata, envSecretValues, envSecretCipher, agentStatus, deployRunner, runtimeActivationDispatcher, deploymentDispatcher, deploymentStopDispatcher, snapshots, controlDeletes: overrides.controlDeletes ?? new InMemoryControlDeleteRepository(projects, audit ?? new InMemoryAuditRepository()), controlGrants: overrides.controlGrants ?? new InMemoryControlGrantRepository() };
+  return { agents, deployments, projects, envMetadata, envSecretValues, envSecretCipher, agentStatus, deployRunner, runtimeActivationDispatcher, deploymentDispatcher, deploymentStopDispatcher, snapshots, controlDeletes, controlRedeploy: overrides.controlRedeploy ?? (controlDeletes as unknown as ControlRedeployRepository), controlGrants: overrides.controlGrants ?? new InMemoryControlGrantRepository() };
 }
 
 class InMemoryControlGrantRepository implements ControlGrantRepository {
@@ -576,7 +582,7 @@ class InMemoryControlGrantRepository implements ControlGrantRepository {
   }
 }
 
-class InMemoryControlDeleteRepository implements ControlDeleteRepository, ControlStopRepository {
+class InMemoryControlDeleteRepository implements ControlDeleteRepository, ControlStopRepository, ControlRedeployRepository {
   readonly #commands = new Map<string, ControlCommand>();
   readonly #confirmations = new Map<string, ControlConfirmation>();
 
@@ -589,6 +595,11 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
     }
     this.#commands.set(key, structuredClone(command));
     return { command: structuredClone(command), created: true };
+  }
+
+  async findByIdempotency(actorId: string, idempotencyKey: string): Promise<ControlCommand | null> {
+    const command = [...this.#commands.values()].find((candidate) => candidate.actorId === actorId && candidate.action === "deployment.redeploy" && candidate.idempotencyKey === idempotencyKey);
+    return command ? structuredClone(command) : null;
   }
 
   async bind(confirmation: ControlConfirmation): Promise<void> { this.#confirmations.set(confirmation.id, structuredClone(confirmation)); }
@@ -619,8 +630,8 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
   async executeConfirmedDeploymentStop({ command, confirmation, now = new Date() }: Parameters<ControlStopRepository["executeConfirmedDeploymentStop"]>[0]) {
     const current = [...this.#commands.values()].find((candidate) => candidate.id === command.id);
     if (!current) throw new Error("Control command was not found");
-    if (current.status === "completed") return { command: structuredClone(current), accepted: true, reason: null, result: current.result ?? null, alreadyCompleted: true };
-    if (current.status === "eligible" || current.status === "dispatching") return { command: structuredClone(current), accepted: true, reason: null, result: current.result ?? null, alreadyCompleted: false };
+    if (current.status === "completed") return { command: structuredClone(current), accepted: true, reason: null, result: (current.result as import("@deploylite/contracts").DeploymentStopCommandResult | undefined) ?? null, alreadyCompleted: true };
+    if (current.status === "eligible" || current.status === "dispatching") return { command: structuredClone(current), accepted: true, reason: null, result: (current.result as import("@deploylite/contracts").DeploymentStopCommandResult | undefined) ?? null, alreadyCompleted: false };
     const stored = this.#confirmations.get(confirmation.id);
     if (!stored || stored.commandId !== current.id || stored.actorId !== current.actorId || stored.action !== current.action || scopeKey(stored.scope) !== scopeKey(current.scope) || stored.inputDigest !== current.inputDigest || stored.classification !== "destructive" || stored.consumedAt || stored.expiresAt <= now) {
       current.status = "rejected";
@@ -647,7 +658,30 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
     return structuredClone(current);
   }
 
-  constructor(private readonly projects: ProjectRepository, private readonly audit: AuditRepository) {}
+  async executeConfirmedDeploymentRedeploy({ command, confirmation, deployment, requestId, snapshotHash, now = new Date() }: Parameters<ControlRedeployRepository["executeConfirmedDeploymentRedeploy"]>[0]) {
+    const current = [...this.#commands.values()].find((candidate) => candidate.id === command.id);
+    if (!current) throw new Error("Control command was not found");
+    if (current.status === "completed") return { command: structuredClone(current), accepted: true, reason: null, result: current.result as import("@deploylite/contracts").DeploymentRedeployCommandResult | null, deployment: null, alreadyCompleted: true };
+    if (current.status !== "pending_confirmation") return { command: structuredClone(current), accepted: false, reason: "command_not_pending", result: null, deployment: null, alreadyCompleted: false };
+    const stored = this.#confirmations.get(confirmation.id);
+    if (!stored || stored.commandId !== current.id || stored.actorId !== current.actorId || stored.action !== current.action || scopeKey(stored.scope) !== scopeKey(current.scope) || stored.inputDigest !== current.inputDigest || stored.classification !== "destructive" || stored.consumedAt || stored.expiresAt <= now || stored.expiresAt > current.expiresAt) { current.status = "rejected"; return { command: structuredClone(current), accepted: false, reason: "confirmation_rejected", result: null, deployment: null, alreadyCompleted: false }; }
+    const before = structuredClone(current); const confirmationBefore = structuredClone(stored);
+    try {
+      stored.consumedAt = now; await this.deployments?.save(deployment);
+      const result = { commandId: current.id, action: "deployment.redeploy" as const, projectId: deployment.projectId, sourceDeploymentId: deployment.sourceDeploymentId!, deploymentId: deployment.id, snapshotHash, status: "completed" as const, correlationId: current.correlationId, reason: null };
+      await this.audit.append({ actorUserId: current.actorId, action: "deployment.redeploy.completed", targetType: "deployment", targetId: deployment.id, requestId, correlationId: current.correlationId, metadata: { projectId: deployment.projectId, sourceDeploymentId: deployment.sourceDeploymentId, snapshotHash } });
+      current.status = "completed"; current.result = result;
+      return { command: structuredClone(current), accepted: true, reason: null, result, deployment, alreadyCompleted: false };
+    } catch (error) { Object.assign(current, before); Object.assign(stored, confirmationBefore); if (this.deployments?.remove) await this.deployments.remove(deployment.id); throw error; }
+  }
+
+  async completeDeploymentRedeploy(command: ControlCommand, result: import("@deploylite/contracts").DeploymentRedeployCommandResult): Promise<ControlCommand> {
+    if (result.commandId !== command.id || result.action !== "deployment.redeploy" || result.correlationId !== command.correlationId) throw new Error("Deployment redeploy result does not match command");
+    const current = [...this.#commands.values()].find((candidate) => candidate.id === command.id); if (!current) throw new Error("Control command was not found");
+    if (current.status === "eligible") { current.status = "completed"; current.result = result; } return structuredClone(current);
+  }
+
+  constructor(private readonly projects: ProjectRepository, private readonly audit: AuditRepository, private readonly deployments?: DeploymentRepository) {}
 
   async executeConfirmedProjectDelete({ command, confirmation, projectId, requestId }: Parameters<ControlDeleteRepository["executeConfirmedProjectDelete"]>[0]) {
     const project = await this.projects.findById(projectId);
@@ -889,6 +923,7 @@ function createDbAuthAdapters(env: DeployLiteEnv, options: BuildApiAppOptions): 
       snapshots: options.state?.snapshots ?? (deployments instanceof DbDeploymentRepository ? deployments : new DbDeploymentRepository(db)),
       envSecretCipher: options.state?.envSecretCipher,
       controlDeletes: options.state?.controlDeletes ?? new DbControlCommandRepository(db),
+      controlRedeploy: options.state?.controlRedeploy ?? new DbControlCommandRepository(db),
       controlGrants: options.state?.controlGrants ?? new DbControlGrantRepository(db)
     })
   };
@@ -1531,7 +1566,7 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
       try {
         const source = createSourceIntent({ sourceMode: "image", requestedReference: body.imageReference }, imagePolicy);
         if (source.sourceMode !== "image" || source.image.selector.kind !== "digest") throw new Error("digest-pinned image is required");
-        snapshot = createDeploymentSnapshot({ deploymentId: deployment.id, projectId: project.id, source, configRevision: body.configRevision ?? "default", runtimeRevision: body.runtimeRevision ?? "default", runtimePort: project.port, secretRefs: (await state.envMetadata.listByProject(project.id)).map((record) => ({ secretRefId: record.key, version: 1 })), policyVersion: imagePolicy.policyVersion, schemaVersion: 1 }, { sha256: (bytes) => createHash("sha256").update(bytes).digest("hex") });
+        snapshot = createDeploymentSnapshot({ deploymentId: deployment.id, projectId: project.id, agentId, commitSha, source, configRevision: body.configRevision ?? "default", runtimeRevision: body.runtimeRevision ?? "default", runtimePort: project.port, secretRefs: (await state.envMetadata.listByProject(project.id)).map((record) => ({ secretRefId: record.key, version: 1 })), policyVersion: imagePolicy.policyVersion, schemaVersion: 1 }, { sha256: (bytes) => createHash("sha256").update(bytes).digest("hex") });
       } catch (error) {
         await appendAudit(adapters.audit, request, { action: "deployment.requested.rejected", targetType: "deployment", targetId: deployment.id, metadata: { reason: error instanceof Error ? error.message : "invalid-image", projectId: project.id } });
         return reply.code(400).send(errorEnvelope(request, "DIGEST_INPUT_INVALID", "A valid digest-pinned image is required."));
@@ -1665,6 +1700,47 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
      await state.controlDeletes.completeDeploymentStop(claimed.command, result);
      await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "deployment.stop.rejected", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, commandId: claimed.command.id, reason: result.reason } });
     return reply.code(409).send(errorEnvelope(request, "DEPLOY_STOP_NOT_CONFIRMED", "Agent did not confirm a stopped container; prior status was preserved."));
+  });
+  app.post(`${API_PREFIX}/deployments/:deploymentId/redeploy`, { preHandler: [requireAuth, requireMutationRole] }, async (request, reply) => {
+    const params = z.object({ deploymentId: z.string().min(1) }).parse(request.params);
+    const body = z.object({ snapshotHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict().parse(request.body ?? {});
+    const idempotencyKey = getHeaderValue(request, "x-control-idempotency-key");
+    if (!idempotencyKey) return reply.code(400).send(errorEnvelope(request, "IDEMPOTENCY_KEY_REQUIRED", "An idempotency key is required for deployment redeploy."));
+    const prior = await state.controlRedeploy.findByIdempotency(request.auth!.user.id, idempotencyKey);
+    if (prior) {
+      if (prior.scope.kind !== "deployment" || prior.scope.deploymentId !== params.deploymentId || digestControlInput({ actorId: request.auth!.user.id, projectId: prior.scope.kind === "deployment" ? prior.scope.projectId : "", sourceDeploymentId: params.deploymentId, snapshotHash: body.snapshotHash }) !== prior.inputDigest) return reply.code(409).send(errorEnvelope(request, "IDEMPOTENCY_CONFLICT", "Idempotency key was already used with different command input."));
+      const priorResult = prior.result as import("@deploylite/contracts").DeploymentRedeployCommandResult | undefined;
+      if (prior.status === "completed" && priorResult) return ok(request, { command: prior, deploymentId: priorResult.deploymentId, snapshotHash: priorResult.snapshotHash, idempotent: true });
+      if (prior.status === "rejected") return reply.code(409).send(errorEnvelope(request, "REDEPLOY_COMMAND_REJECTED", "Redeploy command was rejected and cannot be reused."));
+    }
+    const source = await state.deployments.findById(params.deploymentId);
+    if (!source) return reply.code(404).send(errorEnvelope(request, "REDEPLOY_SOURCE_MISSING", "Source deployment was not found."));
+    const project = await state.projects.findById(source.projectId);
+    if (!project) return reply.code(404).send(errorEnvelope(request, "REDEPLOY_PROJECT_MISSING", "Source deployment project was not found."));
+    const scope = { kind: "deployment" as const, projectId: project.id, deploymentId: source.id };
+    const decision = new PolicyEvaluator().evaluate({ actorId: request.auth!.user.id, role: request.auth!.user.role, action: "deployment.redeploy", scope, correlationId: request.correlationContext.correlationId, grants: await state.controlGrants.listForActor(request.auth!.user.id) });
+    if (!decision.allowed) { await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "deployment.redeploy.rejected", targetType: "deployment", targetId: source.id, metadata: { projectId: project.id, reason: decision.code } }); return reply.code(403).send(errorEnvelope(request, decision.code, "Deployment redeploy is not authorized.")); }
+    const snapshot = await state.snapshots.findByHash(body.snapshotHash);
+    if (!snapshot) { await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "deployment.redeploy.rejected", targetType: "deployment", targetId: source.id, metadata: { projectId: project.id, snapshotHash: body.snapshotHash, reason: "snapshot-missing" } }); return reply.code(404).send(errorEnvelope(request, "REDEPLOY_SNAPSHOT_MISSING", "Deployment snapshot was not found.")); }
+    if (snapshot.projectId !== project.id || snapshot.deploymentId !== source.id) { await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "deployment.redeploy.rejected", targetType: "deployment", targetId: source.id, metadata: { projectId: project.id, snapshotHash: body.snapshotHash, reason: "snapshot-wrong-project" } }); return reply.code(409).send(errorEnvelope(request, "REDEPLOY_SNAPSHOT_WRONG_PROJECT", "Snapshot does not belong to the source deployment project.")); }
+    if (source.status !== "succeeded" || createDeploymentPlan(snapshot).status !== "executable" || !snapshot.agentId || !snapshot.commitSha) { await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "deployment.redeploy.rejected", targetType: "deployment", targetId: source.id, metadata: { projectId: project.id, snapshotHash: body.snapshotHash, reason: "snapshot-ineligible" } }); return reply.code(409).send(errorEnvelope(request, "REDEPLOY_SNAPSHOT_INELIGIBLE", "Snapshot is not eligible for redeployment.")); }
+    let resolved: { command: ControlCommand; created: boolean };
+    try { resolved = await state.controlRedeploy.resolve(createControlCommand({ actorId: request.auth!.user.id, action: "deployment.redeploy", scope, input: { actorId: request.auth!.user.id, projectId: project.id, sourceDeploymentId: source.id, snapshotHash: body.snapshotHash }, idempotencyKey, correlationId: request.correlationContext.correlationId })); }
+    catch (error) { if (error instanceof IdempotencyConflictError) return reply.code(409).send(errorEnvelope(request, error.code, error.message)); throw error; }
+    const existingResult = resolved.command.result as import("@deploylite/contracts").DeploymentRedeployCommandResult | undefined;
+    if (resolved.command.status === "completed" && existingResult) return ok(request, { command: resolved.command, deploymentId: existingResult.deploymentId, snapshotHash: body.snapshotHash, idempotent: true });
+    if (resolved.command.status === "rejected") return reply.code(409).send(errorEnvelope(request, "REDEPLOY_COMMAND_REJECTED", "Redeploy command was rejected and cannot be reused."));
+    const confirmationId = getHeaderValue(request, "x-control-confirmation-id");
+    if (resolved.created && !confirmationId) { const confirmation = createConfirmation({ command: resolved.command, classification: "destructive" }); await state.controlRedeploy.bind(confirmation); await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "deployment.redeploy.pending_confirmation", targetType: "deployment", targetId: source.id, metadata: { projectId: project.id, snapshotHash: body.snapshotHash, commandId: resolved.command.id } }); return reply.code(202).send(ok(request, { commandId: resolved.command.id, confirmationId: confirmation.id, confirmationRequired: true, correlationId: request.correlationContext.correlationId })); }
+    if (resolved.command.status === "eligible") return reply.code(202).send(ok(request, { commandId: resolved.command.id, pending: true, correlationId: request.correlationContext.correlationId }));
+    if (!confirmationId) return reply.code(409).send(errorEnvelope(request, "CONFIRMATION_REQUIRED", "An explicit confirmation is required for deployment redeploy."));
+    const confirmation = { id: confirmationId, commandId: resolved.command.id, actorId: resolved.command.actorId, action: resolved.command.action, scope: resolved.command.scope, inputDigest: resolved.command.inputDigest, classification: "destructive" as const, expiresAt: resolved.command.expiresAt, consumedAt: null };
+    const deployment: Deployment = { id: `dep_${createRequestId()}`, projectId: snapshot.projectId, agentId: snapshot.agentId, status: "queued", commitSha: snapshot.commitSha, startedAt: new Date().toISOString(), finishedAt: null, sourceDeploymentId: snapshot.deploymentId, snapshotHash: snapshot.hash };
+    const admitted = await state.controlRedeploy.executeConfirmedDeploymentRedeploy({ command: resolved.command, confirmation, deployment, requestId: request.correlationContext.requestId, snapshotHash: snapshot.hash });
+    if (!admitted.accepted) return reply.code(409).send(errorEnvelope(request, "CONFIRMATION_REJECTED", "Confirmation is not eligible for this command."));
+    const result = admitted.result;
+    if (!result || !admitted.deployment) return reply.code(409).send(errorEnvelope(request, "REDEPLOY_NOT_COMPLETED", "Redeploy was not completed."));
+    return ok(request, { deployment, command: result, snapshotHash: body.snapshotHash, sourceDeploymentId: source.id });
   });
   app.get(`${API_PREFIX}/deployments/:deploymentId`, { preHandler: requireAuth }, async (request, reply) => {
     const params = z.object({ deploymentId: z.string().min(1) }).parse(request.params);
