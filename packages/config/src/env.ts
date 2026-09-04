@@ -13,6 +13,8 @@ export const deployLiteEnvSchema = z.object({
   DEPLOYLITE_AGENT_URL: z.string().url().optional(),
   DEPLOYLITE_AGENT_TRUST_KEY: z.string().min(16).optional(),
   DEPLOYLITE_AGENT_ID: z.string().min(1).optional(),
+  DEPLOYLITE_AGENT_HOST: z.string().min(1).default("0.0.0.0"),
+  DEPLOYLITE_AGENT_PORT: z.coerce.number().int().min(1).max(65_535).default(3002),
   DEPLOYLITE_CORS_ORIGIN: z.string().url().optional(),
   DEPLOYLITE_API_HOST: z.string().min(1).default("127.0.0.1"),
   DEPLOYLITE_API_PORT: z.coerce.number().int().min(1).max(65_535).default(3001),

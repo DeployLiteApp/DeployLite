@@ -9,11 +9,13 @@ printf 'POSTGRES_PASSWORD=%s\nDATABASE_URL=%s\nDEPLOYLITE_SECRET_KEY=%s\nDEPLOYL
   'postgres://deploylite:base%2Bplus%2Fslash@postgres:5432/deploylite' \
   'placeholder' \
   'operator@acme.co' >"$runtime_env"
+printf 'DEPLOYLITE_AGENT_ID=%s\nDEPLOYLITE_AGENT_TRUST_KEY=%s\n' 'agent_contract' 'transport_contract_key_123' >>"$runtime_env"
+export DEPLOYLITE_AGENT_ID=agent_contract DEPLOYLITE_AGENT_TRUST_KEY=transport_contract_key_123
 base_rendered="$(docker compose -f "$ROOT_DIR/infra/vps/compose.yml" config --no-interpolate)"
 rendered="$(docker compose -f "$ROOT_DIR/infra/vps/compose.yml" -f "$ROOT_DIR/infra/vps/compose.tls.yml" config --no-interpolate)"
 merged_rendered="$(docker compose --env-file "$runtime_env" -f "$ROOT_DIR/infra/vps/compose.yml" -f "$ROOT_DIR/infra/vps/compose.tls.yml" --profile bootstrap config)"
 migrate_environment="$(printf '%s\n' "$merged_rendered" | awk '/^  migrate:$/,/^  api:$/')"
-api_environment="$(printf '%s\n' "$merged_rendered" | awk '/^  api:$/,/^  web:$/')"
+api_environment="$(printf '%s\n' "$merged_rendered" | awk '/^  api:$/ {on=1} on {if ($0 ~ /^  [a-z][a-z-]*:$/ && $0 !~ /^  api:$/) exit; print}')"
 
 contains() { [[ "$rendered" == *"$1"* ]] || { printf 'missing: %s\n' "$1"; return 1; }; }
 [[ "$base_rendered" == *'traefik:v3.6.7'* ]] || { printf 'base Compose must pin Traefik v3.6.7 for Docker API compatibility\n'; exit 1; }
@@ -36,6 +38,13 @@ contains 'traefik.http.routers.deploylite-web.rule='
 contains 'X-DeployLite-Bootstrap=ready'
 contains 'deploylite-bootstrap-marker'
 contains 'DEPLOYLITE_SESSION_COOKIE_SECURE: "true"'
+contains 'image: deploylite-agent:local'
+contains 'DEPLOYLITE_AGENT_URL: http://agent:3002'
+contains 'agent_internal: '
+contains 'required: false'
+contains 'target: /var/run/docker.sock'
+contains 'read_only: true'
+[[ "$api_environment" != *'/var/run/docker.sock'* ]] || { printf 'API must not receive Docker socket access\n'; exit 1; }
 [[ "$migrate_environment" == *'DATABASE_URL: postgres://deploylite:base%2Bplus%2Fslash@postgres:5432/deploylite'* ]] || {
   printf 'migrate must receive the generated URL-safe DATABASE_URL\n'
   exit 1

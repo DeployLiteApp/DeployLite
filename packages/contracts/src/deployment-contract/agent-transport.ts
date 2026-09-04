@@ -12,7 +12,7 @@ export type AgentExecutionCommand = z.infer<typeof agentExecutionCommandSchema>;
 
 const digestImage = z.string().min(1).max(1024).regex(/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[0-9a-f]{64}$/);
 export const dockerImageExecutionReceiptSchema = z.object({
-  deploymentId: id, effectiveImage: digestImage, runtimePort: z.number().int().min(1).max(65535),
+  deploymentId: id, candidateId: id.optional(), effectiveImage: digestImage, runtimePort: z.number().int().min(1).max(65535),
   health: z.enum(["passed", "failed"]), terminalStatus: z.enum(["succeeded", "failed", "canceled"]),
   rollback: z.object({ target: digestImage.nullable(), result: z.enum(["not-required", "restored", "not-available"]) }).strict(), proven: z.boolean()
 }).strict().superRefine((receipt, context) => {

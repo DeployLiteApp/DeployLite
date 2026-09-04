@@ -546,7 +546,7 @@ function createApiState(env: EnvSecretKeySource, overrides: Partial<PlatformRepo
   const envSecretValues = overrides.envSecretValues ?? new InMemoryEnvSecretValueRepository();
   const envSecretCipher = overrides.envSecretCipher ?? createLazyEnvSecretCipher(env);
   const runtimeActivationDispatcher = overrides.runtimeActivationDispatcher ?? new UnavailableRuntimeActivationDispatcher();
-  const deploymentDispatcher = overrides.deploymentDispatcher ?? (typeof env.DEPLOYLITE_AGENT_URL === "string" && typeof env.DEPLOYLITE_AGENT_TRUST_KEY === "string" && typeof env.DEPLOYLITE_AGENT_ID === "string" ? new AuthenticatedAgentDeploymentTransport({ endpoint: env.DEPLOYLITE_AGENT_URL, trustKey: env.DEPLOYLITE_AGENT_TRUST_KEY, agentId: env.DEPLOYLITE_AGENT_ID, allowInsecureInternal: env.NODE_ENV !== "production" }) : new UnavailableDeploymentDispatcher());
+  const deploymentDispatcher = overrides.deploymentDispatcher ?? (typeof env.DEPLOYLITE_AGENT_URL === "string" && typeof env.DEPLOYLITE_AGENT_TRUST_KEY === "string" && typeof env.DEPLOYLITE_AGENT_ID === "string" ? new AuthenticatedAgentDeploymentTransport({ endpoint: env.DEPLOYLITE_AGENT_URL, trustKey: env.DEPLOYLITE_AGENT_TRUST_KEY, agentId: env.DEPLOYLITE_AGENT_ID, allowInsecureInternal: true }) : new UnavailableDeploymentDispatcher());
   const snapshots = overrides.snapshots ?? new InMemorySnapshotRepository();
   const agentStatus = new AgentStatusService(agents);
   const deployRunner = new DeployRunner(deployments, envMetadata, agentStatus, envSecretCipher);

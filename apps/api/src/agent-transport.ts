@@ -8,7 +8,7 @@ export type AgentDispatchContext = Readonly<{ requestId: string; correlationId: 
 export class AuthenticatedAgentDeploymentTransport {
   readonly #options: AgentTransportOptions; readonly #fetch: typeof globalThis.fetch;
   constructor(options: AgentTransportOptions) { this.#options = options; this.#fetch = options.fetch ?? globalThis.fetch; }
-  available(): boolean { let url: URL; try { url = new URL(this.#options.endpoint); validateAgentTransportKey(this.#options.trustKey); } catch { return false; } const internal = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(url.hostname); if (url.username || url.password || url.hash || !["https:", ...(this.#options.allowInsecureInternal && internal ? ["http:"] : [])].includes(url.protocol)) return false; return Boolean(this.#options.agentId.trim()); }
+  available(): boolean { let url: URL; try { url = new URL(this.#options.endpoint); validateAgentTransportKey(this.#options.trustKey); } catch { return false; } const internal = url.hostname === "localhost" || url.hostname === "agent" || /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(url.hostname); if (url.username || url.password || url.hash || !["https:", ...(this.#options.allowInsecureInternal && internal ? ["http:"] : [])].includes(url.protocol)) return false; return Boolean(this.#options.agentId.trim()); }
   async dispatch(snapshot: DeploymentSnapshotV1, commandId: string, context?: AgentDispatchContext): Promise<DockerImageExecutionReceiptV1> {
     if (!this.available()) throw new TransportError("agent transport is not configured");
     if (context?.agentId && context.agentId !== this.#options.agentId) throw new TransportError("agent transport identity mismatch");

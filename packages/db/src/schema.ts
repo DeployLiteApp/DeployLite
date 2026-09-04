@@ -305,6 +305,14 @@ export const controlCommandAudits = pgTable(
   (table) => [index("control_command_audits_command_id_idx").on(table.commandId), index("control_command_audits_correlation_id_idx").on(table.correlationId)]
 );
 
+export const agentReplay = pgTable("agent_replay", {
+  commandId: text("command_id").primaryKey(), fingerprint: text("fingerprint").notNull(),
+  status: text("status").notNull().default("in_progress"), claimOwner: text("claim_owner").notNull(),
+  leaseId: text("lease_id").notNull(), claimToken: text("claim_token").notNull(), leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }).notNull(),
+  receipt: jsonb("receipt").$type<Record<string, unknown> | null>(),
+  claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull().defaultNow(), resolvedAt: timestamp("resolved_at", { withTimezone: true })
+}, (table) => [index("agent_replay_status_lease_idx").on(table.status, table.leaseExpiresAt), check("agent_replay_status_valid", sql`${table.status} in ('in_progress', 'completed')`)]);
+
 export const domains = pgTable(
   "domains",
   {
@@ -364,3 +372,4 @@ export type NewEnvSecretValue = typeof envSecretValues.$inferInsert;
 export type ControlCommandRow = typeof controlCommands.$inferSelect;
 export type ControlGrantRow = typeof controlGrants.$inferSelect;
 export type ControlCommandConfirmationRow = typeof controlCommandConfirmations.$inferSelect;
+export type AgentReplayRow = typeof agentReplay.$inferSelect;

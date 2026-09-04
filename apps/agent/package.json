@@ -19,6 +19,7 @@
     "@deploylite/config": "workspace:*",
     "@deploylite/contracts": "workspace:*",
     "@deploylite/domain": "workspace:*",
+    "@deploylite/db": "workspace:*",
     "zod": "^3.24.1"
   }
 }
