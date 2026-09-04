@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 readonly EXPECTED_NODE_VERSION="24.20.0"
 readonly EXPECTED_PNPM_VERSION="9.15.4"
-readonly EXPECTED_LOCK_SHA256="a285101aef7c7fed49bcca99b062da70071f82a6bae242698722c2968dccb6c5"
+readonly EXPECTED_LOCK_SHA256="cffb7a94703446e32ed5c1fba154f0b97e80e5afcdfeff3eefecfcc7e0f6fd22"
 readonly NODE_IMAGE="node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf"
 
 fail() {
@@ -49,6 +49,12 @@ for dockerfile in apps/api/Dockerfile apps/web/Dockerfile; do
   grep -Fq "RUN corepack enable" "${dockerfile}" || fail "${dockerfile} must enable Corepack"
   grep -Fq "pnpm install --frozen-lockfile" "${dockerfile}" || fail "${dockerfile} must use a frozen pnpm install"
 done
+grep -Fq 'pnpm --filter @deploylite/agent build' apps/api/Dockerfile || fail 'agent target must build the agent entrypoint'
+grep -Fq 'COPY --from=build --chown=deploylite:deploylite /agent /app' apps/api/Dockerfile || fail 'agent target must copy the deployed package'
+grep -Fq 'test -f /agent/dist/index.js' apps/api/Dockerfile || fail 'agent deploy must contain the generated entrypoint'
+grep -Fq 'apk add --no-cache docker-cli' apps/api/Dockerfile || fail 'agent target must contain docker-cli'
+grep -Fqx 'USER deploylite' apps/api/Dockerfile || fail 'agent target must run as deploylite'
+grep -Fqx 'CMD ["node", "dist/index.js"]' apps/api/Dockerfile || fail 'agent target must have the generated entrypoint command'
 
 grep -Fqx 'ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0' apps/web/Dockerfile || \
   fail 'apps/web/Dockerfile must bind the standalone server to 0.0.0.0:3000'

@@ -9,6 +9,7 @@ import { assertEnvMetadataHasNoValueColumns, toEnvVariableMetadataInsert } from 
 import { DbAuthUserRepository, DbRoleRepository, DbSessionRepository } from "./repositories/auth.js";
 import { DbAgentRepository, DbDeploymentRepository, DbProjectRepository } from "./repositories/deployment-data.js";
 import { DbControlCommandRepository, DbControlGrantRepository } from "./repositories/control-plane.js";
+import { DbAgentReplayStore } from "./repositories/agent-replay.js";
 import { IdempotencyConflictError, createConfirmation, createControlCommand, digestControlInput } from "@deploylite/domain";
 import { createDeploymentSnapshot, createSourceIntent } from "@deploylite/contracts";
 
@@ -376,6 +377,18 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
     await repo.bind(expiredConfirmation);
     await expect(repo.consume(expired, expiredConfirmation)).resolves.toMatchObject({ accepted: false, reason: "confirmation_rejected" });
   });
+
+  it("claims replay once, detects payload conflicts, and replays a receipt after client restart", async () => {
+    const commandId = randomUUID(); const lease = { leaseId: "lease-replay", deploymentId: randomUUID(), fence: 1, expiresAt: Date.now() + 30_000 };
+    const receipt = { deploymentId: lease.deploymentId, effectiveImage: `registry.example.com/app@sha256:${"a".repeat(64)}`, runtimePort: 3000, health: "passed" as const, terminalStatus: "succeeded" as const, rollback: { target: null, result: "not-required" as const }, proven: true as const };
+    const first = new DbAgentReplayStore(requireDb(), "worker-a"); const second = new DbAgentReplayStore(requireDb(), "worker-b");
+    const claims = await Promise.all([first.claim(commandId, "payload-a", lease), second.claim(commandId, "payload-a", lease)]);
+    expect(claims.filter((claim) => claim.claimed)).toHaveLength(1);
+    await expect(first.claim(commandId, "payload-b", lease)).rejects.toThrow("replayed with a different payload");
+    const ownerIndex = claims.findIndex((claim) => claim.claimed); const owner = ownerIndex === 0 ? first : second; await owner.complete(commandId, { fingerprint: "payload-a", claimToken: claims[ownerIndex]!.claimToken!, receipt });
+    await expect(new DbAgentReplayStore(requireDb(), "worker-c").claim(commandId, "payload-a", lease)).resolves.toMatchObject({ claimed: false, receipt });
+  });
+  it("rejects the old claimant after atomic lease reclaim", async () => { const commandId = randomUUID(); const deploymentId = randomUUID(); const receipt = { deploymentId, effectiveImage: `registry.example.com/app@sha256:${"a".repeat(64)}`, runtimePort: 3000, health: "passed" as const, terminalStatus: "succeeded" as const, rollback: { target: null, result: "not-required" as const }, proven: true as const }; const first = new DbAgentReplayStore(requireDb(), "same-process"); const second = new DbAgentReplayStore(requireDb(), "same-process"); const oldLease = { leaseId: "old", deploymentId, fence: 1, expiresAt: Date.now() + 30_000 }; const oldClaim = await first.claim(commandId, "payload", oldLease); await requirePool().query("UPDATE agent_replay SET lease_expires_at = now() - interval '1 second' WHERE command_id = $1", [commandId]); const newClaim = await second.claim(commandId, "payload", { ...oldLease, leaseId: "new", expiresAt: Date.now() + 30_000 }); await expect(first.complete(commandId, { fingerprint: "payload", claimToken: oldClaim.claimToken!, receipt })).rejects.toThrow("stale"); await second.complete(commandId, { fingerprint: "payload", claimToken: newClaim.claimToken!, receipt }); await expect(new DbAgentReplayStore(requireDb(), "reader").claim(commandId, "payload", oldLease)).resolves.toMatchObject({ claimed: false, receipt }); });
 });
 
 function requirePool(): pg.Pool {

@@ -58,6 +58,9 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      agent:
+        condition: service_healthy
+        required: false
     environment:
       NODE_ENV: production
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
@@ -70,10 +73,47 @@ services:
       DEPLOYLITE_SESSION_COOKIE_SECURE: "true"
       DEPLOYLITE_BCRYPT_COST: ${DEPLOYLITE_BCRYPT_COST:-12}
       DEPLOYLITE_SECRET_KEY: ${DEPLOYLITE_SECRET_KEY:?DEPLOYLITE_SECRET_KEY is required}
+      DEPLOYLITE_AGENT_URL: http://agent:3002
+      DEPLOYLITE_AGENT_ID: ${DEPLOYLITE_AGENT_ID:?DEPLOYLITE_AGENT_ID is required}
+      DEPLOYLITE_AGENT_TRUST_KEY: ${DEPLOYLITE_AGENT_TRUST_KEY:?DEPLOYLITE_AGENT_TRUST_KEY is required}
     networks:
       - deploylite
+      - agent_internal
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3001/api/v1/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  agent:
+    profiles: [bootstrap, runtime]
+    build:
+      context: ./source
+      dockerfile: apps/api/Dockerfile
+      target: agent
+      args:
+        DOCKER_GID: ${DOCKER_GID:-998}
+    image: deploylite-agent:local
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      DEPLOYLITE_AGENT_ID: ${DEPLOYLITE_AGENT_ID:?DEPLOYLITE_AGENT_ID is required}
+      DEPLOYLITE_AGENT_TRUST_KEY: ${DEPLOYLITE_AGENT_TRUST_KEY:?DEPLOYLITE_AGENT_TRUST_KEY is required}
+      DEPLOYLITE_AGENT_HOST: 0.0.0.0
+      DEPLOYLITE_AGENT_PORT: 3002
+    volumes:
+      # The agent has privileged Docker-host authority through this socket; the
+      # application must enforce ownership labels before every mutation.
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    networks: [agent_internal]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3002/health >/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -105,4 +145,8 @@ volumes:
 
 networks:
   deploylite:
+    driver: bridge
+  agent_internal:
+    name: deploylite-agent
+    internal: true
     driver: bridge

@@ -4,8 +4,8 @@ import { agentExecutionCommandSchema, CapabilityError, createDeploymentCommand, 
 import { type DockerImageExecutionReceiptV1 } from "@deploylite/domain";
 
 export type AgentCommandDispatcher = { dispatch(snapshot: any, commandId: string, signal?: AbortSignal, lease?: LeaseV1): Promise<DockerImageExecutionReceiptV1> };
-export type AgentReplayClaim = { claimed: boolean; receipt?: DockerImageExecutionReceiptV1 };
-export type AgentReplayStore = { readonly durable?: boolean; claim(commandId: string, fingerprint: string, lease: LeaseV1): Promise<AgentReplayClaim>; wait(commandId: string): Promise<DockerImageExecutionReceiptV1>; complete(commandId: string, value: { fingerprint: string; receipt: DockerImageExecutionReceiptV1 }): Promise<void>; release(commandId: string): Promise<void> };
+export type AgentReplayClaim = { claimed: boolean; claimToken?: string; receipt?: DockerImageExecutionReceiptV1 };
+export type AgentReplayStore = { readonly durable?: boolean; claim(commandId: string, fingerprint: string, lease: LeaseV1): Promise<AgentReplayClaim>; wait(commandId: string): Promise<DockerImageExecutionReceiptV1>; complete(commandId: string, value: { fingerprint: string; claimToken: string; receipt: DockerImageExecutionReceiptV1 }): Promise<void>; release(commandId: string): Promise<void> };
 export type AgentCommandReceiverOptions = Readonly<{ agentId: string; trustKey: string; capabilities: readonly string[]; dispatcher: AgentCommandDispatcher; replayStore: AgentReplayStore; now?: () => number }>;
 
 export class AuthenticatedAgentCommandReceiver {
@@ -23,7 +23,7 @@ export class AuthenticatedAgentCommandReceiver {
     const snapshot = { ...command.snapshot, canonicalBytes: bytes };
     const cancellation = new AbortController(); const cancel = () => cancellation.abort(); signal?.addEventListener("abort", cancel, { once: true }); if (command.cancellationRequested) cancellation.abort();
     let receipt: DockerImageExecutionReceiptV1; try { receipt = await this.#options.dispatcher.dispatch(snapshot, command.commandId, cancellation.signal, command.lease); } catch (error) { await this.#options.replayStore.release(command.commandId); throw error; } finally { signal?.removeEventListener("abort", cancel); }
-    try { const validated = this.#validatedReceipt(command, receipt); await this.#options.replayStore.complete(command.commandId, { fingerprint, receipt: validated }); return this.#wrap(command, validated); } catch (error) { await this.#options.replayStore.release(command.commandId); throw error; }
+    try { const validated = this.#validatedReceipt(command, receipt); if (!claim.claimToken) throw new Error("agent replay claim token missing"); await this.#options.replayStore.complete(command.commandId, { fingerprint, claimToken: claim.claimToken, receipt: validated }); return this.#wrap(command, validated); } catch (error) { await this.#options.replayStore.release(command.commandId); throw error; }
   }
   #validatedReceipt(command: AgentExecutionCommand, receipt: DockerImageExecutionReceiptV1) { const validated = dockerImageExecutionReceiptSchema.parse(receipt); if (validated.deploymentId !== command.deploymentId) throw new Error("agent receipt deployment scope rejected"); return validated; }
   #wrap(command: AgentExecutionCommand, receipt: DockerImageExecutionReceiptV1) { const validated = this.#validatedReceipt(command, receipt); return { schemaVersion: 1 as const, commandId: command.commandId, deploymentId: command.deploymentId, terminalStatus: validated.terminalStatus, health: validated.health, redacted: true as const, receipt: validated }; }
