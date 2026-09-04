@@ -36,10 +36,11 @@ export const bootstrapInitialAdminRequestSchema = z.object({
 
 export const canonicalRoleSchema = z.enum(["admin", "operator", "read-only", "auditor"]);
 
-export const controlPlaneActionSchema = z.enum(["project.delete", "project.deploy", "project.update", "platform.agent.register"]);
+export const controlPlaneActionSchema = z.enum(["project.delete", "project.deploy", "project.update", "deployment.stop", "platform.agent.register"]);
 export const controlPlaneScopeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("platform") }),
-  z.object({ kind: z.literal("project"), projectId: idSchema })
+  z.object({ kind: z.literal("project"), projectId: idSchema }),
+  z.object({ kind: z.literal("deployment"), projectId: idSchema, deploymentId: idSchema })
 ]);
 export const confirmationClassificationSchema = z.enum(["destructive", "non-destructive"]);
 export const controlCommandStatusSchema = z.enum(["pending_confirmation", "eligible", "rejected", "completed"]);
@@ -54,6 +55,14 @@ export const controlCommandRequestSchema = z.object({
   idempotencyKey: z.string().min(1).max(200),
   inputDigest: z.string().regex(/^[a-f0-9]{64}$/),
   correlationId: idSchema
+}).strict();
+export const deploymentStopCommandRequestSchema = controlCommandRequestSchema.extend({
+  action: z.literal("deployment.stop"),
+  scope: z.object({ kind: z.literal("deployment"), projectId: idSchema, deploymentId: idSchema }).strict()
+}).strict();
+export const deploymentStopCommandResultSchema = z.object({
+  commandId: idSchema, action: z.literal("deployment.stop"), projectId: idSchema, deploymentId: idSchema,
+  status: z.enum(["eligible", "completed", "rejected"]), correlationId: idSchema, reason: z.string().min(1).nullable()
 }).strict();
 
 export const safeAuthUserSchema = z.object({
@@ -300,6 +309,8 @@ export type CanonicalRole = z.infer<typeof canonicalRoleSchema>;
 export type ControlPlaneAction = z.infer<typeof controlPlaneActionSchema>;
 export type ControlPlaneScope = z.infer<typeof controlPlaneScopeSchema>;
 export type ControlCommandRequest = z.infer<typeof controlCommandRequestSchema>;
+export type DeploymentStopCommandRequest = z.infer<typeof deploymentStopCommandRequestSchema>;
+export type DeploymentStopCommandResult = z.infer<typeof deploymentStopCommandResultSchema>;
 export type ConfirmationClassification = z.infer<typeof confirmationClassificationSchema>;
 export type ControlCommandStatus = z.infer<typeof controlCommandStatusSchema>;
 export type ConfirmationLifecycleResult = z.infer<typeof confirmationLifecycleResultSchema>;

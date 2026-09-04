@@ -12,12 +12,21 @@ import {
   projectUpdateRequestSchema,
   runtimeActivationCommandSchema,
   runtimeConfigurationWriteRequestSchema,
-  sseEventSchema
+  sseEventSchema,
+  deploymentStopCommandRequestSchema,
+  deploymentStopCommandResultSchema
 } from "./index.js";
 
 const now = new Date().toISOString();
 
 describe("contracts", () => {
+  it("accepts only deployment-scoped stop requests and closed results", () => {
+    const request = deploymentStopCommandRequestSchema.parse({ action: "deployment.stop", scope: { kind: "deployment", projectId: "project_1", deploymentId: "deployment_1" }, idempotencyKey: "stop_1", inputDigest: "a".repeat(64), correlationId: "corr_1" });
+    expect(request.scope.kind).toBe("deployment");
+    expect(deploymentStopCommandResultSchema.parse({ commandId: "cmd_1", action: "deployment.stop", projectId: "project_1", deploymentId: "deployment_1", status: "completed", correlationId: "corr_1", reason: null }).status).toBe("completed");
+    expect(deploymentStopCommandRequestSchema.safeParse({ ...request, scope: { kind: "project", projectId: "project_1" } }).success).toBe(false);
+  });
+
   it("rejects invalid heartbeat resource snapshots", () => {
     const result = agentHeartbeatSchema.safeParse({
       agentId: "agent_1",

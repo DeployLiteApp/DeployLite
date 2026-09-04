@@ -43,6 +43,17 @@ describe("control command", () => {
     expect(() => evaluateConfirmation(command, { ...confirmation, action: "project.deploy" })).toThrow(ConfirmationRejectedError);
     expect(() => evaluateConfirmation(command, { ...confirmation, classification: "non-destructive" })).toThrow(ConfirmationRejectedError);
     expect(() => evaluateConfirmation(command, { ...confirmation, expiresAt: new Date(0) })).toThrow(ConfirmationRejectedError);
+    expect(() => evaluateConfirmation(command, { ...confirmation, expiresAt: new Date(command.expiresAt.getTime() + 1) })).toThrow(ConfirmationRejectedError);
+    expect(evaluateConfirmation(command, { ...confirmation, expiresAt: command.expiresAt })).toEqual({ eligible: true });
     expect(() => evaluateConfirmation(command, { ...confirmation, consumedAt: new Date() })).toThrow(ConfirmationRejectedError);
+  });
+
+  it("binds deployment stop to the canonical deployment scope and action", () => {
+    const command = createControlCommand({ actorId: "actor-a", action: "deployment.stop", scope: { kind: "deployment", projectId: "project-a", deploymentId: "deployment-a" }, input: { deploymentId: "deployment-a" }, idempotencyKey: "stop-key", correlationId: "corr-stop" });
+    const confirmation = createConfirmation({ command, classification: "destructive" });
+    expect(command.inputDigest).toBe(digestControlInput({ deploymentId: "deployment-a" }));
+    expect(evaluateConfirmation(command, confirmation)).toEqual({ eligible: true });
+    expect(() => evaluateConfirmation(command, { ...confirmation, scope: { kind: "deployment", projectId: "project-a", deploymentId: "deployment-b" } })).toThrow(ConfirmationRejectedError);
+    expect({ action: command.action, scope: command.scope }).toEqual({ action: "deployment.stop", scope: { kind: "deployment", projectId: "project-a", deploymentId: "deployment-a" } });
   });
 });

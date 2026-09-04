@@ -9,6 +9,7 @@ const envSecretValuesMigrationSql = readFileSync(
   new URL("../migrations/0004_env_secret_values.sql", import.meta.url),
   "utf8"
 );
+const deploymentStopMigrationSql = readFileSync(new URL("../migrations/0012_deployment_stop_command.sql", import.meta.url), "utf8");
 
 describe("auth PostgreSQL schema foundation", () => {
   it("seeds only the canonical RBAC roles", () => {
@@ -86,6 +87,15 @@ describe("env secret values storage migration", () => {
     expect(envSecretValuesMigrationSql).not.toMatch(/\bDROP\b/);
     expect(envSecretValuesMigrationSql).not.toMatch(/\bTRUNCATE\b/);
     expect(envSecretValuesMigrationSql).not.toMatch(/\bALTER\s+TABLE\s+\w+\s+RENAME\b/i);
+  });
+});
+
+describe("deployment stop control migration", () => {
+  it("extends, rather than replaces, the existing command ledger", () => {
+    expect(deploymentStopMigrationSql).toContain("ADD COLUMN result jsonb");
+    expect(deploymentStopMigrationSql).toContain("'deployment.stop'");
+    expect(deploymentStopMigrationSql).toContain("'deployment'");
+    expect(deploymentStopMigrationSql).not.toMatch(/DROP TABLE|TRUNCATE|RENAME/i);
   });
 });
 
