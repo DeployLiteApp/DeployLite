@@ -111,6 +111,7 @@ export type AgentRepository = {
 
 export type DeploymentRepository = {
   save(deployment: Deployment): Promise<Deployment>;
+  saveIfStatus(deployment: Deployment, expectedStatus: Deployment["status"]): Promise<Deployment | null>;
   findById(id: string): Promise<Deployment | null>;
   list(): Promise<Deployment[]>;
   appendLog(event: LogEvent): Promise<LogEvent>;
@@ -283,6 +284,11 @@ export class InMemoryDeploymentRepository implements DeploymentRepository {
   async save(deployment: Deployment): Promise<Deployment> {
     this.#deployments.set(deployment.id, structuredClone(deployment));
     return deployment;
+  }
+
+  async saveIfStatus(deployment: Deployment, expectedStatus: Deployment["status"]): Promise<Deployment | null> {
+    const current = this.#deployments.get(deployment.id);
+    return current?.status === expectedStatus ? this.save(deployment) : null;
   }
 
   async findById(id: string): Promise<Deployment | null> {

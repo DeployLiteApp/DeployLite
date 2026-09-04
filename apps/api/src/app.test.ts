@@ -1,6 +1,7 @@
 import { BcryptPasswordHasher, createOpaqueSessionToken, hashSessionToken } from "@deploylite/db";
 import {
   InitialAdminAlreadyExistsError,
+  InMemoryDeploymentRepository,
   InMemoryEnvSecretValueRepository,
   InMemoryEnvVariableMetadataRepository,
   type AgentRepository,
@@ -15,7 +16,7 @@ import {
 } from "@deploylite/domain";
 import { createEnvSecretCipher, loadEnvSecretKey } from "@deploylite/config";
 import { describe, expect, it } from "vitest";
-import { buildApiApp, createRuntimeRepositories, InMemoryAuditRepository, InMemoryAuthUserRepository, InMemorySessionRepository, type DeploymentDispatcher } from "./app.js";
+import { buildApiApp, createRuntimeRepositories, DeployRunner, InMemoryAuditRepository, InMemoryAuthUserRepository, InMemorySessionRepository, type DeploymentDispatcher } from "./app.js";
 
 const contentHeaders = { "content-type": "application/json" };
 const password = "test_fixture_password_primary";
@@ -121,6 +122,7 @@ function metadataRepositories() {
       calls.push("deployments.save");
       throw new Error("metadata read routes must not create deployments");
     },
+    async saveIfStatus() { calls.push("deployments.saveIfStatus"); throw new Error("metadata read routes must not save deployments"); },
     async findById(id) {
       calls.push("deployments.findById");
       return id === "dep-1" ? { id, projectId: "project-1", agentId: "agent-1", status: "running", commitSha: "abcdef1", startedAt: "2026-01-01T00:00:00.000Z", finishedAt: null } : null;
@@ -1726,7 +1728,7 @@ describe("DeployLite API scaffold", () => {
       expect(response.json().error.code).toBe("VALIDATION_ERROR");
     });
 
-    it("denies read-only callers because audit events are operator/admin scoped", async () => {
+  it("denies read-only callers because audit events are operator/admin scoped", async () => {
       const users = new InMemoryAuthUserRepository([
         { id: "user_readonly_1", email: "reader@example.test", emailNormalized: "reader@example.test", passwordHash: "test_fixture_password_stub", role: "read-only", status: "active", createdAt: new Date(), updatedAt: new Date() }
       ]);
@@ -1749,6 +1751,84 @@ describe("DeployLite API scaffold", () => {
       const cookie = login.headers["set-cookie"] as string;
       const list = await app.inject({ method: "GET", url: "/api/v1/audit-events", headers: { cookie } });
       expect(list.statusCode).toBe(403);
+    });
+
+    it("requires authenticated authorized confirmation and stops exactly once", async () => {
+      const deployments = new InMemoryDeploymentRepository();
+      let dispatches = 0;
+      const stopDispatcher = {
+        available: () => true,
+        async dispatchStop(input: { commandId: string; projectId: string; deploymentId: string; candidateId: string; effectiveImage: string }, context: { correlationId: string }) {
+          dispatches++;
+          expect(input.candidateId).toContain("candidate");
+          return { schemaVersion: 1 as const, action: "deployment.stop" as const, agentId: "agent-1", commandId: input.commandId, projectId: input.projectId, deploymentId: input.deploymentId, candidateId: input.candidateId, effectiveImage: input.effectiveImage, status: "stopped" as const, redacted: true as const, correlationId: context.correlationId, reason: null };
+        }
+      };
+      const { app, audit, user } = await authFixture({ state: { deployments, deploymentStopDispatcher: stopDispatcher, controlGrants: { listForActor: async (actorId: string) => [{ id: "stop-grant", actorId, action: "deployment.stop" as const, scope: { kind: "platform" as const } }] } } });
+      const project = (await app.inject({ method: "POST", url: "/api/v1/projects", headers: { ...contentHeaders, cookie: await loginCookie(app) }, payload: { name: "Stoppable", repoUrl: "https://github.com/example/stoppable", defaultBranch: "main" } })).json().data.project;
+      await deployments.save({ id: "dep-stop-1", projectId: project.id, agentId: "agent-1", status: "running", commitSha: "abcdef1", startedAt: "2026-01-01T00:00:00.000Z", finishedAt: null, stopTarget: { candidateId: "dep-stop-1:candidate:deploy_dep-stop-1", effectiveImage: `registry.example.com/team/app@sha256:${"a".repeat(64)}` } });
+      const cookie = await loginCookie(app);
+      const url = "/api/v1/deployments/dep-stop-1/stop";
+      const headers = { cookie, "x-control-idempotency-key": "stop-once" };
+      expect((await app.inject({ method: "POST", url })).statusCode).toBe(401);
+      const pending = await app.inject({ method: "POST", url, headers });
+      expect(pending.statusCode).toBe(202);
+      const confirmationId = pending.json().data.confirmationId;
+      const stopped = await app.inject({ method: "POST", url, headers: { ...headers, "x-control-confirmation-id": confirmationId, "x-request-id": "req-stop-1" } });
+      expect(stopped.statusCode).toBe(200);
+      expect(stopped.json().data.deployment.status).toBe("canceled");
+      expect(dispatches).toBe(1);
+      const replay = await app.inject({ method: "POST", url, headers: { ...headers, "x-control-confirmation-id": confirmationId } });
+      expect(replay.statusCode).toBe(200);
+      expect(dispatches).toBe(1);
+      const stream = await app.inject({ method: "GET", url: "/api/v1/deployments/dep-stop-1/logs/stream", headers: { cookie } });
+      expect(stream.body.indexOf("event: deployment.log")).toBeLessThan(stream.body.indexOf("event: deployment.status"));
+      expect(stream.body).toContain("canceled");
+      expect(audit.inputs.map((event) => event.action)).toEqual(expect.arrayContaining(["deployment.stop.pending_confirmation", "deployment.stop.dispatched", "deployment.stop.succeeded"]));
+      expect(JSON.stringify(audit.inputs)).not.toContain("a".repeat(64));
+      void user;
+    });
+
+    it("preserves status on agent failure and rejects idempotency payload conflicts", async () => {
+      const deployments = new InMemoryDeploymentRepository();
+      const stopDispatcher = { available: () => true, async dispatchStop(): Promise<never> { throw new Error("transport fixture failure"); } };
+      const { app } = await authFixture({ state: { deployments, deploymentStopDispatcher: stopDispatcher, controlGrants: { listForActor: async (actorId: string) => [{ id: "stop-grant", actorId, action: "deployment.stop" as const, scope: { kind: "platform" as const } }] } } });
+      const cookie = await loginCookie(app);
+      await deployments.save({ id: "dep-stop-fail", projectId: "project_mock_1", agentId: "agent_mock_1", status: "running", commitSha: "abcdef1", startedAt: "2026-01-01T00:00:00.000Z", finishedAt: null, stopTarget: { candidateId: "dep-stop-fail:candidate", effectiveImage: `registry.example.com/team/app@sha256:${"b".repeat(64)}` } });
+      await deployments.save({ id: "dep-stop-other", projectId: "project_mock_1", agentId: "agent_mock_1", status: "running", commitSha: "abcdef1", startedAt: "2026-01-01T00:00:00.000Z", finishedAt: null });
+      const url = "/api/v1/deployments/dep-stop-fail/stop";
+      const headers = { cookie, "x-control-idempotency-key": "stop-failure" };
+      const pending = await app.inject({ method: "POST", url, headers });
+      const conflict = await app.inject({ method: "POST", url: "/api/v1/deployments/dep-stop-other/stop", headers: { ...headers, "x-control-confirmation-id": pending.json().data.confirmationId }, payload: { changed: true } });
+      expect(conflict.statusCode).toBe(409);
+      const failed = await app.inject({ method: "POST", url, headers: { ...headers, "x-control-confirmation-id": pending.json().data.confirmationId } });
+      expect(failed.statusCode).toBe(502);
+      expect((await app.inject({ method: "GET", url: "/api/v1/deployments/dep-stop-fail", headers: { cookie } })).json().data.deployment.status).toBe("running");
+    });
+
+    it("admits concurrent confirmations to one agent dispatch", async () => {
+      const deployments = new InMemoryDeploymentRepository(); let dispatches = 0; let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const stopDispatcher = { available: () => true, async dispatchStop(input: { commandId: string; projectId: string; deploymentId: string; candidateId: string; effectiveImage: string }, context: { correlationId: string }) { dispatches++; await gate; return { schemaVersion: 1 as const, action: "deployment.stop" as const, agentId: "agent-1", commandId: input.commandId, projectId: input.projectId, deploymentId: input.deploymentId, candidateId: input.candidateId, effectiveImage: input.effectiveImage, status: "stopped" as const, redacted: true as const, correlationId: context.correlationId, reason: null }; } };
+      const { app } = await authFixture({ state: { deployments, deploymentStopDispatcher: stopDispatcher, controlGrants: { listForActor: async (actorId: string) => [{ id: "stop-grant", actorId, action: "deployment.stop" as const, scope: { kind: "platform" as const } }] } } });
+      const cookie = await loginCookie(app); const project = (await app.inject({ method: "POST", url: "/api/v1/projects", headers: { ...contentHeaders, cookie }, payload: { name: "Concurrent", repoUrl: "https://github.com/example/concurrent", defaultBranch: "main" } })).json().data.project;
+      await deployments.save({ id: "dep-concurrent", projectId: project.id, agentId: "agent-1", status: "running", commitSha: "abcdef1", startedAt: "2026-01-01T00:00:00.000Z", finishedAt: null, stopTarget: { candidateId: "dep-concurrent:candidate", effectiveImage: `registry.example.com/team/app@sha256:${"c".repeat(64)}` } });
+      const url = "/api/v1/deployments/dep-concurrent/stop"; const headers = { cookie, "x-control-idempotency-key": "concurrent-stop" }; const pending = await app.inject({ method: "POST", url, headers }); const confirmationId = pending.json().data.confirmationId;
+      const first = app.inject({ method: "POST", url, headers: { ...headers, "x-control-confirmation-id": confirmationId } }); const second = app.inject({ method: "POST", url, headers: { ...headers, "x-control-confirmation-id": confirmationId } });
+      await new Promise((resolve) => setTimeout(resolve, 0)); expect(dispatches).toBe(1); release(); expect((await first).statusCode).toBe(200); expect((await second).statusCode).toBe(202);
+    });
+
+    it("does not let a fence during a delayed lifecycle read save", async () => {
+      let release!: () => void; let reads = 0; let saves = 0; const read = new Promise<void>((resolve) => { release = resolve; });
+      const repo = { findById: async () => { reads++; await read; return { id: "dep-fence", projectId: "p", agentId: "a", status: "running" as const, commitSha: "abcdef1", startedAt: "2026-01-01T00:00:00.000Z", finishedAt: null }; }, saveIfStatus: async () => { saves++; return null; }, appendLog: async () => { throw new Error("stale callback logged"); } };
+      const runner = new DeployRunner(repo as never, undefined as never, undefined as never); runner.scheduleAdvance("dep-fence", "succeeded", 0); await new Promise((resolve) => setTimeout(resolve, 0)); runner.fence("dep-fence"); release(); await new Promise((resolve) => setTimeout(resolve, 0)); expect(reads).toBe(1); expect(saves).toBe(0); runner.cancelTimers();
+    });
+
+    it("emits log 101 before a canceled terminal SSE event", async () => {
+      const deployments = new InMemoryDeploymentRepository(); const { app } = await authFixture({ state: { deployments } }); const cookie = await loginCookie(app);
+      await deployments.save({ id: "dep-sse-101", projectId: "project_mock_1", agentId: "agent_mock_1", status: "canceled", commitSha: "abcdef1", startedAt: "2026-01-01T00:00:00.000Z", finishedAt: "2026-01-01T00:01:00.000Z" });
+      for (let sequence = 1; sequence <= 101; sequence++) await deployments.appendLog({ id: `log-${sequence}`, deploymentId: "dep-sse-101", sequence, level: "info", message: `Log ${sequence}`, timestamp: new Date(sequence).toISOString(), redactionApplied: true, requestId: "req-sse", correlationId: "corr-sse" });
+      const body = (await app.inject({ method: "GET", url: "/api/v1/deployments/dep-sse-101/logs/stream", headers: { cookie } })).body; expect(body.indexOf("id: 101\nevent: deployment.log")).toBeLessThan(body.indexOf("event: deployment.status"));
     });
   });
 });

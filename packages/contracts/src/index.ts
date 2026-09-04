@@ -43,7 +43,7 @@ export const controlPlaneScopeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("deployment"), projectId: idSchema, deploymentId: idSchema })
 ]);
 export const confirmationClassificationSchema = z.enum(["destructive", "non-destructive"]);
-export const controlCommandStatusSchema = z.enum(["pending_confirmation", "eligible", "rejected", "completed"]);
+export const controlCommandStatusSchema = z.enum(["pending_confirmation", "eligible", "dispatching", "rejected", "completed"]);
 export const confirmationLifecycleResultSchema = z.object({
   commandId: idSchema,
   accepted: z.boolean(),
@@ -250,7 +250,11 @@ export const deploymentSchema = z.object({
   status: deploymentStatusSchema,
   commitSha: z.string().regex(/^[a-f0-9]{7,40}$/),
   startedAt: isoDateSchema,
-  finishedAt: isoDateSchema.nullable()
+  finishedAt: isoDateSchema.nullable(),
+  stopTarget: z.object({
+    candidateId: idSchema,
+    effectiveImage: z.string().regex(/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[0-9a-f]{64}$/)
+  }).strict().optional()
 });
 
 export const logEventSchema = requestContextSchema.extend({
