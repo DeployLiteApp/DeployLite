@@ -84,20 +84,32 @@ export default async function DeploymentLogsPage({ params }: { params: Promise<{
       <div className="flex flex-col gap-6">
         <div>
           <Link href="/deployments" className="text-sm text-muted-foreground hover:text-foreground">← Back to deployments</Link>
-          <div className="mt-2 flex items-center gap-3">
-            <h1 className="text-2xl font-semibold tracking-tight">Deployment {deployment.id}</h1>
-            <Badge variant={statusVariant(deployment.status)}>{deployment.status}</Badge>
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl font-bold tracking-tight sm:text-[34px] sm:leading-tight">Deployment {deployment.id}</h1>
+            <Badge className="text-[11px] uppercase tracking-wide" variant={statusVariant(deployment.status)}>{deployment.status}</Badge>
           </div>
           <p className="font-mono text-sm text-muted-foreground">commit {deployment.commitSha}</p>
         </div>
 
-        <Card data-testid="deployment-evidence-summary">
-          <CardHeader>
+        <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1.65fr)_minmax(280px,0.75fr)] lg:items-start">
+          <section className="min-w-0 rounded-[10px] bg-zinc-900 p-4 text-zinc-100 sm:p-5" data-testid="deployment-log-panel">
+            <div className="mb-4 flex items-end justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold tracking-tight">Log events</h2>
+                <p className="text-sm text-zinc-400">{events.length} event(s){lastEventId !== null ? ` · last event ID: ${lastEventId}` : ""}</p>
+              </div>
+              <span className="hidden font-mono text-[11px] uppercase tracking-wider text-zinc-500 sm:block">Live evidence</span>
+            </div>
+            <DeploymentLogInspector events={events} variant="terminal" />
+          </section>
+
+          <Card className="rounded-[10px] border border-zinc-200 bg-zinc-50 py-0" data-testid="deployment-evidence-summary">
+          <CardHeader className="px-5 pt-5">
             <CardTitle>Deployment evidence</CardTitle>
             <CardDescription>Snapshot of the metadata captured for this deployment so the operator can audit what ran.</CardDescription>
           </CardHeader>
-          <CardContent className="flex flex-col gap-4">
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <CardContent className="flex flex-col gap-4 px-5 pb-5">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
               <EvidenceField label="Status">
                 <Badge variant={statusVariant(deployment.status)}>{deployment.status}</Badge>
               </EvidenceField>
@@ -171,20 +183,9 @@ export default async function DeploymentLogsPage({ params }: { params: Promise<{
                 <Button variant="outline" data-testid="cta-view-all-deployments">View all deployments</Button>
               </Link>
             </div>
-          </CardContent>
+           </CardContent>
         </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Log events</CardTitle>
-            <CardDescription>
-              {events.length} event(s){lastEventId !== null ? ` · last event ID: ${lastEventId}` : ""}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <DeploymentLogInspector events={events} />
-          </CardContent>
-        </Card>
+        </div>
       </div>
     </AppShell>
   );

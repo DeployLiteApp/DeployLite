@@ -128,16 +128,16 @@ export function DeploymentStopControl({ deployment, role, apiBaseUrl, fetchImpl 
 
   return <div className="flex flex-col gap-3" data-testid="deployment-stop-control">
     <Dialog open={open} onOpenChange={(next) => { if (!pending) setOpen(next); }}>
-      <DialogTrigger render={<Button type="button" variant="destructive" data-testid="deployment-stop-trigger">Stop deployment</Button>} />
-      <DialogContent aria-busy={pending}>
+      <DialogTrigger render={<Button type="button" variant="outline" className="border-destructive/40 text-destructive hover:bg-destructive/10" data-testid="deployment-stop-trigger">Stop deployment</Button>} />
+      <DialogContent aria-busy={pending} className="max-h-[calc(100dvh-2rem)] overscroll-contain overflow-y-auto sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Stop deployment?</DialogTitle>
           <DialogDescription>This requests an authenticated stop for deployment {deployment.id}. The status changes only after the server confirms stop evidence.</DialogDescription>
         </DialogHeader>
         {pending ? <p role="status" aria-live="polite">Stopping deployment. The action is disabled until the server responds.</p> : null}
-        <DialogFooter>
-          <DialogClose render={<Button type="button" variant="outline" disabled={pending}>Cancel</Button>} />
-          <Button type="button" variant="destructive" onClick={() => void onConfirm()} disabled={pending} data-testid="deployment-stop-confirm">{pending ? "Stopping deployment…" : "Confirm stop deployment"}</Button>
+        <DialogFooter className="sm:flex-row">
+          <DialogClose render={<Button className="w-full sm:w-auto" type="button" variant="outline" disabled={pending}>Cancel</Button>} />
+          <Button className="w-full sm:w-auto" type="button" variant="destructive" onClick={() => void onConfirm()} disabled={pending} data-testid="deployment-stop-confirm">{pending ? "Stopping deployment…" : "Confirm stop deployment"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
