@@ -55,4 +55,8 @@ describe("deployment metadata persistence mapping", () => {
   it("returns log events ordered by sequence", () => {
     expect(toOrderedLogEvents([logRow(3), logRow(1), logRow(2)]).map((event) => event.sequence)).toEqual([1, 2, 3]);
   });
+
+  it("reconstitutes the stop target while retaining unrelated metadata in the row", () => {
+    expect(toDeployment(deploymentRow({ metadata: { owner: "keep", stopTarget: { candidateId: "candidate-1", effectiveImage: `registry.example.com/team/app@sha256:${"a".repeat(64)}` } } }))).toMatchObject({ stopTarget: { candidateId: "candidate-1" } });
+  });
 });

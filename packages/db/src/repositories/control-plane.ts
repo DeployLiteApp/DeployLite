@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull, lte } from "drizzle-orm";
+import { and, eq, gt, isNull, lte, or } from "drizzle-orm";
 import type { ConfirmedDeploymentStopInput, ConfirmedDeploymentStopOutcome, ConfirmedProjectDeleteInput, ConfirmedProjectDeleteOutcome, ControlCommand, ControlCommandRepository, ControlConfirmation, ControlConfirmationRepository, ControlDeleteRepository, ControlGrant, ControlGrantRepository, ConfirmationOutcome, ControlStopRepository } from "@deploylite/domain";
 import { IdempotencyConflictError, scopeKey } from "@deploylite/domain";
 
@@ -98,7 +98,8 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
         await tx.insert(controlCommandAudits).values({ commandId: command.id, confirmationId: confirmation.id, correlationId: command.correlationId, outcome: "rejected", reason: "invalid_action" });
         return { command: toCommand(current), accepted: false, reason: "invalid_action", result: null, alreadyCompleted: false };
       }
-      if (current.status === "completed") return { command: toCommand(current), accepted: true, reason: null, result: current.result as ConfirmedDeploymentStopOutcome["result"], alreadyCompleted: true };
+       if (current.status === "completed") return { command: toCommand(current), accepted: true, reason: null, result: current.result as ConfirmedDeploymentStopOutcome["result"], alreadyCompleted: true };
+       if (current.status === "dispatching") return { command: toCommand(current), accepted: true, reason: null, result: current.result as ConfirmedDeploymentStopOutcome["result"], alreadyCompleted: false };
       if (current.status === "rejected") return { command: toCommand(current), accepted: false, reason: "command_rejected", result: stopResult(command, "rejected"), alreadyCompleted: false };
       const [consumed] = await tx.update(controlCommandConfirmations).set({ consumedAt: now }).where(and(eq(controlCommandConfirmations.id, confirmation.id), eq(controlCommandConfirmations.commandId, command.id), eq(controlCommandConfirmations.actorUserId, command.actorId), eq(controlCommandConfirmations.action, command.action), eq(controlCommandConfirmations.scopeKind, command.scope.kind), eq(controlCommandConfirmations.scopeKey, scopeKey(command.scope)), eq(controlCommandConfirmations.inputDigest, command.inputDigest), eq(controlCommandConfirmations.classification, "destructive"), isNull(controlCommandConfirmations.consumedAt), gt(controlCommandConfirmations.expiresAt, now), lte(controlCommandConfirmations.expiresAt, current.expiresAt))).returning();
       if (!consumed) {
@@ -113,9 +114,17 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
     });
   }
 
+  async claimDeploymentStop(command: ControlCommand) {
+    const [claimed] = await this.db.update(controlCommands).set({ status: "dispatching", updatedAt: new Date() }).where(and(eq(controlCommands.id, command.id), eq(controlCommands.status, "eligible"))).returning();
+    if (claimed) return { command: toCommand(claimed), claimed: true };
+    const [current] = await this.db.select().from(controlCommands).where(eq(controlCommands.id, command.id)).limit(1);
+    if (!current) throw new Error("Control command was not found");
+    return { command: toCommand(current), claimed: false };
+  }
+
   async completeDeploymentStop(command: ControlCommand, result: Parameters<ControlStopRepository["completeDeploymentStop"]>[1]): Promise<ControlCommand> {
     if (result.commandId !== command.id || result.action !== "deployment.stop" || result.correlationId !== command.correlationId || command.scope.kind !== "deployment" || result.projectId !== command.scope.projectId || result.deploymentId !== command.scope.deploymentId || result.status !== "completed") throw new Error("Deployment stop result does not match command");
-    const [completed] = await this.db.update(controlCommands).set({ status: "completed", result, updatedAt: new Date() }).where(and(eq(controlCommands.id, command.id), eq(controlCommands.status, "eligible"))).returning();
+    const [completed] = await this.db.update(controlCommands).set({ status: "completed", result, updatedAt: new Date() }).where(and(eq(controlCommands.id, command.id), or(eq(controlCommands.status, "eligible"), eq(controlCommands.status, "dispatching")))).returning();
     if (completed) return toCommand(completed);
     const [current] = await this.db.select().from(controlCommands).where(eq(controlCommands.id, command.id)).limit(1);
     if (!current) throw new Error("Control command was not found");

@@ -66,6 +66,7 @@ export type ControlDeleteRepository = ControlCommandRepository & ControlConfirma
 };
 export type ControlStopRepository = ControlCommandRepository & ControlConfirmationRepository & {
   executeConfirmedDeploymentStop(input: ConfirmedDeploymentStopInput): Promise<ConfirmedDeploymentStopOutcome>;
+  claimDeploymentStop(command: ControlCommand): Promise<{ command: ControlCommand; claimed: boolean }>;
   completeDeploymentStop(command: ControlCommand, result: DeploymentStopCommandResult): Promise<ControlCommand>;
 };
 
