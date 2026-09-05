@@ -1,0 +1,10 @@
+import { describe, expect, it } from "vitest";
+import { agentExecutionCommandSchema, agentExecutionReceiptSchema } from "./agent-transport.js";
+
+const command = { agentId: "agent", commandId: "cmd", deploymentId: "execution", projectId: "project", snapshot: {}, snapshotHash: "a".repeat(64), requiredCapabilities: ["deploy.execute"], lease: { leaseId: "lease", deploymentId: "execution", fence: 1, expiresAt: 10 }, context: { requestId: "request", correlationId: "correlation" }, timeoutMs: 1000, cancellationRequested: false };
+const receipt = { commandId: "cmd", deploymentId: "execution", terminalStatus: "succeeded" as const, health: "passed" as const, redacted: true as const, correlationId: "correlation", receipt: { deploymentId: "execution", effectiveImage: `registry.example/app@sha256:${"a".repeat(64)}`, runtimePort: 3000, health: "passed" as const, terminalStatus: "succeeded" as const, rollback: { target: null, result: "not-required" as const }, proven: true as const } };
+
+describe("agent transport wire versions", () => {
+  it("keeps v1 unchanged and requires v2 for source identity", () => { const { sourceDeploymentId: _ignored, ...v1 } = { ...command, sourceDeploymentId: "source" }; expect(agentExecutionCommandSchema.parse({ ...v1, schemaVersion: 1 })).not.toHaveProperty("sourceDeploymentId"); expect(agentExecutionCommandSchema.parse({ ...v1, schemaVersion: 2, sourceDeploymentId: "source" })).toHaveProperty("sourceDeploymentId", "source"); expect(() => agentExecutionCommandSchema.parse({ ...v1, schemaVersion: 1, sourceDeploymentId: "source" })).toThrow(); });
+  it("rejects unknown receipt versions and accepts both negotiated versions", () => { expect(agentExecutionReceiptSchema.parse({ ...receipt, schemaVersion: 1 })).toHaveProperty("schemaVersion", 1); expect(agentExecutionReceiptSchema.parse({ ...receipt, schemaVersion: 2, sourceDeploymentId: "source", snapshotHash: "a".repeat(64) })).toHaveProperty("schemaVersion", 2); expect(() => agentExecutionReceiptSchema.parse({ ...receipt, schemaVersion: 3 })).toThrow(); });
+});

@@ -74,6 +74,7 @@ export type ControlStopRepository = ControlCommandRepository & ControlConfirmati
 export type ControlRedeployRepository = ControlCommandRepository & ControlConfirmationRepository & {
   findByIdempotency(actorId: string, idempotencyKey: string): Promise<ControlCommand | null>;
   executeConfirmedDeploymentRedeploy(input: ConfirmedDeploymentRedeployInput): Promise<ConfirmedDeploymentRedeployOutcome>;
+  claimDeploymentRedeploy(command: ControlCommand): Promise<{ command: ControlCommand; claimed: boolean; deployment: Deployment | null }>;
   completeDeploymentRedeploy(command: ControlCommand, result: DeploymentRedeployCommandResult): Promise<ControlCommand>;
 };
 

@@ -4,6 +4,7 @@ import { IdempotencyConflictError, scopeKey } from "@deploylite/domain";
 
 import type { DeployLiteDb } from "../client.js";
 import { auditEvents, controlCommandAudits, controlCommandConfirmations, controlCommands, controlGrants, deployments, projects, type ControlCommandRow, type ControlGrantRow } from "../schema.js";
+import { toDeployment } from "./deployment-data.js";
 
 export class DbControlGrantRepository implements ControlGrantRepository {
   constructor(private readonly db: DeployLiteDb) {}
@@ -141,22 +142,26 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
       const [current] = await tx.select().from(controlCommands).where(eq(controlCommands.id, command.id)).limit(1);
       if (!current) throw new Error("Control command was not found");
       if (current.status === "completed") return { command: toCommand(current), accepted: true, reason: null, result: current.result as ConfirmedDeploymentRedeployOutcome["result"], deployment: null, alreadyCompleted: true };
+      if (current.status === "eligible" || current.status === "dispatching") return { command: toCommand(current), accepted: true, reason: null, result: current.result as ConfirmedDeploymentRedeployOutcome["result"], deployment, alreadyCompleted: false };
       if (current.status !== "pending_confirmation") return { command: toCommand(current), accepted: false, reason: "command_not_pending", result: redeployResult(command, "rejected", null, snapshotHash, "command_not_pending"), deployment: null, alreadyCompleted: false };
       const [consumed] = await tx.update(controlCommandConfirmations).set({ consumedAt: now }).where(and(eq(controlCommandConfirmations.id, confirmation.id), eq(controlCommandConfirmations.commandId, command.id), eq(controlCommandConfirmations.actorUserId, command.actorId), eq(controlCommandConfirmations.action, "deployment.redeploy"), eq(controlCommandConfirmations.scopeKind, command.scope.kind), eq(controlCommandConfirmations.scopeKey, scopeKey(command.scope)), eq(controlCommandConfirmations.inputDigest, command.inputDigest), eq(controlCommandConfirmations.classification, "destructive"), isNull(controlCommandConfirmations.consumedAt), gt(controlCommandConfirmations.expiresAt, now), lte(controlCommandConfirmations.expiresAt, current.expiresAt))).returning();
-      if (!consumed) { await tx.update(controlCommands).set({ status: "rejected", updatedAt: now }).where(and(eq(controlCommands.id, command.id), eq(controlCommands.status, "pending_confirmation"))); await tx.insert(controlCommandAudits).values({ commandId: command.id, confirmationId: confirmation.id, correlationId: command.correlationId, outcome: "rejected", reason: "confirmation_rejected" }); return { command: toCommand(current), accepted: false, reason: "confirmation_rejected", result: redeployResult(command, "rejected", null, snapshotHash), deployment: null, alreadyCompleted: false }; }
+      if (!consumed) { const [rejected] = await tx.update(controlCommands).set({ status: "rejected", updatedAt: now, result: redeployResult(command, "rejected", null, snapshotHash) }).where(and(eq(controlCommands.id, command.id), eq(controlCommands.status, "pending_confirmation"))).returning(); await tx.insert(controlCommandAudits).values({ commandId: command.id, confirmationId: confirmation.id, correlationId: command.correlationId, outcome: "rejected", reason: "confirmation_rejected" }); return { command: toCommand(rejected ?? current), accepted: false, reason: "confirmation_rejected", result: redeployResult(command, "rejected", null, snapshotHash), deployment: null, alreadyCompleted: false }; }
       await tx.insert(deployments).values({ id: deployment.id, projectId: deployment.projectId, agentId: deployment.agentId, status: deployment.status, commitSha: deployment.commitSha, snapshotHash, startedAt: new Date(deployment.startedAt), finishedAt: null, metadata: { sourceDeploymentId: deployment.sourceDeploymentId } });
       await this.fault("redeploy-deployment-inserted");
-      const result = redeployResult(command, "completed", deployment.id, snapshotHash);
-      const [completed] = await tx.update(controlCommands).set({ status: "completed", result, updatedAt: now }).where(and(eq(controlCommands.id, command.id), eq(controlCommands.status, "pending_confirmation"))).returning();
-      if (!completed) throw new Error("Control command was not pending");
-      await tx.insert(controlCommandAudits).values({ commandId: command.id, confirmationId: confirmation.id, correlationId: command.correlationId, outcome: "completed", reason: null });
-      await tx.insert(auditEvents).values({ actorUserId: command.actorId, action: "deployment.redeploy.completed", targetType: "deployment", targetId: deployment.id, requestId, correlationId: command.correlationId, metadata: { projectId: deployment.projectId, sourceDeploymentId: deployment.sourceDeploymentId, snapshotHash } });
-      return { command: toCommand(completed), accepted: true, reason: null, result, deployment, alreadyCompleted: false };
+      const result = redeployResult(command, "eligible", deployment.id, snapshotHash);
+      const [eligible] = await tx.update(controlCommands).set({ status: "eligible", result, updatedAt: now }).where(and(eq(controlCommands.id, command.id), eq(controlCommands.status, "pending_confirmation"))).returning();
+      if (!eligible) throw new Error("Control command was not pending");
+      await tx.insert(controlCommandAudits).values({ commandId: command.id, confirmationId: confirmation.id, correlationId: command.correlationId, outcome: "accepted", reason: null });
+      return { command: toCommand(eligible), accepted: true, reason: null, result, deployment, alreadyCompleted: false };
     });
   }
 
+  async claimDeploymentRedeploy(command: ControlCommand) { const [claimed] = await this.db.update(controlCommands).set({ status: "dispatching", updatedAt: new Date() }).where(and(eq(controlCommands.id, command.id), eq(controlCommands.status, "eligible"))).returning(); const row = claimed ?? (await this.db.select().from(controlCommands).where(eq(controlCommands.id, command.id)).limit(1))[0]; if (!row) throw new Error("Control command was not found"); const id = (row.result as { deploymentId?: string } | null)?.deploymentId; const deployment = id ? (await this.db.select().from(deployments).where(eq(deployments.id, id)).limit(1))[0] ?? null : null; return { command: toCommand(row), claimed: Boolean(claimed), deployment: deployment ? toDeployment(deployment) : null }; }
+
   async completeDeploymentRedeploy(command: ControlCommand, result: import("@deploylite/contracts").DeploymentRedeployCommandResult): Promise<ControlCommand> {
-    if (result.commandId !== command.id || result.action !== "deployment.redeploy" || result.correlationId !== command.correlationId) throw new Error("Deployment redeploy result does not match command");
+    if (result.commandId !== command.id || result.action !== "deployment.redeploy" || result.correlationId !== command.correlationId || result.status !== "completed" || command.scope.kind !== "deployment" || result.projectId !== command.scope.projectId || result.sourceDeploymentId !== command.scope.deploymentId) throw new Error("Deployment redeploy result does not match command");
+    const expected = command.result;
+    if (!expected || expected.action !== "deployment.redeploy" || expected.status !== "eligible" || expected.projectId !== result.projectId || expected.sourceDeploymentId !== result.sourceDeploymentId || expected.deploymentId === null || expected.deploymentId !== result.deploymentId || expected.snapshotHash !== result.snapshotHash) throw new Error("Deployment redeploy result does not match persisted command");
     const [completed] = await this.db.update(controlCommands).set({ status: "completed", result, updatedAt: new Date() }).where(and(eq(controlCommands.id, command.id), or(eq(controlCommands.status, "eligible"), eq(controlCommands.status, "dispatching")))).returning();
     if (completed) return toCommand(completed); const [current] = await this.db.select().from(controlCommands).where(eq(controlCommands.id, command.id)).limit(1); if (!current) throw new Error("Control command was not found"); return toCommand(current);
   }

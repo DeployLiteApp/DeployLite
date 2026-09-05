@@ -1,14 +1,14 @@
 import { z } from "zod";
 const id = z.string().min(1).max(256);
+export const agentCapabilityHandshakeSchema = z.object({ schemaVersion: z.literal(1), agentId: id, capabilities: z.array(id).max(32), protocolVersions: z.array(z.union([z.literal(1), z.literal(2)])).min(1).max(4) }).strict();
+export type AgentCapabilityHandshake = z.infer<typeof agentCapabilityHandshakeSchema>;
 const requestContextSchema = z.object({ requestId: id, correlationId: id });
 const leaseSchema = z.object({ leaseId: id, deploymentId: id, fence: z.number().int().positive(), expiresAt: z.number().finite() }).strict();
 
-export const agentExecutionCommandSchema = z.object({
-  schemaVersion: z.literal(1), agentId: id, commandId: id, deploymentId: id, projectId: id, snapshot: z.record(z.unknown()),
-  snapshotHash: z.string().regex(/^[a-f0-9]{64}$/), requiredCapabilities: z.array(z.string().min(1).max(128)).max(8),
-  lease: leaseSchema,
-  context: requestContextSchema, timeoutMs: z.number().int().positive().max(300_000), cancellationRequested: z.boolean()
-}).strict();
+const agentExecutionFields = { agentId: id, commandId: id, deploymentId: id, projectId: id, snapshot: z.record(z.unknown()), snapshotHash: z.string().regex(/^[a-f0-9]{64}$/), requiredCapabilities: z.array(z.string().min(1).max(128)).max(8), lease: leaseSchema, context: requestContextSchema, timeoutMs: z.number().int().positive().max(300_000), cancellationRequested: z.boolean() };
+const agentExecutionCommandV1Schema = z.object({ schemaVersion: z.literal(1), ...agentExecutionFields }).strict();
+const agentExecutionCommandV2Schema = z.object({ schemaVersion: z.literal(2), ...agentExecutionFields, sourceDeploymentId: id }).strict();
+export const agentExecutionCommandSchema = z.union([agentExecutionCommandV1Schema, agentExecutionCommandV2Schema]);
 export type AgentExecutionCommand = z.infer<typeof agentExecutionCommandSchema>;
 
 const digestImage = z.string().min(1).max(1024).regex(/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[0-9a-f]{64}$/);
@@ -24,7 +24,10 @@ export const dockerImageExecutionReceiptSchema = z.object({
   if (receipt.rollback.result === "not-required" && receipt.rollback.target !== null) context.addIssue({ code: z.ZodIssueCode.custom, message: "not-required rollback cannot have a target" });
 });
 export type DockerImageExecutionReceipt = z.infer<typeof dockerImageExecutionReceiptSchema>;
-export const agentExecutionReceiptSchema = z.object({ schemaVersion: z.literal(1), commandId: id, deploymentId: id, terminalStatus: z.enum(["succeeded", "failed", "canceled"]), health: z.enum(["passed", "failed"]), redacted: z.literal(true), receipt: dockerImageExecutionReceiptSchema }).strict();
+const agentExecutionReceiptFields = { commandId: id, deploymentId: id, terminalStatus: z.enum(["succeeded", "failed", "canceled"]), health: z.enum(["passed", "failed"]), redacted: z.literal(true), receipt: dockerImageExecutionReceiptSchema };
+const agentExecutionReceiptV1Schema = z.object({ schemaVersion: z.literal(1), ...agentExecutionReceiptFields, correlationId: id.optional() }).strict();
+const agentExecutionReceiptV2Schema = z.object({ schemaVersion: z.literal(2), ...agentExecutionReceiptFields, correlationId: id, sourceDeploymentId: id, snapshotHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+export const agentExecutionReceiptSchema = z.union([agentExecutionReceiptV1Schema, agentExecutionReceiptV2Schema]);
 export type AgentExecutionReceipt = z.infer<typeof agentExecutionReceiptSchema>;
 
 export const deploymentStopAgentCommandSchema = z.object({
