@@ -13,6 +13,7 @@ vi.mock("next/headers", () => ({
 }));
 
 vi.mock("next/navigation", () => ({
+  usePathname: () => "/projects",
   useRouter: () => ({ refresh: vi.fn(), push: vi.fn() })
 }));
 

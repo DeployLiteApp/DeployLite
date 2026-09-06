@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import DeploymentsPage from "./page.js";
 import { loadRequestAuthSession, loadRequestDashboardMetadata } from "@/lib/server-auth";
 vi.mock("@/lib/server-auth", () => ({ loadRequestAuthSession: vi.fn(), loadRequestDashboardMetadata: vi.fn() }));
-vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }) }));
+vi.mock("next/navigation", () => ({ usePathname: () => "/deployments", useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }) }));
 const authenticated = { kind: "authenticated" as const, user: { id: "user-1", email: "admin@example.test", role: "admin" as const, status: "active" as const } };
 const deployment = { id: "dep-1", projectId: "project-1", agentId: "agent-1", status: "running" as const, commitSha: "abcdef1", startedAt: "2026-01-01T00:00:00.000Z", finishedAt: null };
 beforeEach(() => { vi.mocked(loadRequestAuthSession).mockReset(); vi.mocked(loadRequestDashboardMetadata).mockReset(); });
