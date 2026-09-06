@@ -1,9 +1,9 @@
 import Link from "next/link";
 import { loadRequestAuthSession, loadRequestDashboardMetadata } from "@/lib/server-auth";
 import { AppShell } from "@/components/app-shell";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ProjectsBrowserList } from "./projects-browser-list";
 import { ProjectLaunchList } from "./project-launch-list";
 import { orderProjectLaunchSummaries, summarizeProjectLaunch } from "./project-launch-hub";
 
@@ -46,27 +46,19 @@ export default async function ProjectsPage() {
   const { projects, deployments } = metadata.data;
   const launchHubRows = orderProjectLaunchSummaries(projects.map((project) => summarizeProjectLaunch(project, deployments)));
   const readyCount = launchHubRows.filter((row) => row.nextAction.ctaKey === "inspect-latest-logs").length;
-
   return (
     <AppShell email={auth.user.email}>
-      <div className="flex flex-col gap-6">
-        <div className="flex items-center justify-between">
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-2">
-              <h1 className="text-2xl font-semibold tracking-tight">Projects</h1>
-              <Badge variant="secondary" data-testid="projects-launch-hub-badge">Launch hub</Badge>
-            </div>
-            <p className="text-sm text-muted-foreground">
-              Review each project&apos;s runtime readiness, latest deployment status, and jump to the next action to keep launches moving.
-            </p>
+      <div className="mx-auto flex max-w-[1132px] flex-col gap-[20.5px] md:gap-[18px]">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="mt-0 text-[27px] font-bold leading-8 tracking-[-0.03em] md:mt-1.5 md:text-[28px] md:leading-9">Projects</h1>
+            <p className="mt-1 text-[13px] text-muted-foreground md:hidden">Tus servicios</p>
           </div>
-          <Link href="/projects/new">
-            <Button>New project</Button>
-          </Link>
+          <Link href="/projects/new"><Button className="h-9 w-[118px] justify-center rounded-md bg-[#2563eb] px-0 text-xs text-white hover:bg-[#1d4ed8]">+ Nuevo proyecto</Button></Link>
         </div>
 
         {projects.length === 0 ? (
-          <Card>
+          <Card data-testid="projects-browser-empty">
             <CardHeader>
               <CardTitle>No projects yet</CardTitle>
               <CardDescription>Create your first project to start the deploy flow.</CardDescription>
@@ -78,24 +70,7 @@ export default async function ProjectsPage() {
             </CardContent>
           </Card>
         ) : (
-          <Card>
-            <CardHeader>
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <CardTitle>All projects</CardTitle>
-                  <CardDescription>
-                    {projects.length} configured · {readyCount} with a latest deployment to inspect
-                  </CardDescription>
-                </div>
-                <Badge variant="outline" data-testid="projects-launch-hub-summary">
-                  {readyCount}/{projects.length} launchable
-                </Badge>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <ProjectLaunchList rows={launchHubRows} />
-            </CardContent>
-          </Card>
+          <><ProjectsBrowserList rows={launchHubRows} /><details className="sr-only"><summary>Deployment readiness details</summary><span data-testid="projects-launch-hub-badge">Launch hub</span><span>All projects</span><span data-testid="projects-launch-hub-summary">{readyCount}/{projects.length} launchable</span><ProjectLaunchList rows={launchHubRows} /></details></>
         )}
       </div>
     </AppShell>
