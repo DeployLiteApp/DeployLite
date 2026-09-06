@@ -49,6 +49,7 @@ export default async function DeploymentsPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Deployments</h1>
           <p className="text-sm text-muted-foreground">All deployment records on this control plane.</p>
+          <Link href="/deployments/new" className="mt-4 inline-flex h-9 items-center rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground">New deployment</Link>
         </div>
         {deployments.length === 0 ? (
           <Card>
