@@ -14,5 +14,7 @@ describe("AppShell", () => {
     expect(screen.getByRole("navigation", { name: "Mobile bottom navigation" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
     expect(screen.getByText("admin@example.test").className).toContain("truncate");
+    expect(screen.getByRole("searchbox", { name: "Search projects" }).getAttribute("name")).toBe("query");
+    expect(screen.getByRole("link", { name: "New" }).getAttribute("href")).toBe("/projects/new");
   });
 });

@@ -6,10 +6,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { ProjectsBrowserList } from "./projects-browser-list";
 import { ProjectLaunchList } from "./project-launch-list";
 import { orderProjectLaunchSummaries, summarizeProjectLaunch } from "./project-launch-hub";
+import { filterProjectLaunchSummaries } from "./project-list-filters";
 
 export const dynamic = "force-dynamic";
 
-export default async function ProjectsPage() {
+type ProjectsPageProps = { searchParams?: Promise<{ query?: string | string[] }> };
+
+export default async function ProjectsPage({ searchParams }: ProjectsPageProps) {
   const auth = await loadRequestAuthSession();
   if (auth.kind !== "authenticated") {
     return (
@@ -44,7 +47,10 @@ export default async function ProjectsPage() {
   }
 
   const { projects, deployments } = metadata.data;
-  const launchHubRows = orderProjectLaunchSummaries(projects.map((project) => summarizeProjectLaunch(project, deployments)));
+  const queryValue = (await searchParams)?.query;
+  const query = Array.isArray(queryValue) ? queryValue[0] ?? "" : queryValue ?? "";
+  const allRows = orderProjectLaunchSummaries(projects.map((project) => summarizeProjectLaunch(project, deployments)));
+  const launchHubRows = filterProjectLaunchSummaries(allRows, { query, status: "all", runtime: "all" });
   const readyCount = launchHubRows.filter((row) => row.nextAction.ctaKey === "inspect-latest-logs").length;
   return (
     <AppShell email={auth.user.email}>

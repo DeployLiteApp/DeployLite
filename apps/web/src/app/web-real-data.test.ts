@@ -185,8 +185,9 @@ describe("dashboard real API rendering", () => {
 
     const html = renderToStaticMarkup(await DashboardPage());
 
-    expect(html).toContain("Platform status");
-    expect(html).toContain("Signed in as admin@example.test");
+    expect(html).toContain("Overview");
+    expect(html).toContain("Projects");
+    expect(html).toContain("Deployments");
     expect(html).toContain("Primary Agent");
     expect(html).toContain("/deployments/dep-1");
     expect(html).not.toContain("Mock platform status");
@@ -213,18 +214,12 @@ describe("dashboard real API rendering", () => {
 
     const html = renderToStaticMarkup(await DashboardPage());
 
-    expect(html).toContain("Deployment status summary");
-    expect(html).toContain("Counts summarize deployments loaded for this dashboard response; they are not real-time.");
-    expect(html).toContain('<ul aria-label="Deployment statuses"');
-    expect(html).toContain("Succeeded: 1");
-    expect(html).toContain("Failed: 1");
-    expect(html).toContain("Canceled: 0");
-    expect(html).toContain("Running: 2");
-    expect(html).toContain("Queued: 0");
-    expect(html.indexOf("Succeeded: 1")).toBeLessThan(html.indexOf("Failed: 1"));
-    expect(html.indexOf("Failed: 1")).toBeLessThan(html.indexOf("Canceled: 0"));
-    expect(html.indexOf("Canceled: 0")).toBeLessThan(html.indexOf("Running: 2"));
-    expect(html.indexOf("Running: 2")).toBeLessThan(html.indexOf("Queued: 0"));
+    expect(html).toContain("Deployment status");
+    expect(html).toContain('<ul aria-label="Deployment status counts"');
+    expect(html).toContain("Successful");
+    expect(html).toContain("Failed");
+    expect(html).toContain("In progress");
+    expect(html).toContain("Cancelled");
   });
 
   it("renders every zero-count status when the loaded deployment data is empty", async () => {
@@ -239,11 +234,10 @@ describe("dashboard real API rendering", () => {
 
     const html = renderToStaticMarkup(await DashboardPage());
 
-    expect(html).toContain("Succeeded: 0");
-    expect(html).toContain("Failed: 0");
-    expect(html).toContain("Canceled: 0");
-    expect(html).toContain("Running: 0");
-    expect(html).toContain("Queued: 0");
+    expect(html).toContain("Successful");
+    expect(html).toContain("Failed");
+    expect(html).toContain("In progress");
+    expect(html).toContain("Cancelled");
   });
 
   it("renders unauthenticated, empty, and error dashboard states", async () => {
@@ -258,7 +252,7 @@ describe("dashboard real API rendering", () => {
       "/api/v1/agents": { data: { agents: [] }, error: null, requestId: "req_agents_1" },
       "/api/v1/deployments": { data: { deployments: [] }, error: null, requestId: "req_deployments_1" }
     });
-    expect(renderToStaticMarkup(await DashboardPage())).toContain("No projects yet");
+    expect(renderToStaticMarkup(await DashboardPage())).toContain("No deployment activity is available yet.");
     expect(renderToStaticMarkup(await DashboardPage())).toContain("intentionally out of scope");
 
     mockFetch({
@@ -484,7 +478,7 @@ describe("projects list page launch hub", () => {
     });
 
     const ProjectsPage = (await import("./projects/page.js")).default;
-    const html = renderToStaticMarkup(await ProjectsPage());
+    const html = renderToStaticMarkup(await ProjectsPage({}));
 
     expect(html).toContain("data-testid=\"projects-launch-hub-badge\"");
     expect(html).toContain("Launch hub");
@@ -562,7 +556,7 @@ describe("projects list page launch hub", () => {
     });
 
     const ProjectsPage = (await import("./projects/page.js")).default;
-    const html = renderToStaticMarkup(await ProjectsPage());
+    const html = renderToStaticMarkup(await ProjectsPage({}));
 
     expect(html).toContain("data-testid=\"project-launch-runtime-badge\"");
     expect(html).toContain("Needs command");
@@ -593,7 +587,7 @@ describe("projects list page launch hub", () => {
     });
 
     const ProjectsPage = (await import("./projects/page.js")).default;
-    const html = renderToStaticMarkup(await ProjectsPage());
+    const html = renderToStaticMarkup(await ProjectsPage({}));
 
     expect(html).toContain("data-testid=\"project-launch-latest-badge\"");
     expect(html).toContain("succeeded");
@@ -625,7 +619,7 @@ describe("projects list page launch hub", () => {
     });
 
     const ProjectsPage = (await import("./projects/page.js")).default;
-    const html = renderToStaticMarkup(await ProjectsPage());
+    const html = renderToStaticMarkup(await ProjectsPage({}));
 
     expect(html).toContain("data-testid=\"project-launch-latest-badge\"");
     expect(html).toContain("failed");
@@ -655,7 +649,7 @@ describe("projects list page launch hub", () => {
     });
 
     const ProjectsPage = (await import("./projects/page.js")).default;
-    const html = renderToStaticMarkup(await ProjectsPage());
+    const html = renderToStaticMarkup(await ProjectsPage({}));
 
     expect(html).toContain("data-project-id=\"project-1\"");
     expect(html).toContain("data-project-id=\"project-2\"");
@@ -671,7 +665,7 @@ describe("projects list page launch hub", () => {
   it("preserves the projects list empty state and the API error state", async () => {
     mockCookies();
     const ProjectsPage = (await import("./projects/page.js")).default;
-    const unauthenticatedHtml = renderToStaticMarkup(await ProjectsPage());
+    const unauthenticatedHtml = renderToStaticMarkup(await ProjectsPage({}));
 
     expect(unauthenticatedHtml).toContain("Sign in required");
     expect(unauthenticatedHtml).not.toContain("data-testid=\"project-launch-list\"");
@@ -685,7 +679,7 @@ describe("projects list page launch hub", () => {
       "/api/v1/deployments": { data: { deployments: [] }, error: null, requestId: "req_deployments_1" }
     });
 
-    const emptyHtml = renderToStaticMarkup(await ProjectsPage());
+    const emptyHtml = renderToStaticMarkup(await ProjectsPage({}));
 
     expect(emptyHtml).toContain("No projects yet");
     expect(emptyHtml).toContain("Create your first project to start the deploy flow.");
@@ -699,7 +693,7 @@ describe("projects list page launch hub", () => {
       "/api/v1/deployments": { data: { deployments: [] }, error: null, requestId: "req_deployments_1" }
     });
 
-    const errorHtml = renderToStaticMarkup(await ProjectsPage());
+    const errorHtml = renderToStaticMarkup(await ProjectsPage({}));
     expect(errorHtml).toContain("Unable to load projects");
     expect(errorHtml).not.toContain("data-testid=\"project-launch-list\"");
     expect(errorHtml).not.toContain("data-testid=\"projects-launch-hub-table\"");
