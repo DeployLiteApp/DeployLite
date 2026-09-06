@@ -1,14 +1,13 @@
 import Link from "next/link";
+import { CheckCircle2, CircleAlert, Clock3, XCircle } from "lucide-react";
 import React from "react";
-import { summarizeDeploymentStatuses } from "../../lib/dashboard-deployment-status-summary";
 import { formatBytes } from "../../lib/scaffold-shell";
+import { formatRelativeTime, getDashboardActivity, getDashboardMetrics, summarizeDashboardStatuses } from "./dashboard-view-model";
 import { loadRequestAuthSession, loadRequestDashboardMetadata } from "../../lib/server-auth";
 import { AppShell } from "@/components/app-shell";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
 
 export const dynamic = "force-dynamic";
 
@@ -60,108 +59,80 @@ export default async function DashboardPage() {
   const { agents, deployments, projects } = metadata.data;
   const agent = agents[0];
   const resources = agent?.resourceSnapshot;
-  const latestDeployment = deployments[0];
-  const deploymentStatusSummary = summarizeDeploymentStatuses(deployments);
+  const metrics = getDashboardMetrics(projects, deployments, agents);
+  const activity = getDashboardActivity(deployments, projects);
+  const statusSummary = summarizeDashboardStatuses(deployments);
+  const statusIcons = { succeeded: CheckCircle2, failed: CircleAlert, running: Clock3, queued: Clock3, canceled: XCircle };
 
   return (
-    <AppShell email={auth.user.email}>
-      <div className="flex flex-col gap-6">
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <Badge variant="secondary">cookie-session</Badge>
-              <CardTitle>Platform status</CardTitle>
-            </div>
-            <CardDescription>Signed in as {auth.user.email}. Request {metadata.requestId}.</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3 text-sm text-muted-foreground">
-            <p>Authenticated local metadata from the API. This check does not start Docker, VPS, Dokploy, Traefik, ACME, DNS, domain, or deployment work.</p>
-            <p>Deployment execution, VPS, Dokploy, Docker socket, Traefik, ACME, DNS, and domain work are intentionally out of scope for this local MVP screen. Real Docker execution is deferred; queued/running/succeeded deploys run through a control-plane simulator.</p>
-          </CardContent>
-        </Card>
-
-        <div className="grid gap-4 sm:grid-cols-3">
-          <Card>
-            <CardHeader>
-              <CardTitle>Projects</CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-2">
-              <span className="text-3xl font-semibold tabular-nums">{projects.length}</span>
-              <span className="text-sm text-muted-foreground">
-                {projects[0] ? `Default branch: ${projects[0].defaultBranch}` : "No projects yet"}
-              </span>
-              <Link href="/projects">
-                <Button size="sm" variant="outline">Manage projects</Button>
-              </Link>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle>Agents</CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-2">
-              <span className="text-3xl font-semibold tabular-nums">{agents.length}</span>
-              <span className="text-sm text-muted-foreground">Status: {agent?.status ?? "empty"}</span>
-              <span className="text-sm text-muted-foreground">
-                {agent ? `Name: ${agent.name}` : "Register an agent to enable real deployment execution"}
-              </span>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle>Resources</CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-2">
-              {resources ? (
-                <>
-                  <span className="text-3xl font-semibold tabular-nums">{Math.round(resources.cpuLoad * 100)}% CPU</span>
-                  <span className="text-sm text-muted-foreground tabular-nums">
-                    {formatBytes(resources.memoryUsedBytes)} / {formatBytes(resources.memoryTotalBytes)} memory
-                  </span>
-                </>
-              ) : (
-                <>
-                  <Skeleton className="h-7 w-24" />
-                  <span className="text-sm text-muted-foreground">Waiting for heartbeat</span>
-                </>
-              )}
-            </CardContent>
-          </Card>
+    <AppShell compactMobile email={auth.user.email}>
+      <div className="mx-auto flex w-full flex-col px-1 md:w-[1138px] md:max-w-none md:px-0">
+        <div>
+          <h1 className="text-[28px] font-bold leading-9 tracking-[-0.03em] md:relative md:top-[6px]">Overview</h1>
+          <p className="sr-only">Authenticated platform data · request {metadata.requestId}</p>
+          <p className="sr-only">Signed in as {auth.user.email}. Deployment execution, VPS, Dokploy, Docker socket, Traefik, ACME, DNS, and domain work remain intentionally out of scope for this local MVP screen.</p>
         </div>
 
-        <Card>
-          <CardHeader>
-            <h2 className="font-heading text-base leading-snug font-medium">Deployment status summary</h2>
-            <CardDescription>Counts summarize deployments loaded for this dashboard response; they are not real-time.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ul aria-label="Deployment statuses" className="grid gap-2 sm:grid-cols-5">
-              {deploymentStatusSummary.map(({ status, label, count }) => (
-                <li className="rounded-lg border border-border/60 px-3 py-2 font-medium sm:text-center" key={status}>{label}: {count}</li>
-              ))}
-            </ul>
-          </CardContent>
-        </Card>
+        <section aria-label="Platform metrics" className="mt-[42px] grid grid-cols-[159px_159px] gap-x-3 gap-y-[18px] dark:mt-[45px] md:mt-[11px] md:grid-cols-[repeat(4,258px)] md:gap-6 dark:md:mt-[14px]">
+          {metrics.map(({ label, value }) => <Card className="h-[94px] gap-0 rounded-[8px] border border-[#e4e4e7] bg-white p-4 ring-1 ring-[#e4e4e7] dark:border-[#27272a] dark:bg-[#18181b] dark:ring-[#27272a] md:h-[118px] md:p-5" key={label}>
+            <p className="text-xs text-muted-foreground md:text-sm">{label}</p>
+            <p className="mt-4 text-[28px] font-semibold leading-8 tabular-nums">{value ?? "—"}</p>
+            {value === null ? <p className="sr-only">Not available: environment data is not included in the dashboard API response.</p> : null}
+          </Card>)}
+        </section>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Latest deployment</CardTitle>
-            <CardDescription>Last deployment the API has on record.</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-2 text-sm">
-            {latestDeployment ? (
-              <Link className="font-mono text-primary underline-offset-4 hover:underline" href={`/deployments/${latestDeployment.id}`}>
-                {latestDeployment.id} — {latestDeployment.status}
-              </Link>
-            ) : (
-              <span className="text-muted-foreground">No deployments yet. Create a project to trigger one.</span>
-            )}
-            <Link href="/deployments">
-              <Button size="sm" variant="outline">All deployments</Button>
-            </Link>
-          </CardContent>
-        </Card>
+        <div className="mt-[38px] grid gap-6 md:mt-[30px] md:grid-cols-[650px_460px] md:gap-7">
+          <Card className="min-h-[232px] rounded-[8px] border border-[#e4e4e7] bg-white p-4 ring-1 ring-[#e4e4e7] dark:border-[#27272a] dark:bg-[#18181b] dark:ring-[#27272a] md:h-[402px] md:min-h-0 md:p-6">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-medium">Recent activity</h2>
+              <Link className="text-[13px] font-medium text-primary hover:underline" href="/deployments">View all</Link>
+            </div>
+            {activity.length === 0 ? <p className="mt-10 text-sm text-muted-foreground">No deployment activity is available yet.</p> : <ul className="mt-5" aria-label="Recent deployment activity">
+              {activity.map(({ id, projectName, status, startedAt }, index) => { const Icon = statusIcons[status]; return <li className={`flex min-h-[48px] items-center gap-3 border-b border-[#e4e4e7] last:border-0 dark:border-[#27272a] md:min-h-[61px] md:gap-4 ${index > 2 ? "hidden md:flex" : ""}`} key={id}>
+                <span className="flex size-[30px] shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground"><Icon aria-hidden="true" className="size-4" /></span>
+                <div className="min-w-0 flex-1"><Link className="block truncate text-[13px] font-semibold hover:underline" href={`/deployments/${id}`}>{projectName}</Link><span className="text-xs text-muted-foreground">Deployment {id} · {status}</span></div>
+                <time className="shrink-0 text-xs text-muted-foreground" dateTime={startedAt}>{formatRelativeTime(startedAt)}</time>
+              </li>; })}
+            </ul>}
+          </Card>
+
+          <div className="hidden flex-col gap-[26px] md:flex">
+            <Card className="h-[190px] min-h-0 rounded-[8px] border border-[#e4e4e7] bg-white p-6 ring-1 ring-[#e4e4e7] dark:border-[#27272a] dark:bg-[#18181b] dark:ring-[#27272a]">
+              <h2 className="text-base font-medium">Deployment status</h2>
+              <ul aria-label="Deployment status counts" className="mt-6 grid grid-cols-2 gap-x-6 gap-y-4">
+                {statusSummary.map(({ label, count, tone }) => <li className="flex items-center justify-between text-sm" key={label}><span className="flex items-center gap-2"><span className={`size-2 rounded-full ${tone === "success" ? "bg-emerald-500" : tone === "danger" ? "bg-red-500" : tone === "info" ? "bg-blue-500" : "bg-amber-500"}`} aria-hidden="true" />{label}</span><strong className="tabular-nums">{count}</strong></li>)}
+              </ul>
+            </Card>
+            <Card className="h-[186px] min-h-0 rounded-[8px] border border-[#e4e4e7] bg-white p-6 ring-1 ring-[#e4e4e7] dark:border-[#27272a] dark:bg-[#18181b] dark:ring-[#27272a]">
+              <h2 className="text-base font-medium">Resources</h2>
+              {resources ? <><p className="mt-2 text-xs text-muted-foreground">{agent?.name} · {agent?.status}</p><div className="mt-5 grid grid-cols-3 gap-4 text-xs text-muted-foreground">
+                <ResourceStat label="CPU" value={`${Math.round(resources.cpuLoad * 100)}%`} />
+                <ResourceStat label="Memory" value={`${formatBytes(resources.memoryUsedBytes)} / ${formatBytes(resources.memoryTotalBytes)}`} />
+                <ResourceStat label="Disk" value={`${formatBytes(resources.diskUsedBytes)} / ${formatBytes(resources.diskTotalBytes)}`} />
+              </div></> : <p className="mt-6 text-sm text-muted-foreground">Not available: no agent heartbeat telemetry was provided.</p>}
+            </Card>
+          </div>
+          <details className="rounded-[8px] border border-[#e4e4e7] bg-white ring-1 ring-[#e4e4e7] dark:border-[#27272a] dark:bg-[#18181b] dark:ring-[#27272a] md:hidden">
+            <summary className="cursor-pointer list-none p-4 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563eb]/50">Deployment details</summary>
+            <div className="flex flex-col gap-6 border-t border-[#e4e4e7] p-4 dark:border-[#27272a]">
+              <section aria-label="Deployment status">
+                <h2 className="text-base font-medium">Deployment status</h2>
+                <ul aria-label="Deployment status counts" className="mt-4 grid grid-cols-2 gap-x-6 gap-y-4">
+                  {statusSummary.map(({ label, count, tone }) => <li className="flex items-center justify-between text-sm" key={label}><span className="flex items-center gap-2"><span className={`size-2 rounded-full ${tone === "success" ? "bg-emerald-500" : tone === "danger" ? "bg-red-500" : tone === "info" ? "bg-blue-500" : "bg-amber-500"}`} aria-hidden="true" />{label}</span><strong className="tabular-nums">{count}</strong></li>)}
+                </ul>
+              </section>
+              <section aria-label="Resources">
+                <h2 className="text-base font-medium">Resources</h2>
+                {resources ? <><p className="mt-2 text-xs text-muted-foreground">{agent?.name} · {agent?.status}</p><div className="mt-5 grid grid-cols-3 gap-4 text-xs text-muted-foreground"><ResourceStat label="CPU" value={`${Math.round(resources.cpuLoad * 100)}%`} /><ResourceStat label="Memory" value={`${formatBytes(resources.memoryUsedBytes)} / ${formatBytes(resources.memoryTotalBytes)}`} /><ResourceStat label="Disk" value={`${formatBytes(resources.diskUsedBytes)} / ${formatBytes(resources.diskTotalBytes)}`} /></div></> : <p className="mt-6 text-sm text-muted-foreground">Not available: no agent heartbeat telemetry was provided.</p>}
+              </section>
+            </div>
+          </details>
+        </div>
       </div>
     </AppShell>
   );
+}
+
+function ResourceStat({ label, value }: { label: string; value: string }) {
+  return <div><p>{label}</p><p className="mt-2 font-medium tabular-nums text-foreground">{value}</p></div>;
 }
