@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { trustedPriorExecutionReceiptSchema } from "./deployment-contract/prior-execution-receipt.js";
 
 export const idSchema = z.string().min(1);
 export const isoDateSchema = z.string().datetime({ offset: true });
@@ -260,11 +261,13 @@ export const deploymentSchema = z.object({
   startedAt: isoDateSchema,
   finishedAt: isoDateSchema.nullable(),
   sourceDeploymentId: idSchema.optional(),
+  snapshotOriginId: idSchema.optional(),
   snapshotHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   stopTarget: z.object({
     candidateId: idSchema,
     effectiveImage: z.string().regex(/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[0-9a-f]{64}$/)
-  }).strict().optional()
+  }).strict().optional(),
+  executionReceipt: trustedPriorExecutionReceiptSchema.optional()
 });
 
 export const logEventSchema = requestContextSchema.extend({
@@ -306,6 +309,8 @@ export type {
 } from "./deployment-contract/source-intent.js";
 export { DEPLOYMENT_SNAPSHOT_SCHEMA_VERSION, createDeploymentPlan, createDeploymentSnapshot } from "./deployment-contract/snapshot-plan.js";
 export type { CanonicalHasher, DeploymentPlanStatus, DeploymentPlanStepV1, DeploymentPlanV1, DeploymentSnapshotInputV1, DeploymentSnapshotV1, SecretReferenceV1 } from "./deployment-contract/snapshot-plan.js";
+export { trustedPriorExecutionReceiptSchema } from "./deployment-contract/prior-execution-receipt.js";
+export type { TrustedPriorExecutionReceiptV1 } from "./deployment-contract/prior-execution-receipt.js";
 export * from "./deployment-contract/protocol.js";
 export { assertNoDeploymentEffects } from "./deployment-contract/testing/forbidden-effects.js";
 export type EnvVariableMetadata = z.infer<typeof envVariableMetadataSchema>;
