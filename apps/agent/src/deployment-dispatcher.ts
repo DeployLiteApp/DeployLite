@@ -33,6 +33,7 @@ export class DigestDeploymentDispatcher {
   readonly #trustedHosts: readonly string[];
   readonly #allowedNetworks: readonly string[];
   readonly #networkName: string | undefined;
+  readonly #runtimeConfig: { hostPort: number; containerPort: number; networkName?: string };
   readonly #timeoutMs: number;
 
   constructor(options: DigestDeploymentDispatcherOptions) {
@@ -41,6 +42,7 @@ export class DigestDeploymentDispatcher {
     this.#trustedHosts = options.trustedHosts;
     this.#allowedNetworks = options.allowedNetworks ?? [];
     this.#networkName = options.networkName;
+    this.#runtimeConfig = { hostPort: options.hostPort ?? 3000, containerPort: options.containerPort ?? 3000, ...(options.networkName ? { networkName: options.networkName } : {}) };
     this.#timeoutMs = options.timeoutMs ?? 30_000;
     if (!Number.isFinite(this.#timeoutMs) || this.#timeoutMs <= 0) throw new Error("dispatcher timeout must be positive");
   }
@@ -54,7 +56,7 @@ export class DigestDeploymentDispatcher {
     const lease = suppliedLease ?? this.#protocol.claimLease(snapshot.deploymentId);
     const scoped = scopedSignal(parentSignal, this.#timeoutMs);
     try {
-      return await new DockerImageExecutor({ protocol: this.#protocol, transport: this.#transport!, trustedHosts: this.#trustedHosts, allowedNetworks: this.#allowedNetworks }).execute({ snapshot, commandId, lease, executionDeploymentId: options?.executionDeploymentId, networkName: this.#networkName, signal: scoped.signal });
+      return await new DockerImageExecutor({ protocol: this.#protocol, transport: this.#transport!, trustedHosts: this.#trustedHosts, allowedNetworks: this.#allowedNetworks }).execute({ snapshot, commandId, lease, executionDeploymentId: options?.executionDeploymentId, networkName: this.#networkName, runtimeConfig: this.#runtimeConfig, signal: scoped.signal });
     } finally {
       scoped.dispose();
     }

@@ -12,19 +12,22 @@ const NETWORK = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 export interface DockerImageCandidateV1 { readonly candidateId: string; readonly projectId?: string; readonly deploymentId: string; readonly effectiveImage: string; readonly runtimePort: number; readonly networkName?: string; }
 export interface DockerImageExecutionReceiptV1 {
   readonly deploymentId: string; readonly candidateId?: string; readonly effectiveImage: string; readonly runtimePort: number;
+  readonly runtimeConfig?: { readonly hostPort: number; readonly containerPort: number; readonly networkName?: string };
   readonly health: "passed" | "failed"; readonly terminalStatus: TerminalStatusV1;
   readonly rollback: { readonly target: string | null; readonly result: "not-required" | "restored" | "not-available" };
   readonly proven: boolean;
 }
 export type ProvenDockerImageExecutionReceiptV1 = DockerImageExecutionReceiptV1 & { readonly health: "passed"; readonly terminalStatus: "succeeded"; readonly proven: true };
+export type PriorDockerImageExecutionReceiptV1 = ProvenDockerImageExecutionReceiptV1 & { readonly projectId: string; readonly runtimeConfig?: { readonly hostPort: number; readonly containerPort: number; readonly networkName?: string } };
 export interface DockerImageTransport {
   startCandidate(candidate: DockerImageCandidateV1, signal: AbortSignal): Promise<void>;
   checkHealth(candidate: DockerImageCandidateV1, signal: AbortSignal): Promise<boolean>;
   promoteCandidate(candidate: DockerImageCandidateV1, signal: AbortSignal): Promise<void>;
-  restorePrior(receipt: ProvenDockerImageExecutionReceiptV1, signal: AbortSignal): Promise<void>;
+  promoteCandidate(candidate: DockerImageCandidateV1, prior: PriorDockerImageExecutionReceiptV1 | undefined, signal: AbortSignal): Promise<void>;
+  restorePrior(receipt: PriorDockerImageExecutionReceiptV1, signal: AbortSignal): Promise<void>;
   discardCandidate(candidate: DockerImageCandidateV1, signal: AbortSignal): Promise<void>;
 }
-export interface DockerImageExecutionInputV1 { readonly snapshot: DeploymentSnapshotV1; readonly commandId: string; readonly lease: LeaseV1; readonly executionDeploymentId?: string; readonly networkName?: string; readonly priorProvenReceipt?: ProvenDockerImageExecutionReceiptV1; readonly signal?: AbortSignal; }
+export interface DockerImageExecutionInputV1 { readonly snapshot: DeploymentSnapshotV1; readonly commandId: string; readonly lease: LeaseV1; readonly executionDeploymentId?: string; readonly networkName?: string; readonly runtimeConfig?: { readonly hostPort: number; readonly containerPort: number; readonly networkName?: string }; readonly priorProvenReceipt?: PriorDockerImageExecutionReceiptV1; readonly signal?: AbortSignal; }
 export interface DockerImageExecutorOptions { readonly protocol: InMemoryProtocolTransport; readonly transport: DockerImageTransport; readonly trustedHosts: readonly string[]; readonly allowedNetworks?: readonly string[]; }
 
 function fail(message: string): never { throw new ProtocolValidationError(message); }
@@ -53,7 +56,7 @@ function effectiveImage(snapshot: DeploymentSnapshotV1, trustedHosts: ReadonlySe
   if (selector.kind === "digest" && snapshot.resolvedDigest !== undefined && snapshot.resolvedDigest !== selector.value) fail("snapshot digest selector conflicts with resolved digest");
   return `${base}@${digest}`;
 }
-function assertReceipt(receipt: ProvenDockerImageExecutionReceiptV1 | undefined): void { if (receipt && (receipt.proven !== true || receipt.health !== "passed" || receipt.terminalStatus !== "succeeded" || !DIGEST.test(receipt.effectiveImage.split("@")[1] ?? ""))) fail("rollback receipt is not proven"); }
+function assertReceipt(receipt: PriorDockerImageExecutionReceiptV1 | undefined): void { if (receipt && (receipt.proven !== true || receipt.health !== "passed" || receipt.terminalStatus !== "succeeded" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(receipt.projectId) || !receipt.candidateId?.startsWith(`${receipt.deploymentId}:candidate:`) || !DIGEST.test(receipt.effectiveImage.split("@")[1] ?? ""))) fail("rollback receipt is not proven"); }
 function boundedPort(snapshot: DeploymentSnapshotV1): number { const port = snapshot.runtimePort; if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) fail("docker image execution requires a bounded runtime port"); return port; }
 
 export class DockerImageExecutor {
@@ -61,6 +64,7 @@ export class DockerImageExecutor {
   constructor(options: DockerImageExecutorOptions) { this.#protocol = options.protocol; this.#transport = options.transport; this.#trustedHosts = new Set(options.trustedHosts); this.#allowedNetworks = new Set(options.allowedNetworks ?? []); }
   async execute(input: DockerImageExecutionInputV1): Promise<DockerImageExecutionReceiptV1> {
     const image = effectiveImage(input.snapshot, this.#trustedHosts); const port = boundedPort(input.snapshot);
+    if (input.runtimeConfig && (!Number.isInteger(input.runtimeConfig.hostPort) || input.runtimeConfig.hostPort < 1024 || input.runtimeConfig.hostPort > 65535 || !Number.isInteger(input.runtimeConfig.containerPort) || input.runtimeConfig.containerPort < 1 || input.runtimeConfig.containerPort > 65535 || (input.runtimeConfig.networkName !== undefined && (!NETWORK.test(input.runtimeConfig.networkName) || !this.#allowedNetworks.has(input.runtimeConfig.networkName))))) fail("runtime configuration is not trusted");
     if (input.networkName !== undefined && (!NETWORK.test(input.networkName) || !this.#allowedNetworks.has(input.networkName))) fail("docker network is not allowlisted");
     assertReceipt(input.priorProvenReceipt);
     const executionDeploymentId = input.executionDeploymentId ?? input.snapshot.deploymentId; if (input.lease.deploymentId !== executionDeploymentId) fail("execution deployment identity does not match lease");
@@ -73,7 +77,7 @@ export class DockerImageExecutor {
     const executionDeploymentId = input.executionDeploymentId ?? input.snapshot.deploymentId; const candidate = Object.freeze({ candidateId: `${executionDeploymentId}:candidate:${input.commandId}`, projectId: input.snapshot.projectId, deploymentId: executionDeploymentId, effectiveImage: image, runtimePort: port, ...(input.networkName ? { networkName: input.networkName } : {}) });
     if (input.signal?.aborted) { this.#stage(input, "execution-canceled", 1); return this.#terminal(input, { deploymentId: executionDeploymentId, effectiveImage: image, runtimePort: port, health: "failed", terminalStatus: "canceled", rollback: { target: null, result: "not-available" }, proven: false }); }
     let started = false; let healthy = false; let rollback: DockerImageExecutionReceiptV1["rollback"] = { target: null, result: "not-available" };
-      try { await this.#transport.startCandidate(candidate, input.signal ?? new AbortController().signal); started = true; this.#stage(input, "candidate-started", 1); if (input.signal?.aborted) throw new Error("canceled"); healthy = await this.#transport.checkHealth(candidate, input.signal ?? new AbortController().signal); this.#stage(input, healthy ? "candidate-healthy" : "candidate-unhealthy", 2); if (healthy) { await this.#transport.promoteCandidate(candidate, input.signal ?? new AbortController().signal); this.#stage(input, "candidate-promoted", 3); return this.#terminal(input, { deploymentId: executionDeploymentId, candidateId: candidate.candidateId, effectiveImage: image, runtimePort: port, health: "passed", terminalStatus: "succeeded", rollback: { target: null, result: "not-required" }, proven: true }); } throw new Error("health check failed"); }
+      try { await this.#transport.startCandidate(candidate, input.signal ?? new AbortController().signal); started = true; this.#stage(input, "candidate-started", 1); if (input.signal?.aborted) throw new Error("canceled"); healthy = await this.#transport.checkHealth(candidate, input.signal ?? new AbortController().signal); this.#stage(input, healthy ? "candidate-healthy" : "candidate-unhealthy", 2); if (healthy) { await this.#transport.promoteCandidate(candidate, input.signal ?? new AbortController().signal); this.#stage(input, "candidate-promoted", 3); return this.#terminal(input, { deploymentId: executionDeploymentId, candidateId: candidate.candidateId, effectiveImage: image, runtimePort: port, ...(input.runtimeConfig ? { runtimeConfig: input.runtimeConfig } : {}), health: "passed", terminalStatus: "succeeded", rollback: { target: null, result: "not-required" }, proven: true }); } throw new Error("health check failed"); }
      catch { const prior = input.priorProvenReceipt; if (prior && started) { try { await this.#transport.restorePrior(prior, input.signal ?? new AbortController().signal); rollback = { target: prior.effectiveImage, result: "restored" }; } catch { rollback = { target: prior.effectiveImage, result: "not-available" }; } } if (started) { try { await this.#transport.discardCandidate(candidate, input.signal ?? new AbortController().signal); } catch { /* cleanup is best effort; terminal state remains durable */ } } const canceled = input.signal?.aborted; this.#stage(input, canceled ? "execution-canceled" : "candidate-failed", started ? 3 : 2); return this.#terminal(input, { deploymentId: executionDeploymentId, effectiveImage: image, runtimePort: port, health: healthy ? "passed" : "failed", terminalStatus: canceled ? "canceled" : "failed", rollback, proven: false }); }
   }
 }

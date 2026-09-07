@@ -31,8 +31,9 @@ describe("DigestDeploymentDispatcher", () => {
     const snapshot = createDeploymentSnapshot({ deploymentId: "dep_dispatch", projectId: "project_dispatch", source: createSourceIntent({ sourceMode: "image", requestedReference: `registry.example.com/team/app@${digest}` }, { policyVersion: "p1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }), configRevision: "c1", runtimeRevision: "r1", runtimePort: 3000, secretRefs: [], policyVersion: "p1", schemaVersion: 1 }, { sha256: () => "b".repeat(64) });
     const protocol = new InMemoryProtocolTransport({ clock: { now: () => 1 }, leasePolicy: { ttlMs: 100 }, retryPolicy: { maxAttempts: 1, deadlineMs: 0, backoffMs: () => 0 }, capabilities: ["deploy.execute"] });
     const transport = new FakeDockerImageTransport();
-    const receipt = await new DigestDeploymentDispatcher({ protocol, transport, trustedHosts: ["registry.example.com"] }).dispatch(snapshot, "deploy_dispatch");
-    expect(receipt.terminalStatus).toBe("succeeded");
+     const receipt = await new DigestDeploymentDispatcher({ protocol, transport, trustedHosts: ["registry.example.com"], hostPort: 43000, containerPort: 3000, allowedNetworks: ["deploylite"], networkName: "deploylite" }).dispatch(snapshot, "deploy_dispatch");
+     expect(receipt.terminalStatus).toBe("succeeded");
+     expect(receipt.runtimeConfig).toEqual({ hostPort: 43000, containerPort: 3000, networkName: "deploylite" });
     expect(transport.calls).toEqual(["start", "health", "promote"]);
     expect(protocol.getAck(snapshot.deploymentId)?.kind).toBe("terminal-ack");
   });
