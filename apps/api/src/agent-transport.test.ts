@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import Fastify from "fastify";
-import { createDeploymentSnapshot, createSourceIntent, TransportCanceledError, TransportTimeoutError } from "@deploylite/contracts";
+import { agentExecutionReceiptSchema, createDeploymentSnapshot, createSourceIntent, dockerImageExecutionReceiptSchema, TransportCanceledError, TransportTimeoutError } from "@deploylite/contracts";
 import { AuthenticatedAgentDeploymentTransport } from "./agent-transport.js";
 
 const digest = `sha256:${"a".repeat(64)}`;
@@ -54,6 +54,96 @@ describe("authenticated agent transport", () => {
       const transport = new AuthenticatedAgentDeploymentTransport({ endpoint: "https://agent.test", trustKey: "transport_test_key_123", agentId: "agent-1", fetch: async (url, init) => { const result = await agent.inject({ method: (init?.method ?? "GET") as "GET" | "POST", url: new URL(String(url)).pathname, headers: init?.headers as Record<string, string>, payload: init?.body as string }); return new Response(result.body, { status: result.statusCode, headers: result.headers as Record<string, string> }); } });
       await expect(transport.dispatch(snapshot, "cmd-composed", { agentId: "agent-1", requestId: "req", correlationId: "corr", executionDeploymentId: "dep-execution" })).resolves.toMatchObject({ deploymentId: "dep-execution", sourceDeploymentId: snapshot.deploymentId, correlationId: "corr" });
     } finally { await agent.close(); }
+  });
+  it("proves dispatcher-to-Docker argv-to-API receipt evidence with a fake process runner", async () => {
+    const { DigestDeploymentDispatcher } = await import(new URL("../../agent/src/deployment-dispatcher.ts", import.meta.url).href);
+    const { DockerCliImageTransport } = await import(new URL("../../agent/src/infrastructure/docker/docker-cli-image-transport.ts", import.meta.url).href);
+    const { AuthenticatedAgentCommandReceiver } = await import(new URL("../../agent/src/agent-transport.ts", import.meta.url).href);
+    const { InMemoryProtocolTransport } = await import("@deploylite/domain");
+    const executionId = "dep_execution";
+    const projectId = "project_e2e";
+    const configured = { hostPort: 45123, containerPort: 4567, networkName: "runtime-net" } as const;
+    const image = `registry.example.com/team/app@${digest}`;
+    const e2eSnapshot = createDeploymentSnapshot({
+      deploymentId: "dep_source",
+      projectId,
+      source: createSourceIntent({ sourceMode: "image", requestedReference: image }, { policyVersion: "p1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }),
+      configRevision: "c1",
+      runtimeRevision: "r1",
+      runtimePort: configured.containerPort,
+      secretRefs: [],
+      policyVersion: "p1",
+      schemaVersion: 1
+    }, { sha256: (bytes) => createHash("sha256").update(bytes).digest("hex") });
+    const calls: string[][] = [];
+    const runner = {
+      run: async (argv: readonly string[]) => {
+        calls.push([...argv]);
+        const format = argv[3] ?? "";
+        const stdout = format.includes("State.Health")
+          ? "healthy"
+          : format.includes("com.deploylite.owner")
+            ? `agent-1|${executionId}|${executionId}:candidate:cmd-e2e|${image}`
+            : "";
+        return { exitCode: 0, signal: null, stdout, stderr: "" };
+      }
+    };
+    const protocol = new InMemoryProtocolTransport({
+      clock: { now: () => 1 },
+      leasePolicy: { ttlMs: 30_000 },
+      retryPolicy: { maxAttempts: 1, deadlineMs: 0, backoffMs: () => 0 },
+      capabilities: ["deploy.execute"]
+    });
+    const dockerTransport = new DockerCliImageTransport({ runner, owner: "agent-1", ...configured, allowedNetworks: [configured.networkName] });
+    const dispatcher = new DigestDeploymentDispatcher({ protocol, transport: dockerTransport, trustedHosts: ["registry.example.com"], allowedNetworks: [configured.networkName], ...configured });
+    const replayStore = {
+      durable: true,
+      claim: async () => ({ claimed: true, claimToken: "claim" }),
+      wait: async () => ({}),
+      complete: async () => {},
+      release: async () => {}
+    };
+    let wireReceipt: unknown;
+    const receiver = new AuthenticatedAgentCommandReceiver({
+      agentId: "agent-1",
+      trustKey: "transport_test_key_123",
+      capabilities: ["deploy.execute"],
+      dispatcher,
+      replayStore: replayStore as never,
+      now: () => 1
+    });
+    const apiTransport = new AuthenticatedAgentDeploymentTransport({
+      endpoint: "https://agent.test",
+      trustKey: "transport_test_key_123",
+      agentId: "agent-1",
+      fetch: async (url, init) => {
+        const signature = String((init?.headers as Record<string, string>)["x-deploylite-signature"]);
+        if (String(url).endsWith("/capabilities")) {
+          return new Response(JSON.stringify({ schemaVersion: 1, agentId: "agent-1", capabilities: ["deploy.execute"], protocolVersions: [1, 2] }), { headers: { "x-deploylite-request-signature": signature } });
+        }
+        const response = await receiver.receive(JSON.parse(String(init?.body)), signature);
+        wireReceipt = response;
+        return new Response(JSON.stringify(response), { status: 200 });
+      }
+    });
+    const result = await apiTransport.dispatch(e2eSnapshot, "cmd-e2e", {
+      agentId: "agent-1",
+      requestId: "request-e2e",
+      correlationId: "correlation-e2e",
+      executionDeploymentId: executionId
+    });
+    const wire = agentExecutionReceiptSchema.parse(wireReceipt);
+    const parsedReceipt = dockerImageExecutionReceiptSchema.parse(wire.receipt);
+    expect(parsedReceipt).toMatchObject({ deploymentId: executionId, effectiveImage: image, health: "passed", terminalStatus: "succeeded", proven: true, runtimeConfig: configured });
+    expect(result).toMatchObject({ projectId, sourceDeploymentId: e2eSnapshot.deploymentId, snapshotHash: e2eSnapshot.hash, correlationId: "correlation-e2e", runtimeConfig: configured });
+    expect(calls.find((argv) => argv[1] === "run")).toEqual([
+      "docker", "run", "--detach", "--name", "deploylite-candidate-dep_execution-cmd-e2e",
+      "--label", "com.deploylite.owner=agent-1", "--label", `com.deploylite.project=${projectId}`,
+      "--label", `com.deploylite.deployment=${executionId}`, "--label", `com.deploylite.candidate=${executionId}:candidate:cmd-e2e`,
+      "--label", `com.deploylite.image=${image}`, "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--restart=no",
+      "--tmpfs", "/tmp:rw,noexec,nosuid,nodev", "--tmpfs", "/var/cache/nginx:rw,noexec,nosuid,nodev", "--tmpfs", "/var/run:rw,noexec,nosuid,nodev",
+      "--network", configured.networkName, "--publish", `127.0.0.1:${configured.hostPort}:${configured.containerPort}`, image
+    ]);
   });
   it("runs v2 in process through receiver, dispatcher, and executor with distinct identities", async () => { const { AuthenticatedAgentCommandReceiver } = await import(new URL("../../agent/dist/agent-transport.js", import.meta.url).href); const { DigestDeploymentDispatcher } = await import(new URL("../../agent/dist/deployment-dispatcher.js", import.meta.url).href); const { FakeDockerImageTransport, InMemoryProtocolTransport } = await import("@deploylite/domain"); const replay = new Map<string, any>(); const replayStore = { claim: async (id: string) => replay.has(id) ? { claimed: false, receipt: replay.get(id).receipt } : { claimed: true, claimToken: "claim" }, wait: async (id: string) => replay.get(id).receipt, complete: async (id: string, value: any) => { replay.set(id, value); }, release: async () => {} }; const dispatcher = new DigestDeploymentDispatcher({ protocol: new InMemoryProtocolTransport({ clock: { now: () => 1 }, leasePolicy: { ttlMs: 100 }, retryPolicy: { maxAttempts: 1, deadlineMs: 0, backoffMs: () => 0 }, capabilities: ["deploy.execute"] }), transport: new FakeDockerImageTransport(), trustedHosts: ["registry.example.com"] }); const receiver = new AuthenticatedAgentCommandReceiver({ agentId: "agent-1", trustKey: "transport_test_key_123", capabilities: ["deploy.execute"], dispatcher, replayStore: replayStore as never, now: () => 1 }); const transport = new AuthenticatedAgentDeploymentTransport({ endpoint: "https://agent.test", trustKey: "transport_test_key_123", agentId: "agent-1", fetch: async (url, init) => { if (String(url).endsWith("/capabilities")) return new Response(JSON.stringify({ schemaVersion: 1, agentId: "agent-1", capabilities: ["deploy.execute"], protocolVersions: [1, 2] }), { headers: { "x-deploylite-request-signature": String((init?.headers as Record<string, string>)["x-deploylite-signature"]) } }); const body = JSON.parse(String(init?.body)); return new Response(JSON.stringify(await receiver.receive(body, String((init?.headers as Record<string, string>)["x-deploylite-signature"])))); } }); const result = await transport.dispatch(snapshot, "cmd-e2e", { agentId: "agent-1", requestId: "req-e2e", correlationId: "corr-e2e", executionDeploymentId: "dep-execution" }); expect(result).toMatchObject({ deploymentId: "dep-execution", sourceDeploymentId: snapshot.deploymentId, correlationId: "corr-e2e", terminalStatus: "succeeded" }); });
   it("allows operator-controlled internal HTTP only when explicitly opted in", () => {
