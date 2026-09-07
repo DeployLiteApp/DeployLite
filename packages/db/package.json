@@ -10,7 +10,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.source-contract.json",
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --allowOnly=false --config vitest.config.ts",
     "db:generate": "drizzle-kit generate --config drizzle.config.ts",

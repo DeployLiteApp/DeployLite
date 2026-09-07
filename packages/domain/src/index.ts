@@ -1,4 +1,4 @@
-import type { Agent, AgentHeartbeat, Deployment, EnvSecretValue, EnvVariableMetadata, LogEvent, Project, ScaffoldUser } from "@deploylite/contracts";
+import { trustedPriorExecutionReceiptSchema, type Agent, type AgentHeartbeat, type Deployment, type EnvSecretValue, type EnvVariableMetadata, type LogEvent, type Project, type ScaffoldUser, type TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
 import type { DeploymentSnapshotV1 } from "@deploylite/contracts";
 import { redactLogMessage } from "@deploylite/config";
 export { InMemorySnapshotStore } from "./deployment-contract/snapshot-memory.js";
@@ -278,13 +278,25 @@ export class AgentStatusService {
   }
 }
 
+type BoundDeployment = Deployment & { snapshotOriginId?: string };
+type BoundReceipt = TrustedPriorExecutionReceiptV1 & { snapshotOriginId: string };
+const immutableDeploymentFields: readonly (keyof BoundDeployment)[] = ["projectId", "agentId", "commitSha", "startedAt", "sourceDeploymentId", "snapshotOriginId", "snapshotHash", "executionReceipt"];
+const terminalDeploymentStatuses: readonly Deployment["status"][] = ["succeeded", "failed", "canceled"];
+const semanticallyEqual = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
+
 export class InMemoryDeploymentRepository implements DeploymentRepository {
-  readonly #deployments = new Map<string, Deployment>();
+  #deployments = new Map<string, Deployment>();
   readonly #logs = new Map<string, LogEvent[]>();
 
   async save(deployment: Deployment): Promise<Deployment> {
-    this.#deployments.set(deployment.id, structuredClone(deployment));
-    return deployment;
+    const next = structuredClone(deployment) as BoundDeployment;
+    const current = this.#deployments.get(next.id) as BoundDeployment | undefined;
+    if (current) {
+      if (immutableDeploymentFields.some((field) => !semanticallyEqual(current[field], next[field]))) throw new Error("Deployment identity, snapshot, and proof are immutable");
+      if (terminalDeploymentStatuses.includes(current.status) && !semanticallyEqual(current, next)) throw new Error("Deployment terminal outcome is immutable");
+    }
+    this.#deployments = new Map(this.#deployments).set(next.id, next);
+    return structuredClone(next);
   }
 
   async saveIfStatus(deployment: Deployment, expectedStatus: Deployment["status"]): Promise<Deployment | null> {
@@ -293,14 +305,29 @@ export class InMemoryDeploymentRepository implements DeploymentRepository {
   }
 
   async findById(id: string): Promise<Deployment | null> {
-    return this.#deployments.get(id) ?? null;
+    const deployment = this.#deployments.get(id);
+    return deployment ? structuredClone(deployment) : null;
   }
 
   async list(): Promise<Deployment[]> {
-    return [...this.#deployments.values()];
+    return structuredClone([...this.#deployments.values()]);
   }
 
   async remove(id: string): Promise<boolean> { return this.#deployments.delete(id); }
+
+  async saveExecutionReceipt(deploymentId: string, receipt: TrustedPriorExecutionReceiptV1): Promise<Deployment | null> {
+    const parsed = trustedPriorExecutionReceiptSchema.parse(structuredClone(receipt)) as BoundReceipt;
+    const current = this.#deployments.get(deploymentId) as BoundDeployment | undefined;
+    if (!current) return null;
+    if (current.status !== "succeeded" || parsed.deploymentId !== current.id || parsed.projectId !== current.projectId || parsed.snapshotOriginId !== current.snapshotOriginId || parsed.snapshotHash !== current.snapshotHash || parsed.runtimeHost !== current.agentId) throw new Error("Deployment execution receipt binding is invalid");
+    if (current.executionReceipt) {
+      if (!semanticallyEqual(current.executionReceipt, parsed)) throw new Error("Deployment execution receipt is immutable");
+      return structuredClone(current);
+    }
+    const updated = { ...current, executionReceipt: parsed };
+    this.#deployments = new Map(this.#deployments).set(deploymentId, updated);
+    return structuredClone(updated);
+  }
 
   async appendLog(event: LogEvent): Promise<LogEvent> {
     const safeEvent = { ...event, message: redactLogMessage(event.message), redactionApplied: true };
