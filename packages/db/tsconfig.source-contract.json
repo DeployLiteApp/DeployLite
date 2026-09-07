@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "noEmit": true,
+    "rootDir": "..",
+    "paths": {
+      "@deploylite/config": ["packages/config/src/index.ts"],
+      "@deploylite/contracts": ["packages/contracts/src/index.ts"],
+      "@deploylite/domain": ["packages/domain/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "type-tests/**/*.ts"]
+}

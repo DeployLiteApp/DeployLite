@@ -117,7 +117,6 @@ export type DeploymentRepository = {
   appendLog(event: LogEvent): Promise<LogEvent>;
   listLogs(deploymentId: string, afterSequence?: number): Promise<LogEvent[]>;
   remove?(id: string): Promise<boolean>;
-  saveExecutionReceipt(deploymentId: string, receipt: TrustedPriorExecutionReceiptV1): Promise<Deployment | null>;
 };
 
 export type DeploymentSnapshotRepository = {
