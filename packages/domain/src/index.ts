@@ -3,6 +3,7 @@ import type { DeploymentSnapshotV1 } from "@deploylite/contracts";
 import { redactLogMessage } from "@deploylite/config";
 export { InMemorySnapshotStore } from "./deployment-contract/snapshot-memory.js";
 export { InMemoryProtocolTransport } from "./deployment-contract/protocol-memory.js";
+export * from "./deployment-contract/execution-completion.js";
 export * from "./deployment-contract/docker-image-executor.js";
 export { FakeDockerImageTransport } from "./deployment-contract/testing/fake-docker-image-transport.js";
 
