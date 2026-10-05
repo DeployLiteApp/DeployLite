@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import "./execution-postgres.integration-cases.js";
+import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 
 import pg from "pg";
@@ -180,7 +181,7 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
       startedAt: now,
       finishedAt: null
     });
-    const snapshot = createDeploymentSnapshot({ deploymentId, projectId, source: createSourceIntent({ sourceMode: "image", requestedReference: `registry.example.com/app@sha256:${"a".repeat(64)}` }, { policyVersion: "integration", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }), configRevision: "config-1", runtimeRevision: "runtime-1", runtimePort: 3000, secretRefs: [{ secretRefId: "DATABASE_URL", version: 1 }], policyVersion: "integration", schemaVersion: 1 }, { sha256: () => "b".repeat(64) });
+    const snapshot = createDeploymentSnapshot({ deploymentId, projectId, source: createSourceIntent({ sourceMode: "image", requestedReference: `registry.example.com/app@sha256:${"a".repeat(64)}` }, { policyVersion: "integration", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }), configRevision: "config-1", runtimeRevision: "runtime-1", runtimePort: 3000, secretRefs: [{ secretRefId: "DATABASE_URL", version: 1 }], policyVersion: "integration", schemaVersion: 1 }, { sha256: (bytes) => createHash("sha256").update(bytes).digest("hex") });
     await requireDbDeploymentRepository().saveSnapshot(snapshot);
     await expect(client.query("SELECT snapshot_hash, snapshot_evidence FROM deployments WHERE id = $1", [deploymentId])).resolves.toMatchObject({ rows: [{ snapshot_hash: snapshot.hash, snapshot_evidence: snapshot.canonicalJson }] });
     await requireDbDeploymentRepository().appendLog({
@@ -261,6 +262,8 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
         redactionApplied: true
       })
     ]);
+
+    await expect(requireDbDeploymentRepository().findByHash(snapshot.hash)).resolves.toEqual(snapshot);
 
     const reopenedClient = requirePool();
     await expect(reopenedClient.query("SELECT id, name, status, metadata FROM servers WHERE id = $1", [serverId])).resolves.toMatchObject({
