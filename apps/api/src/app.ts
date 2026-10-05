@@ -3,6 +3,8 @@ import { createAuditLogRecord, createCorrelationContext, createRequestId, parseD
 import { materializeMockDeploy, redactEnvFileForLog, type EncryptedEnvRecord } from "@deploylite/agent";
 import {
   agentRegistrationSchema,
+  dockerImageExecutionReceiptSchema,
+  type TrustedPriorExecutionReceiptV1,
   authLoginRequestSchema,
   bootstrapInitialAdminRequestSchema,
   deployRequestSchema,
@@ -34,7 +36,7 @@ import {
   type DeploymentSnapshotV1,
   type ImageReferencePolicyV1
 } from "@deploylite/contracts";
-import { BcryptPasswordHasher, bootstrapInitialAdmin, closeDbPool, createDbClient, createDbPool, createOpaqueSessionToken, DbAgentRepository, DbAuditRepository, DbAuthUserRepository, DbControlCommandRepository, DbControlGrantRepository, DbDeploymentRepository, DbEnvSecretValueRepository, DbEnvVariableMetadataRepository, DbProjectRepository, DbSessionRepository, hashSessionToken, type DeployLiteDb } from "@deploylite/db";
+import { BcryptPasswordHasher, bootstrapInitialAdmin, closeDbPool, createDbClient, createDbPool, createOpaqueSessionToken, DbAgentRepository, DbAuditRepository, DbAuthUserRepository, DbControlCommandRepository, DbControlGrantRepository, DbDeploymentRepository, DbDeploymentExecutionRepository, DbEnvSecretValueRepository, DbEnvVariableMetadataRepository, DbProjectRepository, DbSessionRepository, hashSessionToken, type DeployLiteDb } from "@deploylite/db";
 import {
   AgentStatusService,
   authenticateLocalUser,
@@ -77,13 +79,15 @@ import {
   type PasswordHasher,
   type AgentRepository,
   type DeploymentRepository,
+  type DeploymentExecutionRepository,
+  type ExecutionCompletionOutcome,
   type DeploymentSnapshotRepository,
   type DockerImageExecutionReceiptV1,
   type ProjectRepository,
   type SafeAuthUser,
   type SessionRepository
 } from "@deploylite/domain";
-import { ProtocolError } from "@deploylite/contracts";
+import { ProtocolError, TransportCanceledError } from "@deploylite/contracts";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { AuthenticatedAgentDeploymentTransport, type AgentDispatchContext, type DeploymentDispatchReceipt } from "./agent-transport.js";
 import { z } from "zod";
@@ -471,6 +475,7 @@ type PlatformRepositoryOptions = {
   deploymentDispatcher?: DeploymentDispatcher;
   deploymentStopDispatcher?: DeploymentStopDispatcher;
   snapshots?: DeploymentSnapshotRepository;
+  executionCompletion?: DeploymentExecutionRepository;
   controlDeletes?: ControlDeleteRepository & ControlStopRepository;
   controlRedeploy?: ControlRedeployRepository;
   controlGrants?: ControlGrantRepository;
@@ -571,6 +576,7 @@ function createApiState(env: EnvSecretKeySource, overrides: Partial<PlatformRepo
   const projects = overrides.projects ?? new InMemoryProjectRepository();
   const memory = !overrides.deployments && !overrides.controlDeletes && !overrides.controlRedeploy ? createInMemoryExecutionRepositories(projects, audit ?? new InMemoryAuditRepository()) : null;
   const deployments = overrides.deployments ?? memory?.deployments ?? new InMemoryDeploymentRepository();
+  const executionCompletion = overrides.executionCompletion ?? memory?.completion;
   const envMetadata = overrides.envMetadata ?? new InMemoryEnvVariableMetadataRepository();
   const envSecretValues = overrides.envSecretValues ?? new InMemoryEnvSecretValueRepository();
   const envSecretCipher = overrides.envSecretCipher ?? createLazyEnvSecretCipher(env);
@@ -582,7 +588,7 @@ function createApiState(env: EnvSecretKeySource, overrides: Partial<PlatformRepo
   const controlDeletes = overrides.controlDeletes ?? memory?.controls ?? new InMemoryControlDeleteRepository(projects, audit ?? new InMemoryAuditRepository(), deployments);
   const agentStatus = new AgentStatusService(agents);
   const deployRunner = new DeployRunner(deployments, envMetadata, agentStatus, envSecretCipher);
-  return { agents, deployments, projects, envMetadata, envSecretValues, envSecretCipher, agentStatus, deployRunner, runtimeActivationDispatcher, deploymentDispatcher, deploymentStopDispatcher, snapshots, controlDeletes, controlRedeploy: overrides.controlRedeploy ?? memory?.controls ?? (controlDeletes as unknown as ControlRedeployRepository), controlGrants: overrides.controlGrants ?? new InMemoryControlGrantRepository() };
+  return { agents, deployments, executionCompletion, projects, envMetadata, envSecretValues, envSecretCipher, agentStatus, deployRunner, runtimeActivationDispatcher, deploymentDispatcher, deploymentStopDispatcher, snapshots, controlDeletes, controlRedeploy: overrides.controlRedeploy ?? memory?.controls ?? (controlDeletes as unknown as ControlRedeployRepository), controlGrants: overrides.controlGrants ?? new InMemoryControlGrantRepository() };
 }
 
 class InMemoryControlGrantRepository implements ControlGrantRepository {
@@ -929,6 +935,7 @@ function createDbAuthAdapters(env: DeployLiteEnv, options: BuildApiAppOptions): 
     state: createApiState(env, {
       agents: options.state?.agents ?? new DbAgentRepository(db),
       deployments,
+      executionCompletion: options.state?.executionCompletion ?? (deployments instanceof DbDeploymentRepository ? new DbDeploymentExecutionRepository(db) : undefined),
       projects: options.state?.projects ?? new DbProjectRepository(db),
       envMetadata: options.state?.envMetadata ?? new DbEnvVariableMetadataRepository(db),
       envSecretValues: options.state?.envSecretValues ?? new DbEnvSecretValueRepository(db),
@@ -1577,7 +1584,7 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
       startedAt: new Date().toISOString(),
       finishedAt: null
     };
-    await state.deployments.save(deployment);
+    if (body.imageReference === undefined) await state.deployments.save(deployment);
     if (body.imageReference !== undefined) {
       let snapshot: DeploymentSnapshotV1;
       try {
@@ -1588,6 +1595,9 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
         await appendAudit(adapters.audit, request, { action: "deployment.requested.rejected", targetType: "deployment", targetId: deployment.id, metadata: { reason: error instanceof Error ? error.message : "invalid-image", projectId: project.id } });
         return reply.code(400).send(errorEnvelope(request, "DIGEST_INPUT_INVALID", "A valid digest-pinned image is required."));
       }
+      deployment.snapshotHash = snapshot.hash;
+      deployment.snapshotOriginId = snapshot.deploymentId;
+      await state.deployments.save(deployment);
       await state.snapshots.saveSnapshot(snapshot);
       await appendAudit(adapters.audit, request, { action: "deployment.requested", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, snapshotHash: snapshot.hash, image: snapshot.source.sourceMode === "image" ? snapshot.source.image.redactedReference : "image" } });
       if (!state.deploymentDispatcher.available()) {
@@ -1598,28 +1608,62 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
        const running: Deployment = { ...deployment, status: "running", stopTarget };
       await state.deployments.save(running);
       await state.deployments.appendLog({ id: `log_${createRequestId()}`, deploymentId: deployment.id, sequence: 1, level: "info", message: "Agent accepted digest snapshot and started execution.", timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId });
+      const completeInitial = async (terminalStatus: "succeeded" | "failed" | "canceled", terminalStopTarget = running.stopTarget, proof: TrustedPriorExecutionReceiptV1 | null = null): Promise<ExecutionCompletionOutcome> => {
+        // Equal completion includes finishedAt; reuse durable time when reconciling an already committed receipt.
+        const persisted = await state.deployments.findById(running.id);
+        const finishedAt = persisted?.finishedAt ?? new Date().toISOString();
+        if (!state.executionCompletion) {
+          return { kind: "committed", deployment: await state.deployments.save({ ...running, status: terminalStatus, finishedAt, stopTarget: terminalStopTarget }), command: null };
+        }
+        return state.executionCompletion.completeExecution({
+          commandId: null, commandResult: null, proof, expectedStatus: running.status,
+          executionId: running.id, projectId: running.projectId, sourceExecutionId: null,
+          snapshotOriginId: snapshot.deploymentId, snapshotHash: snapshot.hash, runtimeHost: agentId,
+          effectiveImageDigest: snapshot.source.sourceMode === "image" ? snapshot.source.image.selector.value : "",
+          terminalStatus, finishedAt
+        });
+      };
+      const rejectCompletion = (kind: "conflict" | "not-found") => reply.code(kind === "conflict" ? 409 : 404).send(errorEnvelope(request, kind === "conflict" ? "EXECUTION_COMPLETION_CONFLICT" : "NOT_FOUND", "Digest execution completion could not be persisted."));
+      const abort = new AbortController();
+      const onAbort = () => abort.abort();
+      request.raw.once("aborted", onAbort);
+      if (request.raw.aborted) abort.abort();
+      let result: "dispatched" | DockerImageExecutionReceiptV1;
       try {
-        const abort = new AbortController(); const onAbort = () => abort.abort(); request.raw.once("aborted", onAbort); if (request.raw.aborted) abort.abort();
-        let result: "dispatched" | DockerImageExecutionReceiptV1;
-        try {
-          result = await state.deploymentDispatcher.dispatch(snapshot, `deploy_${deployment.id}`, { agentId, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId, signal: abort.signal });
-        } finally {
-          request.raw.removeListener("aborted", onAbort);
-        }
-        if (typeof result !== "string") {
-           const terminal: Deployment = { ...running, status: result.terminalStatus, finishedAt: new Date().toISOString(), stopTarget: result.candidateId && result.effectiveImage ? { candidateId: result.candidateId, effectiveImage: result.effectiveImage } : running.stopTarget };
-          await state.deployments.save(terminal);
-          await state.deployments.appendLog({ id: `log_${createRequestId()}`, deploymentId: deployment.id, sequence: 2, level: result.terminalStatus === "succeeded" ? "info" : "error", message: `Agent execution ${result.terminalStatus}.`, timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId });
-          await appendAudit(adapters.audit, request, { action: `deployment.${result.terminalStatus}`, targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, snapshotHash: snapshot.hash, health: result.health, rollback: result.rollback } });
-          return ok(request, { deployment: terminal, snapshotHash: snapshot.hash, execution: result });
-        }
+        result = await state.deploymentDispatcher.dispatch(snapshot, `deploy_${deployment.id}`, { agentId, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId, signal: abort.signal });
       } catch (error) {
         const classification = error instanceof ProtocolError ? error.code : "transport-failed";
-        const failed: Deployment = { ...running, status: "failed", finishedAt: new Date().toISOString() };
-        await state.deployments.save(failed);
-        await state.deployments.appendLog({ id: `log_${createRequestId()}`, deploymentId: deployment.id, sequence: 2, level: "error", message: "Agent execution failed before a terminal receipt was returned.", timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId });
+        const terminalStatus = error instanceof TransportCanceledError ? "canceled" : "failed";
+        const completion = await completeInitial(terminalStatus);
+        if (completion.kind === "conflict" || completion.kind === "not-found") return rejectCompletion(completion.kind);
+        await state.deployments.appendLog({ id: `log_${createRequestId()}`, deploymentId: deployment.id, sequence: 2, level: "error", message: `Agent execution ${terminalStatus} before a terminal receipt was returned.`, timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId });
         await appendAudit(adapters.audit, request, { action: "deployment.dispatch.rejected", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, snapshotHash: snapshot.hash, reason: classification } });
         return reply.code(502).send(errorEnvelope(request, "DEPLOY_DISPATCH_FAILED", "Digest deployment dispatch failed."));
+      } finally {
+        request.raw.removeListener("aborted", onAbort);
+      }
+      // Receipt persistence errors propagate without a second terminal publication.
+      if (typeof result !== "string") {
+        const parsed = dockerImageExecutionReceiptSchema.safeParse(result);
+        if (!parsed.success) return reply.code(409).send(errorEnvelope(request, "EXECUTION_PROOF_INVALID", "Agent terminal receipt bindings are invalid."));
+        result = parsed.data;
+        const proof = result.executionReceipt;
+        if (proof && (result.deploymentId !== running.id || proof.projectId !== running.projectId || proof.runtimeHost !== agentId || proof.snapshotOriginId !== snapshot.deploymentId || proof.snapshotHash !== snapshot.hash || proof.effectiveImageDigest !== (snapshot.source.sourceMode === "image" ? snapshot.source.image.selector.value : "") || proof.candidateId !== stopTarget.candidateId || proof.containerPort !== snapshot.runtimePort)) return reply.code(409).send(errorEnvelope(request, "EXECUTION_PROOF_INVALID", "Agent execution proof does not match the selected deployment."));
+        if (proof && !state.executionCompletion) return reply.code(503).send(errorEnvelope(request, "EXECUTION_COMPLETION_UNAVAILABLE", "Atomic execution completion is unavailable."));
+        let terminal: Deployment;
+        const terminalStopTarget = result.candidateId && result.effectiveImage ? { candidateId: result.candidateId, effectiveImage: result.effectiveImage } : running.stopTarget;
+        if (result.terminalStatus === "succeeded" && !proof) {
+          // Legacy health-only success remains readable without eligibility for trusted redeploy.
+          terminal = { ...running, status: result.terminalStatus, finishedAt: new Date().toISOString(), stopTarget: terminalStopTarget };
+          await state.deployments.save(terminal);
+        } else {
+          const completion = await completeInitial(result.terminalStatus, terminalStopTarget, proof ?? null);
+          if (!("deployment" in completion)) return rejectCompletion(completion.kind);
+          terminal = completion.deployment;
+        }
+        await state.deployments.appendLog({ id: `log_${createRequestId()}`, deploymentId: deployment.id, sequence: 2, level: result.terminalStatus === "succeeded" ? "info" : "error", message: `Agent execution ${result.terminalStatus}.`, timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId });
+        await appendAudit(adapters.audit, request, { action: `deployment.${result.terminalStatus}`, targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, snapshotHash: snapshot.hash, health: result.health, rollback: result.rollback } });
+        return ok(request, { deployment: terminal, snapshotHash: snapshot.hash, execution: result });
       }
       await appendAudit(adapters.audit, request, { action: "deployment.dispatched", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, snapshotHash: snapshot.hash, capability: "deploy.execute" } });
       return ok(request, { deployment: running, snapshotHash: snapshot.hash });
