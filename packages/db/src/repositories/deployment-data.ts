@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
 import { redactLogMessage } from "@deploylite/config";
-import { trustedPriorExecutionReceiptSchema, type Agent, type Deployment, type DeploymentSnapshotV1, type LogEvent, type Project } from "@deploylite/contracts";
+import { createDeploymentSnapshot, trustedPriorExecutionReceiptSchema, type Agent, type Deployment, type DeploymentSnapshotV1, type LogEvent, type Project } from "@deploylite/contracts";
 import type { AgentRepository, DeploymentRepository, DeploymentSnapshotRepository, ProjectRepository } from "@deploylite/domain";
 
 import type { DeployLiteDb } from "../client.js";
@@ -178,10 +179,38 @@ export class DbDeploymentRepository implements DeploymentRepository, DeploymentS
   }
 
   async findByHash(hash: string): Promise<DeploymentSnapshotV1 | null> {
-    const [row] = await this.db.select({ evidence: deployments.snapshotEvidence }).from(deployments).where(eq(deployments.snapshotHash, hash)).limit(1);
-    if (!row?.evidence) return null;
-    const snapshot = JSON.parse(row.evidence) as DeploymentSnapshotV1;
-    return { ...snapshot, canonicalBytes: new TextEncoder().encode(snapshot.canonicalJson) };
+    const [row] = await this.db.select({
+      id: deployments.id,
+      projectId: deployments.projectId,
+      agentId: deployments.agentId,
+      commitSha: deployments.commitSha,
+      hash: deployments.snapshotHash,
+      evidence: deployments.snapshotEvidence
+    }).from(deployments)
+      .where(and(eq(deployments.snapshotHash, hash), isNotNull(deployments.snapshotEvidence)))
+      .limit(1);
+    if (!row) return null;
+    try {
+      const data = JSON.parse(row.evidence!) as DeploymentSnapshotV1;
+      if (data.schemaVersion !== 1 || data.source?.schemaVersion !== 1
+        || (data.source.sourceMode !== "build" && data.source.sourceMode !== "image")
+        || typeof data.sourceSchemaVersion !== "number"
+        || (data.runtimePort !== null && typeof data.runtimePort !== "number")) {
+        throw new Error("Invalid canonical snapshot data");
+      }
+      const snapshot = createDeploymentSnapshot({ ...data, schemaVersion: data.sourceSchemaVersion }, {
+        sha256: (bytes) => createHash("sha256").update(bytes).digest("hex")
+      });
+      if (snapshot.canonicalJson !== row.evidence || snapshot.hash !== hash || snapshot.hash !== row.hash
+        || snapshot.deploymentId !== row.id || snapshot.projectId !== row.projectId
+        || (snapshot.agentId !== undefined && snapshot.agentId !== row.agentId)
+        || (snapshot.commitSha !== undefined && snapshot.commitSha !== row.commitSha)) {
+        throw new Error("Canonical snapshot binding mismatch");
+      }
+      return snapshot;
+    } catch (cause) {
+      throw new Error("Stored deployment snapshot evidence is invalid", { cause });
+    }
   }
 
   async findById(id: string): Promise<Deployment | null> {
