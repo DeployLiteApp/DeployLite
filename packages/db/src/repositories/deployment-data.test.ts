@@ -14,6 +14,7 @@ function deploymentRow(overrides: Partial<DeploymentRow> = {}): DeploymentRow {
     commitSha: "abcdef1",
     snapshotHash: null,
     snapshotEvidence: null,
+    executionReceipt: null,
     startedAt: now,
     finishedAt: null,
     metadata: {},
@@ -38,6 +39,35 @@ function logRow(sequence: number): DeploymentLogRow {
 }
 
 describe("deployment metadata persistence mapping", () => {
+  it("retains the immutable snapshot origin and execution receipt when reading a redeploy", () => {
+    const receipt = {
+      schemaVersion: 1 as const,
+      candidateId: "candidate-2",
+      deploymentId: "dep-1",
+      projectId: "project-1",
+      snapshotOriginId: "dep-origin",
+      snapshotHash: "a".repeat(64),
+      effectiveImageDigest: `sha256:${"b".repeat(64)}`,
+      runtimeHost: "agent-1",
+      container: "deploylite-dep-1",
+      containerId: "container-2",
+      hostPort: 43000,
+      containerPort: 3000,
+      network: null
+    };
+    const row = {
+      ...deploymentRow({ status: "succeeded", snapshotHash: receipt.snapshotHash, metadata: { sourceDeploymentId: "dep-parent", snapshotOriginId: "dep-origin" } }),
+      executionReceipt: receipt
+    };
+
+    expect(toDeployment(row)).toMatchObject({
+      sourceDeploymentId: "dep-parent",
+      snapshotOriginId: "dep-origin",
+      snapshotHash: receipt.snapshotHash,
+      executionReceipt: receipt
+    });
+  });
+
   it("maps attached deployments without manufacturing empty agent IDs", () => {
     expect(toDeployment(deploymentRow({ snapshotHash: "a".repeat(64) }))).toEqual({
       id: "dep-1",
