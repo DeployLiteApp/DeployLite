@@ -9,3 +9,5 @@ Adopts the original reviewed source with complete signed-transport, repository a
 Required quality, PostgreSQL, supply-chain and baseline checks must pass on the exact published head before protected merge.
 
 Rollback uses a scoped revert through the protected PR flow. No production operation or local runtime authorization is implied.
+
+The hosted HTTP authentication fixture uses distinct source/execution identities, retaining wrong-key, tamper and stale-lease status assertions.
