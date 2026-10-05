@@ -6,13 +6,25 @@ export type AgentCapabilityHandshake = z.infer<typeof agentCapabilityHandshakeSc
 const requestContextSchema = z.object({ requestId: id, correlationId: id });
 const leaseSchema = z.object({ leaseId: id, deploymentId: id, fence: z.number().int().positive(), expiresAt: z.number().finite() }).strict();
 
+// Reuse deployment leases for project, immediate source and new execution authority.
+export const deploymentExecutionAuthoritySchema = z.object({
+  projectId: id, commandId: id, action: z.enum(["deployment.redeploy", "deployment.stop"]),
+  projectLease: leaseSchema, executionLease: leaseSchema, sourceLease: leaseSchema.optional()
+}).strict();
+export type DeploymentExecutionAuthorityV1 = z.infer<typeof deploymentExecutionAuthoritySchema>;
+
+const digestImage = z.string().min(1).max(1024).regex(/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[0-9a-f]{64}$/);
+export const promotionPolicySchema = z.object({ maxOutageMs: z.number().int().positive().max(300_000), maxRecoveryMs: z.number().int().positive().max(300_000) }).strict();
+export type PromotionPolicy = z.infer<typeof promotionPolicySchema>;
+export const agentReplacementSchema = z.object({ prior: trustedPriorExecutionReceiptSchema, effectiveImage: digestImage, policy: promotionPolicySchema }).strict();
+export type AgentReplacementV1 = z.infer<typeof agentReplacementSchema>;
+
 const agentExecutionFields = { agentId: id, commandId: id, deploymentId: id, projectId: id, snapshot: z.record(z.unknown()), snapshotHash: z.string().regex(/^[a-f0-9]{64}$/), requiredCapabilities: z.array(z.string().min(1).max(128)).max(8), lease: leaseSchema, context: requestContextSchema, timeoutMs: z.number().int().positive().max(300_000), cancellationRequested: z.boolean() };
 const agentExecutionCommandV1Schema = z.object({ schemaVersion: z.literal(1), ...agentExecutionFields }).strict();
-const agentExecutionCommandV2Schema = z.object({ schemaVersion: z.literal(2), ...agentExecutionFields, sourceDeploymentId: id }).strict();
+const agentExecutionCommandV2Schema = z.object({ schemaVersion: z.literal(2), ...agentExecutionFields, sourceDeploymentId: id, authority: deploymentExecutionAuthoritySchema.optional(), replacement: agentReplacementSchema.optional() }).strict();
 export const agentExecutionCommandSchema = z.union([agentExecutionCommandV1Schema, agentExecutionCommandV2Schema]);
 export type AgentExecutionCommand = z.infer<typeof agentExecutionCommandSchema>;
 
-const digestImage = z.string().min(1).max(1024).regex(/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[0-9a-f]{64}$/);
 const runtimeConfigSchema = z.object({ hostPort: z.number().int().min(1024).max(65535), containerPort: z.number().int().min(1).max(65535), networkName: z.string().regex(/^[a-z0-9][a-z0-9_.-]{0,62}$/).optional() }).strict();
 export const dockerImageExecutionReceiptSchema = z.object({
   deploymentId: id, candidateId: id.optional(), effectiveImage: digestImage, runtimePort: z.number().int().min(1).max(65535), runtimeConfig: runtimeConfigSchema.optional(), executionReceipt: trustedPriorExecutionReceiptSchema.optional(),
@@ -52,15 +64,15 @@ export type AgentExecutionReceipt = z.infer<typeof agentExecutionReceiptSchema>;
 
 export const deploymentStopAgentCommandSchema = z.object({
   schemaVersion: z.literal(1), action: z.literal("deployment.stop"), agentId: id, commandId: id,
-  projectId: id, deploymentId: id, candidateId: id, effectiveImage: digestImage,
-  requiredCapabilities: z.array(z.literal("deployment.stop")).length(1), lease: leaseSchema,
+  projectId: id, deploymentId: id, candidateId: id, effectiveImage: digestImage, containerId: trustedPriorExecutionReceiptSchema.shape.containerId.optional(),
+  requiredCapabilities: z.array(z.literal("deployment.stop")).length(1), lease: leaseSchema, authority: deploymentExecutionAuthoritySchema.optional(),
   context: requestContextSchema, timeoutMs: z.number().int().positive().max(300_000), cancellationRequested: z.boolean()
 }).strict();
 export type DeploymentStopAgentCommand = z.infer<typeof deploymentStopAgentCommandSchema>;
 
 export const deploymentStopAgentReceiptSchema = z.object({
   schemaVersion: z.literal(1), action: z.literal("deployment.stop"), agentId: id, commandId: id,
-  projectId: id, deploymentId: id, candidateId: id, effectiveImage: digestImage,
+  projectId: id, deploymentId: id, candidateId: id, effectiveImage: digestImage, containerId: trustedPriorExecutionReceiptSchema.shape.containerId.optional(),
   status: z.enum(["stopped", "already-stopped", "absent", "failed", "canceled"]), redacted: z.literal(true),
   correlationId: id, reason: z.string().max(512).nullable()
 }).strict();
