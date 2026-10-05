@@ -1,6 +1,6 @@
 import { getTableColumns } from "drizzle-orm";
 import type { Pool } from "pg";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExecutionCompletionInput } from "@deploylite/domain";
 import { createDbClient } from "../client.js";
 import { controlCommands, deployments, type ControlCommandRow, type DeploymentRow } from "../schema.js";
@@ -44,6 +44,9 @@ class RecordingTransactionalClient {
   private before: typeof this.state | undefined;
   missingWrite: "deployment" | "command" | null = null;
   failCommandWrite = false;
+  extraCommands: ControlCommandRow[] = [];
+  beforeCommandLock?: () => void;
+  beforeCommandWrite?: () => void;
 
   // This model records real Drizzle SQL, but is not a PostgreSQL engine or concurrency harness.
   async query(query: string | { text: string }, values: unknown[] = []) {
@@ -51,15 +54,22 @@ class RecordingTransactionalClient {
     this.queries.push({ text, values });
     if (text === "begin") this.before = structuredClone(this.state);
     if (text === "rollback" && this.before) this.state = this.before;
+    if (text.includes("pg_advisory_xact_lock")) return { rows: [] };
     if (text.startsWith("select")) {
+      if (text.includes('from "control_commands"') && text.endsWith("for update")) this.beforeCommandLock?.();
       const command = text.includes('from "control_commands"');
       const row = command ? this.state.command : this.state.deployment;
       const columns = getTableColumns(command ? controlCommands : deployments);
-      return { rows: row ? [Object.keys(columns).map((key) => row[key as keyof typeof row])] : [] };
+      const related = command && text.includes("::jsonb") ? [row, ...this.extraCommands].filter(Boolean) : row ? [row] : [];
+      return { rows: related.map((entry) => Object.keys(columns).map((key) => entry![key as keyof typeof row])) };
     }
     if (text.startsWith("update")) {
       const command = text.includes('update "control_commands"');
       const row = command ? this.state.command : this.state.deployment;
+      if (command) {
+        this.beforeCommandWrite?.();
+        if (text.includes("clock_timestamp()") && (!this.state.command?.executionAuthority || Math.min(this.state.command.expiresAt.getTime(), this.state.command.executionAuthority.projectLease.expiresAt, this.state.command.executionAuthority.executionLease.expiresAt, this.state.command.executionAuthority.sourceLease?.expiresAt ?? Infinity) <= Date.now())) return { rows: [] };
+      }
       if (command && this.failCommandWrite) throw new Error("injected command write failure");
       if (!row || this.missingWrite === (command ? "command" : "deployment")) return { rows: [] };
       const set = text.split(" set ")[1]?.split(" where ")[0] ?? "";
@@ -81,7 +91,50 @@ function harness() {
   return { client, repository };
 }
 
+afterEach(() => vi.useRealTimers());
 describe("PostgreSQL execution-completion adapter with a recording transaction model", () => {
+  it.each(["expired-at-lock", "superseded-at-lock", "expired-at-write"])("checks persisted authority inside the terminal transaction for %s", async (fault) => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-04T19:00:00Z"));
+    const { client, repository } = harness();
+    const lease = (deploymentId: string) => ({ deploymentId, leaseId: `${deploymentId}:owner`, fence: 2, expiresAt: Date.now() + 120_000 });
+    const authority = { projectId: input.projectId, commandId: input.commandId!, action: "deployment.redeploy" as const, projectLease: lease(input.projectId), sourceLease: lease(input.sourceExecutionId!), executionLease: lease(input.executionId) };
+    Object.assign(client.state.command!, { executionAuthority: structuredClone(authority), expiresAt: new Date(authority.projectLease.expiresAt) });
+    client.beforeCommandLock = () => {
+      if (fault === "expired-at-lock") vi.setSystemTime(authority.projectLease.expiresAt);
+      if (fault === "superseded-at-lock") client.extraCommands = [{ ...structuredClone(client.state.command!), id: "newer", executionAuthority: { ...structuredClone(authority), commandId: "newer", projectLease: { ...authority.projectLease, fence: 3 } } }];
+    };
+    if (fault === "expired-at-write") client.beforeCommandWrite = () => vi.setSystemTime(authority.projectLease.expiresAt);
+    await expect(repository.completeExecution({ ...input, authority } as ExecutionCompletionInput)).resolves.toEqual({ kind: "conflict" });
+    expect(client.state).toMatchObject({ deployment: { status: "running", executionReceipt: null }, command: { status: "dispatching", result } });
+    if (fault !== "expired-at-write") expect(client.queries.some(({ text }) => text.startsWith("update"))).toBe(false);
+  });
+  it("serializes authority-bearing completion with claims and replays an equal terminal result after expiry", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-04T19:00:00Z"));
+    const { client, repository } = harness();
+    const lease = (deploymentId: string) => ({ deploymentId, leaseId: `${deploymentId}:owner`, fence: 2, expiresAt: Date.now() + 120_000 });
+    const authority = { projectId: input.projectId, commandId: input.commandId!, action: "deployment.redeploy" as const, projectLease: lease(input.projectId), sourceLease: lease(input.sourceExecutionId!), executionLease: lease(input.executionId) };
+    Object.assign(client.state.command!, { executionAuthority: authority, expiresAt: new Date(authority.projectLease.expiresAt) });
+    const submitted = { ...input, authority };
+    expect((await repository.completeExecution(submitted)).kind).toBe("committed");
+    const projectLock = client.queries.findIndex(({ text }) => text.includes("pg_advisory_xact_lock"));
+    const commandLock = client.queries.findIndex(({ text }) => text.includes('from "control_commands"') && text.endsWith("for update"));
+    expect(projectLock).toBeGreaterThan(0); expect(projectLock).toBeLessThan(commandLock);
+    expect(client.queries[projectLock]?.values).toEqual(["deploylite:execution:project-1"]);
+    expect(client.queries.find(({ text }) => text.startsWith('update "control_commands"'))?.text).toContain("clock_timestamp()");
+    const writes = client.queries.filter(({ text }) => text.startsWith("update")).length;
+    vi.setSystemTime(authority.projectLease.expiresAt);
+    expect((await repository.completeExecution(submitted)).kind).toBe("replayed");
+    expect(client.queries.filter(({ text }) => text.startsWith("update"))).toHaveLength(writes);
+  });
+  it("rejects null-command INITIAL completion after persisted stop authority without rewriting its outcome", async () => {
+    const { client, repository } = harness();
+    const lease = { deploymentId: input.executionId, leaseId: "stop:owner", fence: 2, expiresAt: Date.now() + 120_000 };
+    Object.assign(client.state.command!, { action: "deployment.stop", scopeKey: JSON.stringify([input.projectId, input.executionId]), status: "completed", executionAuthority: { projectId: input.projectId, commandId: "command-1", action: "deployment.stop", projectLease: { ...lease, deploymentId: input.projectId }, executionLease: lease }, result: { commandId: "command-1", action: "deployment.stop", projectId: input.projectId, deploymentId: input.executionId, status: "completed", correlationId: "correlation-1", reason: "stopped" } });
+    client.state.deployment!.metadata = { snapshotOriginId: input.snapshotOriginId };
+    expect(await repository.completeExecution({ ...input, commandId: null, commandResult: null, sourceExecutionId: null, terminalStatus: "failed", proof: null })).toEqual({ kind: "conflict" });
+    expect(client.state.deployment?.status).toBe("running"); expect(client.state.command?.status).toBe("completed");
+    expect(client.queries.some(({ text }) => text.startsWith("update"))).toBe(false);
+  });
   it("commits deployment proof and command result together after command-first locks", async () => {
     const { client, repository } = harness();
     expect(await repository.completeExecution(input)).toMatchObject({
@@ -168,7 +221,7 @@ describe("PostgreSQL execution-completion adapter with a recording transaction m
     client.state.deployment!.metadata = { snapshotOriginId: "origin-1" };
     await expect(repository.completeExecution({ ...input, commandId: null, commandResult: null, sourceExecutionId: null, terminalStatus, proof: null })).resolves.toMatchObject({ kind: "committed", deployment: { status: terminalStatus }, command: null });
     expect(client.state.deployment).toMatchObject({ status: terminalStatus, executionReceipt: null });
-    expect(client.queries.some(({ text }) => text.includes('"control_commands"'))).toBe(false);
+    expect(client.queries.some(({ text }) => text.includes('"control_commands"') && (text.endsWith("for update") || text.startsWith("update")))).toBe(false);
   });
 
   it("clones submitted and returned references and rejects invalid proof before transactions", async () => {
