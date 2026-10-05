@@ -28,15 +28,15 @@ export type DockerActiveIdentityObservation = Readonly<{
 export type RuntimeExecutionAuthority = { assertValid(): Promise<void>; readonly expiresAt?: number };
 export type DockerPromotionContext = Readonly<{ prior: PriorDockerImageExecutionReceiptV1; policy: PromotionPolicy; authority: RuntimeExecutionAuthority; candidate?: DockerImageCandidateV1; promotionSignal?: AbortSignal; completePreparation?: () => void }>;
 export interface DockerImageTransport {
-  startCandidate(candidate: DockerImageCandidateV1, signal: AbortSignal): Promise<void>;
+  startCandidate(candidate: DockerImageCandidateV1, signal: AbortSignal, context?: DockerPromotionContext, authority?: RuntimeExecutionAuthority): Promise<void>;
   checkHealth(candidate: DockerImageCandidateV1, signal: AbortSignal): Promise<boolean>;
   // Legacy transports may omit observations; absence is never trusted runtime proof.
   promoteCandidate(candidate: DockerImageCandidateV1, signal: AbortSignal): Promise<DockerActiveIdentityObservation | void>;
-  promoteCandidate(candidate: DockerImageCandidateV1, prior: PriorDockerImageExecutionReceiptV1 | undefined, signal: AbortSignal): Promise<DockerActiveIdentityObservation | void>;
-  restorePrior(receipt: PriorDockerImageExecutionReceiptV1, signal: AbortSignal): Promise<void>;
-  discardCandidate(candidate: DockerImageCandidateV1, signal: AbortSignal): Promise<void>;
+  promoteCandidate(candidate: DockerImageCandidateV1, prior: PriorDockerImageExecutionReceiptV1 | undefined, signal: AbortSignal, context?: DockerPromotionContext, authority?: RuntimeExecutionAuthority): Promise<DockerActiveIdentityObservation | void>;
+  restorePrior(receipt: PriorDockerImageExecutionReceiptV1, signal: AbortSignal, context?: DockerPromotionContext): Promise<void>;
+  discardCandidate(candidate: DockerImageCandidateV1, signal: AbortSignal, context?: DockerPromotionContext): Promise<void>;
 }
-export interface DockerImageExecutionInputV1 { readonly snapshot: DeploymentSnapshotV1; readonly commandId: string; readonly lease: LeaseV1; readonly executionDeploymentId?: string; readonly networkName?: string; readonly runtimeConfig?: { readonly hostPort: number; readonly containerPort: number; readonly networkName?: string }; readonly priorProvenReceipt?: PriorDockerImageExecutionReceiptV1; readonly signal?: AbortSignal; }
+export interface DockerImageExecutionInputV1 { readonly snapshot: DeploymentSnapshotV1; readonly commandId: string; readonly lease: LeaseV1; readonly executionDeploymentId?: string; readonly networkName?: string; readonly runtimeConfig?: { readonly hostPort: number; readonly containerPort: number; readonly networkName?: string }; readonly priorProvenReceipt?: PriorDockerImageExecutionReceiptV1; readonly promotionPolicy?: PromotionPolicy; readonly authority?: RuntimeExecutionAuthority; readonly signal?: AbortSignal; readonly promotionSignal?: AbortSignal; readonly completePreparation?: () => void; }
 export interface DockerImageExecutorOptions { readonly protocol: InMemoryProtocolTransport; readonly transport: DockerImageTransport; readonly trustedHosts: readonly string[]; readonly allowedNetworks?: readonly string[]; readonly runtimeHost?: string; readonly snapshotHasher?: CanonicalHasher; }
 
 function fail(message: string): never { throw new ProtocolValidationError(message); }
@@ -88,7 +88,7 @@ export class DockerImageExecutor {
   constructor(options: DockerImageExecutorOptions) { this.#protocol = options.protocol; this.#transport = options.transport; this.#trustedHosts = new Set(options.trustedHosts); this.#allowedNetworks = new Set(options.allowedNetworks ?? []); this.#runtimeHost = options.runtimeHost; this.#snapshotHasher = options.snapshotHasher; }
   async execute(input: DockerImageExecutionInputV1): Promise<DockerImageExecutionReceiptV1> {
     // Capture validated bindings before any adapter or protocol await can expose mutable callers.
-    input = { ...input, snapshot: structuredClone(input.snapshot), lease: structuredClone(input.lease), runtimeConfig: input.runtimeConfig ? structuredClone(input.runtimeConfig) : undefined, priorProvenReceipt: input.priorProvenReceipt ? structuredClone(input.priorProvenReceipt) : undefined };
+    input = { ...input, snapshot: structuredClone(input.snapshot), lease: structuredClone(input.lease), runtimeConfig: input.runtimeConfig ? structuredClone(input.runtimeConfig) : undefined, priorProvenReceipt: input.priorProvenReceipt ? structuredClone(input.priorProvenReceipt) : undefined, promotionPolicy: input.promotionPolicy ? promotionPolicySchema.parse(input.promotionPolicy) : undefined };
     validateDockerImageSnapshot(input.snapshot, this.#snapshotHasher);
     if (this.#runtimeHost && input.snapshot.agentId && input.snapshot.agentId !== this.#runtimeHost) fail("snapshot configured runtime host mismatch");
     const image = effectiveImage(input.snapshot, this.#trustedHosts); const port = boundedPort(input.snapshot);
@@ -96,8 +96,12 @@ export class DockerImageExecutor {
     if (input.runtimeConfig && (!Number.isInteger(input.runtimeConfig.hostPort) || input.runtimeConfig.hostPort < 1024 || input.runtimeConfig.hostPort > 65535 || !Number.isInteger(input.runtimeConfig.containerPort) || input.runtimeConfig.containerPort < 1 || input.runtimeConfig.containerPort > 65535 || (input.runtimeConfig.networkName !== undefined && (!NETWORK.test(input.runtimeConfig.networkName) || !this.#allowedNetworks.has(input.runtimeConfig.networkName))))) fail("runtime configuration is not trusted");
     if (input.networkName !== undefined && (!NETWORK.test(input.networkName) || !this.#allowedNetworks.has(input.networkName))) fail("docker network is not allowlisted");
     assertReceipt(input.priorProvenReceipt);
+    if (input.priorProvenReceipt && this.#runtimeHost) {
+      const prior = input.priorProvenReceipt, proof = trustedPriorExecutionReceiptSchema.safeParse(prior.executionReceipt);
+      if (!input.authority || !input.promotionPolicy || !proof.success || proof.data.projectId !== input.snapshot.projectId || proof.data.deploymentId !== prior.deploymentId || proof.data.snapshotOriginId !== input.snapshot.deploymentId || proof.data.snapshotHash !== input.snapshot.hash || proof.data.runtimeHost !== this.#runtimeHost || proof.data.effectiveImageDigest !== image.split("@")[1] || proof.data.containerPort !== port || prior.effectiveImage !== image) fail("replacement requires bound observed prior, explicit policy and authority");
+    }
     const executionDeploymentId = input.executionDeploymentId ?? input.snapshot.deploymentId; if (input.lease.deploymentId !== executionDeploymentId) fail("execution deployment identity does not match lease");
-    const command = this.#protocol.createCommand({ commandId: input.commandId, deploymentId: executionDeploymentId, requiredCapabilities: ["deploy.execute"], payload: { snapshotHash: input.snapshot.hash, runtimeHost: this.#runtimeHost ?? null, runtimeConfig: input.runtimeConfig ?? null, effectiveImage: image, runtimePort: port, networkName: input.networkName ?? null, rollbackTarget: input.priorProvenReceipt?.effectiveImage ?? null }, lease: input.lease });
+    const command = this.#protocol.createCommand({ commandId: input.commandId, deploymentId: executionDeploymentId, requiredCapabilities: ["deploy.execute"], payload: { snapshotHash: input.snapshot.hash, runtimeHost: this.#runtimeHost ?? null, runtimeConfig: input.runtimeConfig ?? null, effectiveImage: image, runtimePort: port, networkName: input.networkName ?? null, rollbackTarget: input.priorProvenReceipt?.effectiveImage ?? null, replacement: input.priorProvenReceipt ?? null, promotionPolicy: input.promotionPolicy ?? null }, lease: input.lease });
     return (await this.#protocol.deliverAsync(command, () => this.#run(input, image, port))).result;
   }
   #stage(input: DockerImageExecutionInputV1, stage: string, sequence: number): void { this.#protocol.recordStageAck(createStageAck({ schemaVersion: 1, deploymentId: input.executionDeploymentId ?? input.snapshot.deploymentId, commandId: input.commandId, lease: input.lease, stage, sequence })); }
@@ -113,20 +117,60 @@ export class DockerImageExecutor {
   async #run(input: DockerImageExecutionInputV1, image: string, port: number): Promise<DockerImageExecutionReceiptV1> {
     const executionDeploymentId = input.executionDeploymentId ?? input.snapshot.deploymentId; const candidate = Object.freeze({ candidateId: `${executionDeploymentId}:candidate:${input.commandId}`, projectId: input.snapshot.projectId, deploymentId: executionDeploymentId, effectiveImage: image, runtimePort: port, ...(input.networkName ? { networkName: input.networkName } : {}) });
     if (input.signal?.aborted) { this.#stage(input, "execution-canceled", 1); return this.#terminal(input, { deploymentId: executionDeploymentId, effectiveImage: image, runtimePort: port, health: "failed", terminalStatus: "canceled", rollback: { target: null, result: "not-available" }, proven: false }); }
+    const context: DockerPromotionContext | undefined = input.priorProvenReceipt && input.promotionPolicy && input.authority ? { prior: input.priorProvenReceipt, policy: input.promotionPolicy, authority: input.authority, candidate, promotionSignal: input.promotionSignal, completePreparation: input.completePreparation } : undefined;
+    await awaitAbortable(async () => input.authority?.assertValid(), input.signal);
     let started = false; let healthy = false; let rollback: DockerImageExecutionReceiptV1["rollback"] = { target: null, result: "not-available" };
     try {
-      await this.#transport.startCandidate(candidate, input.signal ?? new AbortController().signal);
+      await awaitAbortable(() => this.#transport.startCandidate(candidate, input.signal ?? new AbortController().signal, context, input.authority), input.signal);
       started = true; this.#stage(input, "candidate-started", 1);
       if (input.signal?.aborted) throw new Error("canceled");
-      healthy = await this.#transport.checkHealth(candidate, input.signal ?? new AbortController().signal);
+      healthy = await awaitAbortable(() => this.#transport.checkHealth(candidate, input.signal ?? new AbortController().signal), input.signal);
       this.#stage(input, healthy ? "candidate-healthy" : "candidate-unhealthy", 2);
       if (!healthy) throw new Error("health check failed");
-      const observation = await this.#transport.promoteCandidate(candidate, input.signal ?? new AbortController().signal);
+      await awaitAbortable(async () => input.authority?.assertValid(), input.signal);
+      const promotionSignal = input.signal;
+      const observation = context ? await this.#transport.promoteCandidate(candidate, input.priorProvenReceipt, promotionSignal ?? new AbortController().signal, context) : await this.#transport.promoteCandidate(candidate, undefined, input.signal ?? new AbortController().signal, undefined, input.authority);
       const proof = observation ? this.#proof(input, candidate, observation) : undefined;
       this.#stage(input, "candidate-promoted", 3);
       return this.#terminal(input, { deploymentId: executionDeploymentId, candidateId: candidate.candidateId, effectiveImage: image, runtimePort: port, ...(input.runtimeConfig ? { runtimeConfig: input.runtimeConfig } : {}), ...(proof ? { executionReceipt: proof } : {}), health: "passed", terminalStatus: "succeeded", rollback: { target: null, result: "not-required" }, proven: true });
     }
-     catch { const prior = input.priorProvenReceipt; if (prior && started) { try { await this.#transport.restorePrior(prior, input.signal ?? new AbortController().signal); rollback = { target: prior.effectiveImage, result: "restored" }; } catch { rollback = { target: prior.effectiveImage, result: "not-available" }; } } if (started) { try { await this.#transport.discardCandidate(candidate, input.signal ?? new AbortController().signal); } catch { /* cleanup is best effort; terminal state remains durable */ } } const canceled = input.signal?.aborted; this.#stage(input, canceled ? "execution-canceled" : "candidate-failed", started ? 3 : 2); return this.#terminal(input, { deploymentId: executionDeploymentId, effectiveImage: image, runtimePort: port, health: healthy ? "passed" : "failed", terminalStatus: canceled ? "canceled" : "failed", rollback, proven: false }); }
+    catch {
+      const prior = input.priorProvenReceipt;
+      const recovery = new AbortController();
+      const recoverySignal = context ? recovery.signal : input.signal ?? recovery.signal;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const authorizeRecovery = async () => {
+        await input.authority?.assertValid();
+        if (context && recoverySignal.aborted) throw new Error("recovery deadline exceeded");
+      };
+      const recover = async () => {
+        // Fresh reads, recovery and cleanup share the independent recovery budget.
+        await authorizeRecovery();
+        if (prior && started) {
+          try { await this.#transport.restorePrior(prior, recoverySignal, context); rollback = { target: prior.effectiveImage, result: "restored" }; }
+          catch { rollback = { target: prior.effectiveImage, result: "not-available" }; }
+        }
+        if (started) {
+          await authorizeRecovery();
+          try { await this.#transport.discardCandidate(candidate, recoverySignal, context); }
+          catch { /* Preserve the observed recovery outcome when candidate cleanup fails. */ }
+        }
+        await authorizeRecovery();
+      };
+      try {
+        if (context) {
+          const deadline = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { recovery.abort(); reject(new Error("recovery deadline exceeded")); }, context.policy.maxRecoveryMs); });
+          await Promise.race([recover(), deadline]);
+        } else await recover();
+      } catch (error) {
+        // No terminal receipt can attest recovery when authority or its bound is unresolved.
+        if (context) throw error;
+        rollback = { target: prior?.effectiveImage ?? null, result: "not-available" };
+      } finally { if (timer) clearTimeout(timer); }
+      const canceled = input.signal?.aborted || input.promotionSignal?.aborted;
+      this.#stage(input, canceled ? "execution-canceled" : "candidate-failed", started ? 3 : 2);
+      return this.#terminal(input, { deploymentId: executionDeploymentId, effectiveImage: image, runtimePort: port, health: "failed", terminalStatus: canceled ? "canceled" : "failed", rollback, proven: false });
+    }
   }
 }
 
