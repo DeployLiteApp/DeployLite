@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { trustedPriorExecutionReceiptSchema } from "./prior-execution-receipt.js";
 const id = z.string().min(1).max(256);
 export const agentCapabilityHandshakeSchema = z.object({ schemaVersion: z.literal(1), agentId: id, capabilities: z.array(id).max(32), protocolVersions: z.array(z.union([z.literal(1), z.literal(2)])).min(1).max(4) }).strict();
 export type AgentCapabilityHandshake = z.infer<typeof agentCapabilityHandshakeSchema>;
@@ -14,7 +15,7 @@ export type AgentExecutionCommand = z.infer<typeof agentExecutionCommandSchema>;
 const digestImage = z.string().min(1).max(1024).regex(/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[0-9a-f]{64}$/);
 const runtimeConfigSchema = z.object({ hostPort: z.number().int().min(1024).max(65535), containerPort: z.number().int().min(1).max(65535), networkName: z.string().regex(/^[a-z0-9][a-z0-9_.-]{0,62}$/).optional() }).strict();
 export const dockerImageExecutionReceiptSchema = z.object({
-  deploymentId: id, candidateId: id.optional(), effectiveImage: digestImage, runtimePort: z.number().int().min(1).max(65535), runtimeConfig: runtimeConfigSchema.optional(),
+  deploymentId: id, candidateId: id.optional(), effectiveImage: digestImage, runtimePort: z.number().int().min(1).max(65535), runtimeConfig: runtimeConfigSchema.optional(), executionReceipt: trustedPriorExecutionReceiptSchema.optional(),
   health: z.enum(["passed", "failed"]), terminalStatus: z.enum(["succeeded", "failed", "canceled"]),
   rollback: z.object({ target: digestImage.nullable(), result: z.enum(["not-required", "restored", "not-available"]) }).strict(), proven: z.boolean()
 }).strict().superRefine((receipt, context) => {
@@ -23,12 +24,30 @@ export const dockerImageExecutionReceiptSchema = z.object({
   if (receipt.terminalStatus === "canceled" && receipt.health !== "failed") context.addIssue({ code: z.ZodIssueCode.custom, message: "canceled receipt must be unhealthy" });
   if (receipt.rollback.result === "restored" && receipt.rollback.target === null) context.addIssue({ code: z.ZodIssueCode.custom, message: "restored rollback requires a target" });
   if (receipt.rollback.result === "not-required" && receipt.rollback.target !== null) context.addIssue({ code: z.ZodIssueCode.custom, message: "not-required rollback cannot have a target" });
+  const proof = receipt.executionReceipt;
+  if (!proof) return;
+  // Wire alignment does not authenticate the producer or establish runtime observation.
+  if (receipt.terminalStatus !== "succeeded" || receipt.health !== "passed" || !receipt.proven) context.addIssue({ code: z.ZodIssueCode.custom, path: ["executionReceipt"], message: "execution proof requires a successful proven healthy receipt" });
+  if (receipt.candidateId !== proof.candidateId) context.addIssue({ code: z.ZodIssueCode.custom, path: ["candidateId"], message: "candidate must match execution proof" });
+  if (receipt.deploymentId !== proof.deploymentId) context.addIssue({ code: z.ZodIssueCode.custom, path: ["deploymentId"], message: "deployment must match execution proof" });
+  if (receipt.effectiveImage.split("@")[1] !== proof.effectiveImageDigest) context.addIssue({ code: z.ZodIssueCode.custom, path: ["effectiveImage"], message: "immutable image digest must match execution proof" });
+  const runtime = receipt.runtimeConfig;
+  if (!runtime) context.addIssue({ code: z.ZodIssueCode.custom, path: ["runtimeConfig"], message: "execution proof requires runtime configuration" });
+  if (receipt.runtimePort !== proof.containerPort) context.addIssue({ code: z.ZodIssueCode.custom, path: ["runtimePort"], message: "runtime port must match proof container port" });
+  if (runtime && (runtime.containerPort !== proof.containerPort || runtime.hostPort !== proof.hostPort || (runtime.networkName ?? null) !== proof.network)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["runtimeConfig"], message: "runtime ports and network must match execution proof" });
 });
 export type DockerImageExecutionReceipt = z.infer<typeof dockerImageExecutionReceiptSchema>;
 const agentExecutionReceiptFields = { commandId: id, deploymentId: id, terminalStatus: z.enum(["succeeded", "failed", "canceled"]), health: z.enum(["passed", "failed"]), redacted: z.literal(true), receipt: dockerImageExecutionReceiptSchema };
 const agentExecutionReceiptV1Schema = z.object({ schemaVersion: z.literal(1), ...agentExecutionReceiptFields, correlationId: id.optional() }).strict();
 const agentExecutionReceiptV2Schema = z.object({ schemaVersion: z.literal(2), ...agentExecutionReceiptFields, correlationId: id, sourceDeploymentId: id, snapshotHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
-export const agentExecutionReceiptSchema = z.union([agentExecutionReceiptV1Schema, agentExecutionReceiptV2Schema]);
+export const agentExecutionReceiptSchema = z.union([agentExecutionReceiptV1Schema, agentExecutionReceiptV2Schema]).superRefine((envelope, context) => {
+  const receipt = envelope.receipt;
+  const proof = receipt.executionReceipt;
+  if (!proof) return;
+  if (envelope.deploymentId !== receipt.deploymentId || envelope.terminalStatus !== receipt.terminalStatus || envelope.health !== receipt.health) context.addIssue({ code: z.ZodIssueCode.custom, path: ["receipt"], message: "outer deployment, terminal status and health must match proof-bearing receipt" });
+  // sourceDeploymentId names the immediate execution, not the canonical snapshot origin.
+  if (envelope.schemaVersion === 2 && envelope.snapshotHash !== proof.snapshotHash) context.addIssue({ code: z.ZodIssueCode.custom, path: ["snapshotHash"], message: "canonical snapshot hash must match execution proof" });
+});
 export type AgentExecutionReceipt = z.infer<typeof agentExecutionReceiptSchema>;
 
 export const deploymentStopAgentCommandSchema = z.object({
