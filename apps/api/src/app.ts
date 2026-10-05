@@ -4,6 +4,7 @@ import { materializeMockDeploy, redactEnvFileForLog, type EncryptedEnvRecord } f
 import {
   agentRegistrationSchema,
   dockerImageExecutionReceiptSchema,
+  trustedPriorExecutionReceiptSchema,
   type TrustedPriorExecutionReceiptV1,
   authLoginRequestSchema,
   bootstrapInitialAdminRequestSchema,
@@ -39,6 +40,7 @@ import {
 import { BcryptPasswordHasher, bootstrapInitialAdmin, closeDbPool, createDbClient, createDbPool, createOpaqueSessionToken, DbAgentRepository, DbAuditRepository, DbAuthUserRepository, DbControlCommandRepository, DbControlGrantRepository, DbDeploymentRepository, DbDeploymentExecutionRepository, DbEnvSecretValueRepository, DbEnvVariableMetadataRepository, DbProjectRepository, DbSessionRepository, hashSessionToken, type DeployLiteDb } from "@deploylite/db";
 import {
   AgentStatusService,
+  validateDockerImageSnapshot,
   authenticateLocalUser,
   getBootstrapStatus,
   InMemoryAgentRepository,
@@ -1784,8 +1786,13 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
     if (!decision.allowed) { await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "deployment.redeploy.rejected", targetType: "deployment", targetId: source.id, metadata: { projectId: project.id, reason: decision.code } }); return reply.code(403).send(errorEnvelope(request, decision.code, "Deployment redeploy is not authorized.")); }
     const snapshot = await state.snapshots.findByHash(body.snapshotHash);
     if (!snapshot) { await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "deployment.redeploy.rejected", targetType: "deployment", targetId: source.id, metadata: { projectId: project.id, snapshotHash: body.snapshotHash, reason: "snapshot-missing" } }); return reply.code(404).send(errorEnvelope(request, "REDEPLOY_SNAPSHOT_MISSING", "Deployment snapshot was not found.")); }
-    if (snapshot.projectId !== project.id || snapshot.deploymentId !== source.id) { await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "deployment.redeploy.rejected", targetType: "deployment", targetId: source.id, metadata: { projectId: project.id, snapshotHash: body.snapshotHash, reason: "snapshot-wrong-project" } }); return reply.code(409).send(errorEnvelope(request, "REDEPLOY_SNAPSHOT_WRONG_PROJECT", "Snapshot does not belong to the source deployment project.")); }
-    if (source.status !== "succeeded" || createDeploymentPlan(snapshot).status !== "executable" || !snapshot.agentId || !snapshot.commitSha) { await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "deployment.redeploy.rejected", targetType: "deployment", targetId: source.id, metadata: { projectId: project.id, snapshotHash: body.snapshotHash, reason: "snapshot-ineligible" } }); return reply.code(409).send(errorEnvelope(request, "REDEPLOY_SNAPSHOT_INELIGIBLE", "Snapshot is not eligible for redeployment.")); }
+    if (snapshot.projectId !== project.id) { await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "deployment.redeploy.rejected", targetType: "deployment", targetId: source.id, metadata: { projectId: project.id, snapshotHash: body.snapshotHash, reason: "snapshot-wrong-project" } }); return reply.code(409).send(errorEnvelope(request, "REDEPLOY_SNAPSHOT_WRONG_PROJECT", "Snapshot does not belong to the source deployment project.")); }
+    let canonicalValid = true;
+    try { validateDockerImageSnapshot(snapshot, { sha256: (bytes) => createHash("sha256").update(bytes).digest("hex") }); } catch { canonicalValid = false; }
+    const sourceProof = trustedPriorExecutionReceiptSchema.safeParse(source.executionReceipt);
+    const imageDigest = snapshot.source.sourceMode === "image" ? (snapshot.source.image.selector.kind === "digest" ? snapshot.source.image.selector.value : snapshot.resolvedDigest) : undefined;
+    const sourceBound = sourceProof.success && sourceProof.data.deploymentId === source.id && sourceProof.data.projectId === project.id && sourceProof.data.runtimeHost === source.agentId && source.agentId === snapshot.agentId && source.snapshotOriginId === snapshot.deploymentId && source.snapshotHash === snapshot.hash && sourceProof.data.snapshotOriginId === snapshot.deploymentId && sourceProof.data.snapshotHash === snapshot.hash && sourceProof.data.effectiveImageDigest === imageDigest && sourceProof.data.containerPort === snapshot.runtimePort;
+    if (!canonicalValid || !sourceBound || source.status !== "succeeded" || createDeploymentPlan(snapshot).status !== "executable" || !snapshot.agentId || !snapshot.commitSha) { await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "deployment.redeploy.rejected", targetType: "deployment", targetId: source.id, metadata: { projectId: project.id, snapshotHash: body.snapshotHash, reason: "snapshot-ineligible" } }); return reply.code(409).send(errorEnvelope(request, "REDEPLOY_SNAPSHOT_INELIGIBLE", "Snapshot is not eligible for redeployment.")); }
     let resolved: { command: ControlCommand; created: boolean };
     try { resolved = await state.controlRedeploy.resolve(createControlCommand({ actorId: request.auth!.user.id, action: "deployment.redeploy", scope, input: { actorId: request.auth!.user.id, projectId: project.id, sourceDeploymentId: source.id, snapshotHash: body.snapshotHash }, idempotencyKey, correlationId: request.correlationContext.correlationId })); }
     catch (error) { if (error instanceof IdempotencyConflictError) return reply.code(409).send(errorEnvelope(request, error.code, error.message)); throw error; }
@@ -1797,7 +1804,7 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
      if (resolved.command.status === "eligible" || resolved.command.status === "dispatching") return reply.code(202).send(ok(request, { command: resolved.command, pending: true, correlationId: request.correlationContext.correlationId }));
     if (!confirmationId) return reply.code(409).send(errorEnvelope(request, "CONFIRMATION_REQUIRED", "An explicit confirmation is required for deployment redeploy."));
     const confirmation = { id: confirmationId, commandId: resolved.command.id, actorId: resolved.command.actorId, action: resolved.command.action, scope: resolved.command.scope, inputDigest: resolved.command.inputDigest, classification: "destructive" as const, expiresAt: resolved.command.expiresAt, consumedAt: null };
-    const deployment: Deployment = { id: `dep_${createRequestId()}`, projectId: snapshot.projectId, agentId: snapshot.agentId, status: "queued", commitSha: snapshot.commitSha, startedAt: new Date().toISOString(), finishedAt: null, sourceDeploymentId: snapshot.deploymentId, snapshotHash: snapshot.hash };
+    const deployment: Deployment = { id: `dep_${createRequestId()}`, projectId: snapshot.projectId, agentId: snapshot.agentId, status: "queued", commitSha: snapshot.commitSha, startedAt: new Date().toISOString(), finishedAt: null, sourceDeploymentId: source.id, snapshotOriginId: snapshot.deploymentId, snapshotHash: snapshot.hash };
      const admitted = await state.controlRedeploy.executeConfirmedDeploymentRedeploy({ command: resolved.command, confirmation, deployment, requestId: request.correlationContext.requestId, snapshotHash: snapshot.hash });
      if (!admitted.accepted) return reply.code(409).send(errorEnvelope(request, "CONFIRMATION_REJECTED", "Confirmation is not eligible for this command."));
      const result = admitted.result;
@@ -1806,36 +1813,41 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
      if (!claim.claimed) return reply.code(202).send(ok(request, { command: claim.command, pending: true, correlationId: request.correlationContext.correlationId }));
      if (!claim.deployment) throw new Error("Redeploy command deployment was not persisted");
      const queued = claim.deployment;
-     const complete = async (terminal: import("@deploylite/contracts").DeploymentRedeployCommandResult) => { await state.controlRedeploy.completeDeploymentRedeploy(claim.command, terminal); };
-     if (!state.deploymentDispatcher.available()) {
-       const failed = { ...queued, status: "failed" as const, finishedAt: new Date().toISOString() };
-       await state.deployments.save(failed);
-       const terminal = { ...result, status: "completed" as const, reason: "deploy.execute-unavailable" };
-       await complete(terminal);
-       await appendAudit(adapters.audit, request, { action: "deployment.redeploy.failed", targetType: "deployment", targetId: queued.id, metadata: { projectId: queued.projectId, sourceDeploymentId: source.id, snapshotHash: snapshot.hash, reason: terminal.reason } });
-       return reply.code(503).send(errorEnvelope(request, "DEPLOY_EXECUTE_UNAVAILABLE", "Redeploy execution is unavailable."));
+     const running: Deployment = { ...queued, status: "running", stopTarget: { candidateId: `${queued.id}:candidate:deploy_${queued.id}`, effectiveImage: snapshot.source.sourceMode === "image" ? `${snapshot.source.image.registryHost}/${snapshot.source.image.repository}@${imageDigest}` : "" } };
+     await state.deployments.save(running);
+     if (!state.executionCompletion) return reply.code(503).send(errorEnvelope(request, "EXECUTION_COMPLETION_UNAVAILABLE", "Atomic redeploy completion is unavailable."));
+     let execution: "dispatched" | DockerImageExecutionReceiptV1 | DeploymentDispatchReceipt | undefined;
+     let dispatchError: unknown; let dispatchFailed = false;
+     const available = state.deploymentDispatcher.available();
+     if (available) {
+       await state.deployments.appendLog({ id: `log_${createRequestId()}`, deploymentId: queued.id, sequence: 1, level: "info", message: "Agent accepted redeploy snapshot and started execution.", timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: claim.command.correlationId });
+       const abort = new AbortController(); const onAbort = () => abort.abort(); request.raw.once("aborted", onAbort); if (request.raw.aborted) abort.abort();
+       try { execution = await state.deploymentDispatcher.dispatch(snapshot, `deploy_${queued.id}`, { agentId: queued.agentId!, requestId: request.correlationContext.requestId, correlationId: claim.command.correlationId, executionDeploymentId: queued.id, sourceDeploymentId: source.id, signal: abort.signal }); }
+       catch (error) { dispatchFailed = true; dispatchError = error; }
+       finally { request.raw.removeListener("aborted", onAbort); }
      }
-     const abort = new AbortController(); const onAbort = () => abort.abort(); request.raw.once("aborted", onAbort);
-     try {
-        const execution = await state.deploymentDispatcher.dispatch(snapshot, `deploy_${queued.id}`, { agentId: queued.agentId!, requestId: request.correlationContext.requestId, correlationId: claim.command.correlationId, executionDeploymentId: queued.id, signal: abort.signal });
-        if (typeof execution === "string") return reply.code(202).send(ok(request, { command: claim.command, deployment: queued, pending: true, correlationId: request.correlationContext.correlationId })); const receipt = execution as DeploymentDispatchReceipt;
-        const expected = claim.command.result as import("@deploylite/contracts").DeploymentRedeployCommandResult | undefined;
-        if (!expected || expected.status !== "eligible" || expected.projectId !== queued.projectId || expected.sourceDeploymentId !== source.id || expected.deploymentId !== queued.id || expected.snapshotHash !== snapshot.hash || receipt.projectId !== expected.projectId || receipt.sourceDeploymentId !== expected.sourceDeploymentId || receipt.snapshotHash !== expected.snapshotHash || receipt.deploymentId !== expected.deploymentId || receipt.correlationId !== expected.correlationId) throw new RedeployReceiptMismatchError("Redeploy dispatcher receipt identity mismatch");
-        const terminalDeployment = { ...queued, status: receipt.terminalStatus, finishedAt: new Date().toISOString() };
-       await state.deployments.save(terminalDeployment);
-        const terminal = { ...result, status: "completed" as const, reason: receipt.terminalStatus === "succeeded" ? null : `agent-${receipt.terminalStatus}` };
-       await complete(terminal);
-        await appendAudit(adapters.audit, request, { action: `deployment.redeploy.${receipt.terminalStatus}`, targetType: "deployment", targetId: queued.id, metadata: { projectId: queued.projectId, sourceDeploymentId: source.id, snapshotHash: snapshot.hash, health: receipt.health, rollback: receipt.rollback } });
-        return ok(request, { deployment: terminalDeployment, command: terminal, snapshotHash: body.snapshotHash, sourceDeploymentId: source.id, execution: receipt });
-      } catch (error) {
-        if (error instanceof RedeployReceiptMismatchError) return reply.code(502).send(errorEnvelope(request, "REDEPLOY_DISPATCH_FAILED", "Redeploy execution returned invalid terminal evidence."));
-        const failed = { ...queued, status: "failed" as const, finishedAt: new Date().toISOString() };
-       await state.deployments.save(failed);
-       const terminal = { ...result, status: "completed" as const, reason: error instanceof Error ? "agent-dispatch-failed" : "agent-dispatch-failed" };
-       await complete(terminal);
-       await appendAudit(adapters.audit, request, { action: "deployment.redeploy.failed", targetType: "deployment", targetId: queued.id, metadata: { projectId: queued.projectId, sourceDeploymentId: source.id, snapshotHash: snapshot.hash, reason: terminal.reason } });
-       return reply.code(502).send(errorEnvelope(request, "REDEPLOY_DISPATCH_FAILED", "Redeploy execution failed."));
-     } finally { request.raw.removeListener("aborted", onAbort); }
+     if (execution === "dispatched") return reply.code(202).send(ok(request, { command: claim.command, deployment: running, pending: true, correlationId: claim.command.correlationId }));
+     let terminalStatus: "succeeded" | "failed" | "canceled" = dispatchError instanceof TransportCanceledError ? "canceled" : "failed";
+     let proof: TrustedPriorExecutionReceiptV1 | null = null;
+     if (execution) {
+       const receipt = execution as DeploymentDispatchReceipt;
+       const expected = claim.command.result as import("@deploylite/contracts").DeploymentRedeployCommandResult | undefined;
+       const { projectId: _projectId, sourceDeploymentId: _sourceId, snapshotHash: _hash, correlationId: _correlation, ...inner } = receipt;
+       const parsed = dockerImageExecutionReceiptSchema.safeParse(inner);
+       if (!expected || expected.status !== "eligible" || expected.projectId !== queued.projectId || expected.sourceDeploymentId !== source.id || expected.deploymentId !== queued.id || expected.snapshotHash !== snapshot.hash || receipt.projectId !== expected.projectId || receipt.sourceDeploymentId !== expected.sourceDeploymentId || receipt.snapshotHash !== expected.snapshotHash || receipt.deploymentId !== expected.deploymentId || receipt.correlationId !== expected.correlationId || !parsed.success || parsed.data.runtimePort !== snapshot.runtimePort || parsed.data.effectiveImage !== running.stopTarget!.effectiveImage) return reply.code(502).send(errorEnvelope(request, "REDEPLOY_DISPATCH_FAILED", "Redeploy execution returned invalid terminal evidence."));
+       terminalStatus = parsed.data.terminalStatus;
+       proof = parsed.data.executionReceipt ?? null;
+       if (terminalStatus === "succeeded" && (!proof || proof.projectId !== queued.projectId || proof.deploymentId !== queued.id || proof.candidateId !== running.stopTarget!.candidateId || proof.runtimeHost !== queued.agentId || proof.snapshotOriginId !== snapshot.deploymentId || proof.snapshotHash !== snapshot.hash || proof.effectiveImageDigest !== imageDigest || proof.containerPort !== snapshot.runtimePort || proof.hostPort !== sourceProof.data!.hostPort || proof.network !== sourceProof.data!.network)) return reply.code(502).send(errorEnvelope(request, "REDEPLOY_DISPATCH_FAILED", "Redeploy execution returned invalid trusted proof."));
+     }
+     const terminal = { ...result, status: "completed" as const, reason: !available ? "deploy.execute-unavailable" : dispatchFailed ? "agent-dispatch-failed" : terminalStatus === "succeeded" ? null : `agent-${terminalStatus}` };
+     // Completion failures must never enter the dispatch catch or fall back to separate writes.
+     const persisted = await state.deployments.findById(running.id);
+     const completion = await state.executionCompletion.completeExecution({ commandId: claim.command.id, commandResult: terminal, proof, expectedStatus: running.status, executionId: running.id, projectId: running.projectId, sourceExecutionId: source.id, snapshotOriginId: snapshot.deploymentId, snapshotHash: snapshot.hash, runtimeHost: running.agentId!, effectiveImageDigest: imageDigest!, terminalStatus, finishedAt: persisted?.finishedAt ?? new Date().toISOString() });
+     if (!("deployment" in completion)) return reply.code(completion.kind === "conflict" ? 409 : 404).send(errorEnvelope(request, completion.kind === "conflict" ? "EXECUTION_COMPLETION_CONFLICT" : "NOT_FOUND", "Redeploy completion could not be persisted."));
+     await state.deployments.appendLog({ id: `log_${createRequestId()}`, deploymentId: running.id, sequence: available ? 2 : 1, level: terminalStatus === "succeeded" ? "info" : "error", message: `Agent redeploy ${terminalStatus}.`, timestamp: completion.deployment.finishedAt!, redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: claim.command.correlationId });
+     await appendAudit(adapters.audit, request, { action: `deployment.redeploy.${terminalStatus}`, targetType: "deployment", targetId: queued.id, metadata: { projectId: queued.projectId, sourceDeploymentId: source.id, snapshotHash: snapshot.hash, reason: terminal.reason } });
+     if (!available || dispatchFailed) return reply.code(!available ? 503 : 502).send(errorEnvelope(request, !available ? "DEPLOY_EXECUTE_UNAVAILABLE" : "REDEPLOY_DISPATCH_FAILED", "Redeploy execution failed."));
+     return ok(request, { deployment: completion.deployment, command: completion.command!.result, snapshotHash: snapshot.hash, sourceDeploymentId: source.id, execution });
   });
   app.get(`${API_PREFIX}/deployments/:deploymentId`, { preHandler: requireAuth }, async (request, reply) => {
     const params = z.object({ deploymentId: z.string().min(1) }).parse(request.params);

@@ -115,3 +115,23 @@ it("preserves direct legacy stub-hashed dispatch without creating eligible proof
   expect(failure).toBeUndefined(); expect(result).toMatchObject({ terminalStatus: "succeeded", health: "passed" });
   expect(result).not.toHaveProperty("executionReceipt"); expect(transport.calls).toEqual(["start", "health", "promote"]);
 });
+
+
+describe("repeated execution source versus canonical origin", () => {
+  it("accepts signed C from immediate B with canonical A proof and rejects changed-source replay", async () => {
+    const body = { ...command(), commandId: "cmd-C", deploymentId: "execution-C", sourceDeploymentId: "execution-B", lease: { ...command().lease, deploymentId: "execution-C" } };
+    const store = receiverStore(); let effects = 0;
+    const receiver = new AuthenticatedAgentCommandReceiver({ agentId: "agent-1", trustKey: "transport_test_key_123", capabilities: ["deploy.execute"], now: () => 1, replayStore: store, dispatcher: { runtimeConfig: { hostPort: 43000, containerPort: 3000 }, dispatch: async () => { effects++; return proofReceipt(body); } } });
+    const signed = signAgentTransport(JSON.stringify(body), "transport_test_key_123"); let first: any; let failure: unknown;
+    try { first = await receiver.receive(body, signed); } catch (error) { failure = error; }
+    expect(failure).toBeUndefined(); expect(first).toMatchObject({ sourceDeploymentId: "execution-B", receipt: { executionReceipt: { deploymentId: "execution-C", snapshotOriginId: "dep_receiver" } } });
+    expect(await receiver.receive(body, signed)).toEqual(first); expect(effects).toBe(1);
+    const changed = { ...body, sourceDeploymentId: "execution-other" };
+    await expect(receiver.receive(changed, signAgentTransport(JSON.stringify(changed), "transport_test_key_123"))).rejects.toThrow("payload conflict"); expect(effects).toBe(1);
+  });
+  it("rejects a proof that substitutes immediate source for canonical origin", async () => {
+    const body = { ...command(), sourceDeploymentId: "execution-B" }; const store = receiverStore();
+    const receiver = new AuthenticatedAgentCommandReceiver({ agentId: "agent-1", trustKey: "transport_test_key_123", capabilities: ["deploy.execute"], now: () => 1, replayStore: store, dispatcher: { runtimeConfig: { hostPort: 43000, containerPort: 3000 }, dispatch: async () => proofReceipt(body, { snapshotOriginId: "execution-B" }) } });
+    await expect(receiver.receive(body, signAgentTransport(JSON.stringify(body), "transport_test_key_123"))).rejects.toThrow(); expect(store.completions).toBe(0);
+  });
+});
