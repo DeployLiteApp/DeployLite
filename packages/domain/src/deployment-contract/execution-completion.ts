@@ -1,9 +1,11 @@
-import { trustedPriorExecutionReceiptSchema, type Deployment, type DeploymentRedeployCommandResult, type TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
+import type { InitialExecutionBinding } from "./deployment-authority.js";
+import { deploymentExecutionAuthoritySchema, protocolPayloadFingerprint, type DeploymentExecutionAuthorityV1, trustedPriorExecutionReceiptSchema, type Deployment, type DeploymentRedeployCommandResult, type TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
 
 export type ExecutionTerminalStatus = Extract<Deployment["status"], "succeeded" | "failed" | "canceled">;
 
 export type ExecutionCompletionInput = Readonly<{
   commandId: string | null;
+  authority?: DeploymentExecutionAuthorityV1;
   expectedStatus: Deployment["status"];
   executionId: string;
   projectId: string;
@@ -22,6 +24,7 @@ export type ExecutionCommandRecord = Readonly<{
   id: string;
   status: "eligible" | "dispatching" | "completed";
   result: DeploymentRedeployCommandResult;
+  executionAuthority?: DeploymentExecutionAuthorityV1;
 }>;
 
 export type ExecutionCompletionOutcome =
@@ -33,6 +36,9 @@ export type DeploymentExecutionRepository = {
 };
 
 export type ExecutionCompletionTransaction = {
+  validateInitialExecution?(projectId: string, executionId: string, binding: InitialExecutionBinding): Promise<boolean>;
+  lockProjectAuthority?(projectId: string): Promise<void>;
+  validateAuthority?(authority: DeploymentExecutionAuthorityV1): Promise<boolean>;
   lockCommand(id: string): Promise<ExecutionCommandRecord | null>;
   lockDeployment(id: string): Promise<Deployment | null>;
   saveDeployment(deployment: Deployment): Promise<void>;
@@ -49,6 +55,7 @@ export async function completeExecutionAtomically(
 ): Promise<ExecutionCompletionOutcome> {
   const candidate = parseInput(input);
   return store.transaction(async (transaction) => {
+    if (candidate.authority || candidate.commandId === null) await transaction.lockProjectAuthority?.(candidate.projectId);
     const command = candidate.commandId ? await transaction.lockCommand(candidate.commandId) : null;
     if (candidate.commandId && !command) return { kind: "not-found" };
     const deployment = await transaction.lockDeployment(candidate.executionId);
@@ -70,6 +77,8 @@ export async function completeExecutionAtomically(
         ? { kind: "replayed", deployment: structuredClone(deployment), command: structuredClone(command) }
         : { kind: "conflict" };
     }
+    if (candidate.commandId === null && transaction.validateInitialExecution && !await transaction.validateInitialExecution(candidate.projectId, candidate.executionId, candidate)) return { kind: "conflict" };
+    if (candidate.authority && (!transaction.validateAuthority || !await transaction.validateAuthority(candidate.authority))) return { kind: "conflict" };
     if (deployment.status !== candidate.expectedStatus) return { kind: "conflict" };
 
     await transaction.saveDeployment(completedDeployment);
@@ -89,16 +98,19 @@ function parseInput(input: ExecutionCompletionInput): ExecutionCompletionInput {
   if (!/^sha256:[a-f0-9]{64}$/.test(copy.effectiveImageDigest) || !copy.runtimeHost || Number.isNaN(Date.parse(copy.finishedAt))) throw new Error("Execution completion runtime binding is invalid");
   if ((copy.terminalStatus === "succeeded") !== Boolean(proof)) throw new Error("Successful completion requires trusted proof and ordinary failure forbids it");
   if (Boolean(copy.commandId) !== Boolean(copy.commandResult)) throw new Error("Command completion identity is invalid");
-  return { ...copy, proof };
+  return { ...copy, proof, ...(copy.authority ? { authority: deploymentExecutionAuthoritySchema.parse(copy.authority) } : {}) };
 }
 
 function bindingsMatch(deployment: Deployment, command: ExecutionCommandRecord | null, input: ExecutionCompletionInput): boolean {
   if (deployment.id !== input.executionId || deployment.projectId !== input.projectId || deployment.agentId !== input.runtimeHost || (deployment.sourceDeploymentId ?? null) !== input.sourceExecutionId || deployment.snapshotOriginId !== input.snapshotOriginId || deployment.snapshotHash !== input.snapshotHash) return false;
   if (input.proof && (input.proof.deploymentId !== input.executionId || input.proof.projectId !== input.projectId || input.proof.snapshotOriginId !== input.snapshotOriginId || input.proof.snapshotHash !== input.snapshotHash || input.proof.runtimeHost !== input.runtimeHost || input.proof.effectiveImageDigest !== input.effectiveImageDigest)) return false;
   if (!command) return input.commandId === null && input.commandResult === null;
+  if (command.status !== "dispatching" && command.status !== "completed") return false;
   const result = input.commandResult;
   const expected = command.result;
   if (command.id !== input.commandId || !result) return false;
+  if (Boolean(command.executionAuthority) !== Boolean(input.authority)) return false;
+  if (input.authority && (protocolPayloadFingerprint(command.executionAuthority) !== protocolPayloadFingerprint(input.authority) || input.authority.commandId !== command.id || input.authority.action !== "deployment.redeploy" || input.authority.projectId !== input.projectId || input.authority.projectLease.deploymentId !== input.projectId || input.authority.executionLease.deploymentId !== input.executionId || input.authority.sourceLease?.deploymentId !== input.sourceExecutionId)) return false;
   if (command.status === "completed") return true;
   return result.commandId === command.id && result.action === "deployment.redeploy" && result.status === "completed"
     && result.projectId === input.projectId && result.sourceDeploymentId === input.sourceExecutionId

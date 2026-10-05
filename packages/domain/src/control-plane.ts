@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { CanonicalRole, ConfirmationClassification, ControlCommandStatus, ControlPlaneAction, ControlPlaneScope, Deployment, DeploymentRedeployCommandResult, DeploymentStopCommandResult } from "@deploylite/contracts";
+import type { CanonicalRole, ConfirmationClassification, ControlCommandStatus, ControlPlaneAction, ControlPlaneScope, Deployment, DeploymentRedeployCommandResult, DeploymentStopCommandResult, DeploymentExecutionAuthorityV1 } from "@deploylite/contracts";
 
 export type ControlGrant = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope };
 export type ControlGrantRepository = { listForActor(actorId: string): Promise<ControlGrant[]> };
 export type PolicyRequest = { actorId: string; role: CanonicalRole; action: ControlPlaneAction; scope: ControlPlaneScope; correlationId: string; grants: ControlGrant[] };
 export type PolicyDecision = { allowed: true; grantId: string; correlationId: string } | { allowed: false; code: "FORBIDDEN" | "ROLE_DENIED" | "SCOPE_DENIED"; correlationId: string };
-export type ControlCommand = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; idempotencyKey: string; correlationId: string; status: ControlCommandStatus; expiresAt: Date; result?: DeploymentStopCommandResult | DeploymentRedeployCommandResult };
+export type ControlCommand = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; idempotencyKey: string; correlationId: string; status: ControlCommandStatus; expiresAt: Date; result?: DeploymentStopCommandResult | DeploymentRedeployCommandResult; executionAuthority?: DeploymentExecutionAuthorityV1 };
 export type ControlConfirmation = { id: string; commandId: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; classification: ConfirmationClassification; expiresAt: Date; consumedAt: Date | null };
 export type ConfirmationOutcome = { command: ControlCommand; accepted: boolean; reason: string | null };
 export type ConfirmedProjectDeleteInput = { command: ControlCommand; confirmation: ControlConfirmation; projectId: string; requestId: string; now?: Date };
@@ -67,14 +67,16 @@ export type ControlDeleteRepository = ControlCommandRepository & ControlConfirma
   executeConfirmedProjectDelete(input: ConfirmedProjectDeleteInput): Promise<ConfirmedProjectDeleteOutcome>;
 };
 export type ControlStopRepository = ControlCommandRepository & ControlConfirmationRepository & {
+  validateDeploymentAuthority?(authority: DeploymentExecutionAuthorityV1, now?: number): Promise<void>;
   executeConfirmedDeploymentStop(input: ConfirmedDeploymentStopInput): Promise<ConfirmedDeploymentStopOutcome>;
-  claimDeploymentStop(command: ControlCommand): Promise<{ command: ControlCommand; claimed: boolean }>;
+  claimDeploymentStop(command: ControlCommand): Promise<{ command: ControlCommand; claimed: boolean; authority?: DeploymentExecutionAuthorityV1 }>;
   completeDeploymentStop(command: ControlCommand, result: DeploymentStopCommandResult): Promise<ControlCommand>;
 };
 export type ControlRedeployRepository = ControlCommandRepository & ControlConfirmationRepository & {
+  validateDeploymentAuthority?(authority: DeploymentExecutionAuthorityV1, now?: number): Promise<void>;
   findByIdempotency(actorId: string, idempotencyKey: string): Promise<ControlCommand | null>;
   executeConfirmedDeploymentRedeploy(input: ConfirmedDeploymentRedeployInput): Promise<ConfirmedDeploymentRedeployOutcome>;
-  claimDeploymentRedeploy(command: ControlCommand): Promise<{ command: ControlCommand; claimed: boolean; deployment: Deployment | null }>;
+  claimDeploymentRedeploy(command: ControlCommand): Promise<{ command: ControlCommand; claimed: boolean; deployment: Deployment | null; authority?: DeploymentExecutionAuthorityV1 }>;
   completeDeploymentRedeploy(command: ControlCommand, result: DeploymentRedeployCommandResult): Promise<ControlCommand>;
 };
 

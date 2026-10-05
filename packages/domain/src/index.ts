@@ -10,6 +10,7 @@ export * from "./deployment-contract/docker-image-executor.js";
 export { FakeDockerImageTransport } from "./deployment-contract/testing/fake-docker-image-transport.js";
 
 export * from "./control-plane.js";
+export * from "./deployment-contract/deployment-authority.js";
 
 export const canonicalRoleNames = ["admin", "operator", "read-only", "auditor"] as const;
 export type CanonicalRoleName = (typeof canonicalRoleNames)[number];

@@ -36,7 +36,7 @@ class RecordingTransactionalClient {
     command: {
       id: "command-1", actorUserId: "actor-1", action: "deployment.redeploy", scopeKind: "deployment",
       scopeKey: JSON.stringify(["project-1", "source-1"]), inputDigest: "input-1", idempotencyKey: "key-1",
-      correlationId: "correlation-1", status: "dispatching", result, expiresAt: new Date(finishedAt),
+      correlationId: "correlation-1", status: "dispatching", executionAuthority: null, result, expiresAt: new Date(finishedAt),
       createdAt: new Date(startedAt), updatedAt: new Date(startedAt)
     }
   };
