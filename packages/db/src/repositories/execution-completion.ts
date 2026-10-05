@@ -1,7 +1,7 @@
-import { and, eq } from "drizzle-orm";
-import { deploymentRedeployCommandResultSchema, type Deployment } from "@deploylite/contracts";
+import { and, eq, gt, sql } from "drizzle-orm";
+import { deploymentExecutionAuthoritySchema, deploymentRedeployCommandResultSchema, type Deployment } from "@deploylite/contracts";
 import {
-  completeExecutionAtomically,
+  completeExecutionAtomically, validateDeploymentAuthority, validateInitialExecution,
   type DeploymentExecutionRepository,
   type ExecutionCommandRecord,
   type ExecutionCompletionInput,
@@ -11,6 +11,7 @@ import {
 } from "@deploylite/domain";
 import type { DeployLiteDb } from "../client.js";
 import { controlCommands, deployments, type ControlCommandRow } from "../schema.js";
+import { toCommand } from "./control-plane.js";
 import { toDeployment } from "./deployment-data.js";
 
 export class DbDeploymentExecutionRepository implements DeploymentExecutionRepository {
@@ -20,10 +21,23 @@ export class DbDeploymentExecutionRepository implements DeploymentExecutionRepos
     const store: ExecutionCompletionStore = {
       transaction: (work) => this.db.transaction(async (tx) => {
         let lockedDeployment: Deployment | null = null;
+        let lockedCommand: ExecutionCommandRecord | null = null;
         const transaction: ExecutionCompletionTransaction = {
+          lockProjectAuthority: async (projectId) => { await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`deploylite:execution:${projectId}`}, 0))`); },
+          validateInitialExecution: async (projectId, executionId, binding) => {
+            const related = await tx.select().from(controlCommands).where(and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${projectId}`));
+            try { validateInitialExecution(related.map(toCommand), lockedDeployment, projectId, executionId, binding); return true; }
+            catch { return false; }
+          },
+          validateAuthority: async (authority) => {
+            const related = await tx.select().from(controlCommands).where(and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${authority.projectId}`));
+            try { validateDeploymentAuthority(related.map(toCommand), authority); return true; }
+            catch { return false; }
+          },
           lockCommand: async (id) => {
             const [row] = await tx.select().from(controlCommands).where(eq(controlCommands.id, id)).limit(1).for("update");
-            return row ? toExecutionCommand(row) : null;
+            lockedCommand = row ? toExecutionCommand(row) : null;
+            return lockedCommand;
           },
           lockDeployment: async (id) => {
             const [row] = await tx.select().from(deployments).where(eq(deployments.id, id)).limit(1).for("update");
@@ -40,8 +54,10 @@ export class DbDeploymentExecutionRepository implements DeploymentExecutionRepos
             if (!saved) throw new ExecutionCompletionConflict();
           },
           saveCommand: async (command) => {
+            const authority = lockedCommand?.executionAuthority;
+            const expiresAt = authority ? Math.min(authority.projectLease.expiresAt, authority.executionLease.expiresAt, authority.sourceLease?.expiresAt ?? Infinity) : null;
             const [saved] = await tx.update(controlCommands).set({ status: command.status, result: command.result, updatedAt: new Date() })
-              .where(and(eq(controlCommands.id, command.id), eq(controlCommands.status, "dispatching")))
+              .where(and(eq(controlCommands.id, command.id), eq(controlCommands.status, "dispatching"), ...(authority ? [eq(controlCommands.executionAuthority, authority), gt(controlCommands.expiresAt, sql`clock_timestamp()`), sql`clock_timestamp() < to_timestamp(${expiresAt! / 1000})`] : [])))
               .returning({ id: controlCommands.id });
             if (!saved) throw new ExecutionCompletionConflict();
           }
@@ -68,5 +84,5 @@ function toExecutionCommand(row: ControlCommandRow): ExecutionCommandRecord {
   if (!Array.isArray(scope) || scope.length !== 2 || scope[0] !== result.projectId || scope[1] !== result.sourceDeploymentId
     || row.id !== result.commandId || row.correlationId !== result.correlationId
     || result.status !== (row.status === "completed" ? "completed" : "eligible")) throw new ExecutionCompletionConflict();
-  return { id: row.id, status: row.status, result };
+  return { id: row.id, status: row.status, result, ...(row.executionAuthority ? { executionAuthority: deploymentExecutionAuthoritySchema.parse(row.executionAuthority) } : {}) };
 }

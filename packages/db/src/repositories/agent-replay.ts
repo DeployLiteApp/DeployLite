@@ -6,7 +6,7 @@ import { agentReplay } from "../schema.js";
 
 export type AgentReplayReceipt = Record<string, unknown>;
 export type AgentReplayClaim = { claimed: boolean; claimToken?: string; receipt?: AgentReplayReceipt };
-export type AgentReplayStore = { readonly durable: true; claim(commandId: string, fingerprint: string, lease: LeaseV1): Promise<AgentReplayClaim>; wait(commandId: string): Promise<AgentReplayReceipt>; complete(commandId: string, value: { fingerprint: string; claimToken: string; receipt: AgentReplayReceipt }): Promise<void>; release(commandId: string): Promise<void> };
+export type AgentReplayStore = { readonly durable: true; claim(commandId: string, fingerprint: string, lease: LeaseV1): Promise<AgentReplayClaim>; wait(commandId: string): Promise<AgentReplayReceipt>; complete(commandId: string, value: { fingerprint: string; claimToken: string; receipt: AgentReplayReceipt }): Promise<void>; release(commandId: string, claimToken?: string): Promise<void> };
 
 export class DbAgentReplayStore implements AgentReplayStore {
   readonly durable = true as const;
@@ -36,5 +36,5 @@ export class DbAgentReplayStore implements AgentReplayStore {
     if (!result.length) throw new Error("replay claim is stale or already completed");
     this.#owned.delete(commandId);
   }
-  async release(commandId: string): Promise<void> { await this.db.delete(agentReplay).where(and(eq(agentReplay.commandId, commandId), eq(agentReplay.claimOwner, this.owner), eq(agentReplay.status, "in_progress"))); }
+  async release(commandId: string, claimToken?: string): Promise<void> { if (!claimToken) return; await this.db.delete(agentReplay).where(and(eq(agentReplay.commandId, commandId), eq(agentReplay.claimOwner, this.owner), eq(agentReplay.claimToken, claimToken), eq(agentReplay.status, "in_progress"))); }
 }
