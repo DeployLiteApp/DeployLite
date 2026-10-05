@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { signAgentTransport } from "@deploylite/config";
-import { createDeploymentSnapshot, createSourceIntent, TransportCanceledError } from "@deploylite/contracts";
+import { createDeploymentSnapshot, createSourceIntent, trustedPriorExecutionReceiptSchema, TransportCanceledError } from "@deploylite/contracts";
 import { FakeDockerImageTransport } from "@deploylite/domain";
 import { AuthenticatedAgentCommandReceiver } from "./agent-transport.js";
 import { DigestDeploymentDispatcher } from "./deployment-dispatcher.js";
@@ -48,4 +48,70 @@ describe("agent command receiver", () => {
   ])("rejects stop %s before dispatch", async (_name, overrides) => {
     const body = stopCommand(overrides); const stop = { stop: async () => { throw new Error("must not stop"); } }; const receiver = new AuthenticatedAgentCommandReceiver({ agentId: "agent-1", trustKey: "transport_test_key_123", capabilities: ["deployment.stop"], dispatcher: { dispatch: async () => { throw new Error("must not execute"); } }, stopDispatcher: stop, replayStore: { claim: async () => ({ claimed: true, claimToken: "x" }), wait: async () => { throw new Error("must not wait"); }, complete: async () => {}, release: async () => {} }, now: () => 1 }); const signed = signAgentTransport(JSON.stringify(body), "transport_test_key_123"); await expect(receiver.receive(body, signed)).rejects.toThrow();
   });
+});
+
+function proofReceipt(body: ReturnType<typeof command>, patch: Record<string, unknown> = {}) {
+  const proof = trustedPriorExecutionReceiptSchema.parse({ schemaVersion: 1, candidateId: `${body.deploymentId}:candidate:${body.commandId}`, deploymentId: body.deploymentId, projectId: body.projectId, snapshotOriginId: body.snapshot.deploymentId, snapshotHash: body.snapshotHash, effectiveImageDigest: digest, runtimeHost: "agent-1", container: "active-observed", containerId: "physical-container", hostPort: 43000, containerPort: 3000, network: null, ...patch });
+  return { deploymentId: proof.deploymentId, candidateId: proof.candidateId, effectiveImage: `registry.example.com/team/app@${proof.effectiveImageDigest}`, runtimePort: proof.containerPort, runtimeConfig: { hostPort: proof.hostPort, containerPort: proof.containerPort, ...(proof.network ? { networkName: proof.network } : {}) }, health: "passed" as const, terminalStatus: "succeeded" as const, rollback: { target: null, result: "not-required" as const }, proven: true, executionReceipt: proof };
+}
+function receiverStore() {
+  const records = new Map<string, any>();
+  return { claims: 0, completions: 0, claim: async function(id: string, fingerprint: string) { this.claims++; const prior = records.get(id); if (prior) { if (prior.fingerprint !== fingerprint) throw new Error("payload conflict"); return { claimed: false, receipt: prior.receipt }; } return { claimed: true, claimToken: "proof-claim" }; }, wait: async () => { throw new Error("unexpected wait"); }, complete: async function(id: string, value: any) { this.completions++; records.set(id, structuredClone(value)); }, release: async () => {} };
+}
+
+describe("configured observed proof receiver", () => {
+  it("threads configured identity to the actual executor and retains equal replay proof", async () => {
+    const body = command(); const calls: string[] = [];
+    const dispatcher = new DigestDeploymentDispatcher({ protocol: new InMemoryProtocolTransport({ clock: { now: () => 1 }, leasePolicy: { ttlMs: 1000 }, retryPolicy: { maxAttempts: 1, deadlineMs: 0, backoffMs: () => 0 }, capabilities: ["deploy.execute"] }), hostPort: 43000, containerPort: 3000, trustedHosts: ["registry.example.com"], transport: { startCandidate: async () => { calls.push("start"); }, checkHealth: async () => true, promoteCandidate: async (candidate) => { calls.push("promote"); return { container: "actual-active", containerId: "physical-receiver-container", imageId: "sha256:actual-config-id", owner: "configured-owner", projectId: body.projectId, deploymentId: body.deploymentId, candidateId: candidate.candidateId, effectiveImage: candidate.effectiveImage, running: true, health: "healthy", hostPort: 43000, containerPort: 3000, network: null }; }, discardCandidate: async () => {}, restorePrior: async () => {} } });
+    const store = receiverStore();
+    const receiver = new AuthenticatedAgentCommandReceiver({ agentId: "agent-1", trustKey: "transport_test_key_123", capabilities: ["deploy.execute"], dispatcher, replayStore: store, now: () => 1 });
+    const signature = signAgentTransport(JSON.stringify(body), "transport_test_key_123");
+    const first = await receiver.receive(body, signature);
+    expect(first.receipt).toMatchObject({ executionReceipt: { runtimeHost: "agent-1", snapshotOriginId: "dep_receiver", container: "actual-active", containerId: "physical-receiver-container" } });
+    expect(await receiver.receive(body, signature)).toEqual(first);
+    expect(calls).toEqual(["start", "promote"]); expect(store.completions).toBe(1);
+  });
+
+  it.each(["projectId", "deploymentId", "runtimePort", "agentId", "configRevision", "runtimeRevision", "source"])("rejects signed changed canonical %s before replay or effects", async (field) => {
+    const body = command(); const changed: any = structuredClone(body);
+    changed.snapshot[field] = field === "runtimePort" ? 3001 : field === "source" ? { ...body.snapshot.source, image: { ...(body.snapshot.source as any).image, repository: "team/other", reference: `registry.example.com/team/other@${digest}` } } : "other";
+    if (field === "projectId") changed.projectId = "other";
+    if (field === "deploymentId") changed.sourceDeploymentId = "other";
+    let dispatched = 0; const store = receiverStore();
+    const receiver = new AuthenticatedAgentCommandReceiver({ agentId: "agent-1", trustKey: "transport_test_key_123", capabilities: ["deploy.execute"], dispatcher: { dispatch: async () => { dispatched++; return proofReceipt(body); } }, replayStore: store, now: () => 1 });
+    await expect(receiver.receive(changed, signAgentTransport(JSON.stringify(changed), "transport_test_key_123"))).rejects.toThrow();
+    expect({ dispatched, claims: store.claims, completions: store.completions }).toEqual({ dispatched: 0, claims: 0, completions: 0 });
+  });
+
+  it.each([
+    ["project", { projectId: "other" }], ["configured host", { runtimeHost: "request-override" }], ["canonical origin", { snapshotOriginId: "other" }],
+    ["canonical hash", { snapshotHash: "b".repeat(64) }], ["digest", { effectiveImageDigest: `sha256:${"b".repeat(64)}` }],
+    ["candidate", { candidateId: "other-candidate" }], ["host port", { hostPort: 44000 }], ["container port", { containerPort: 8080 }], ["network", { network: "other" }]
+  ])("rejects provided proof with wrong signed/configured %s before replay publication", async (_field, patch) => {
+    const body = command(); const store = receiverStore();
+    const receiver = new AuthenticatedAgentCommandReceiver({ agentId: "agent-1", trustKey: "transport_test_key_123", capabilities: ["deploy.execute"], dispatcher: { runtimeConfig: { hostPort: 43000, containerPort: 3000 }, dispatch: async () => proofReceipt(body, patch) } as any, replayStore: store, now: () => 1 });
+    await expect(receiver.receive(body, signAgentTransport(JSON.stringify(body), "transport_test_key_123"))).rejects.toThrow();
+    expect(store.completions).toBe(0);
+  });
+
+  it("rejects a validly hashed snapshot for another configured host before dispatch", async () => {
+    const body = command(); const source = body.snapshot as any;
+    const snapshot = createDeploymentSnapshot({ ...source, agentId: "other-agent", schemaVersion: source.sourceSchemaVersion }, { sha256: (bytes) => createHash("sha256").update(bytes).digest("hex") });
+    const changed = { ...body, snapshot: { ...snapshot, canonicalBytes: undefined }, snapshotHash: snapshot.hash };
+    let effects = 0; const store = receiverStore();
+    const receiver = new AuthenticatedAgentCommandReceiver({ agentId: "agent-1", trustKey: "transport_test_key_123", capabilities: ["deploy.execute"], dispatcher: { dispatch: async () => { effects++; return proofReceipt(body); } }, replayStore: store, now: () => 1 });
+    await expect(receiver.receive(changed, signAgentTransport(JSON.stringify(changed), "transport_test_key_123"))).rejects.toThrow();
+    expect(effects).toBe(0); expect(store.claims).toBe(0);
+  });
+});
+
+it("preserves direct legacy stub-hashed dispatch without creating eligible proof", async () => {
+  const value = command().snapshot;
+  const snapshot = { ...value, hash: "b".repeat(64), canonicalBytes: new TextEncoder().encode(value.canonicalJson) };
+  const transport = new FakeDockerImageTransport();
+  const dispatcher = new DigestDeploymentDispatcher({ protocol: new InMemoryProtocolTransport({ clock: { now: () => 1 }, leasePolicy: { ttlMs: 1000 }, retryPolicy: { maxAttempts: 1, deadlineMs: 0, backoffMs: () => 0 }, capabilities: ["deploy.execute"] }), transport, trustedHosts: ["registry.example.com"] });
+  let result: any; let failure: unknown;
+  try { result = await dispatcher.dispatch(snapshot as any, "legacy"); } catch (error) { failure = error; }
+  expect(failure).toBeUndefined(); expect(result).toMatchObject({ terminalStatus: "succeeded", health: "passed" });
+  expect(result).not.toHaveProperty("executionReceipt"); expect(transport.calls).toEqual(["start", "health", "promote"]);
 });
