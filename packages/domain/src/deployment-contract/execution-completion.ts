@@ -28,6 +28,10 @@ export type ExecutionCompletionOutcome =
   | Readonly<{ kind: "committed" | "replayed"; deployment: Deployment; command: ExecutionCommandRecord | null }>
   | Readonly<{ kind: "conflict" | "not-found" }>;
 
+export type DeploymentExecutionRepository = {
+  completeExecution(input: ExecutionCompletionInput): Promise<ExecutionCompletionOutcome>;
+};
+
 export type ExecutionCompletionTransaction = {
   lockCommand(id: string): Promise<ExecutionCommandRecord | null>;
   lockDeployment(id: string): Promise<Deployment | null>;
