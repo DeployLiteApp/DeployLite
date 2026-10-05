@@ -205,3 +205,19 @@ describe("authenticated agent transport", () => {
     const controller = new AbortController(); const pending = transport.dispatchStop({ ...input, commandId: "stop-cancel" }, { agentId: "agent-1", requestId: "req", correlationId: "corr", signal: controller.signal }); controller.abort(); await expect(pending).rejects.toBeInstanceOf(TransportCanceledError);
   });
 });
+
+
+describe("repeated lineage transport", () => {
+  it("signs immediate B separately from canonical A and validates the echoed source", async () => {
+    let body: any;
+    const transport = new AuthenticatedAgentDeploymentTransport({ endpoint: "https://agent.test", agentId: "agent-1", trustKey: "transport_test_key_123", now: () => 1, fetch: async (url, init) => {
+      if (String(url).endsWith("/capabilities")) return new Response(JSON.stringify({ schemaVersion: 1, agentId: "agent-1", capabilities: ["deploy.execute"], protocolVersions: [1, 2] }), { headers: { "x-deploylite-request-signature": String((init?.headers as Record<string, string>)["x-deploylite-signature"]) } });
+      body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ schemaVersion: 2, commandId: "cmd-C", deploymentId: "execution-C", sourceDeploymentId: "execution-B", snapshotHash: snapshot.hash, terminalStatus: "succeeded", health: "passed", redacted: true, correlationId: "corr-C", receipt: { ...receipt, deploymentId: "execution-C" } }));
+    } });
+    let result: any; let failure: unknown;
+    try { result = await transport.dispatch(snapshot, "cmd-C", { agentId: "agent-1", requestId: "req-C", correlationId: "corr-C", executionDeploymentId: "execution-C", sourceDeploymentId: "execution-B" }); } catch (error) { failure = error; }
+    expect(body).toMatchObject({ sourceDeploymentId: "execution-B", deploymentId: "execution-C", snapshot: { deploymentId: snapshot.deploymentId }, snapshotHash: snapshot.hash });
+    expect(failure).toBeUndefined(); expect(result).toMatchObject({ sourceDeploymentId: "execution-B", deploymentId: "execution-C" });
+  });
+});
