@@ -144,3 +144,86 @@ def restart(env=None, runner=subprocess.run, clock=time.monotonic, sleep=time.sl
         except RestartError as error:
             write_receipt(file, {"status": "not_verified", "reason": str(error)})
             raise
+
+
+def cleanup(container, env=None, runner=subprocess.run):
+    """Verify fixture absence on this service; GitHub owns container cleanup."""
+    env = dict(os.environ if env is None else env)
+    env.update(DEPLOYLITE_PG_CONTAINER_ID=container, DEPLOYLITE_PG_IMAGE=IMAGE,
+               DEPLOYLITE_PG_RECEIPT_DIR=str(Path(env.get("RUNNER_TEMP", "")) / "deploylite-postgres-evidence"))
+    container, labels = context(env)
+
+    def command(*args):
+        try:
+            return runner(["docker", *args], check=True, text=True, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, timeout=3).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            raise RestartError("docker_command_failed") from None
+
+    with receipt_file(env, "cleanup.json") as file:
+        write_receipt(file, {"status": "not_verified"})
+        try:
+            try:
+                info = json.loads(command("inspect", "--type=container", "--format", FORMAT, container))
+            except json.JSONDecodeError:
+                raise RestartError("identity_mismatch") from None
+            validate(info, container, labels, require_healthy=True)
+            sql = "SELECT count(*) FROM pg_database WHERE datname ~ '^(deploylite_verify_|deploylite_u2b_|deploylite_api_verify_)';"
+            if command("exec", container, "psql", "-U", "deploylite", "-d", "postgres", "-Atqc", sql) != "0":
+                raise RestartError("fixture_cleanup_not_verified")
+            receipt = {"status": "verified", "fixtureDatabases": 0, "containerId": container,
+                       "imageId": info["Image"], "labels": labels}
+            write_receipt(file, receipt)
+            return receipt
+        except RestartError as error:
+            write_receipt(file, {"status": "not_verified", "reason": str(error)})
+            raise
+
+
+def verify_evidence(directory, container, env=None):
+    """Require executed, passing suites and nontrivial same-run physical receipts."""
+    env = dict(os.environ if env is None else env)
+    env.update(DEPLOYLITE_PG_CONTAINER_ID=container, DEPLOYLITE_PG_IMAGE=IMAGE)
+    directory = Path(directory)
+    try:
+        container, labels = context(env)
+        if directory != Path(env["RUNNER_TEMP"]) / "deploylite-postgres-evidence" or directory.is_symlink():
+            return False
+
+        def load(name):
+            path = directory / name
+            if not path.is_file() or path.is_symlink():
+                raise RestartError("missing_evidence")
+            return json.loads(path.read_text())
+
+        for suite in ("db", "api"):
+            report = load(suite + ".json")
+            total = report["numTotalTests"]
+            assertions = [case for result in report["testResults"] for case in result["assertionResults"]]
+            if (report["success"] is not True or type(total) is not int or total <= 0
+                    or report["numPassedTests"] != total or report["numPendingTests"] != 0 or report["numFailedTests"] != 0
+                    or len(assertions) != total or any(case["status"] != "passed" for case in assertions)):
+                return False
+            if suite == "db" and sum(case["title"] == CASE for case in assertions) != 1:
+                return False
+        restarted = load("restart.json")
+        cleaned = load("cleanup.json")
+        before = {"Id": restarted["containerId"], "Image": restarted["imageId"], "DeclaredImage": restarted["imageRef"],
+                  "Labels": restarted["labels"], "StartedAt": restarted["beforeStartedAt"], "Health": restarted["health"]}
+        validate(before, container, labels, require_healthy=True)
+        validate({**before, "StartedAt": restarted["afterStartedAt"]}, container, labels, require_healthy=True)
+        return (restarted["status"] == "verified" and cleaned["status"] == "verified"
+                and restarted["beforeStartedAt"] != restarted["afterStartedAt"]
+                and re.fullmatch(r"16\.\d+", restarted["serverVersion"]) is not None and restarted["deadlineSeconds"] == 20
+                and cleaned["fixtureDatabases"] == 0 and cleaned["containerId"] == container
+                and cleaned["imageId"] == restarted["imageId"] and cleaned["labels"] == labels)
+    except (OSError, ValueError, TypeError, KeyError, RestartError):
+        return False
+
+
+if __name__ == "__main__":
+    try:
+        print(json.dumps(restart()))
+    except RestartError as error:
+        print(json.dumps({"status": "not_verified", "reason": str(error)}))
+        sys.exit(1)

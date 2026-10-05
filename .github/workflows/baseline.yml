@@ -52,6 +52,10 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U deploylite -d deploylite" --health-interval 5s --health-timeout 5s --health-retries 20
+          --label io.deploylite.ci.owner=${{ github.repository }}
+          --label io.deploylite.ci.run=${{ github.run_id }}
+          --label io.deploylite.ci.attempt=${{ github.run_attempt }}
+          --label io.deploylite.ci.job=postgres-integration
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.1.1
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
@@ -61,8 +65,57 @@ jobs:
       - run: corepack enable && pnpm install --frozen-lockfile
       - run: pnpm --filter @deploylite/db db:migrate
         env: { DATABASE_URL: postgres://deploylite:deploylite-ci-only@localhost:5432/deploylite }
-      - run: pnpm --filter @deploylite/db db:verify:integration && pnpm --filter @deploylite/api db:verify:integration
+      - name: Test PostgreSQL CI helper without runtime effects
+        run: python3 scripts/ci/postgres-restart.test.py
+      - name: Verify DB integration including the owned physical restart
+        id: db_tests
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/deploylite-postgres-evidence"
+          pnpm --filter @deploylite/db db:verify:integration --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/deploylite-postgres-evidence/db.json" 2>&1 | tee "$RUNNER_TEMP/deploylite-postgres-evidence/db.log"
+        env:
+          DATABASE_URL: postgres://deploylite:deploylite-ci-only@localhost:5432/deploylite
+          DEPLOYLITE_PG_RESTART_HELPER: ${{ github.workspace }}/scripts/ci/postgres-restart.py
+          DEPLOYLITE_PG_CONTAINER_ID: ${{ job.services.postgres.id }}
+          DEPLOYLITE_PG_IMAGE: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+          DEPLOYLITE_PG_RECEIPT_DIR: ${{ runner.temp }}/deploylite-postgres-evidence
+      - name: Verify API PostgreSQL integration
+        if: ${{ !cancelled() && steps.db_tests.outcome != 'skipped' }}
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/deploylite-postgres-evidence"
+          pnpm --filter @deploylite/api db:verify:integration --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/deploylite-postgres-evidence/api.json" 2>&1 | tee "$RUNNER_TEMP/deploylite-postgres-evidence/api.log"
         env: { DATABASE_URL: postgres://deploylite:deploylite-ci-only@localhost:5432/deploylite }
+      - name: Verify suite fixture cleanup on the exact CI service
+        if: always()
+        env:
+          PG_SERVICE_ID: ${{ job.services.postgres.id }}
+        run: |
+          python3 - <<'PY'
+          import os, runpy
+          helper = runpy.run_path("scripts/ci/postgres-restart.py")
+          helper["cleanup"](os.environ["PG_SERVICE_ID"])
+          PY
+      - name: Require complete physical restart and suite evidence
+        if: always()
+        env:
+          PG_SERVICE_ID: ${{ job.services.postgres.id }}
+        run: |
+          python3 - <<'PY'
+          import json, os, runpy, sys
+          from pathlib import Path
+          helper = runpy.run_path("scripts/ci/postgres-restart.py")
+          verified = helper["verify_evidence"](Path(os.environ["RUNNER_TEMP"]) / "deploylite-postgres-evidence", os.environ["PG_SERVICE_ID"])
+          print(json.dumps({"status": "verified" if verified else "not_verified"}))
+          sys.exit(0 if verified else 1)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: postgres-integration-reports
+          path: ${{ runner.temp }}/deploylite-postgres-evidence/
+          if-no-files-found: warn
+          retention-days: 30
 
   compose-and-supply-chain:
     runs-on: ubuntu-24.04
