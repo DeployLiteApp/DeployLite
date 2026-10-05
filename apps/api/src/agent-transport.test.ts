@@ -76,11 +76,20 @@ describe("authenticated agent transport", () => {
       schemaVersion: 1
     }, { sha256: (bytes) => createHash("sha256").update(bytes).digest("hex") });
     const calls: string[][] = [];
+    const actualContainerId = "c".repeat(64);
+    const actualImageId = `sha256:${"b".repeat(64)}`;
+    const actualBindings = { [`${configured.containerPort}/tcp`]: [{ HostIp: "127.0.0.1", HostPort: String(configured.hostPort) }] };
     const runner = {
       run: async (argv: readonly string[]) => {
         calls.push([...argv]);
         const format = argv[3] ?? "";
-        const stdout = format.includes("State.Health")
+        const stdout = argv[1] === "container" && argv[2] === "inspect"
+          ? JSON.stringify({ id: actualContainerId, name: `/${"deploylite-active-" + executionId}`, imageId: actualImageId,
+              owner: "agent-1", projectId, deploymentId: executionId, candidateId: `${executionId}:candidate:cmd-e2e`, effectiveImage: image,
+              running: true, health: "healthy", hostBindings: actualBindings, portBindings: actualBindings,
+              networkMode: configured.networkName, networks: { [configured.networkName]: { networkId: "d".repeat(64), endpointId: "e".repeat(64) } } })
+          : argv[1] === "image" && argv[2] === "inspect" ? JSON.stringify(actualImageId)
+          : format.includes("State.Health")
           ? "healthy"
           : format.includes("com.deploylite.owner")
             ? `agent-1|${executionId}|${executionId}:candidate:cmd-e2e|${image}`

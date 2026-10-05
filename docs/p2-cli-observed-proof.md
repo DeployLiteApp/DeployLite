@@ -4,7 +4,7 @@ Return inspected active container identity after promotion, retaining strict own
 
 Refs #315; parent #292 remains open until aggregate acceptance.
 
-Original observed-identity strict-TDD assertions preceded implementation. Current recording-process regression and source checks are required before protected publication; no real Docker engine is invoked by this source boundary.
+Original observed-identity strict-TDD assertions preceded implementation. The existing API recording fixture now supplies container/image inspection output required by this transport; its real assertion failure was reproduced before the fixture adaptation. Source checks and protected hosted gates are required; no real Docker engine is invoked locally.
 
 Required quality, PostgreSQL, supply-chain and baseline checks must pass on the exact published head before protected merge.
 
