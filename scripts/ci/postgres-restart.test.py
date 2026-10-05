@@ -221,6 +221,161 @@ class RestartTests(unittest.TestCase):
         self.assertEqual(json.loads((self.directory / "restart.json").read_text()), receipt)
         self.assertNotIn("sensitive-secret", json.dumps(receipt))
 
+    def test_baseline_other_jobs_and_service_runtime_are_preserved(self):
+        workflow = (Path(__file__).parents[2] / ".github/workflows/baseline.yml").read_text()
+        self.assertIn("image: " + IMAGE, workflow)
+        self.assertIn('ports: ["5432:5432"]', workflow)
+        self.assertIn("--health-interval 5s --health-timeout 5s --health-retries 20", workflow)
+        self.assertIn("  quality:\n", workflow)
+        self.assertIn("  compose-and-supply-chain:\n", workflow)
+        self.assertIn("  baseline-gate:\n", workflow)
+
+    def test_noarg_entrypoint_fails_closed_with_explicit_not_verified_status(self):
+        output = io.StringIO()
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=True), contextlib.redirect_stdout(output):
+            with patch("subprocess.run", side_effect=AssertionError("No CLI allowed")) as runner:
+                with self.assertRaises(SystemExit) as caught:
+                    runpy.run_path(str(Path(__file__).with_name("postgres-restart.py")), run_name="__main__")
+                self.assertEqual(caught.exception.code, 1)
+                runner.assert_not_called()
+        self.assertEqual(json.loads(output.getvalue()), {"status": "not_verified", "reason": "invalid_ci_context"})
+
+    def cleanup(self):
+        return HELPER["cleanup"](CONTAINER, self.env, self.docker.run)
+
+    def seed_evidence(self):
+        self.restart()
+        self.cleanup()
+        for suite, title in [("db", HELPER["CASE"]), ("api", "API PostgreSQL verification")]:
+            report = {"success": True, "numTotalTests": 1, "numPassedTests": 1, "numPendingTests": 0, "numFailedTests": 0,
+                      "testResults": [{"assertionResults": [{"title": title, "status": "passed"}]}]}
+            (self.directory / (suite + ".json")).write_text(json.dumps(report))
+
+    def test_cleanup_verifies_zero_owned_fixtures_without_deleting_foreign_data(self):
+        receipt = self.cleanup()
+        self.assertEqual(receipt["status"], "verified")
+        self.assertEqual(receipt["fixtureDatabases"], 0)
+        self.assertEqual(json.loads((self.directory / "cleanup.json").read_text()), receipt)
+        self.assertEqual(self.docker.restarts(), [])
+        sql = next(argv[-1] for argv, _ in self.docker.calls if argv[1] == "exec")
+        self.assertEqual(sql, "SELECT count(*) FROM pg_database WHERE datname ~ '^(deploylite_verify_|deploylite_u2b_|deploylite_api_verify_)';")
+        self.assertEqual(self.docker.fixtures, ["foreign-database", "deployliteXverify_foreign"])
+
+    def test_cleanup_fails_on_each_owned_prefix_or_wrong_container_ownership(self):
+        for name in ("deploylite_verify_123", "deploylite_u2b_123", "deploylite_api_verify_123"):
+            with self.subTest(name=name):
+                (self.directory / "cleanup.json").unlink(missing_ok=True)
+                self.docker.fixtures = [name]
+                with self.assertRaisesRegex(HELPER["RestartError"], "fixture_cleanup_not_verified"):
+                    self.cleanup()
+                self.assertEqual(json.loads((self.directory / "cleanup.json").read_text())["status"], "not_verified")
+        (self.directory / "cleanup.json").unlink(missing_ok=True)
+        self.docker.before["Labels"]["owner"] = "foreign"
+        previous = len(self.docker.calls)
+        with self.assertRaisesRegex(HELPER["RestartError"], "identity_mismatch"):
+            self.cleanup()
+        self.assertEqual(len(self.docker.calls), previous + 1)
+
+    def test_evidence_gate_requires_physical_case_json_and_both_receipts(self):
+        self.seed_evidence()
+        self.assertTrue(HELPER["verify_evidence"](self.directory, CONTAINER, self.env))
+
+    def test_evidence_gate_rejects_missing_failed_skipped_empty_or_mismatched_evidence(self):
+        self.seed_evidence()
+        originals = {name: (self.directory / name).read_text() for name in ("db.json", "api.json", "restart.json", "cleanup.json")}
+        cases = [(name, None, None) for name in originals]
+        cases += [(suite + ".json", field, value) for suite in ("db", "api") for field, value in
+                  [("success", False), ("numTotalTests", 0), ("numPassedTests", 0), ("numPendingTests", 1), ("numFailedTests", 1), ("testResults", [])]]
+        cases += [("restart.json", "status", "not_verified"), ("cleanup.json", "status", "not_verified"),
+                  ("cleanup.json", "fixtureDatabases", 1), ("cleanup.json", "imageId", "sha256:" + "c" * 64),
+                  ("restart.json", "containerId", "c" * 64), ("restart.json", "labels", {**LABELS, "run": "foreign"}),
+                  ("restart.json", "afterStartedAt", self.docker.before["StartedAt"])]
+        for name, field, value in cases:
+            with self.subTest(name=name, field=field, value=value):
+                path = self.directory / name
+                data = json.loads(originals[name])
+                if field is None:
+                    path.unlink()
+                else:
+                    data[field] = value
+                    path.write_text(json.dumps(data))
+                self.assertFalse(HELPER["verify_evidence"](self.directory, CONTAINER, self.env))
+                path.write_text(originals[name])
+        for field, value in [("title", "different case"), ("status", "pending")]:
+            with self.subTest(assertionField=field):
+                data = json.loads(originals["db.json"])
+                data["testResults"][0]["assertionResults"][0][field] = value
+                (self.directory / "db.json").write_text(json.dumps(data))
+                self.assertFalse(HELPER["verify_evidence"](self.directory, CONTAINER, self.env))
+
+    def test_workflow_supplies_exact_service_and_scopes_restart_env_to_db_step(self):
+        workflow = (Path(__file__).parents[2] / ".github/workflows/baseline.yml").read_text()
+        pg_job = workflow.split("  postgres-integration:\n", 1)[1].split("  compose-and-supply-chain:\n", 1)[0]
+        self.assertIn("--label io.deploylite.ci.owner=${{ github.repository }}", pg_job)
+        self.assertIn("--label io.deploylite.ci.run=${{ github.run_id }}", pg_job)
+        self.assertIn("--label io.deploylite.ci.attempt=${{ github.run_attempt }}", pg_job)
+        self.assertIn("--label io.deploylite.ci.job=postgres-integration", pg_job)
+        self.assertEqual(pg_job.count("DEPLOYLITE_PG_RESTART_HELPER:"), 1)
+        self.assertIn("DEPLOYLITE_PG_CONTAINER_ID: ${{ job.services.postgres.id }}", pg_job)
+        self.assertEqual(pg_job.count("--reporter=default --reporter=json"), 2)
+        self.assertIn("--outputFile.json=", pg_job)
+        self.assertIn("verify_evidence", pg_job)
+        self.assertIn("if: always()", pg_job)
+        self.assertIn("name: postgres-integration-reports", pg_job)
+
+    def test_every_missing_inspected_field_and_helper_input_fails_before_restart(self):
+        for field in self.docker.before.copy():
+            with self.subTest(inspectField=field):
+                self.reset_fake()
+                self.docker.before.pop(field)
+                self.assert_rejected("identity_mismatch")
+        for field, reason in [("DEPLOYLITE_PG_CONTAINER_ID", "invalid_container_id"), ("DEPLOYLITE_PG_IMAGE", "invalid_service_image"),
+                              ("RUNNER_TEMP", "unsafe_receipt_path"), ("DEPLOYLITE_PG_RECEIPT_DIR", "unsafe_receipt_path")]:
+            with self.subTest(helperInput=field):
+                original = self.env.copy()
+                self.reset_fake()
+                self.env.pop(field)
+                self.assert_rejected(reason)
+                self.env = original
+
+    def test_malformed_selected_json_is_rejected_without_effects(self):
+        for value in ("{bad-json", "null", "[]", "{}"):
+            with self.subTest(value=value):
+                self.reset_fake()
+                self.docker.raw_inspect = value
+                self.assert_rejected("identity_mismatch")
+
+    def test_restart_and_final_version_commands_have_effective_timeouts(self):
+        for delays in ([0, 0, 9], [0, 0, 0, 0, 9]):
+            with self.subTest(delays=delays):
+                self.reset_fake()
+                self.docker.delays = list(delays)
+                self.assert_rejected("docker_command_failed", restarts=1)
+                self.assertLessEqual(self.docker.now, 20)
+                self.assertTrue(all(kwargs["timeout"] <= 6 for _, kwargs in self.docker.calls))
+
+    def test_cleanup_subprocess_error_leaves_redacted_not_verified_receipt(self):
+        self.docker.error = subprocess.CalledProcessError(1, ["docker", "exec"], stderr="sensitive-secret")
+        self.docker.error_on = "exec"
+        with self.assertRaisesRegex(HELPER["RestartError"], "docker_command_failed"):
+            self.cleanup()
+        receipt = (self.directory / "cleanup.json").read_text()
+        self.assertEqual(json.loads(receipt)["status"], "not_verified")
+        self.assertNotIn("sensitive-secret", receipt)
+        self.assertEqual(self.docker.restarts(), [])
+
+    def test_evidence_gate_rejects_invalid_json_and_symlink_files(self):
+        self.seed_evidence()
+        path = self.directory / "db.json"
+        original = path.read_text()
+        path.write_text("{bad-json")
+        self.assertFalse(HELPER["verify_evidence"](self.directory, CONTAINER, self.env))
+        path.unlink()
+        foreign = Path(self.temp.name) / "foreign.json"
+        foreign.write_text(original)
+        path.symlink_to(foreign)
+        self.assertFalse(HELPER["verify_evidence"](self.directory, CONTAINER, self.env))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
