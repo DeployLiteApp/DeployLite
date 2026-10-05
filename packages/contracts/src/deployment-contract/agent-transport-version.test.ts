@@ -1,6 +1,6 @@
 import { trustedPriorExecutionReceiptSchema } from "./prior-execution-receipt.js";
 import { describe, expect, it } from "vitest";
-import { agentExecutionCommandSchema, agentExecutionReceiptSchema, dockerImageExecutionReceiptSchema } from "./agent-transport.js";
+import { agentExecutionCommandSchema, agentExecutionReceiptSchema, deploymentStopAgentCommandSchema, dockerImageExecutionReceiptSchema } from "./agent-transport.js";
 
 const command = { agentId: "agent", commandId: "cmd", deploymentId: "execution", projectId: "project", snapshot: {}, snapshotHash: "a".repeat(64), requiredCapabilities: ["deploy.execute"], lease: { leaseId: "lease", deploymentId: "execution", fence: 1, expiresAt: 10 }, context: { requestId: "request", correlationId: "correlation" }, timeoutMs: 1000, cancellationRequested: false };
 const receipt = { commandId: "cmd", deploymentId: "execution", terminalStatus: "succeeded" as const, health: "passed" as const, redacted: true as const, correlationId: "correlation", receipt: { deploymentId: "execution", effectiveImage: `registry.example/app@sha256:${"a".repeat(64)}`, runtimePort: 3000, runtimeConfig: { hostPort: 43000, containerPort: 3000, networkName: "deploylite" }, health: "passed" as const, terminalStatus: "succeeded" as const, rollback: { target: null, result: "not-required" as const }, proven: true as const } };
@@ -120,5 +120,25 @@ describe("proof binding and legacy compatibility", () => {
     expect(agentExecutionReceiptSchema.safeParse({ ...input, projectId: "project" }).success).toBe(false);
     expect(agentExecutionReceiptSchema.safeParse({ ...input, agentId: "configured-agent" }).success).toBe(false);
     expect(dockerImageExecutionReceiptSchema.safeParse({ ...input.receipt, runtimeConfig: { ...input.receipt.runtimeConfig, networkName: null } }).success).toBe(false);
+  });
+});
+
+
+function authority(action: "deployment.redeploy" | "deployment.stop", executionId: string) {
+  const lease = (deploymentId: string, suffix: string) => ({ deploymentId, leaseId: `cmd:${suffix}:2`, fence: 2, expiresAt: 120_000 });
+  return { projectId: "project", commandId: "cmd", action, projectLease: lease("project", "project"), executionLease: lease(executionId, "execution"), ...(action === "deployment.redeploy" ? { sourceLease: lease("previous-execution", "source") } : {}) };
+}
+describe("optional coordinated replacement and stop wire authority", () => {
+  it("retains explicit replacement policy, observed previous proof and coordinated leases in v2", () => {
+    const prior = { ...proofEnvelope().receipt.executionReceipt, deploymentId: "previous-execution" };
+    const body = { ...command, schemaVersion: 2, sourceDeploymentId: prior.deploymentId, lease: authority("deployment.redeploy", "execution").executionLease,
+      authority: authority("deployment.redeploy", "execution"), replacement: { prior, effectiveImage: receipt.receipt.effectiveImage, policy: { maxOutageMs: 30_000, maxRecoveryMs: 60_000 } } };
+    const parsed = agentExecutionCommandSchema.safeParse(body);
+    expect(parsed.success).toBe(true); if (parsed.success) expect(parsed.data).toMatchObject({ authority: body.authority, replacement: body.replacement });
+  });
+  it("retains shared authority in an existing stop command without changing its version", () => {
+    const body = { schemaVersion: 1, action: "deployment.stop", agentId: "agent", commandId: "cmd", projectId: "project", deploymentId: "previous-execution", candidateId: "previous-execution:candidate:prior", effectiveImage: receipt.receipt.effectiveImage, requiredCapabilities: ["deployment.stop"], lease: authority("deployment.stop", "previous-execution").executionLease, authority: authority("deployment.stop", "previous-execution"), context: command.context, timeoutMs: 1000, cancellationRequested: false };
+    const parsed = deploymentStopAgentCommandSchema.safeParse(body);
+    expect(parsed.success).toBe(true); if (parsed.success) expect(parsed.data).toHaveProperty("authority", body.authority);
   });
 });
