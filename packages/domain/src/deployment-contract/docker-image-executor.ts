@@ -1,6 +1,6 @@
 import {
-  createStageAck, createTerminalAck, createTerminalIntent, ProtocolValidationError,
-  trustedPriorExecutionReceiptSchema, type CanonicalHasher, type TrustedPriorExecutionReceiptV1, type DeploymentSnapshotV1, type LeaseV1, type TerminalStatusV1
+  createStageAck, createTerminalAck, createTerminalIntent, ProtocolValidationError, TransportCanceledError,
+  trustedPriorExecutionReceiptSchema, type CanonicalHasher, type TrustedPriorExecutionReceiptV1, type DeploymentSnapshotV1, type LeaseV1, promotionPolicySchema, type PromotionPolicy, type TerminalStatusV1
 } from "@deploylite/contracts";
 import { InMemoryProtocolTransport } from "./protocol-memory.js";
 
@@ -25,6 +25,8 @@ export type DockerActiveIdentityObservation = Readonly<{
   owner: string; projectId: string; deploymentId: string; candidateId: string; effectiveImage: string;
   running: true; health: "healthy"; hostPort: number; containerPort: number; network: string | null;
 }>;
+export type RuntimeExecutionAuthority = { assertValid(): Promise<void>; readonly expiresAt?: number };
+export type DockerPromotionContext = Readonly<{ prior: PriorDockerImageExecutionReceiptV1; policy: PromotionPolicy; authority: RuntimeExecutionAuthority; candidate?: DockerImageCandidateV1; promotionSignal?: AbortSignal; completePreparation?: () => void }>;
 export interface DockerImageTransport {
   startCandidate(candidate: DockerImageCandidateV1, signal: AbortSignal): Promise<void>;
   checkHealth(candidate: DockerImageCandidateV1, signal: AbortSignal): Promise<boolean>;
@@ -67,6 +69,19 @@ function effectiveImage(snapshot: DeploymentSnapshotV1, trustedHosts: ReadonlySe
 }
 function assertReceipt(receipt: PriorDockerImageExecutionReceiptV1 | undefined): void { if (receipt && (receipt.proven !== true || receipt.health !== "passed" || receipt.terminalStatus !== "succeeded" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(receipt.projectId) || !receipt.candidateId?.startsWith(`${receipt.deploymentId}:candidate:`) || !DIGEST.test(receipt.effectiveImage.split("@")[1] ?? ""))) fail("rollback receipt is not proven"); }
 function boundedPort(snapshot: DeploymentSnapshotV1): number { const port = snapshot.runtimePort; if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) fail("docker image execution requires a bounded runtime port"); return port; }
+
+/** Settle even when a read ignores cancellation; callers still fence each later effect. */
+export function awaitAbortable<T>(read: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const canceled = () => { cleanup(); reject(signal?.reason instanceof Error && signal.reason.name !== "AbortError" ? signal.reason : new TransportCanceledError()); };
+    const cleanup = () => signal?.removeEventListener("abort", canceled);
+    if (signal?.aborted) { canceled(); return; }
+    signal?.addEventListener("abort", canceled, { once: true });
+    Promise.resolve().then(() => { if (signal?.aborted) throw new TransportCanceledError(); return read(); }).then((value) => {
+      if (signal?.aborted) canceled(); else { cleanup(); resolve(value); }
+    }, (error) => { cleanup(); reject(error); });
+  });
+}
 
 export class DockerImageExecutor {
   #protocol: InMemoryProtocolTransport; #transport: DockerImageTransport; #trustedHosts: ReadonlySet<string>; #allowedNetworks: ReadonlySet<string>; #runtimeHost?: string; #snapshotHasher?: CanonicalHasher;
