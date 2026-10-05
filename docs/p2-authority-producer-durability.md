@@ -1,11 +1,11 @@
-# P2 delivery: feat(deploy): fence promotion with persisted execution authority
+# P2 delivery: durable execution authority
 
-Validate fresh persisted shared authority inside replay claim and terminal transactions, and bind Docker promotion to the immutable project, execution and immediate-source lease with bounded recovery.
+Validate fresh shared execution authority inside durable replay claim and terminal completion transactions, preserving equal replay and atomic outcome/proof/command publication.
 
-Refs #294; parent #292 remains open until aggregate acceptance.
+Refs #294 and #315; parent #292 remains open until aggregate acceptance.
 
-Adopts complete original replay, terminal repository and executor producer source plus all matching recording/fake-transport tests. Existing schema fixture initializer is already adopted. No real database, Docker or migration runs locally; protected exact-head hosted evidence is required.
+Complete original recording-session tests accompany the repository changes. Local checks use recording clients; no real database, Docker, listener or migration runs.
 
-Required quality, PostgreSQL, supply-chain and baseline checks must pass on the exact published head before protected merge.
+The transport context contract is paired with its CLI implementation in the following source boundary; domain execution and signed/API integration remain subsequent.
 
-Rollback uses a scoped revert through the protected PR flow. No production operation or local runtime authorization is implied.
+Exact-head protected quality, PostgreSQL, supply-chain and baseline gates precede merge. A scoped protected revert is the rollback path; final physical acceptance remains pending.
