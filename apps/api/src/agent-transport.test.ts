@@ -145,6 +145,12 @@ describe("authenticated agent transport", () => {
     const parsedReceipt = dockerImageExecutionReceiptSchema.parse(wire.receipt);
     expect(parsedReceipt).toMatchObject({ deploymentId: executionId, effectiveImage: image, health: "passed", terminalStatus: "succeeded", proven: true, runtimeConfig: configured });
     expect(result).toMatchObject({ projectId, sourceDeploymentId: e2eSnapshot.deploymentId, snapshotHash: e2eSnapshot.hash, correlationId: "correlation-e2e", runtimeConfig: configured });
+    expect(calls.filter((argv) => argv[1] === "container" || argv[1] === "image").map((argv) => [argv.slice(0, 3), argv.at(-1)])).toEqual([
+      [["docker", "container", "inspect"], `deploylite-active-${executionId}`],
+      [["docker", "image", "inspect"], image]
+    ]);
+    expect(parsedReceipt.executionReceipt).toMatchObject({ deploymentId: executionId, projectId, snapshotOriginId: e2eSnapshot.deploymentId, snapshotHash: e2eSnapshot.hash, runtimeHost: "agent-1", container: `deploylite-active-${executionId}`, containerId: actualContainerId, effectiveImageDigest: digest, hostPort: configured.hostPort, containerPort: configured.containerPort, network: configured.networkName });
+    expect(result.executionReceipt).toEqual(parsedReceipt.executionReceipt);
     expect(calls.find((argv) => argv[1] === "run")).toEqual([
       "docker", "run", "--detach", "--name", "deploylite-candidate-dep_execution-cmd-e2e",
       "--label", "com.deploylite.owner=agent-1", "--label", `com.deploylite.project=${projectId}`,
