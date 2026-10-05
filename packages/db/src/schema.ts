@@ -1,4 +1,4 @@
-import type { TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
+import type { TrustedPriorExecutionReceiptV1, DeploymentExecutionAuthorityV1 } from "@deploylite/contracts";
 import { sql } from "drizzle-orm";
 import { boolean, check, customType, index, integer, jsonb, pgTable, smallint, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
@@ -257,6 +257,7 @@ export const controlCommands = pgTable(
     correlationId: text("correlation_id").notNull(),
     status: text("status").notNull().default("pending"),
     result: jsonb("result").$type<Record<string, unknown> | null>(),
+    executionAuthority: jsonb("execution_authority").$type<DeploymentExecutionAuthorityV1 | null>(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     ...timestamps
   },

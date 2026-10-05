@@ -136,6 +136,14 @@ describe("atomic execution completion", () => {
     expect(store.command).toEqual(state.command);
   });
 
+  it.each(["succeeded", "failed", "canceled"] as const)("rejects %s completion of an unclaimed eligible command without writes", async (terminalStatus) => {
+    const store = new FakeTransactionalStore();
+    store.command = command("eligible");
+    const before = structuredClone({ deployment: store.deployment, command: store.command });
+    await expect(completeExecutionAtomically(store, input({ terminalStatus, proof: terminalStatus === "succeeded" ? proof() : null }))).resolves.toEqual({ kind: "conflict" });
+    expect({ deployment: store.deployment, command: store.command }).toEqual(before);
+  });
+
   it("rejects wrong source binding before either row changes", async () => {
     const store = new FakeTransactionalStore();
     const before = structuredClone({ deployment: store.deployment, command: store.command });

@@ -400,7 +400,9 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
     const admitted = await repo.executeConfirmedDeploymentStop({ command, confirmation, requestId: "req-stop" });
     expect(admitted).toMatchObject({ accepted: true, result: { status: "eligible", deploymentId } });
     const result = { ...admitted.result!, status: "completed" as const, reason: null };
-    await expect(repo.completeDeploymentStop(admitted.command, result)).resolves.toMatchObject({ status: "completed", result });
+    const claimed = await repo.claimDeploymentStop(admitted.command);
+    expect(claimed.claimed).toBe(true);
+    await expect(repo.completeDeploymentStop(claimed.command, result)).resolves.toMatchObject({ status: "completed", result });
     await expect(repo.executeConfirmedDeploymentStop({ command, confirmation, requestId: "req-stop" })).resolves.toMatchObject({ alreadyCompleted: true, result });
   });
 
