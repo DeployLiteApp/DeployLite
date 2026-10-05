@@ -41,6 +41,7 @@ import {
   getBootstrapStatus,
   InMemoryAgentRepository,
   InMemoryDeploymentRepository,
+  InMemoryExecutionState,
   InMemoryEnvSecretValueRepository,
   InMemoryEnvVariableMetadataRepository,
   InitialAdminAlreadyExistsError,
@@ -558,10 +559,18 @@ function createLazyEnvSecretCipher(env: EnvSecretKeySource): EnvSecretCipher {
   };
 }
 
+export function createInMemoryExecutionRepositories(projects: ProjectRepository = new InMemoryProjectRepository(), audit: AuditRepository = new InMemoryAuditRepository()) {
+  const completion = new InMemoryExecutionState();
+  const deployments = new InMemoryDeploymentRepository(completion);
+  const controls = new InMemoryControlDeleteRepository(projects, audit, deployments, completion);
+  return { deployments, controls, completion };
+}
+
 function createApiState(env: EnvSecretKeySource, overrides: Partial<PlatformRepositoryOptions> = {}, audit?: AuditRepository): PlatformRepositories {
   const agents = overrides.agents ?? new InMemoryAgentRepository();
-  const deployments = overrides.deployments ?? new InMemoryDeploymentRepository();
   const projects = overrides.projects ?? new InMemoryProjectRepository();
+  const memory = !overrides.deployments && !overrides.controlDeletes && !overrides.controlRedeploy ? createInMemoryExecutionRepositories(projects, audit ?? new InMemoryAuditRepository()) : null;
+  const deployments = overrides.deployments ?? memory?.deployments ?? new InMemoryDeploymentRepository();
   const envMetadata = overrides.envMetadata ?? new InMemoryEnvVariableMetadataRepository();
   const envSecretValues = overrides.envSecretValues ?? new InMemoryEnvSecretValueRepository();
   const envSecretCipher = overrides.envSecretCipher ?? createLazyEnvSecretCipher(env);
@@ -570,10 +579,10 @@ function createApiState(env: EnvSecretKeySource, overrides: Partial<PlatformRepo
   const deploymentDispatcher = overrides.deploymentDispatcher ?? agentTransport ?? new UnavailableDeploymentDispatcher();
   const deploymentStopDispatcher = overrides.deploymentStopDispatcher ?? agentTransport ?? new UnavailableDeploymentStopDispatcher();
   const snapshots = overrides.snapshots ?? new InMemorySnapshotRepository();
-  const controlDeletes = overrides.controlDeletes ?? new InMemoryControlDeleteRepository(projects, audit ?? new InMemoryAuditRepository(), deployments);
+  const controlDeletes = overrides.controlDeletes ?? memory?.controls ?? new InMemoryControlDeleteRepository(projects, audit ?? new InMemoryAuditRepository(), deployments);
   const agentStatus = new AgentStatusService(agents);
   const deployRunner = new DeployRunner(deployments, envMetadata, agentStatus, envSecretCipher);
-  return { agents, deployments, projects, envMetadata, envSecretValues, envSecretCipher, agentStatus, deployRunner, runtimeActivationDispatcher, deploymentDispatcher, deploymentStopDispatcher, snapshots, controlDeletes, controlRedeploy: overrides.controlRedeploy ?? (controlDeletes as unknown as ControlRedeployRepository), controlGrants: overrides.controlGrants ?? new InMemoryControlGrantRepository() };
+  return { agents, deployments, projects, envMetadata, envSecretValues, envSecretCipher, agentStatus, deployRunner, runtimeActivationDispatcher, deploymentDispatcher, deploymentStopDispatcher, snapshots, controlDeletes, controlRedeploy: overrides.controlRedeploy ?? memory?.controls ?? (controlDeletes as unknown as ControlRedeployRepository), controlGrants: overrides.controlGrants ?? new InMemoryControlGrantRepository() };
 }
 
 class InMemoryControlGrantRepository implements ControlGrantRepository {
@@ -584,22 +593,21 @@ class InMemoryControlGrantRepository implements ControlGrantRepository {
 }
 
 class InMemoryControlDeleteRepository implements ControlDeleteRepository, ControlStopRepository, ControlRedeployRepository {
-  readonly #commands = new Map<string, ControlCommand>();
   readonly #confirmations = new Map<string, ControlConfirmation>();
 
   async resolve(command: ControlCommand): Promise<{ command: ControlCommand; created: boolean }> {
     const key = `${command.actorId}:${command.action}:${scopeKey(command.scope)}:${command.idempotencyKey}`;
-    const existing = this.#commands.get(key);
+    const existing = this.executionState.commands.get(key);
     if (existing) {
       if (existing.inputDigest !== command.inputDigest) throw new IdempotencyConflictError();
       return { command: structuredClone(existing), created: false };
     }
-    this.#commands.set(key, structuredClone(command));
+    this.executionState.commands.set(key, structuredClone(command));
     return { command: structuredClone(command), created: true };
   }
 
   async findByIdempotency(actorId: string, idempotencyKey: string): Promise<ControlCommand | null> {
-    const command = [...this.#commands.values()].find((candidate) => candidate.actorId === actorId && candidate.action === "deployment.redeploy" && candidate.idempotencyKey === idempotencyKey);
+    const command = [...this.executionState.commands.values()].find((candidate) => candidate.actorId === actorId && candidate.action === "deployment.redeploy" && candidate.idempotencyKey === idempotencyKey);
     return command ? structuredClone(command) : null;
   }
 
@@ -607,7 +615,7 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
 
   async consume(command: ControlCommand, confirmation: ControlConfirmation, now = new Date()) {
     const stored = this.#confirmations.get(confirmation.id);
-    const current = [...this.#commands.values()].find((candidate) => candidate.id === command.id);
+    const current = [...this.executionState.commands.values()].find((candidate) => candidate.id === command.id);
     if (!stored || !current) return { command, accepted: false, reason: "confirmation_rejected" };
     try {
       if (stored.actorId !== confirmation.actorId || stored.action !== confirmation.action || scopeKey(stored.scope) !== scopeKey(confirmation.scope) || stored.inputDigest !== confirmation.inputDigest || stored.classification !== confirmation.classification) throw new ConfirmationRejectedError();
@@ -622,14 +630,14 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
   }
 
   async complete(command: ControlCommand): Promise<ControlCommand> {
-    const current = [...this.#commands.values()].find((candidate) => candidate.id === command.id);
+    const current = [...this.executionState.commands.values()].find((candidate) => candidate.id === command.id);
     if (!current) throw new Error("Control command was not found");
     if (current.status === "eligible") current.status = "completed";
     return structuredClone(current);
   }
 
   async executeConfirmedDeploymentStop({ command, confirmation, now = new Date() }: Parameters<ControlStopRepository["executeConfirmedDeploymentStop"]>[0]) {
-    const current = [...this.#commands.values()].find((candidate) => candidate.id === command.id);
+    const current = [...this.executionState.commands.values()].find((candidate) => candidate.id === command.id);
     if (!current) throw new Error("Control command was not found");
     if (current.status === "completed") return { command: structuredClone(current), accepted: true, reason: null, result: (current.result as import("@deploylite/contracts").DeploymentStopCommandResult | undefined) ?? null, alreadyCompleted: true };
     if (current.status === "eligible" || current.status === "dispatching") return { command: structuredClone(current), accepted: true, reason: null, result: (current.result as import("@deploylite/contracts").DeploymentStopCommandResult | undefined) ?? null, alreadyCompleted: false };
@@ -644,7 +652,7 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
   }
 
   async claimDeploymentStop(command: ControlCommand) {
-    const current = [...this.#commands.values()].find((candidate) => candidate.id === command.id);
+    const current = [...this.executionState.commands.values()].find((candidate) => candidate.id === command.id);
     if (!current) throw new Error("Control command was not found");
     if (current.status !== "eligible") return { command: structuredClone(current), claimed: false };
     current.status = "dispatching";
@@ -653,14 +661,14 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
 
   async completeDeploymentStop(command: ControlCommand, result: import("@deploylite/contracts").DeploymentStopCommandResult): Promise<ControlCommand> {
     if (result.commandId !== command.id || result.action !== "deployment.stop") throw new Error("Deployment stop result does not match command");
-    const current = [...this.#commands.values()].find((candidate) => candidate.id === command.id);
+    const current = [...this.executionState.commands.values()].find((candidate) => candidate.id === command.id);
     if (!current) throw new Error("Control command was not found");
     if (current.status === "eligible" || current.status === "dispatching") { current.status = "completed"; current.result = result; }
     return structuredClone(current);
   }
 
   async executeConfirmedDeploymentRedeploy({ command, confirmation, deployment, requestId, snapshotHash, now = new Date() }: Parameters<ControlRedeployRepository["executeConfirmedDeploymentRedeploy"]>[0]) {
-    const current = [...this.#commands.values()].find((candidate) => candidate.id === command.id);
+    const current = [...this.executionState.commands.values()].find((candidate) => candidate.id === command.id);
     if (!current) throw new Error("Control command was not found");
     if (current.status === "completed") return { command: structuredClone(current), accepted: true, reason: null, result: current.result as import("@deploylite/contracts").DeploymentRedeployCommandResult | null, deployment: null, alreadyCompleted: true };
     if (current.status === "eligible" || current.status === "dispatching") return { command: structuredClone(current), accepted: true, reason: null, result: current.result as import("@deploylite/contracts").DeploymentRedeployCommandResult, deployment, alreadyCompleted: false };
@@ -677,20 +685,20 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
 
   async completeDeploymentRedeploy(command: ControlCommand, result: import("@deploylite/contracts").DeploymentRedeployCommandResult): Promise<ControlCommand> {
     if (result.commandId !== command.id || result.action !== "deployment.redeploy" || result.correlationId !== command.correlationId || result.status !== "completed") throw new Error("Deployment redeploy result does not match command");
-    const current = [...this.#commands.values()].find((candidate) => candidate.id === command.id); if (!current) throw new Error("Control command was not found");
+    const current = [...this.executionState.commands.values()].find((candidate) => candidate.id === command.id); if (!current) throw new Error("Control command was not found");
     const expected = current.result as import("@deploylite/contracts").DeploymentRedeployCommandResult | undefined;
     if (!expected || expected.status !== "eligible" || current.scope.kind !== "deployment" || result.projectId !== current.scope.projectId || result.sourceDeploymentId !== current.scope.deploymentId || result.projectId !== expected.projectId || result.sourceDeploymentId !== expected.sourceDeploymentId || result.deploymentId === null || result.deploymentId !== expected.deploymentId || result.snapshotHash !== expected.snapshotHash) throw new Error("Deployment redeploy result does not match persisted command");
     if (current.status === "eligible" || current.status === "dispatching") { current.status = "completed"; current.result = result; } return structuredClone(current);
   }
 
-  async claimDeploymentRedeploy(command: ControlCommand) { const current = [...this.#commands.values()].find((candidate) => candidate.id === command.id); if (!current) throw new Error("Control command was not found"); const id = (current.result as import("@deploylite/contracts").DeploymentRedeployCommandResult | undefined)?.deploymentId; const deployment = id ? await this.deployments?.findById(id) ?? null : null; if (current.status !== "eligible") return { command: structuredClone(current), claimed: false, deployment }; current.status = "dispatching"; return { command: structuredClone(current), claimed: true, deployment }; }
+  async claimDeploymentRedeploy(command: ControlCommand) { const current = [...this.executionState.commands.values()].find((candidate) => candidate.id === command.id); if (!current) throw new Error("Control command was not found"); const id = (current.result as import("@deploylite/contracts").DeploymentRedeployCommandResult | undefined)?.deploymentId; const deployment = id ? await this.deployments?.findById(id) ?? null : null; if (current.status !== "eligible") return { command: structuredClone(current), claimed: false, deployment }; current.status = "dispatching"; return { command: structuredClone(current), claimed: true, deployment }; }
 
-  constructor(private readonly projects: ProjectRepository, private readonly audit: AuditRepository, private readonly deployments?: DeploymentRepository) {}
+  constructor(private readonly projects: ProjectRepository, private readonly audit: AuditRepository, private readonly deployments?: DeploymentRepository, private readonly executionState = new InMemoryExecutionState()) {}
 
   async executeConfirmedProjectDelete({ command, confirmation, projectId, requestId }: Parameters<ControlDeleteRepository["executeConfirmedProjectDelete"]>[0]) {
     const project = await this.projects.findById(projectId);
     if (!project) throw new Error("Project was not found for confirmed deletion");
-    const commandBefore = [...this.#commands.values()].find((candidate) => candidate.id === command.id);
+    const commandBefore = [...this.executionState.commands.values()].find((candidate) => candidate.id === command.id);
     const confirmationBefore = this.#confirmations.get(confirmation.id);
     const outcome = await this.consume(command, confirmation);
     if (!outcome.accepted || outcome.command.status === "completed") return { ...outcome, removed: outcome.command.status === "completed", auditRecorded: outcome.command.status === "completed", alreadyCompleted: outcome.command.status === "completed" };

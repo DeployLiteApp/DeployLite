@@ -1,6 +1,8 @@
 import { trustedPriorExecutionReceiptSchema, type Agent, type AgentHeartbeat, type Deployment, type EnvSecretValue, type EnvVariableMetadata, type LogEvent, type Project, type ScaffoldUser, type TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
 import type { DeploymentSnapshotV1 } from "@deploylite/contracts";
 import { redactLogMessage } from "@deploylite/config";
+import { InMemoryExecutionState } from "./deployment-contract/execution-memory-state.js";
+export { InMemoryExecutionState } from "./deployment-contract/execution-memory-state.js";
 export { InMemorySnapshotStore } from "./deployment-contract/snapshot-memory.js";
 export { InMemoryProtocolTransport } from "./deployment-contract/protocol-memory.js";
 export * from "./deployment-contract/execution-completion.js";
@@ -286,39 +288,39 @@ const terminalDeploymentStatuses: readonly Deployment["status"][] = ["succeeded"
 const semanticallyEqual = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
 
 export class InMemoryDeploymentRepository implements DeploymentRepository {
-  #deployments = new Map<string, Deployment>();
   readonly #logs = new Map<string, LogEvent[]>();
+  constructor(private readonly executionState = new InMemoryExecutionState()) {}
 
   async save(deployment: Deployment): Promise<Deployment> {
     const next = structuredClone(deployment) as BoundDeployment;
-    const current = this.#deployments.get(next.id) as BoundDeployment | undefined;
+    const current = this.executionState.deployments.get(next.id) as BoundDeployment | undefined;
     if (current) {
       if (immutableDeploymentFields.some((field) => !semanticallyEqual(current[field], next[field]))) throw new Error("Deployment identity, snapshot, and proof are immutable");
       if (terminalDeploymentStatuses.includes(current.status) && !semanticallyEqual(current, next)) throw new Error("Deployment terminal outcome is immutable");
     }
-    this.#deployments = new Map(this.#deployments).set(next.id, next);
+    this.executionState.deployments = new Map(this.executionState.deployments).set(next.id, next);
     return structuredClone(next);
   }
 
   async saveIfStatus(deployment: Deployment, expectedStatus: Deployment["status"]): Promise<Deployment | null> {
-    const current = this.#deployments.get(deployment.id);
+    const current = this.executionState.deployments.get(deployment.id);
     return current?.status === expectedStatus ? this.save(deployment) : null;
   }
 
   async findById(id: string): Promise<Deployment | null> {
-    const deployment = this.#deployments.get(id);
+    const deployment = this.executionState.deployments.get(id);
     return deployment ? structuredClone(deployment) : null;
   }
 
   async list(): Promise<Deployment[]> {
-    return structuredClone([...this.#deployments.values()]);
+    return structuredClone([...this.executionState.deployments.values()]);
   }
 
-  async remove(id: string): Promise<boolean> { return this.#deployments.delete(id); }
+  async remove(id: string): Promise<boolean> { return this.executionState.deployments.delete(id); }
 
   async saveExecutionReceipt(deploymentId: string, receipt: TrustedPriorExecutionReceiptV1): Promise<Deployment | null> {
     const parsed = trustedPriorExecutionReceiptSchema.parse(structuredClone(receipt)) as BoundReceipt;
-    const current = this.#deployments.get(deploymentId) as BoundDeployment | undefined;
+    const current = this.executionState.deployments.get(deploymentId) as BoundDeployment | undefined;
     if (!current) return null;
     if (current.status !== "succeeded" || parsed.deploymentId !== current.id || parsed.projectId !== current.projectId || parsed.snapshotOriginId !== current.snapshotOriginId || parsed.snapshotHash !== current.snapshotHash || parsed.runtimeHost !== current.agentId) throw new Error("Deployment execution receipt binding is invalid");
     if (current.executionReceipt) {
@@ -326,7 +328,7 @@ export class InMemoryDeploymentRepository implements DeploymentRepository {
       return structuredClone(current);
     }
     const updated = { ...current, executionReceipt: parsed };
-    this.#deployments = new Map(this.#deployments).set(deploymentId, updated);
+    this.executionState.deployments = new Map(this.executionState.deployments).set(deploymentId, updated);
     return structuredClone(updated);
   }
 
