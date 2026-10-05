@@ -1,14 +1,16 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { validateAgentTransportKey, verifyAgentTransport } from "@deploylite/config";
-import { agentExecutionCommandSchema, CapabilityError, createDeploymentCommand, deploymentStopAgentCommandSchema, deploymentStopAgentReceiptSchema, dockerImageExecutionReceiptSchema, FenceError, LeaseExpiredError, protocolPayloadFingerprint, TransportCanceledError, type AgentExecutionCommand, type DeploymentSnapshotV1, type DeploymentStopAgentCommand, type DeploymentStopAgentReceipt, type LeaseV1 } from "@deploylite/contracts";
-import { validateDockerImageSnapshot, type DockerImageExecutionReceiptV1 } from "@deploylite/domain";
+import { agentExecutionCommandSchema, CapabilityError, createDeploymentCommand, deploymentStopAgentCommandSchema, deploymentStopAgentReceiptSchema, dockerImageExecutionReceiptSchema, FenceError, LeaseExpiredError, protocolPayloadFingerprint, TransportCanceledError, TransportTimeoutError, type AgentExecutionCommand, type DeploymentSnapshotV1, type DeploymentStopAgentCommand, type DeploymentStopAgentReceipt, type LeaseV1, type PromotionPolicy, type DeploymentExecutionAuthorityV1 } from "@deploylite/contracts";
+import { awaitAbortable, validateDockerImageSnapshot, type DockerImageExecutionReceiptV1, type DeploymentAuthorityValidation, type PriorDockerImageExecutionReceiptV1 } from "@deploylite/domain";
 
-export type AgentCommandDispatcher = { readonly runtimeConfig?: { readonly hostPort: number; readonly containerPort: number; readonly networkName?: string }; dispatch(snapshot: any, commandId: string, signal?: AbortSignal, lease?: LeaseV1, options?: { executionDeploymentId?: string; runtimeHost?: string }): Promise<DockerImageExecutionReceiptV1> };
-export type AgentStopDispatcher = { stop(input: { projectId: string; deploymentId: string; candidateId: string; effectiveImage: string }, signal?: AbortSignal, lease?: LeaseV1): Promise<"stopped" | "already-stopped" | "absent" | "failed" | "canceled"> };
+export type RuntimeExecutionAuthority = { assertValid(): Promise<void>; readonly expiresAt?: number };
+export type AgentDispatchOptions = { executionDeploymentId?: string; runtimeHost?: string; priorProvenReceipt?: PriorDockerImageExecutionReceiptV1; promotionPolicy?: PromotionPolicy; authority?: RuntimeExecutionAuthority; preparationTimeoutMs?: number };
+export type AgentCommandDispatcher = { readonly promotionPolicy?: PromotionPolicy; readonly runtimeConfig?: { readonly hostPort: number; readonly containerPort: number; readonly networkName?: string }; dispatch(snapshot: any, commandId: string, signal?: AbortSignal, lease?: LeaseV1, options?: AgentDispatchOptions): Promise<DockerImageExecutionReceiptV1> };
+export type AgentStopDispatcher = { stop(input: { projectId: string; deploymentId: string; candidateId: string; effectiveImage: string; containerId?: string }, signal?: AbortSignal, lease?: LeaseV1, authority?: RuntimeExecutionAuthority, timeoutMs?: number): Promise<"stopped" | "already-stopped" | "absent" | "failed" | "canceled"> };
 export type AgentReplayReceipt = Record<string, unknown>;
 export type AgentReplayClaim = { claimed: boolean; claimToken?: string; receipt?: AgentReplayReceipt };
-export type AgentReplayStore = { readonly durable?: boolean; claim(commandId: string, fingerprint: string, lease: LeaseV1): Promise<AgentReplayClaim>; wait(commandId: string): Promise<AgentReplayReceipt>; complete(commandId: string, value: { fingerprint: string; claimToken: string; receipt: AgentReplayReceipt }): Promise<void>; release(commandId: string): Promise<void> };
-export type AgentCommandReceiverOptions = Readonly<{ agentId: string; trustKey: string; capabilities: readonly string[]; dispatcher: AgentCommandDispatcher; stopDispatcher?: AgentStopDispatcher; replayStore: AgentReplayStore; now?: () => number }>;
+export type AgentReplayStore = { readonly durable?: boolean; claim(commandId: string, fingerprint: string, lease: LeaseV1): Promise<AgentReplayClaim>; wait(commandId: string): Promise<AgentReplayReceipt>; complete(commandId: string, value: { fingerprint: string; claimToken: string; receipt: AgentReplayReceipt }): Promise<void>; release(commandId: string, claimToken?: string): Promise<void> };
+export type AgentCommandReceiverOptions = Readonly<{ agentId: string; trustKey: string; capabilities: readonly string[]; dispatcher: AgentCommandDispatcher; stopDispatcher?: AgentStopDispatcher; replayStore: AgentReplayStore; authorityValidator?: DeploymentAuthorityValidation; now?: () => number }>;
 
 export class AuthenticatedAgentCommandReceiver {
   readonly #options: AgentCommandReceiverOptions;
@@ -19,6 +21,7 @@ export class AuthenticatedAgentCommandReceiver {
   get capabilities(): readonly string[] { return this.#options.capabilities; }
   verifyRequest(payload: string, signature: string | undefined): boolean { return verifyAgentTransport(payload, signature, this.#options.trustKey); }
   async receive(body: unknown, signature: string | undefined, signal?: AbortSignal): Promise<any> {
+    if (signal?.aborted) throw new TransportCanceledError();
     const text = JSON.stringify(body); if (!verifyAgentTransport(text, signature, this.#options.trustKey)) throw new Error("agent authentication failed");
     if (typeof body === "object" && body !== null && (body as { action?: string }).action === "deployment.stop") return this.receiveStop(body, signal);
     const command = agentExecutionCommandSchema.parse(structuredClone(body));
@@ -29,22 +32,96 @@ export class AuthenticatedAgentCommandReceiver {
     validateDockerImageSnapshot(snapshot, { sha256: (value) => createHash("sha256").update(value).digest("hex") });
     const runtime = this.#options.dispatcher.runtimeConfig ? structuredClone(this.#options.dispatcher.runtimeConfig) : undefined;
     if (command.agentId !== this.#options.agentId || (snapshot.agentId && snapshot.agentId !== this.#options.agentId) || command.projectId !== snapshot.projectId || (command.schemaVersion === 1 && command.deploymentId !== snapshot.deploymentId) || (command.schemaVersion === 2 && command.sourceDeploymentId === command.deploymentId) || command.deploymentId !== command.lease.deploymentId || command.snapshotHash !== snapshot.hash || (runtime && runtime.containerPort !== snapshot.runtimePort)) throw new Error("agent command scope rejected");
+    const options = command.schemaVersion === 1 && this.#options.authorityValidator ? { authority: this.initialAuthority(command) } : this.replacementOptions(command, runtime);
     if (command.requiredCapabilities.length !== 1 || command.requiredCapabilities[0] !== "deploy.execute") throw new CapabilityError(command.requiredCapabilities[0] ?? "deploy.execute");
     for (const capability of command.requiredCapabilities) if (!this.#options.capabilities.includes(capability)) throw new CapabilityError(capability);
     if ((this.#options.now ?? Date.now)() >= command.lease.expiresAt) throw new LeaseExpiredError();
-    this.validateFence(command.lease); const fingerprint = protocolPayloadFingerprint({ snapshot: command.snapshot, agentId: this.#options.agentId, deploymentId: command.deploymentId, sourceDeploymentId: command.schemaVersion === 2 ? command.sourceDeploymentId : null, correlationId: command.context.correlationId, runtimeConfig: runtime ?? null }); createDeploymentCommand({ schemaVersion: 1, commandId: command.commandId, deploymentId: command.deploymentId, requiredCapabilities: command.requiredCapabilities, payload: { snapshotHash: command.snapshotHash }, lease: command.lease }); const claim = await this.#options.replayStore.claim(command.commandId, fingerprint, command.lease);
-    if (!claim.claimed) return this.#wrap(command, dockerImageExecutionReceiptSchema.parse(claim.receipt ?? await this.#options.replayStore.wait(command.commandId)), runtime);
-    const cancellation = new AbortController(); const cancel = () => cancellation.abort(); signal?.addEventListener("abort", cancel, { once: true }); if (command.cancellationRequested) cancellation.abort();
-    let receipt: DockerImageExecutionReceiptV1; try { receipt = await this.#options.dispatcher.dispatch(snapshot, command.commandId, cancellation.signal, command.lease, { executionDeploymentId: command.deploymentId, runtimeHost: this.#options.agentId }); } catch (error) { await this.#options.replayStore.release(command.commandId); throw error; } finally { signal?.removeEventListener("abort", cancel); }
-    try { const validated = this.#validatedReceipt(command, receipt, runtime); if (!claim.claimToken) throw new Error("agent replay claim token missing"); await this.#options.replayStore.complete(command.commandId, { fingerprint, claimToken: claim.claimToken, receipt: validated as unknown as AgentReplayReceipt }); return this.#wrap(command, validated, runtime); } catch (error) { await this.#options.replayStore.release(command.commandId); throw error; }
+    this.validateFence(command.lease); const fingerprint = protocolPayloadFingerprint({ snapshot: command.snapshot, agentId: this.#options.agentId, deploymentId: command.deploymentId, sourceDeploymentId: command.schemaVersion === 2 ? command.sourceDeploymentId : null, correlationId: command.context.correlationId, runtimeConfig: runtime ?? null, authority: command.schemaVersion === 2 ? command.authority ?? null : null, replacement: command.schemaVersion === 2 ? command.replacement ?? null : null }); createDeploymentCommand({ schemaVersion: 1, commandId: command.commandId, deploymentId: command.deploymentId, requiredCapabilities: command.requiredCapabilities, payload: { snapshotHash: command.snapshotHash }, lease: command.lease });
+    const admission = this.admission(command.timeoutMs, command.lease, signal);
+    let claim: AgentReplayClaim | undefined;
+    try {
+      claim = await this.claimReplay(command.commandId, fingerprint, command.lease, admission.signal);
+      if (!claim.claimed) return this.#wrap(command, dockerImageExecutionReceiptSchema.parse(claim.receipt ?? await awaitAbortable(() => this.#options.replayStore.wait(command.commandId), admission.signal)), runtime);
+      await awaitAbortable(async () => options.authority?.assertValid(), admission.signal);
+      admission.finishPreparation();
+      if (command.cancellationRequested) admission.cancel();
+      // The dispatcher owns preparation/cutover/recovery. Do not race its independent recovery against caller cancellation.
+      const receipt = await this.#options.dispatcher.dispatch(snapshot, command.commandId, admission.signal, command.lease, { executionDeploymentId: command.deploymentId, runtimeHost: this.#options.agentId, ...options, preparationTimeoutMs: admission.remaining() });
+      const validated = this.#validatedReceipt(command, receipt, runtime);
+      if (!claim.claimToken) throw new Error("agent replay claim token missing");
+      await this.#options.replayStore.complete(command.commandId, { fingerprint, claimToken: claim.claimToken, receipt: validated as unknown as AgentReplayReceipt });
+      return this.#wrap(command, validated, runtime);
+    } catch (error) { if (claim?.claimed && claim.claimToken) this.releaseReplay(command.commandId, claim.claimToken); throw error; }
+    finally { admission.dispose(); }
+
   }
   private async receiveStop(body: unknown, signal?: AbortSignal): Promise<DeploymentStopAgentReceipt> {
-    const command = deploymentStopAgentCommandSchema.parse(body); if (!this.#options.stopDispatcher) throw new CapabilityError("deployment.stop");
+    const command = deploymentStopAgentCommandSchema.parse(structuredClone(body)); if (!this.#options.stopDispatcher) throw new CapabilityError("deployment.stop");
+    const authority = this.runtimeAuthority(command.authority, command.projectId, command.deploymentId, command.lease, "deployment.stop");
     if (command.agentId !== this.#options.agentId || command.lease.deploymentId !== command.deploymentId) throw new Error("agent command scope rejected");
     if (!this.#options.capabilities.includes("deployment.stop")) throw new CapabilityError("deployment.stop"); if ((this.#options.now?.() ?? Date.now()) >= command.lease.expiresAt) throw new LeaseExpiredError();
-    if (signal?.aborted) throw new TransportCanceledError(); this.validateFence(command.lease); const fingerprint = protocolPayloadFingerprint({ action: command.action, agentId: command.agentId, projectId: command.projectId, deploymentId: command.deploymentId, candidateId: command.candidateId, effectiveImage: command.effectiveImage, correlationId: command.context.correlationId }); const claim = await this.#options.replayStore.claim(command.commandId, fingerprint, command.lease); if (!claim.claimed) return deploymentStopAgentReceiptSchema.parse(claim.receipt ?? await this.#options.replayStore.wait(command.commandId));
-    const cancellation = new AbortController(); const cancel = () => cancellation.abort(); signal?.addEventListener("abort", cancel, { once: true }); if (command.cancellationRequested) cancellation.abort();
-    try { const status = await this.#options.stopDispatcher.stop({ projectId: command.projectId, deploymentId: command.deploymentId, candidateId: command.candidateId, effectiveImage: command.effectiveImage }, cancellation.signal, command.lease); const receipt = deploymentStopAgentReceiptSchema.parse({ schemaVersion: 1, action: command.action, agentId: command.agentId, commandId: command.commandId, projectId: command.projectId, deploymentId: command.deploymentId, candidateId: command.candidateId, effectiveImage: command.effectiveImage, status, redacted: true, correlationId: command.context.correlationId, reason: status === "failed" ? "docker_stop_failed" : status === "canceled" ? "canceled" : null }); if (!claim.claimToken) throw new Error("agent replay claim token missing"); await this.#options.replayStore.complete(command.commandId, { fingerprint, claimToken: claim.claimToken, receipt }); return receipt; } catch (error) { await this.#options.replayStore.release(command.commandId); throw error; } finally { signal?.removeEventListener("abort", cancel); }
+    if (signal?.aborted) throw new TransportCanceledError(); this.validateFence(command.lease); const fingerprint = protocolPayloadFingerprint({ action: command.action, agentId: command.agentId, projectId: command.projectId, deploymentId: command.deploymentId, candidateId: command.candidateId, effectiveImage: command.effectiveImage, containerId: command.containerId ?? null, correlationId: command.context.correlationId, authority: command.authority ?? null });
+    const admission = this.admission(command.timeoutMs, command.lease, signal); let claim: AgentReplayClaim | undefined;
+    try {
+      claim = await this.claimReplay(command.commandId, fingerprint, command.lease, admission.signal);
+      if (!claim.claimed) return deploymentStopAgentReceiptSchema.parse(claim.receipt ?? await awaitAbortable(() => this.#options.replayStore.wait(command.commandId), admission.signal));
+      await awaitAbortable(async () => authority?.assertValid(), admission.signal); admission.finishPreparation();
+      if (command.cancellationRequested) admission.cancel();
+      const status = await this.#options.stopDispatcher.stop({ projectId: command.projectId, deploymentId: command.deploymentId, candidateId: command.candidateId, effectiveImage: command.effectiveImage, ...(command.containerId ? { containerId: command.containerId } : {}) }, admission.signal, command.lease, authority, admission.remaining());
+      const receipt = deploymentStopAgentReceiptSchema.parse({ schemaVersion: 1, action: command.action, agentId: command.agentId, commandId: command.commandId, projectId: command.projectId, deploymentId: command.deploymentId, candidateId: command.candidateId, effectiveImage: command.effectiveImage, ...(command.containerId ? { containerId: command.containerId } : {}), status, redacted: true, correlationId: command.context.correlationId, reason: status === "failed" ? "docker_stop_failed" : status === "canceled" ? "canceled" : null });
+      if (!claim.claimToken) throw new Error("agent replay claim token missing");
+      await this.#options.replayStore.complete(command.commandId, { fingerprint, claimToken: claim.claimToken, receipt }); return receipt;
+    } catch (error) { if (claim?.claimed && claim.claimToken) this.releaseReplay(command.commandId, claim.claimToken); throw error; }
+    finally { admission.dispose(); }
+
+  }
+  private admission(timeoutMs: number, lease: LeaseV1, parent?: AbortSignal) {
+    const controller = new AbortController(), cancel = () => controller.abort(new TransportCanceledError());
+    const limit = Math.min(timeoutMs, lease.expiresAt - (this.#options.now ?? Date.now)()), deadline = Date.now() + limit;
+    parent?.addEventListener("abort", cancel, { once: true }); if (parent?.aborted) cancel();
+    const timer = setTimeout(() => controller.abort(new TransportTimeoutError()), Math.max(0, limit));
+    return { signal: controller.signal, cancel, remaining: () => Math.max(0, deadline - Date.now()), finishPreparation: () => { if (controller.signal.aborted) throw controller.signal.reason; if (Date.now() >= deadline) { controller.abort(new TransportTimeoutError()); throw controller.signal.reason; } clearTimeout(timer); }, dispose: () => { clearTimeout(timer); parent?.removeEventListener("abort", cancel); } };
+  }
+  private releaseReplay(commandId: string, claimToken: string): void {
+    // Cleanup must not hold an already canceled/deadline-bound admission open.
+    // The durable token CAS fences a late delete; failure retains the claim until its lease expires.
+    try { void this.#options.replayStore.release(commandId, claimToken).catch(() => {}); }
+    catch { /* Preserve the original admission/dispatch error and the unresolved durable claim. */ }
+  }
+  private async claimReplay(commandId: string, fingerprint: string, lease: LeaseV1, signal: AbortSignal) {
+    return awaitAbortable(async () => {
+      const claim = await this.#options.replayStore.claim(commandId, fingerprint, lease);
+      if (signal.aborted) { if (claim.claimed && claim.claimToken) this.releaseReplay(commandId, claim.claimToken); throw signal.reason; }
+      return claim;
+    }, signal);
+  }
+  private initialAuthority(command: Extract<AgentExecutionCommand, { schemaVersion: 1 }>): RuntimeExecutionAuthority {
+    const validate = this.#options.authorityValidator?.validateInitialExecution?.bind(this.#options.authorityValidator);
+    if (!validate) throw new FenceError("Persisted INITIAL authority reader required");
+    return { expiresAt: command.lease.expiresAt, assertValid: async () => {
+      await validate(command.projectId, command.deploymentId, { snapshotOriginId: command.deploymentId, snapshotHash: command.snapshotHash, runtimeHost: this.#options.agentId });
+      if ((this.#options.now ?? Date.now)() >= command.lease.expiresAt) throw new LeaseExpiredError();
+      this.validateFence(command.lease);
+    } };
+  }
+  private runtimeAuthority(value: DeploymentExecutionAuthorityV1 | undefined, projectId: string, executionId: string, lease: LeaseV1, action: DeploymentExecutionAuthorityV1["action"], sourceId?: string): RuntimeExecutionAuthority | undefined {
+    if (!value) { if (this.#options.authorityValidator) throw new FenceError("Persisted execution authority required"); return undefined; }
+    const validator = this.#options.authorityValidator;
+    if (!validator || value.projectId !== projectId || value.action !== action || value.projectLease.deploymentId !== projectId || protocolPayloadFingerprint(value.executionLease) !== protocolPayloadFingerprint(lease) || (action === "deployment.redeploy" ? value.sourceLease?.deploymentId !== sourceId : value.sourceLease !== undefined)) throw new FenceError("Signed execution authority scope rejected");
+    const captured = structuredClone(value);
+    return { expiresAt: Math.min(captured.projectLease.expiresAt, captured.executionLease.expiresAt, captured.sourceLease?.expiresAt ?? Infinity), assertValid: async () => { await validator.validateDeploymentAuthority(structuredClone(captured), (this.#options.now ?? Date.now)()); if ((this.#options.now ?? Date.now)() >= Math.min(captured.projectLease.expiresAt, captured.executionLease.expiresAt, captured.sourceLease?.expiresAt ?? Infinity)) throw new LeaseExpiredError(); } };
+  }
+  private replacementOptions(command: AgentExecutionCommand, runtime: AgentCommandDispatcher["runtimeConfig"]): AgentDispatchOptions {
+    if (command.schemaVersion === 1) return {};
+    const authority = this.runtimeAuthority(command.authority, command.projectId, command.deploymentId, command.lease, "deployment.redeploy", command.sourceDeploymentId);
+    const replacement = command.replacement;
+    if (!replacement) { if (authority) throw new Error("Observed previous execution required"); return {}; }
+    const prior = replacement.prior, source = command.snapshot.source as DeploymentSnapshotV1["source"];
+    const digest = source.sourceMode === "image" ? source.image.selector.kind === "digest" ? source.image.selector.value : command.snapshot.resolvedDigest : undefined;
+    const effectiveImage = source.sourceMode === "image" ? `${source.image.registryHost}/${source.image.repository}@${digest}` : undefined;
+    if (!authority || !runtime || !this.#options.dispatcher.promotionPolicy || protocolPayloadFingerprint(replacement.policy) !== protocolPayloadFingerprint(this.#options.dispatcher.promotionPolicy) || replacement.effectiveImage !== effectiveImage || prior.projectId !== command.projectId || prior.deploymentId !== command.sourceDeploymentId || prior.snapshotOriginId !== command.snapshot.deploymentId || prior.snapshotHash !== command.snapshotHash || prior.effectiveImageDigest !== digest || prior.runtimeHost !== this.#options.agentId || prior.hostPort !== runtime.hostPort || prior.containerPort !== runtime.containerPort || prior.containerPort !== command.snapshot.runtimePort || prior.network !== (runtime.networkName ?? null)) throw new Error("Previous execution binding rejected");
+    const priorProvenReceipt: PriorDockerImageExecutionReceiptV1 = { deploymentId: prior.deploymentId, projectId: prior.projectId, candidateId: prior.candidateId, effectiveImage: replacement.effectiveImage, runtimePort: prior.containerPort, runtimeConfig: { hostPort: prior.hostPort, containerPort: prior.containerPort, ...(prior.network ? { networkName: prior.network } : {}) }, terminalStatus: "succeeded", health: "passed", proven: true, rollback: { target: null, result: "not-required" }, executionReceipt: prior };
+    return { authority, priorProvenReceipt, promotionPolicy: replacement.policy };
   }
   private validateFence(lease: LeaseV1): void { const current = this.#fences.get(lease.deploymentId); if (current && (lease.fence < current.fence || (lease.fence === current.fence && current.leaseId !== lease.leaseId))) throw new FenceError(); if (!current || lease.fence > current.fence) this.#fences.set(lease.deploymentId, lease); }
   #validatedReceipt(command: AgentExecutionCommand, receipt: DockerImageExecutionReceiptV1, runtime?: AgentCommandDispatcher["runtimeConfig"]) {

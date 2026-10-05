@@ -109,17 +109,21 @@ export type { AgentServerOptions } from "./server.js";
 
 export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
   const { parseDeployLiteEnv } = await import("@deploylite/config");
-  const { createDbClient, createDbPool, closeDbPool, DbAgentReplayStore } = await import("@deploylite/db");
+  const { createDbClient, createDbPool, closeDbPool, DbAgentReplayStore, DbControlCommandRepository } = await import("@deploylite/db");
   const { InMemoryProtocolTransport } = await import("@deploylite/domain");
   const parsed = parseDeployLiteEnv(env);
   if (parsed.NODE_ENV === "production" && !parsed.DATABASE_URL) throw new Error("agent durable database is required");
   if (!parsed.DEPLOYLITE_AGENT_ID || !parsed.DEPLOYLITE_AGENT_TRUST_KEY || !parsed.DATABASE_URL) throw new Error("agent runtime configuration is incomplete");
   const pool = createDbPool(parsed.DATABASE_URL); const db = createDbClient(pool);
   const replayStore = new DbAgentReplayStore(db, `${parsed.DEPLOYLITE_AGENT_ID}:${process.pid}:${randomUUID()}`);
+  const authorityValidator = new DbControlCommandRepository(db);
+  const promotionPolicy = { maxOutageMs: 30_000, maxRecoveryMs: 60_000 };
+  const temporaryHostPort = env.DEPLOYLITE_AGENT_TEMPORARY_HOST_PORT === undefined ? undefined : Number(env.DEPLOYLITE_AGENT_TEMPORARY_HOST_PORT);
+  if (temporaryHostPort !== undefined && (!Number.isInteger(temporaryHostPort) || temporaryHostPort < 1024 || temporaryHostPort > 65535 || temporaryHostPort === 3000)) { await closeDbPool(pool); throw new Error("agent temporary host port is unsafe"); }
   const protocol = new InMemoryProtocolTransport({ clock: { now: Date.now }, leasePolicy: { ttlMs: 30_000 }, retryPolicy: { maxAttempts: 1, deadlineMs: 30_000, backoffMs: () => 0 }, capabilities: ["deploy.execute"] });
-  const dispatcher = new DigestDeploymentDispatcher({ protocol, runner: new (await import("./infrastructure/docker/docker-process-runner.js")).DockerProcessRunner(), trustedHosts: ["docker.io", "ghcr.io", "registry.example.com"], allowedNetworks: ["deploylite-agent"] });
+  const dispatcher = new DigestDeploymentDispatcher({ protocol, runner: new (await import("./infrastructure/docker/docker-process-runner.js")).DockerProcessRunner(), temporaryHostPort, promotionPolicy, trustedHosts: ["docker.io", "ghcr.io", "registry.example.com"], allowedNetworks: ["deploylite-agent"] });
   if (!dispatcher.available()) { await closeDbPool(pool); throw new Error("agent dispatcher is unavailable"); }
-  const receiver = new AuthenticatedAgentCommandReceiver({ agentId: parsed.DEPLOYLITE_AGENT_ID, trustKey: parsed.DEPLOYLITE_AGENT_TRUST_KEY, capabilities: ["deploy.execute"], dispatcher, replayStore: replayStore as never });
+  const receiver = new AuthenticatedAgentCommandReceiver({ agentId: parsed.DEPLOYLITE_AGENT_ID, trustKey: parsed.DEPLOYLITE_AGENT_TRUST_KEY, capabilities: ["deploy.execute", "deployment.stop"], dispatcher, stopDispatcher: dispatcher, authorityValidator, replayStore: replayStore as never });
   const server = await startAgentServer({ host: parsed.DEPLOYLITE_AGENT_HOST, port: parsed.DEPLOYLITE_AGENT_PORT, receiver, replayStore: replayStore as never, production: parsed.NODE_ENV === "production" });
   const close = async () => { await server.close(); await closeDbPool(pool); };
   process.once("SIGINT", close); process.once("SIGTERM", close);
