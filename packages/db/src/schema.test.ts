@@ -1,8 +1,10 @@
 import { readFileSync } from "node:fs";
+import { getTableColumns } from "drizzle-orm";
+import { getTableConfig, PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 
 import { assertEnvMetadataHasNoValueColumns, toEnvVariableMetadataInsert } from "./env-metadata.js";
-import { canonicalRoleNames } from "./schema.js";
+import { canonicalRoleNames, controlCommands, deployments } from "./schema.js";
 
 const migrationSql = readFileSync(new URL("../migrations/0000_auth_postgres_foundation.sql", import.meta.url), "utf8");
 const envSecretValuesMigrationSql = readFileSync(
@@ -117,3 +119,37 @@ function extractCreateTableBody(sql: string, tableName: string): string {
   }
   return match[1] ?? "";
 }
+
+describe("trusted execution receipt storage", () => {
+  it("adds nullable JSONB evidence without a default or legacy backfill", () => {
+    const column = Object.values(getTableColumns(deployments)).find((candidate) => candidate.name === "execution_receipt");
+    expect(column?.getSQLType()).toBe("jsonb");
+    expect(column?.notNull).toBe(false);
+    expect(column?.hasDefault).toBe(false);
+    const migration = readFileSync(new URL("../migrations/0015_trusted_prior_execution_receipt.sql", import.meta.url), "utf8");
+    expect(migration.trim()).toBe("ALTER TABLE deployments ADD COLUMN execution_receipt jsonb;");
+  });
+});
+
+
+describe("repeated snapshot and dispatch schema contracts", () => {
+  it("indexes repeated snapshot hashes without uniqueness and replaces only the old index", () => {
+    const snapshotIndex = getTableConfig(deployments).indexes.find((candidate) => candidate.config.name === "deployments_snapshot_hash_idx");
+    expect(snapshotIndex?.config).toMatchObject({ unique: false });
+    expect(snapshotIndex?.config.columns.map((column) => "name" in column ? column.name : null)).toEqual(["snapshot_hash"]);
+    const dialect = new PgDialect();
+    expect(snapshotIndex?.config.where && dialect.sqlToQuery(snapshotIndex.config.where).sql).toContain('"deployments"."snapshot_hash" is not null');
+    const migration = readFileSync(new URL("../migrations/0016_repeated_deployment_snapshot_hash.sql", import.meta.url), "utf8");
+    expect(migration.trim()).toBe("DROP INDEX deployments_snapshot_hash_unique;\nCREATE INDEX deployments_snapshot_hash_idx ON deployments (snapshot_hash) WHERE snapshot_hash IS NOT NULL;");
+    expect(migration).not.toMatch(/DROP TABLE|DELETE|UPDATE|TRUNCATE|ALTER TABLE/i);
+  });
+
+  it("matches the historical dispatch-claim command status constraint", () => {
+    const constraint = getTableConfig(controlCommands).checks.find((candidate) => candidate.name === "control_commands_status_valid");
+    if (!constraint) throw new Error("Expected command status check");
+    const sql = new PgDialect().sqlToQuery(constraint.value).sql;
+    expect(sql).toContain("'dispatching'");
+    const historical = readFileSync(new URL("../migrations/0013_control_command_dispatching.sql", import.meta.url), "utf8");
+    expect(sql.match(/'[^']+'/g)).toEqual(historical.match(/'[^']+'/g));
+  });
+});

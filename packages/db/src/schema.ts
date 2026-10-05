@@ -1,3 +1,4 @@
+import type { TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
 import { sql } from "drizzle-orm";
 import { boolean, check, customType, index, integer, jsonb, pgTable, smallint, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
@@ -144,6 +145,7 @@ export const deployments = pgTable(
     commitSha: text("commit_sha").notNull(),
     snapshotHash: text("snapshot_hash"),
     snapshotEvidence: text("snapshot_evidence"),
+    executionReceipt: jsonb("execution_receipt").$type<TrustedPriorExecutionReceiptV1 | null>(),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     metadata: jsonObject("metadata"),
@@ -152,6 +154,7 @@ export const deployments = pgTable(
   (table) => [
     index("deployments_project_id_idx").on(table.projectId),
     index("deployments_agent_id_idx").on(table.agentId),
+    index("deployments_snapshot_hash_idx").on(table.snapshotHash).where(sql`${table.snapshotHash} is not null`),
     check("deployments_status_valid", sql`${table.status} in ('queued', 'running', 'succeeded', 'failed', 'canceled')`)
   ]
 );
@@ -262,7 +265,7 @@ export const controlCommands = pgTable(
     index("control_commands_actor_user_id_idx").on(table.actorUserId),
     check("control_commands_action_valid", sql`${table.action} in ('project.delete', 'project.deploy', 'project.update', 'deployment.stop', 'deployment.redeploy', 'platform.agent.register')`),
     check("control_commands_scope_valid", sql`${table.scopeKind} in ('platform', 'project', 'deployment')`),
-    check("control_commands_status_valid", sql`${table.status} in ('pending_confirmation', 'eligible', 'rejected', 'completed')`)
+    check("control_commands_status_valid", sql`${table.status} in ('pending_confirmation', 'eligible', 'dispatching', 'rejected', 'completed')`)
   ]
 );
 

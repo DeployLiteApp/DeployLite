@@ -1,6 +1,6 @@
 import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
 import { redactLogMessage } from "@deploylite/config";
-import type { Agent, Deployment, DeploymentSnapshotV1, LogEvent, Project } from "@deploylite/contracts";
+import { trustedPriorExecutionReceiptSchema, type Agent, type Deployment, type DeploymentSnapshotV1, type LogEvent, type Project } from "@deploylite/contracts";
 import type { AgentRepository, DeploymentRepository, DeploymentSnapshotRepository, ProjectRepository } from "@deploylite/domain";
 
 import type { DeployLiteDb } from "../client.js";
@@ -120,38 +120,61 @@ export class DbDeploymentRepository implements DeploymentRepository, DeploymentS
   constructor(private readonly db: DeployLiteDb) {}
 
   async save(deployment: Deployment): Promise<Deployment> {
-    const metadataValue = { ...(deployment.sourceDeploymentId ? { sourceDeploymentId: deployment.sourceDeploymentId } : {}), ...(deployment.stopTarget ? { stopTarget: deployment.stopTarget } : {}) };
-    const metadata = Object.keys(metadataValue).length ? sql`coalesce(${deployments.metadata}, '{}'::jsonb) || ${JSON.stringify(metadataValue)}::jsonb` : undefined;
+    const next = structuredClone(deployment);
+    const metadataValue = {
+      ...(next.sourceDeploymentId ? { sourceDeploymentId: next.sourceDeploymentId } : {}),
+      ...(next.snapshotOriginId ? { snapshotOriginId: next.snapshotOriginId } : {}),
+      ...(next.stopTarget ? { stopTarget: next.stopTarget } : {})
+    };
     const [row] = await this.db
       .insert(deployments)
       .values({
-        id: deployment.id,
-        projectId: deployment.projectId,
-        agentId: deployment.agentId,
-        status: deployment.status,
-        commitSha: deployment.commitSha,
-        snapshotHash: deployment.snapshotHash ?? null,
-        startedAt: new Date(deployment.startedAt),
-        finishedAt: deployment.finishedAt ? new Date(deployment.finishedAt) : null,
-        ...(Object.keys(metadataValue).length ? { metadata: metadataValue } : {})
+        id: next.id,
+        projectId: next.projectId,
+        agentId: next.agentId,
+        status: next.status,
+        commitSha: next.commitSha,
+        snapshotHash: next.snapshotHash ?? null,
+        executionReceipt: next.executionReceipt ? trustedPriorExecutionReceiptSchema.parse(next.executionReceipt) : null,
+        startedAt: new Date(next.startedAt),
+        finishedAt: next.finishedAt ? new Date(next.finishedAt) : null,
+        metadata: metadataValue
       })
-        .onConflictDoUpdate({ target: deployments.id, set: { projectId: deployment.projectId, agentId: deployment.agentId, status: deployment.status, commitSha: deployment.commitSha, snapshotHash: deployment.snapshotHash ?? null, startedAt: new Date(deployment.startedAt), finishedAt: deployment.finishedAt ? new Date(deployment.finishedAt) : null, ...(metadata ? { metadata } : {}), updatedAt: new Date() } })
+      .onConflictDoUpdate({
+        target: deployments.id,
+        set: mutableDeploymentValues(next),
+        setWhere: genericDeploymentWriteGuard(next)
+      })
       .returning();
 
-    if (!row) throw new Error("Failed to save deployment");
+    if (!row) throw new Error("Deployment identity, snapshot, proof, and terminal outcome are immutable");
     const saved = toDeployment(row);
     if (!saved) throw new Error("Failed to save attached deployment");
     return saved;
   }
 
   async saveIfStatus(deployment: Deployment, expectedStatus: Deployment["status"]): Promise<Deployment | null> {
-    const [row] = await this.db.update(deployments).set({ status: deployment.status, finishedAt: deployment.finishedAt ? new Date(deployment.finishedAt) : null, ...(deployment.stopTarget ? { metadata: sql`coalesce(${deployments.metadata}, '{}'::jsonb) || jsonb_build_object('stopTarget', ${JSON.stringify(deployment.stopTarget)}::jsonb)` } : {}), updatedAt: new Date() }).where(and(eq(deployments.id, deployment.id), eq(deployments.status, expectedStatus))).returning();
+    const next = structuredClone(deployment);
+    const [row] = await this.db.update(deployments)
+      .set(mutableDeploymentValues(next))
+      .where(and(eq(deployments.id, next.id), eq(deployments.status, expectedStatus), genericDeploymentWriteGuard(next)))
+      .returning();
     return row ? toDeployment(row) : null;
   }
 
   async saveSnapshot(snapshot: DeploymentSnapshotV1): Promise<void> {
-    const result = await this.db.update(deployments).set({ snapshotHash: snapshot.hash, snapshotEvidence: snapshot.canonicalJson, updatedAt: new Date() }).where(eq(deployments.id, snapshot.deploymentId)).returning({ id: deployments.id });
-    if (!result.length) throw new Error("Deployment does not exist for snapshot");
+    const next = structuredClone(snapshot);
+    const equalEvidence = and(eq(deployments.snapshotHash, next.hash), eq(deployments.snapshotEvidence, next.canonicalJson));
+    const result = await this.db.update(deployments)
+      .set({ snapshotHash: next.hash, snapshotEvidence: next.canonicalJson, updatedAt: new Date() })
+      .where(and(
+        eq(deployments.id, next.deploymentId), eq(deployments.projectId, next.projectId),
+        sql`(${deployments.snapshotHash} is null or ${deployments.snapshotHash} = ${next.hash})`,
+        sql`(${deployments.snapshotEvidence} is null or ${deployments.snapshotEvidence} = ${next.canonicalJson})`,
+        sql`(${equalEvidence} or (${deployments.status} in ('queued', 'running') and ${deployments.executionReceipt} is null))`
+      ))
+      .returning({ id: deployments.id });
+    if (!result.length) throw new Error("Deployment is missing or its snapshot is immutable");
   }
 
   async findByHash(hash: string): Promise<DeploymentSnapshotV1 | null> {
@@ -196,6 +219,32 @@ export class DbDeploymentRepository implements DeploymentRepository, DeploymentS
   }
 }
 
+function mutableDeploymentValues(next: Deployment) {
+  return {
+    status: next.status,
+    finishedAt: next.finishedAt ? new Date(next.finishedAt) : null,
+    ...(next.stopTarget ? { metadata: sql`coalesce(${deployments.metadata}, '{}'::jsonb) || jsonb_build_object('stopTarget', ${JSON.stringify(next.stopTarget)}::jsonb)` } : {}),
+    updatedAt: new Date()
+  };
+}
+
+function genericDeploymentWriteGuard(next: Deployment) {
+  return and(
+    eq(deployments.projectId, next.projectId), eq(deployments.agentId, next.agentId), eq(deployments.commitSha, next.commitSha),
+    sql`coalesce(${deployments.startedAt}, ${deployments.createdAt}) = ${next.startedAt}::timestamptz`,
+    sql`${deployments.metadata}->>'sourceDeploymentId' is not distinct from ${next.sourceDeploymentId ?? null}`,
+    sql`${deployments.metadata}->>'snapshotOriginId' is not distinct from ${next.snapshotOriginId ?? null}`,
+    // Omitted hashes retain evidence attached by saveSnapshot before a legacy lifecycle update.
+    next.snapshotHash === undefined ? undefined : sql`${deployments.snapshotHash} is not distinct from ${next.snapshotHash}`,
+    sql`${deployments.executionReceipt} is not distinct from ${next.executionReceipt ? JSON.stringify(next.executionReceipt) : null}::jsonb`,
+    sql`(${deployments.status} not in ('succeeded', 'failed', 'canceled') or (
+      ${deployments.status} = ${next.status}
+      and ${deployments.finishedAt} is not distinct from ${next.finishedAt}::timestamptz
+      and ${deployments.metadata}->'stopTarget' is not distinct from ${next.stopTarget ? JSON.stringify(next.stopTarget) : null}::jsonb
+    ))`
+  );
+}
+
 function toAgent(row: typeof agents.$inferSelect): Agent {
   return {
     id: row.id,
@@ -229,7 +278,7 @@ export function toDeployment(row: typeof deployments.$inferSelect): Deployment |
     return null;
   }
 
-  return {
+  return structuredClone({
     id: row.id,
     projectId: row.projectId,
     agentId: row.agentId,
@@ -239,8 +288,10 @@ export function toDeployment(row: typeof deployments.$inferSelect): Deployment |
     finishedAt: row.finishedAt?.toISOString() ?? null,
     ...(row.metadata && typeof row.metadata === "object" && row.metadata["stopTarget"] ? { stopTarget: row.metadata["stopTarget"] as Deployment["stopTarget"] } : {}),
     ...(row.metadata && typeof row.metadata === "object" && typeof row.metadata["sourceDeploymentId"] === "string" ? { sourceDeploymentId: row.metadata["sourceDeploymentId"] } : {}),
-    ...(row.snapshotHash ? { snapshotHash: row.snapshotHash } : {})
-  };
+    ...(typeof row.metadata?.["snapshotOriginId"] === "string" ? { snapshotOriginId: row.metadata["snapshotOriginId"] } : {}),
+    ...(row.snapshotHash ? { snapshotHash: row.snapshotHash } : {}),
+    ...(row.executionReceipt ? { executionReceipt: trustedPriorExecutionReceiptSchema.parse(row.executionReceipt) } : {})
+  });
 }
 
 export function toLogEvent(row: typeof deploymentLogs.$inferSelect): LogEvent {
