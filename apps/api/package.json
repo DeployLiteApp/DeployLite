@@ -7,8 +7,8 @@
     "build": "tsc -p tsconfig.json",
     "dev": "pnpm build && node dist/index.js",
     "start": "node dist/index.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.source-contract.json",
+    "lint": "tsc -p tsconfig.source-contract.json",
     "test": "vitest run --allowOnly=false --config vitest.config.ts",
     "db:verify:integration": "DEPLOYLITE_API_POSTGRES_INTEGRATION=1 vitest run --allowOnly=false --config vitest.config.ts src/postgres.integration.test.ts"
   },

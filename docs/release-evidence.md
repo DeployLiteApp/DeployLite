@@ -54,3 +54,13 @@ After a successful periodic renewal run, the ACME integration harness supports t
 - `pnpm test:acme-renewal:periodic` sets `DEPLOYLITE_ACME_TEST_MODE=periodic` and waits up to 100 seconds for Traefik's natural renewal ticker. The periodic path does not restart, recreate, or kill Traefik between the initial and renewed certificates, and requires at least 55 seconds before accepting replacement.
 
 The periodic command is an opt-in integration check and is not part of baseline CI.
+
+## Shared execution memory foundation
+
+The API's in-memory deployment, command and atomic-completion repositories now
+share one execution state. Adapter tests cover atomic terminal publication,
+transaction rollback, equal concurrent replay, changed replay, missing rows,
+clone isolation and compatibility with existing repository constructors.
+This corrective memory foundation contributes to #315. PostgreSQL adapter
+parity, observed runtime proof, safe promotion and user-facing rollback require
+their subsequent evidence; this slice does not close P2 or approve a release.
