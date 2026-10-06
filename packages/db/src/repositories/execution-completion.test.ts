@@ -239,3 +239,13 @@ describe("PostgreSQL execution-completion adapter with a recording transaction m
     expect(invalid.client.queries).toEqual([]);
   });
 });
+
+
+describe("cached completion cancellation under the PostgreSQL transaction", () => {
+  it.each(["after-lock", "during-command-write"] as const)("rolls back terminal publication when aborted %s", async (at) => {
+    const { client, repository } = harness(), before = structuredClone(client.state), controller = new AbortController();
+    if (at === "after-lock") client.beforeCommandLock = () => controller.abort(new Error("cache publication canceled"));
+    else client.beforeCommandWrite = () => controller.abort(new Error("cache publication canceled"));
+    await expect((repository.completeExecution as any)(input, controller.signal)).rejects.toThrow("cache publication canceled"); expect(client.state).toEqual(before); expect(client.queries.at(-1)?.text).toBe("rollback");
+  });
+});

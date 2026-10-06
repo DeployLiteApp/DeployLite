@@ -32,7 +32,7 @@ export type ExecutionCompletionOutcome =
   | Readonly<{ kind: "conflict" | "not-found" }>;
 
 export type DeploymentExecutionRepository = {
-  completeExecution(input: ExecutionCompletionInput): Promise<ExecutionCompletionOutcome>;
+  completeExecution(input: ExecutionCompletionInput, signal?: AbortSignal): Promise<ExecutionCompletionOutcome>;
 };
 
 export type ExecutionCompletionTransaction = {
@@ -46,12 +46,13 @@ export type ExecutionCompletionTransaction = {
 };
 
 export type ExecutionCompletionStore = {
-  transaction<T>(work: (transaction: ExecutionCompletionTransaction) => Promise<T>): Promise<T>;
+  transaction<T>(work: (transaction: ExecutionCompletionTransaction) => Promise<T>, signal?: AbortSignal): Promise<T>;
 };
 
 export async function completeExecutionAtomically(
   store: ExecutionCompletionStore,
-  input: ExecutionCompletionInput
+  input: ExecutionCompletionInput,
+  signal?: AbortSignal
 ): Promise<ExecutionCompletionOutcome> {
   const candidate = parseInput(input);
   return store.transaction(async (transaction) => {
@@ -77,18 +78,22 @@ export async function completeExecutionAtomically(
         ? { kind: "replayed", deployment: structuredClone(deployment), command: structuredClone(command) }
         : { kind: "conflict" };
     }
+    signal?.throwIfAborted();
     if (candidate.commandId === null && transaction.validateInitialExecution && !await transaction.validateInitialExecution(candidate.projectId, candidate.executionId, candidate)) return { kind: "conflict" };
     if (candidate.authority && (!transaction.validateAuthority || !await transaction.validateAuthority(candidate.authority))) return { kind: "conflict" };
     if (deployment.status !== candidate.expectedStatus) return { kind: "conflict" };
 
+    signal?.throwIfAborted();
     await transaction.saveDeployment(completedDeployment);
+    signal?.throwIfAborted();
     if (completedCommand) await transaction.saveCommand(completedCommand);
+    signal?.throwIfAborted();
     return {
       kind: "committed",
       deployment: structuredClone(completedDeployment),
       command: structuredClone(completedCommand)
     };
-  });
+  }, signal);
 }
 
 function parseInput(input: ExecutionCompletionInput): ExecutionCompletionInput {

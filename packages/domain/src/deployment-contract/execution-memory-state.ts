@@ -7,9 +7,9 @@ export class InMemoryExecutionState implements ExecutionCompletionStore {
   deployments = new Map<string, Deployment>();
   commands = new Map<string, ControlCommand>();
 
-  completeExecution(input: ExecutionCompletionInput): Promise<ExecutionCompletionOutcome> { return completeExecutionAtomically(this, input); }
+  completeExecution(input: ExecutionCompletionInput, signal?: AbortSignal): Promise<ExecutionCompletionOutcome> { return completeExecutionAtomically(this, input, signal); }
 
-  async transaction<T>(work: (transaction: ExecutionCompletionTransaction) => Promise<T>): Promise<T> {
+  async transaction<T>(work: (transaction: ExecutionCompletionTransaction) => Promise<T>, signal?: AbortSignal): Promise<T> {
     for (;;) {
       const baseDeployments = structuredClone(this.deployments), baseCommands = structuredClone(this.commands);
       const stagedDeployments = structuredClone(baseDeployments), stagedCommands = structuredClone(baseCommands);
@@ -40,6 +40,8 @@ export class InMemoryExecutionState implements ExecutionCompletionStore {
       const nextDeployments = new Map(this.deployments), nextCommands = new Map(this.commands);
       for (const [id, value] of stagedDeployments) if (!equal(value, baseDeployments.get(id))) nextDeployments.set(id, value);
       for (const [key, value] of stagedCommands) if (!equal(value, baseCommands.get(key))) nextCommands.set(key, value);
+      // Equal durable replay is read-only; an abort fences every new map publication.
+      if (!equal([...nextDeployments], [...this.deployments]) || !equal([...nextCommands], [...this.commands])) signal?.throwIfAborted();
       this.deployments = nextDeployments; this.commands = nextCommands;
       return result;
     }

@@ -151,3 +151,13 @@ describe("persisted Stop terminal CAS", () => {
     } finally { vi.useRealTimers(); }
   });
 });
+
+
+describe("cached Stop publication cancellation", () => {
+  it("rolls back Stop completion when the caller aborts during the final SQL write", async () => {
+    const f = fixture(), claim = await f.first.claimDeploymentStop(f.stop), controller = new AbortController(); const before = structuredClone(f.pool.rows.get("stop"));
+    f.pool.beforeWrite = () => controller.abort(new Error("cache publication canceled"));
+    const result = { commandId: "stop", action: "deployment.stop" as const, projectId: "project", deploymentId: "A", status: "completed" as const, correlationId: "stop", reason: "stopped" };
+    await expect((f.second.completeDeploymentStop as any)(claim.command, result, controller.signal)).rejects.toThrow("cache publication canceled"); expect(f.pool.rows.get("stop")).toEqual(before); expect(f.pool.queries.at(-1)?.text).toBe("rollback");
+  });
+});

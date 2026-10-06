@@ -17,9 +17,10 @@ import { toDeployment } from "./deployment-data.js";
 export class DbDeploymentExecutionRepository implements DeploymentExecutionRepository {
   constructor(private readonly db: DeployLiteDb) {}
 
-  completeExecution(input: ExecutionCompletionInput): Promise<ExecutionCompletionOutcome> {
+  completeExecution(input: ExecutionCompletionInput, signal?: AbortSignal): Promise<ExecutionCompletionOutcome> {
     const store: ExecutionCompletionStore = {
       transaction: (work) => this.db.transaction(async (tx) => {
+        let wrote = false;
         let lockedDeployment: Deployment | null = null;
         let lockedCommand: ExecutionCommandRecord | null = null;
         const transaction: ExecutionCompletionTransaction = {
@@ -52,6 +53,7 @@ export class DbDeploymentExecutionRepository implements DeploymentExecutionRepos
             }).where(and(eq(deployments.id, deployment.id), eq(deployments.status, lockedDeployment.status)))
               .returning({ id: deployments.id });
             if (!saved) throw new ExecutionCompletionConflict();
+            wrote = true;
           },
           saveCommand: async (command) => {
             const authority = lockedCommand?.executionAuthority;
@@ -60,12 +62,15 @@ export class DbDeploymentExecutionRepository implements DeploymentExecutionRepos
               .where(and(eq(controlCommands.id, command.id), eq(controlCommands.status, "dispatching"), ...(authority ? [eq(controlCommands.executionAuthority, authority), gt(controlCommands.expiresAt, sql`clock_timestamp()`), sql`clock_timestamp() < to_timestamp(${expiresAt! / 1000})`] : [])))
               .returning({ id: controlCommands.id });
             if (!saved) throw new ExecutionCompletionConflict();
+            wrote = true;
           }
         };
-        return work(transaction);
+        const outcome = await work(transaction);
+        if (wrote) signal?.throwIfAborted();
+        return outcome;
       })
     };
-    return completeExecutionAtomically(store, input).catch((error: unknown) => {
+    return completeExecutionAtomically(store, input, signal).catch((error: unknown) => {
       if (error instanceof ExecutionCompletionConflict) return { kind: "conflict" };
       throw error;
     });

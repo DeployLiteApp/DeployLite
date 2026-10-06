@@ -331,3 +331,51 @@ it.each(["handshake", "terminal-body"])("enforces the same response deadline whe
   expect(error).toBeInstanceOf(TransportTimeoutError); expect(isAgentPreDispatchRejection(error)).toBe(stage === "handshake");
   expect(calls).toHaveLength(1);
 });
+
+
+describe("cache-only transport", () => {
+  it("retrieves the original execution receipt through a target-authenticated read without another execute/handshake", async () => {
+    const requests: { url: string; init?: RequestInit }[] = [];
+    const envelope = { schemaVersion: 2, commandId: "original-command", deploymentId: "B", sourceDeploymentId: "A", snapshotHash: snapshot.hash, correlationId: "original-correlation", terminalStatus: receipt.terminalStatus, health: receipt.health, redacted: true, receipt: { ...receipt, deploymentId: "B" } };
+    const transport = new AuthenticatedAgentDeploymentTransport({ endpoint: "https://agent.test", trustKey: "transport_test_key_123", agentId: "agent-1", fetch: async (url, init) => { requests.push({ url: String(url), init }); return new Response(JSON.stringify({ schemaVersion: 1, action: "deploy.execute", agentId: "agent-1", commandId: "original-command", correlationId: "original-correlation", receipt: envelope })); } });
+    expect(await transport.readExecutionReceipt(snapshot, "original-command", { agentId: "agent-1", requestId: "fresh-request", correlationId: "original-correlation", executionDeploymentId: "B", sourceDeploymentId: "A" })).toMatchObject({ deploymentId: "B", sourceDeploymentId: "A", snapshotHash: snapshot.hash, correlationId: "original-correlation" });
+    expect(requests).toHaveLength(1); expect(requests[0]!.url).toBe("https://agent.test/deployments/receipt");
+    const query = JSON.parse(String(requests[0]!.init?.body)); expect(query).toMatchObject({ commandId: "original-command", deploymentId: "B", sourceDeploymentId: "A", correlationId: "original-correlation", authority: null, replacement: null }); expect(query).not.toHaveProperty("lease"); expect(query).not.toHaveProperty("requiredCapabilities");
+    const { verifyAgentTransport } = await import("@deploylite/config"); expect(verifyAgentTransport(`POST /deployments/receipt\n${String(requests[0]!.init?.body)}`, (requests[0]!.init?.headers as Record<string, string>)["x-deploylite-signature"], "transport_test_key_123")).toBe(true);
+  });
+  it("retrieves the same Stop receipt without posting Stop again", async () => {
+    const input = { projectId: snapshot.projectId, deploymentId: "A", commandId: "original-stop", candidateId: "candidate-A", effectiveImage: receipt.effectiveImage, containerId: "1".repeat(64) };
+    const cached = { schemaVersion: 1, action: "deployment.stop", agentId: "agent-1", ...input, status: "stopped", redacted: true, correlationId: "original-correlation", reason: null };
+    const calls: string[] = []; const transport = new AuthenticatedAgentDeploymentTransport({ endpoint: "https://agent.test", trustKey: "transport_test_key_123", agentId: "agent-1", fetch: async (url) => { calls.push(String(url)); return new Response(JSON.stringify({ schemaVersion: 1, action: "deployment.stop", agentId: "agent-1", commandId: input.commandId, correlationId: cached.correlationId, receipt: cached })); } });
+    expect(await transport.readStopReceipt(input, { agentId: "agent-1", requestId: "fresh-request", correlationId: "original-correlation" })).toEqual(cached); expect(calls).toEqual(["https://agent.test/deployments/receipt"]);
+  });
+});
+function cacheTransport(action: "deploy.execute" | "deployment.stop", patch?: (value: any) => void, fetchStage?: "fetch" | "body", timeoutMs = 100) {
+  const input = { projectId: snapshot.projectId, deploymentId: "B", commandId: "original-command", candidateId: "candidate-B", effectiveImage: receipt.effectiveImage, containerId: "1".repeat(64) };
+  const context = { agentId: "agent-1", requestId: "retry-request", correlationId: "original-correlation", executionDeploymentId: "B", sourceDeploymentId: "A" };
+  const execute = { schemaVersion: 2, commandId: input.commandId, deploymentId: "B", sourceDeploymentId: "A", snapshotHash: snapshot.hash, terminalStatus: receipt.terminalStatus, health: receipt.health, redacted: true, correlationId: context.correlationId, receipt: { ...receipt, deploymentId: "B" } };
+  const stopped = { schemaVersion: 1, action: "deployment.stop", agentId: "agent-1", ...input, status: "stopped", redacted: true, correlationId: context.correlationId, reason: null };
+  const cached = { schemaVersion: 1, action, agentId: "agent-1", commandId: input.commandId, correlationId: context.correlationId, receipt: action === "deploy.execute" ? execute : stopped }; patch?.(cached);
+  const fetch = vi.fn(async () => fetchStage === "fetch" ? await new Promise<Response>(() => {}) : fetchStage === "body" ? { ok: true, json: () => new Promise(() => {}) } as Response : new Response(JSON.stringify(cached)));
+  const transport = new AuthenticatedAgentDeploymentTransport({ endpoint: "https://agent.test", trustKey: "transport_test_key_123", agentId: "agent-1", timeoutMs, fetch });
+  const read = (signal?: AbortSignal) => action === "deploy.execute" ? transport.readExecutionReceipt(snapshot, input.commandId, { ...context, signal }) : transport.readStopReceipt(input, { ...context, signal });
+  return { read, fetch };
+}
+describe("cache transport scope and whole read deadline", () => {
+  it.each(["deploy.execute", "deployment.stop"] as const)("accepts unresolved missing %s evidence without effects", async (action) => { const f = cacheTransport(action, (value) => { value.receipt = null; }); expect(await f.read()).toBeNull(); expect(f.fetch).toHaveBeenCalledOnce(); });
+  it.each(["agentId", "commandId", "correlationId"])("rejects mismatched cached outer %s", async (field) => { const f = cacheTransport("deploy.execute", (value) => { value[field] = "different"; }); await expect(f.read()).rejects.toThrow("identity"); });
+  it.each(["commandId", "deploymentId", "sourceDeploymentId", "snapshotHash", "correlationId"])("rejects mismatched cached execution %s", async (field) => { const f = cacheTransport("deploy.execute", (value) => { value.receipt[field] = field === "snapshotHash" ? "c".repeat(64) : "different"; }); await expect(f.read()).rejects.toThrow("identity"); });
+  it.each(["agentId", "commandId", "projectId", "deploymentId", "candidateId", "effectiveImage", "containerId", "correlationId"])("rejects mismatched cached Stop %s", async (field) => { const f = cacheTransport("deployment.stop", (value) => { value.receipt[field] = field === "containerId" ? "2".repeat(64) : field === "effectiveImage" ? `registry.example.com/other@sha256:${"b".repeat(64)}` : "different"; }); await expect(f.read()).rejects.toThrow("identity"); });
+  it.each(["deploy.execute", "deployment.stop"] as const)("rejects pre-aborted %s cache read before fetch", async (action) => { const f = cacheTransport(action), parent = new AbortController(); parent.abort(); await expect(f.read(parent.signal)).rejects.toThrow("canceled"); expect(f.fetch).not.toHaveBeenCalled(); });
+  it.each(["deploy.execute", "deployment.stop"] as const)("bounds %s fetch and body even when either ignores cancellation", async (action) => {
+    vi.useFakeTimers(); try { for (const stage of ["fetch", "body"] as const) { const f = cacheTransport(action, undefined, stage, 10); const outcome = f.read().then(() => "resolved", () => "rejected"); await vi.advanceTimersByTimeAsync(10); expect(await Promise.race([outcome, Promise.resolve("still-pending")])).toBe("rejected"); expect(f.fetch).toHaveBeenCalledOnce(); } } finally { vi.useRealTimers(); }
+  });
+  it.each(["deploy.execute", "deployment.stop"] as const)("settles canceled %s cache body without any execution continuation", async (action) => { const f = cacheTransport(action, undefined, "body"), parent = new AbortController(); const outcome = f.read(parent.signal).then(() => "resolved", () => "rejected"); await new Promise<void>((resolve) => setImmediate(resolve)); parent.abort(); await new Promise<void>((resolve) => setImmediate(resolve)); expect(await Promise.race([outcome, Promise.resolve("still-pending")])).toBe("rejected"); expect(f.fetch).toHaveBeenCalledOnce(); });
+});
+
+it.each(["deploy.execute", "deployment.stop"] as const)("rejects caller-selected agent on %s cache lookup before fetch", async (action) => {
+  const fetch = vi.fn(async () => new Response(JSON.stringify({ schemaVersion: 1, action, agentId: "agent-1", commandId: "original-command", correlationId: "original-correlation", receipt: null })));
+  const transport = new AuthenticatedAgentDeploymentTransport({ endpoint: "https://agent.test", trustKey: "transport_test_key_123", agentId: "agent-1", fetch }); const context = { agentId: "different-agent", requestId: "retry", correlationId: "original-correlation" };
+  const read = action === "deploy.execute" ? transport.readExecutionReceipt(snapshot, "original-command", context) : transport.readStopReceipt({ projectId: snapshot.projectId, deploymentId: "A", commandId: "original-command", candidateId: "candidate", effectiveImage: receipt.effectiveImage }, context);
+  await expect(read).rejects.toThrow("identity"); expect(fetch).not.toHaveBeenCalled();
+});

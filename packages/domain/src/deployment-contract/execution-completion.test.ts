@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { InMemoryExecutionState } from "./execution-memory-state.js";
+import { createControlCommand } from "../control-plane.js";
 import type { Deployment, DeploymentRedeployCommandResult, TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
 
 import {
@@ -88,14 +90,16 @@ class FakeTransactionalStore implements ExecutionCompletionStore {
   command: ExecutionCommandRecord | null = command();
   readonly locks: string[] = [];
   failAfterDeployment = false;
+  onDeploymentLock?: () => void;
+  onDeploymentSaved?: () => void;
 
   async transaction<T>(work: (transaction: ExecutionCompletionTransaction) => Promise<T>): Promise<T> {
     const before = structuredClone({ deployment: this.deployment, command: this.command });
     try {
       return await work({
         lockCommand: async (id) => { this.locks.push(`command:${id}`); return structuredClone(this.command); },
-        lockDeployment: async (id) => { this.locks.push(`deployment:${id}`); return structuredClone(this.deployment); },
-        saveDeployment: async (value) => { this.deployment = structuredClone(value); if (this.failAfterDeployment) throw new Error("injected write failure"); },
+        lockDeployment: async (id) => { this.locks.push(`deployment:${id}`); this.onDeploymentLock?.(); return structuredClone(this.deployment); },
+        saveDeployment: async (value) => { this.deployment = structuredClone(value); this.onDeploymentSaved?.(); if (this.failAfterDeployment) throw new Error("injected write failure"); },
         saveCommand: async (value) => { this.command = structuredClone(value); }
       });
     } catch (error) {
@@ -177,4 +181,29 @@ describe("atomic execution completion", () => {
     await expect(completeExecutionAtomically(store, input())).rejects.toThrow("injected write failure");
     expect({ deployment: store.deployment, command: store.command }).toEqual(before);
   });
+});
+
+
+describe("cached terminal publication cancellation", () => {
+  it.each(["before-handoff", "after-lock", "after-staged-write"] as const)("rolls back completion when canceled %s", async (at) => {
+    const store = new FakeTransactionalStore(), before = structuredClone({ deployment: store.deployment, command: store.command }), controller = new AbortController();
+    if (at === "before-handoff") controller.abort(new Error("cache publication canceled"));
+    if (at === "after-lock") store.onDeploymentLock = () => controller.abort(new Error("cache publication canceled"));
+    if (at === "after-staged-write") store.onDeploymentSaved = () => controller.abort(new Error("cache publication canceled"));
+    await expect((completeExecutionAtomically as any)(store, input(), controller.signal)).rejects.toThrow("cache publication canceled");
+    expect({ deployment: store.deployment, command: store.command }).toEqual(before);
+  });
+  it("preserves equal durable replay despite an aborted caller without a new write", async () => {
+    const store = new FakeTransactionalStore(); await completeExecutionAtomically(store, input()); const before = structuredClone({ deployment: store.deployment, command: store.command }), controller = new AbortController(); controller.abort();
+    await expect((completeExecutionAtomically as any)(store, input(), controller.signal)).resolves.toMatchObject({ kind: "replayed" }); expect({ deployment: store.deployment, command: store.command }).toEqual(before);
+  });
+});
+
+
+it("rejects abort at the actual shared-memory map publication boundary", async () => {
+  const state = new InMemoryExecutionState(), controller = new AbortController(); state.deployments.set("execution-1", deployment());
+  state.commands.set("command-1", { ...createControlCommand({ actorId: "actor", action: "deployment.redeploy", scope: { kind: "deployment", projectId: "project-1", deploymentId: "source-1" }, input: {}, idempotencyKey: "key", correlationId: "correlation-1" }), ...command() });
+  const before = structuredClone({ deployments: state.deployments, commands: state.commands }), original = state.transaction.bind(state);
+  state.transaction = (async (work: Parameters<typeof state.transaction>[0], signal?: AbortSignal) => (original as any)(async (transaction: ExecutionCompletionTransaction) => { const result = await work(transaction); controller.abort(new Error("cache publication canceled")); return result; }, signal)) as typeof state.transaction;
+  await expect((state.completeExecution as any)(input(), controller.signal)).rejects.toThrow("cache publication canceled"); expect({ deployments: state.deployments, commands: state.commands }).toEqual(before);
 });
