@@ -205,6 +205,236 @@ class PhysicalFixture {
     this.events.push(event);
     return event;
   }
+  async persist(): Promise<void> {
+    // Capture one existing cleanup authority before any await; a delayed read must never start a new publication after it expires.
+    const deadline = this.cleanupDeadlineMonoMs, controller = this.cleanupController;
+    const fence = () => {
+      if (deadline === undefined) return; // Ordinary pre-cleanup evidence keeps its existing behavior.
+      assert.equal(this.cleanupDeadlineMonoMs, deadline, "receipt cannot renew cleanup deadline");
+      assert(controller && controller === this.cleanupController, "receipt must retain original cleanup controller");
+      controller.signal.throwIfAborted();
+      assert(performance.now() < deadline, "receipt publication outside owned cleanup deadline");
+    };
+    fence();
+    const deployments = this.memory ? await this.memory.deployments.list() : null;
+    fence();
+    const path = resolve(this.manifest.receiptDirectory, `${this.caseId}.json`);
+    const text = JSON.stringify({ ...this.ledger, grantId: this.manifest.grantId, owner: this.owner,
+      projectId: this.projectId, runtimeHost: this.manifest.runtimeHost, network: this.network,
+      image: this.manifest.image, platform: this.manifest.platform, policy,
+      envelopes: this.envelopes, replies: this.replies, events: this.events,
+      completionState: deployments ? { deployments: deployments.filter((value) => value.projectId === this.projectId),
+        commands: [...this.memory.completion.commands.values()] } : null }, null, 2);
+    assert(!text.includes(this.credentials.trustKey) && !text.includes(this.credentials.adminPassword), "credential receipt leak");
+    fence();
+    await this.receiptWrite(path, text + "\n", { mode: 0o600, ...(deadline === undefined ? {} : { signal: controller!.signal }) });
+    fence(); // Cancellation of a write already submitted to the OS never proves that no bytes were published.
+  }
+  private async withinCleanup<T>(closure: CleanupClosure, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    assert.equal(closure.deadlineMonoMs, this.cleanupDeadlineMonoMs, "cleanup cannot renew its original deadline");
+    const remaining = closure.deadlineMonoMs - performance.now();
+    assert(remaining > 0, "owned cleanup deadline exhausted before operation");
+    if (Date.now() >= Date.parse(this.manifest.expiresAt)) assert(this.manifest.expiryClosures, "explicit post-expiry cleanup permission required");
+    this.cleanupController ??= new AbortController();
+    const signal = this.cleanupController.signal; signal.throwIfAborted();
+    if (!this.cleanupTimer) {
+      this.cleanupTimer = setTimeout(() => this.cleanupController!.abort(new Error("owned cleanup deadline exhausted")), remaining);
+      this.cleanupTimer.unref?.();
+    }
+    let abort!: () => void;
+    const exhausted = new Promise<never>((_resolve, reject) => {
+      abort = () => reject(signal.reason); signal.addEventListener("abort", abort, { once: true });
+    });
+    try {
+      // The CLI receives the same deadline signal; the race also settles a misbehaving injected runner/await as unknown.
+      const value = await Promise.race([operation(signal), exhausted]);
+      signal.throwIfAborted(); assert(performance.now() < closure.deadlineMonoMs, "late cleanup result cannot verify closure");
+      return value;
+    } finally { signal.removeEventListener("abort", abort); }
+  }
+  async invoke(argv: readonly string[], signal = new AbortController().signal, closure?: CleanupClosure): Promise<DockerProcessExit> {
+    assert.equal(argv[0], "docker");
+    const now = performance.now(), expiry = Date.parse(this.manifest.expiresAt);
+    assert(Number.isFinite(expiry), "valid grant expiry required");
+    if (closure) {
+      assert.equal(closure.kind, "cleanup", "post-expiry recovery remains unbound and forbidden");
+      const budget = this.manifest.expiryClosures?.cleanupMaxMs ?? 30_000;
+      assert(Number.isFinite(closure.deadlineMonoMs) && closure.deadlineMonoMs > now && closure.deadlineMonoMs - now <= budget, "owned cleanup deadline expired or widened");
+      if (this.cleanupDeadlineMonoMs === undefined) this.cleanupDeadlineMonoMs = closure.deadlineMonoMs;
+      assert.equal(closure.deadlineMonoMs, this.cleanupDeadlineMonoMs, "owned cleanup deadline cannot renew");
+      if (Date.now() >= expiry) assert(this.manifest.expiryClosures, "explicit post-expiry cleanup permission required");
+      const target = argv.at(-1)!;
+      if (argv[1] === "network") {
+        assert(["inspect", "rm"].includes(argv[2]!) && objectId.test(this.networkId) && target === this.networkId, "cleanup network outside owned ledger");
+      } else if (argv[1] === "rm") {
+        assert(objectId.test(target) && this.containers.has(target), "cleanup container outside exact owned ledger");
+      } else {
+        assert(argv[1] === "inspect" || (argv[1] === "container" && argv[2] === "inspect"), "cleanup permits only owned inspection/removal");
+        this.intentFor(target);
+      }
+    } else {
+      assert(Date.now() < expiry, "fresh Docker effect after grant expiry forbidden; post-expiry recovery binding pending");
+    }
+    const event = this.event("docker-command", { argv: [...argv], physicalRan: true, phase: "started" });
+    try {
+      const command = (deadlineSignal?: AbortSignal) => this.raw.run([argv[0]!, "--config", this.manifest.dockerConfigDirectory,
+        "--host", this.manifest.dockerHost, ...argv.slice(1)], deadlineSignal ? AbortSignal.any([signal, deadlineSignal]) : signal);
+      const result = closure ? await this.withinCleanup(closure, command) : await command();
+      Object.assign(event, { phase: "completed", completedMonoMs: performance.now(), exitCode: result.exitCode,
+        signal: result.signal, stdout: result.stdout, stderr: result.stderr });
+      return result;
+    } catch (error) {
+      Object.assign(event, { phase: "rejected", completedMonoMs: performance.now(), errorKind: (error as Error).name,
+        ...(closure ? { daemonOutcome: "unknown" } : {}) });
+      throw error;
+    }
+  }
+  private intentFor(target: string): Intent {
+    const intent = [...this.intents.values()].find((entry) => entry.candidate === target || entry.active === target) ?? this.containers.get(target)?.intent;
+    assert(intent, "target outside exact signed-execution manifest");
+    return intent;
+  }
+  private async inspected(target: string, closure?: CleanupClosure): Promise<Container> {
+    const intent = this.intentFor(target);
+    const candidate = { projectId: this.projectId, deploymentId: intent.deploymentId, candidateId: intent.candidateId,
+      effectiveImage: this.manifest.image, runtimePort: this.manifest.containerPort, networkName: this.network };
+    const argv = this.builders.buildDockerActiveIdentityInspectArgv({ candidate, containerName: target,
+      projectId: this.projectId, owner: this.owner, hostPort: this.manifest.activePort,
+      containerPort: this.manifest.containerPort, allowedNetworks: [this.network], networkName: this.network });
+    const value = JSON.parse((await this.invoke(argv, undefined, closure)).stdout) as Container;
+    assert(objectId.test(value.id) && imageId.test(value.imageId));
+    assert.equal(value.owner, this.owner); assert.equal(value.projectId, this.projectId);
+    assert.equal(value.deploymentId, intent.deploymentId); assert.equal(value.candidateId, intent.candidateId);
+    assert([`/${intent.candidate}`, `/${intent.active}`].includes(value.name), "unexpected physical container name");
+    assert.equal(value.effectiveImage, this.manifest.image); assert.equal(value.imageId, this.configId);
+    assert.equal(value.networkMode, this.network); assert.deepEqual(Object.keys(value.networks), [this.network]);
+    assert.equal(value.networks[this.network]?.networkId, this.networkId);
+    return value;
+  }
+  async observe(deployment: Deployment, healthy = true): Promise<Container> {
+    const value = await this.inspected(`deploylite-active-${deployment.id}`);
+    assert.equal(value.id, deployment.executionReceipt?.containerId);
+    assert.equal(value.name, `/${deployment.executionReceipt?.container}`);
+    if (healthy) { assert.equal(value.running, true); assert.equal(value.health, "healthy"); }
+    const expected = { "8080/tcp": [{ HostIp: "127.0.0.1", HostPort: "49170" }] };
+    assert.deepEqual(value.hostBindings, expected);
+    if (healthy) assert.deepEqual(value.portBindings, expected);
+    this.event("physical-observation", { deploymentId: deployment.id, observation: value });
+    return value;
+  }
+  async setup(testBoundary: { runner?: DockerCliRunner; portCheck?: (port: number) => Promise<void>; config?: GrantTestBoundary } = {}): Promise<void> {
+    await validatePrivateDockerConfig(this.manifest.dockerConfigDirectory, testBoundary.config); // Recheck before every process construction.
+    const { DockerProcessRunner } = await import("../../agent/src/infrastructure/docker/docker-process-runner.js");
+    this.builders = await import("../../agent/src/infrastructure/docker/docker-cli-argv.js");
+    this.raw = testBoundary.runner ?? new DockerProcessRunner({ timeoutMs: 30_000, maxOutputBytes: 64 * 1024 });
+    const engineFormat = '{"id":{{json .ID}},"os":{{json .OSType}},"architecture":{{json .Architecture}},"cpu":{{json .NCPU}},"memory":{{json .MemTotal}}}';
+    const engine = JSON.parse((await this.invoke(["docker", "info", "--format", engineFormat])).stdout);
+    assert.equal(engine.id, this.manifest.engineId); assert.equal(engine.os, "linux");
+    // The owned ephemeral job/engine is bound above; budgets apply to our containers, never shared daemon settings.
+    this.event("owned-engine-observation", { engineId: engine.id, ciJob: this.manifest.ciJob,
+      nativeCpu: engine.cpu, nativeMemoryBytes: engine.memory, containerCpu: this.manifest.containerCpu,
+      containerMemoryBytes: this.manifest.containerMemoryBytes, maxContainers: this.manifest.maxContainers });
+    const imageFormat = '{"id":{{json .Id}},"os":{{json .Os}},"arch":{{json .Architecture}},"repoDigests":{{json .RepoDigests}},"healthType":{{if .Config.Healthcheck}}{{if .Config.Healthcheck.Test}}{{json (index .Config.Healthcheck.Test 0)}}{{else}}null{{end}}{{else}}null{{end}},"healthInterval":{{if .Config.Healthcheck}}{{json .Config.Healthcheck.Interval}}{{else}}0{{end}}}';
+    const image = JSON.parse((await this.invoke(["docker", "image", "inspect", "--format", imageFormat, this.manifest.image])).stdout);
+    assert(imageId.test(image.id)); assert.equal(`${image.os}/${image.arch}`, this.manifest.platform);
+    const architecture = engine.architecture === "x86_64" ? "amd64" : engine.architecture === "aarch64" ? "arm64" : engine.architecture;
+    assert.equal(image.arch, architecture, "native approved fixture platform required");
+    assert(Array.isArray(image.repoDigests) && image.repoDigests.includes(this.manifest.image), "preloaded exact digest required");
+    assert(["CMD", "CMD-SHELL"].includes(image.healthType) && image.healthInterval > 0 && image.healthInterval <= 2_000_000_000,
+      "fixture must already contain a frequent Docker HEALTHCHECK; no implicit override/build/pull");
+    this.configId = image.id;
+    const portCheck = testBoundary.portCheck ?? availablePort;
+    await portCheck(this.manifest.activePort); await portCheck(this.manifest.temporaryPort);
+    const networkFormat = '{"id":{{json .Id}},"name":{{json .Name}},"owner":{{json (index .Labels "com.deploylite.owner")}},"project":{{json (index .Labels "com.deploylite.project")}},"internal":{{json .Internal}},"containers":{{json .Containers}}}';
+    this.allowedFormats.add(networkFormat);
+    const created = await this.invoke(["docker", "network", "create", "--internal", "--label", `com.deploylite.owner=${this.owner}`,
+      "--label", `com.deploylite.project=${this.projectId}`, this.network]);
+    this.networkId = created.stdout.trim(); assert(objectId.test(this.networkId));
+    this.ledger.resources.push({ kind: "network", id: this.networkId, name: this.network, owner: this.owner, project: this.projectId });
+    await this.persist();
+    const network = JSON.parse((await this.invoke(["docker", "network", "inspect", "--format", networkFormat, this.networkId])).stdout);
+    assert.equal(network.internal, true); assert.equal(network.owner, this.owner); assert.equal(network.project, this.projectId);
+    const sample = { candidateId: "dep_fixture:candidate:command", projectId: this.projectId, deploymentId: "dep_fixture",
+      effectiveImage: this.manifest.image, runtimePort: 8080, networkName: this.network };
+    for (const argv of [this.builders.buildDockerInspectArgv("fixture"), this.builders.buildDockerOwnershipInspectArgv("fixture"),
+      this.builders.buildDockerRestoreInspectArgv("fixture"), this.builders.buildDockerStopOwnershipInspectArgv("a".repeat(64)),
+      this.builders.buildDockerLifecycleInspectArgv("fixture"), this.builders.buildDockerImageIdentityInspectArgv(this.manifest.image),
+      this.builders.buildDockerOwnedStopLookupArgv({ owner: this.owner, projectId: this.projectId,
+        deploymentId: sample.deploymentId, candidateId: sample.candidateId, effectiveImage: this.manifest.image }),
+      this.builders.buildDockerActiveIdentityInspectArgv({ candidate: sample, projectId: this.projectId, containerName: "fixture",
+        hostPort: 49170, containerPort: 8080, owner: this.owner, allowedNetworks: [this.network], networkName: this.network })]) {
+      this.allowedFormats.add(argv[argv.indexOf("--format") + 1]!);
+    }
+    this.runner = { run: (argv, signal) => this.runProduction(argv, signal) };
+    await this.setupApplication();
+  }
+  private async runProduction(argv: readonly string[], signal: AbortSignal): Promise<DockerProcessExit> {
+    assert.equal(argv[0], "docker");
+    if (argv[1] === "run") {
+      const name = argv[argv.indexOf("--name") + 1]!;
+      const intent = this.intentFor(name);
+      const port = Number(argv[argv.indexOf("--publish") + 1]!.split(":")[1]);
+      assert(port === 49170 || port === 49171);
+      const expected = this.builders.buildDockerRunArgv({ candidate: { candidateId: intent.candidateId,
+        projectId: this.projectId, deploymentId: intent.deploymentId, effectiveImage: this.manifest.image,
+        runtimePort: 8080, networkName: this.network }, projectId: this.projectId, containerName: name,
+        hostPort: port, containerPort: 8080, owner: this.owner, allowedNetworks: [this.network], networkName: this.network });
+      assert.deepEqual(argv, expected, "production run escaped fixture scope");
+      const ids = (await this.invoke(["docker", "ps", "--all", "--no-trunc", "--filter", `label=com.deploylite.owner=${this.owner}`,
+        "--filter", `label=com.deploylite.project=${this.projectId}`, "--format", "{{.ID}}"])).stdout.trim().split("\n").filter(Boolean);
+      assert(ids.length < this.manifest.maxContainers && ids.every((id) => this.containers.has(id)), "container ceiling/ownership conflict");
+      this.event("run-intent", { name, intent, sourceArgv: [...argv], port }); await this.persist();
+      // Test boundary forbids Docker's implicit registry pull. Production argv itself remains recorded unchanged.
+      const bounded = argv.slice(2).map((part, index, source) => source[index - 1] === "--tmpfs" ? `${part},size=16m` : part);
+      const result = await this.invoke([argv[0]!, argv[1]!, "--pull=never", `--cpus=${this.manifest.containerCpu}`,
+        `--memory=${this.manifest.containerMemoryBytes}`, "--pids-limit=64", ...bounded], signal);
+      const id = result.stdout.trim(); assert(objectId.test(id));
+      this.containers.set(id, { intent, name });
+      this.ledger.resources.push({ kind: "container", id, name, owner: this.owner, project: this.projectId,
+        deploymentId: intent.deploymentId, candidateId: intent.candidateId, image: this.manifest.image });
+      await this.persist(); // Record the physical ID before checking caps, so a rejected observation cannot lose cleanup ownership.
+      const format = '{"id":{{json .Id}},"cpu":{{json .HostConfig.NanoCpus}},"memory":{{json .HostConfig.Memory}},"pids":{{json .HostConfig.PidsLimit}}}';
+      const observed = JSON.parse((await this.invoke(["docker", "container", "inspect", "--format", format, id], signal)).stdout);
+      assert.equal(observed.id, id); assert.equal(observed.cpu, this.manifest.containerCpu * 1_000_000_000);
+      assert.equal(observed.memory, this.manifest.containerMemoryBytes); assert.equal(observed.pids, 64);
+      this.event("owned-container-budget", { containerId: id, ...observed });
+      await this.persist(); return result;
+    }
+    if (argv.includes("--format")) {
+      assert(this.allowedFormats.has(argv[argv.indexOf("--format") + 1]!), "arbitrary inspection dump forbidden");
+      if (argv[1] === "image") assert.equal(argv.at(-1), this.manifest.image);
+      else if (argv[1] === "ps") {
+        assert(argv.includes(`label=com.deploylite.owner=${this.owner}`) && argv.includes(`label=com.deploylite.project=${this.projectId}`));
+      } else this.intentFor(argv.at(-1)!);
+      const result = await this.invoke(argv, signal);
+      if (this.barrier && result.stdout.trim() === "healthy" && argv.at(-1)?.startsWith("deploylite-candidate-")) {
+        const barrier = this.barrier; this.barrier = undefined; barrier.entered(); await barrier.wait;
+      }
+      return result;
+    }
+    assert(["stop", "start", "rm", "rename"].includes(argv[1]!), "non-fixture command forbidden");
+    const target = argv[1] === "rename" ? argv[2]! : argv.at(-1)!;
+    const lifecycleArgv = argv[1] === "stop" ? this.builders.buildDockerStopArgv(target)
+      : argv[1] === "start" ? this.builders.buildDockerStartArgv(target)
+      : argv[1] === "rm" ? this.builders.buildDockerRemoveArgv(target)
+      : this.builders.buildDockerRenameArgv(target, this.intentFor(target).active);
+    assert.deepEqual(argv, lifecycleArgv, "lifecycle escaped exact fixture operation");
+    const before = await this.inspected(target);
+    assert(this.containers.has(before.id), "destructive target must be a recorded manifest ID");
+    if (argv[1] === "rename") assert.equal(argv[3], this.intentFor(target).active);
+    if (argv[1] === "stop") this.event("physical-owned-stop", { containerId: before.id, priorRunning: before.running,
+      lastHealthyProbeBegin: this.events.filter((event) => event.kind === "loopback-probe" && event.healthy).at(-1)?.beginMonoMs });
+    const result = await this.invoke(argv, signal);
+    if (argv[1] === "rm") this.containers.delete(before.id);
+    if (argv[1] === "rename") this.containers.get(before.id)!.name = argv[3]!;
+    if (argv[1] === "stop" && this.faultArmed && ["throw-after-stop", "cancel-after-stop"].includes(this.fault)) {
+      this.faultArmed = false; this.faultMono = performance.now();
+      this.event("harness-injected-fault", { fault: this.fault, actualStoppedContainerId: before.id });
+      if (this.fault === "cancel-after-stop") this.controller.abort();
+      else throw new Error("harness injected failure after real owned prior stop");
+    }
+    return result;
+  }
   private register(body: Record<string, unknown>): void {
     if (body.action === "deployment.stop") return;
     assert.equal(body.projectId, this.projectId); assert.equal(body.agentId, this.manifest.runtimeHost);
@@ -215,6 +445,104 @@ class PhysicalFixture {
       candidate: `deploylite-candidate-${deploymentId}-${commandId}`, active: `deploylite-active-${deploymentId}` };
     const old = this.intents.get(deploymentId);
     if (old) assert.deepEqual(intent, old); else this.intents.set(deploymentId, intent);
+  }
+  private async setupApplication(): Promise<void> {
+    const [{ buildApiApp, createRuntimeRepositories, createInMemoryExecutionRepositories, InMemoryAuthUserRepository },
+      { parseDeployLiteEnv, signAgentTransport }, { AuthenticatedAgentCommandReceiver, DigestDeploymentDispatcher },
+      { InMemoryProtocolTransport }, { AuthenticatedAgentDeploymentTransport }, { createDeploymentSnapshot }] = await Promise.all([
+      import("./app.js"), import("@deploylite/config"), import("@deploylite/agent"), import("@deploylite/domain"),
+      import("./agent-transport.js"), import("@deploylite/contracts")
+    ]);
+    const env = { NODE_ENV: "test", DEPLOYLITE_BCRYPT_COST: "10" };
+    const runtime = await createRuntimeRepositories(parseDeployLiteEnv(env), { auth: { users: new InMemoryAuthUserRepository() } });
+    const email = `p2v-${this.manifest.runId}@example.test`;
+    await runtime.auth.users.createInitialAdmin({ email, passwordHash: await runtime.auth.hasher.hash(this.credentials.adminPassword) });
+    await runtime.state.projects.save({ id: this.projectId, name: "Disposable P2 fixture", repoUrl: "https://example.test/p2-fixture",
+      defaultBranch: "main", buildCommand: "unused", runCommand: "unused", port: 8080, description: null, imageTag: null });
+    await runtime.state.agents.save({ id: this.manifest.runtimeHost, name: "Disposable P2 fixture agent", endpoint: "https://agent.fixture.test",
+      status: "online", lastHeartbeatAt: new Date().toISOString(), resourceSnapshot: { cpuLoad: 0, memoryUsedBytes: 0,
+        memoryTotalBytes: this.manifest.containerMemoryBytes * this.manifest.maxContainers, diskUsedBytes: 0, diskTotalBytes: 1 } });
+    this.memory = createInMemoryExecutionRepositories(runtime.state.projects, runtime.auth.audit);
+    const dispatcher = new DigestDeploymentDispatcher({ protocol: new InMemoryProtocolTransport({ clock: { now: Date.now },
+      leasePolicy: { ttlMs: 180_000 }, retryPolicy: { maxAttempts: 1, deadlineMs: 0, backoffMs: () => 0 }, capabilities: ["deploy.execute"] }),
+      runner: this.runner, owner: this.owner, hostPort: 49170, temporaryHostPort: 49171, containerPort: 8080,
+      trustedHosts: [this.manifest.image.split("/")[0]!], allowedNetworks: [this.network], networkName: this.network, promotionPolicy: policy });
+    const settled = new Map<string, { fingerprint: string; receipt: Record<string, unknown> }>();
+    const pending = new Map<string, string>();
+    const replayStore: AgentReplayStore = {
+      claim: async (id, fingerprint) => {
+        const old = settled.get(id);
+        if (old) { assert.equal(old.fingerprint, fingerprint); return { claimed: false, receipt: structuredClone(old.receipt) }; }
+        assert(!pending.has(id), "unexpected concurrent same command"); pending.set(id, fingerprint);
+        return { claimed: true, claimToken: `${this.manifest.runId}:${id}` };
+      },
+      wait: async () => { throw new Error("unexpected harness replay wait"); },
+      complete: async (id, value) => { assert.equal(pending.get(id), value.fingerprint); settled.set(id, structuredClone(value)); pending.delete(id); },
+      release: async (id) => { pending.delete(id); }
+    };
+    const receiver = new AuthenticatedAgentCommandReceiver({ agentId: this.manifest.runtimeHost, trustKey: this.credentials.trustKey,
+      capabilities: ["deploy.execute", "deployment.stop"], dispatcher, stopDispatcher: dispatcher,
+      authorityValidator: this.memory.controls, replayStore });
+    const transport = new AuthenticatedAgentDeploymentTransport({ endpoint: "https://agent.fixture.test", agentId: this.manifest.runtimeHost,
+      trustKey: this.credentials.trustKey, fetch: async (url, init) => {
+        const signature = String((init?.headers as Record<string, string>)["x-deploylite-signature"]);
+        if (String(url).endsWith("/capabilities")) {
+          assert(receiver.verifyRequest("GET /capabilities", signature));
+          return new Response(JSON.stringify({ schemaVersion: 1, agentId: receiver.agentId, capabilities: receiver.capabilities,
+            protocolVersions: [1, 2] }), { headers: { "x-deploylite-request-signature": signature } });
+        }
+        let body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        let requestSignature = signature;
+        assert(receiver.verifyRequest(JSON.stringify(body), signature), "real API signature required");
+        this.register(body);
+        const originalBinding = { commandId: body.commandId, deploymentId: body.deploymentId,
+          correlationId: record(body.context).correlationId, originalProjectId: body.projectId, originalSnapshotHash: body.snapshotHash };
+        if (this.tamper !== "none" && body.schemaVersion === 1 && !body.action) {
+          if (this.tamper === "unsigned") body = { ...body, projectId: randomUUID() };
+          else {
+            const original = body.snapshot as unknown as DeploymentSnapshotV1;
+            const { hash: _hash, canonicalJson: _json, canonicalBytes: _bytes, ...projection } = original;
+            const changed = createDeploymentSnapshot({ ...projection, configRevision: "harness-alternative-config" },
+              { sha256: (bytes) => createHash("sha256").update(bytes).digest("hex") });
+            body = { ...body, snapshot: { ...changed, canonicalBytes: undefined }, snapshotHash: changed.hash };
+            requestSignature = signAgentTransport(JSON.stringify(body), this.credentials.trustKey);
+          }
+          this.event("harness-injected-wire-tamper", { tamper: this.tamper, ...originalBinding });
+        }
+        this.envelopes.push(structuredClone({ ...body, requestAuthenticated: receiver.verifyRequest(JSON.stringify(body), requestSignature) }));
+        const relay = () => this.controller.abort(); init?.signal?.addEventListener("abort", relay, { once: true });
+        if (init?.signal?.aborted) relay();
+        try {
+          let reply: Awaited<ReturnType<typeof receiver.receive>>;
+          try { reply = await receiver.receive(body, requestSignature, this.controller.signal); }
+          catch (error) {
+            this.event("receiver-rejection", { commandId: body.commandId, deploymentId: body.deploymentId,
+              correlationId: record(body.context).correlationId, requestAuthenticated: receiver.verifyRequest(JSON.stringify(body), requestSignature),
+              reason: (error as Error).message });
+            throw error;
+          }
+          this.replies.push(structuredClone(reply));
+          if ((this.fault === "lost-stop-reply" && body.action === "deployment.stop") ||
+            (this.fault === "lost-replacement-reply" && body.schemaVersion === 2)) {
+            this.event("harness-injected-lost-reply", { action: body.action ?? "deploy.execute", commandId: body.commandId });
+            throw new Error("harness dropped actual received terminal reply");
+          }
+          return new Response(JSON.stringify(reply));
+        } finally { init?.signal?.removeEventListener("abort", relay); }
+      } });
+    const snapshots = new Map<string, DeploymentSnapshotV1>();
+    this.app = await buildApiApp({ env, auth: runtime.auth, imagePolicy: { policyVersion: "p2-fixture-v1",
+      trustedHosts: [this.manifest.image.split("/")[0]!], allowTags: false, allowDigests: true },
+      state: { ...runtime.state, deployments: this.memory.deployments, executionCompletion: this.memory.completion,
+        controlDeletes: this.memory.controls, controlRedeploy: this.memory.controls, deploymentDispatcher: transport,
+        deploymentStopDispatcher: transport, snapshots: { saveSnapshot: async (value) => { snapshots.set(value.hash, structuredClone(value)); },
+          findByHash: async (hash) => structuredClone(snapshots.get(hash) ?? null) },
+        controlGrants: { listForActor: async (actorId) => ["deployment.redeploy", "deployment.stop"].map((action) => ({
+          id: `${this.manifest.runId}:${action}`, actorId, action: action as "deployment.redeploy" | "deployment.stop",
+          scope: { kind: "platform" as const } })) } } });
+    const login = await this.app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { email, password: this.credentials.adminPassword } });
+    assert.equal(login.statusCode, 200); this.cookie = login.headers["set-cookie"] as string;
+    // No app.listen(), agent server, PostgreSQL, real secrets or deployed HTTP boundary is involved.
   }
 }
 
@@ -270,6 +598,63 @@ describe("physical Docker acceptance opt-in guard", () => {
     expect(() => register.register({ projectId: f.projectId, agentId: f.manifest.runtimeHost, deploymentId, commandId })).not.toThrow();
     expect(f.intents.get(deploymentId)?.candidateId).toBe(`${deploymentId}:candidate:${commandId}`);
   });
+  it("accepts a larger native owned hosted engine and records only per-container budgets", async () => {
+    const f = new PhysicalFixture(validateManifest(owned(), jobEnv), { trustKey: "mock-only", adminPassword: "mock-only" }, "GUARD_ENGINE");
+    const id = "d".repeat(64);
+    const run = vi.fn(async (argv: readonly string[]): Promise<DockerProcessExit> => {
+      const words = argv.filter((word) => !["--config", jobEnv.DOCKER_CONFIG, "--host", f.manifest.dockerHost].includes(word));
+      const data = words[1] === "info" ? { id: f.manifest.engineId, os: "linux", architecture: "x86_64", cpu: 8, memory: 16 * 1024 ** 3 }
+        : words[1] === "image" ? { id: `sha256:${"a".repeat(64)}`, os: "linux", arch: "amd64", repoDigests: [f.manifest.image], healthType: "CMD", healthInterval: 1_000_000_000 }
+        : words[2] === "inspect" ? { id, name: f.network, owner: f.owner, project: f.projectId, internal: true, containers: {} } : null;
+      return { exitCode: 0, signal: null, stdout: data === null ? id : JSON.stringify(data), stderr: "" };
+    });
+    const portCheck = vi.fn(async () => {});
+    const app = vi.spyOn(f as unknown as { setupApplication(): Promise<void> }, "setupApplication").mockResolvedValue();
+    const persist = vi.spyOn(f, "persist").mockResolvedValue();
+    try {
+      await expect(f.setup({ runner: { run }, portCheck, config: { stat: async () => ({ isDirectory: () => true, isSymbolicLink: () => false, uid: process.getuid!(), mode: 0o700 }), list: async () => [] } })).resolves.toBeUndefined();
+      expect(portCheck.mock.calls).toEqual([[49170], [49171]]);
+      expect(run.mock.calls.every(([argv]) => !argv.includes("update"))).toBe(true);
+    } finally { app.mockRestore(); persist.mockRestore(); }
+  });
+  async function recordingRun(limits = { cpu: 500_000_000, memory: 64 * 1024 * 1024, pids: 64 }) {
+    const f = new PhysicalFixture(validateManifest(owned(), jobEnv), { trustKey: "mock-only", adminPassword: "mock-only" }, "GUARD_CAPS");
+    const builders = await import("../../agent/src/infrastructure/docker/docker-cli-argv.js");
+    const deploymentId = "33333333-3333-4333-8333-333333333333", commandId = "44444444-4444-4444-8444-444444444444";
+    const intent = { deploymentId, candidateId: `${deploymentId}:candidate:${commandId}`,
+      candidate: `deploylite-candidate-${deploymentId}-${commandId}`, active: `deploylite-active-${deploymentId}` };
+    const id = "e".repeat(64); f.intents.set(deploymentId, intent);
+    const run = vi.fn(async (argv: readonly string[]): Promise<DockerProcessExit> => {
+      const words = argv.filter((word) => !["--config", jobEnv.DOCKER_CONFIG, "--host", f.manifest.dockerHost].includes(word));
+      const stdout = words[1] === "ps" ? "" : words[1] === "run" ? id : JSON.stringify({ id, ...limits });
+      return { exitCode: 0, signal: null, stdout, stderr: "" };
+    });
+    Object.assign(f, { raw: { run }, builders });
+    vi.spyOn(f, "persist").mockResolvedValue();
+    const argv = builders.buildDockerRunArgv({ candidate: { candidateId: intent.candidateId, projectId: f.projectId,
+      deploymentId, effectiveImage: f.manifest.image, runtimePort: 8080, networkName: f.network }, projectId: f.projectId,
+      containerName: intent.candidate, owner: f.owner, hostPort: 49171, containerPort: 8080, networkName: f.network, allowedNetworks: [f.network] });
+    const execute = () => (f as unknown as { runProduction(argv: readonly string[], signal: AbortSignal): Promise<DockerProcessExit> })
+      .runProduction(argv, new AbortController().signal);
+    return { f, run, execute };
+  }
+  it("adds pull-never/owned caps and verifies their actual inspection before returning success", async () => {
+    const { f, run, execute } = await recordingRun();
+    await execute();
+    const args = run.mock.calls.find(([argv]) => argv.includes("run"))![0];
+    expect(args).toContain("--pull=never"); expect(args).toContain("--cpus=0.5");
+    expect(args).toContain("--memory=67108864"); expect(args).toContain("--pids-limit=64");
+    expect(args.filter((part) => part.includes(":rw,")).every((part) => part.includes("size=16m"))).toBe(true);
+    expect(args.slice(1, 5)).toEqual(["--config", jobEnv.DOCKER_CONFIG, "--host", f.manifest.dockerHost]);
+    expect(run.mock.calls.some(([argv]) => argv.includes("inspect") && argv.at(-1) === "e".repeat(64))).toBe(true);
+    expect(f.events.some((event) => event.kind === "owned-container-budget" && event.cpu === 500_000_000 && event.memory === 67108864)).toBe(true);
+  });
+  it.each([{ cpu: 0, memory: 67108864, pids: 64 }, { cpu: 500000000, memory: 0, pids: 64 }, { cpu: 500000000, memory: 67108864, pids: 0 }])(
+    "refuses observed missing/widened owned-container limits %j while retaining the exact cleanup ID", async (limits) => {
+      const { f, execute } = await recordingRun(limits);
+      await expect(execute()).rejects.toThrow();
+      expect(f.containers.has("e".repeat(64))).toBe(true);
+    });
   describe("corrective Docker source guards", () => {
     const correctedEnv = { ...jobEnv, RUNNER_ENVIRONMENT: "github-hosted" };
     const corrected = () => ({ ...owned(), expiryClosures: { recoveryMaxMs: 60_000, cleanupMaxMs: 30_000 } });
