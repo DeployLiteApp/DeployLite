@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { validateAgentTransportKey, verifyAgentTransport } from "@deploylite/config";
-import { agentExecutionCommandSchema, CapabilityError, createDeploymentCommand, deploymentStopAgentCommandSchema, deploymentStopAgentReceiptSchema, dockerImageExecutionReceiptSchema, FenceError, LeaseExpiredError, protocolPayloadFingerprint, TransportCanceledError, TransportTimeoutError, type AgentExecutionCommand, type DeploymentSnapshotV1, type DeploymentStopAgentCommand, type DeploymentStopAgentReceipt, type LeaseV1, type PromotionPolicy, type DeploymentExecutionAuthorityV1 } from "@deploylite/contracts";
+import { agentReceiptQuerySchema, agentCachedReceiptSchema, type AgentReceiptQuery, agentExecutionCommandSchema, CapabilityError, createDeploymentCommand, deploymentStopAgentCommandSchema, deploymentStopAgentReceiptSchema, dockerImageExecutionReceiptSchema, FenceError, LeaseExpiredError, protocolPayloadFingerprint, TransportCanceledError, TransportTimeoutError, type AgentExecutionCommand, type DeploymentSnapshotV1, type DeploymentStopAgentCommand, type DeploymentStopAgentReceipt, type LeaseV1, type PromotionPolicy, type DeploymentExecutionAuthorityV1 } from "@deploylite/contracts";
 import { awaitAbortable, validateDockerImageSnapshot, type DockerImageExecutionReceiptV1, type DeploymentAuthorityValidation, type PriorDockerImageExecutionReceiptV1 } from "@deploylite/domain";
 
 export type RuntimeExecutionAuthority = { assertValid(): Promise<void>; readonly expiresAt?: number };
@@ -9,7 +9,7 @@ export type AgentCommandDispatcher = { readonly promotionPolicy?: PromotionPolic
 export type AgentStopDispatcher = { stop(input: { projectId: string; deploymentId: string; candidateId: string; effectiveImage: string; containerId?: string }, signal?: AbortSignal, lease?: LeaseV1, authority?: RuntimeExecutionAuthority, timeoutMs?: number): Promise<"stopped" | "already-stopped" | "absent" | "failed" | "canceled"> };
 export type AgentReplayReceipt = Record<string, unknown>;
 export type AgentReplayClaim = { claimed: boolean; claimToken?: string; receipt?: AgentReplayReceipt };
-export type AgentReplayStore = { readonly durable?: boolean; claim(commandId: string, fingerprint: string, lease: LeaseV1): Promise<AgentReplayClaim>; wait(commandId: string): Promise<AgentReplayReceipt>; complete(commandId: string, value: { fingerprint: string; claimToken: string; receipt: AgentReplayReceipt }): Promise<void>; release(commandId: string, claimToken?: string): Promise<void> };
+export type AgentReplayStore = { readonly durable?: boolean; lookup?(commandId: string, fingerprint: string): Promise<AgentReplayReceipt | null>; claim(commandId: string, fingerprint: string, lease: LeaseV1): Promise<AgentReplayClaim>; wait(commandId: string): Promise<AgentReplayReceipt>; complete(commandId: string, value: { fingerprint: string; claimToken: string; receipt: AgentReplayReceipt }): Promise<void>; release(commandId: string, claimToken?: string): Promise<void> };
 export type AgentCommandReceiverOptions = Readonly<{ agentId: string; trustKey: string; capabilities: readonly string[]; dispatcher: AgentCommandDispatcher; stopDispatcher?: AgentStopDispatcher; replayStore: AgentReplayStore; authorityValidator?: DeploymentAuthorityValidation; now?: () => number }>;
 
 export class AuthenticatedAgentCommandReceiver {
@@ -20,6 +20,45 @@ export class AuthenticatedAgentCommandReceiver {
   get agentId(): string { return this.#options.agentId; }
   get capabilities(): readonly string[] { return this.#options.capabilities; }
   verifyRequest(payload: string, signature: string | undefined): boolean { return verifyAgentTransport(payload, signature, this.#options.trustKey); }
+  async readReceipt(body: unknown, signature: string | undefined, signal?: AbortSignal): Promise<unknown> {
+    if (signal?.aborted) throw new TransportCanceledError();
+    const started = Date.now();
+    if (!this.verifyRequest(`POST /deployments/receipt\n${JSON.stringify(body)}`, signature)) throw new Error("agent authentication failed");
+    const query = agentReceiptQuerySchema.parse(structuredClone(body));
+    const runtime = this.#options.dispatcher.runtimeConfig ? structuredClone(this.#options.dispatcher.runtimeConfig) : undefined;
+    if (query.agentId !== this.#options.agentId) throw new Error("agent cache scope rejected");
+    if (query.action === "deploy.execute") {
+      const canonicalJson = query.snapshot.canonicalJson;
+      if (typeof canonicalJson !== "string") throw new Error("agent snapshot evidence rejected");
+      const snapshot = { ...query.snapshot, canonicalBytes: new TextEncoder().encode(canonicalJson) } as unknown as DeploymentSnapshotV1;
+      validateDockerImageSnapshot(snapshot, { sha256: (value) => createHash("sha256").update(value).digest("hex") });
+      if (query.projectId !== snapshot.projectId || (snapshot.agentId && snapshot.agentId !== this.#options.agentId) || query.snapshotHash !== snapshot.hash || (query.sourceDeploymentId === null ? query.deploymentId !== snapshot.deploymentId || query.authority !== null || query.replacement !== null : query.sourceDeploymentId === query.deploymentId) || (runtime && snapshot.runtimePort !== runtime.containerPort)) throw new Error("agent cache scope rejected");
+    }
+    const fingerprint = this.receiptFingerprint(query, runtime);
+    const controller = new AbortController(), cancel = () => controller.abort(new TransportCanceledError());
+    signal?.addEventListener("abort", cancel, { once: true }); if (signal?.aborted) cancel();
+    const remaining = query.timeoutMs - (Date.now() - started);
+    const timer = setTimeout(() => controller.abort(new TransportTimeoutError()), Math.max(0, remaining));
+    try {
+    if (remaining <= 0) throw new TransportTimeoutError();
+      const cached = await awaitAbortable(async () => await this.#options.replayStore.lookup?.(query.commandId, fingerprint) ?? null, controller.signal);
+      if (Date.now() >= started + query.timeoutMs) throw new TransportTimeoutError();
+      let receipt: unknown = null;
+      if (cached && query.action === "deploy.execute") {
+        const command = { schemaVersion: query.sourceDeploymentId === null ? 1 as const : 2 as const, commandId: query.commandId, projectId: query.projectId, deploymentId: query.deploymentId, ...(query.sourceDeploymentId === null ? {} : { sourceDeploymentId: query.sourceDeploymentId }), snapshot: query.snapshot, snapshotHash: query.snapshotHash, context: { correlationId: query.correlationId } };
+        const inner = this.#validatedReceipt(command, dockerImageExecutionReceiptSchema.parse(cached), runtime);
+        receipt = query.sourceDeploymentId === null ? { schemaVersion: 1, commandId: query.commandId, deploymentId: query.deploymentId, terminalStatus: inner.terminalStatus, health: inner.health, redacted: true, receipt: inner } : { schemaVersion: 2, commandId: query.commandId, deploymentId: query.deploymentId, sourceDeploymentId: query.sourceDeploymentId, snapshotHash: query.snapshotHash, correlationId: query.correlationId, terminalStatus: inner.terminalStatus, health: inner.health, redacted: true, receipt: inner };
+      } else if (cached) {
+        const stopped = deploymentStopAgentReceiptSchema.parse(cached);
+        if (query.action !== "deployment.stop" || stopped.agentId !== query.agentId || stopped.commandId !== query.commandId || stopped.projectId !== query.projectId || stopped.deploymentId !== query.deploymentId || stopped.candidateId !== query.candidateId || stopped.effectiveImage !== query.effectiveImage || (stopped.containerId ?? null) !== query.containerId || stopped.correlationId !== query.correlationId) throw new Error("agent cached Stop scope rejected");
+        receipt = stopped;
+      }
+      return agentCachedReceiptSchema.parse({ schemaVersion: 1, action: query.action, agentId: this.#options.agentId, commandId: query.commandId, correlationId: query.correlationId, receipt });
+    } finally { clearTimeout(timer); signal?.removeEventListener("abort", cancel); }
+  }
+  private receiptFingerprint(query: AgentReceiptQuery, runtime?: AgentCommandDispatcher["runtimeConfig"]): string {
+    return protocolPayloadFingerprint(query.action === "deploy.execute" ? { snapshot: query.snapshot, agentId: this.#options.agentId, deploymentId: query.deploymentId, sourceDeploymentId: query.sourceDeploymentId, correlationId: query.correlationId, runtimeConfig: runtime ?? null, authority: query.authority, replacement: query.replacement } : { action: query.action, agentId: query.agentId, projectId: query.projectId, deploymentId: query.deploymentId, candidateId: query.candidateId, effectiveImage: query.effectiveImage, containerId: query.containerId, correlationId: query.correlationId, authority: query.authority });
+  }
   async receive(body: unknown, signature: string | undefined, signal?: AbortSignal): Promise<any> {
     if (signal?.aborted) throw new TransportCanceledError();
     const text = JSON.stringify(body); if (!verifyAgentTransport(text, signature, this.#options.trustKey)) throw new Error("agent authentication failed");
@@ -124,7 +163,7 @@ export class AuthenticatedAgentCommandReceiver {
     return { authority, priorProvenReceipt, promotionPolicy: replacement.policy };
   }
   private validateFence(lease: LeaseV1): void { const current = this.#fences.get(lease.deploymentId); if (current && (lease.fence < current.fence || (lease.fence === current.fence && current.leaseId !== lease.leaseId))) throw new FenceError(); if (!current || lease.fence > current.fence) this.#fences.set(lease.deploymentId, lease); }
-  #validatedReceipt(command: AgentExecutionCommand, receipt: DockerImageExecutionReceiptV1, runtime?: AgentCommandDispatcher["runtimeConfig"]) {
+  #validatedReceipt(command: Pick<AgentExecutionCommand, "commandId" | "projectId" | "deploymentId" | "snapshot" | "snapshotHash">, receipt: DockerImageExecutionReceiptV1, runtime?: AgentCommandDispatcher["runtimeConfig"]) {
     const validated = dockerImageExecutionReceiptSchema.parse(receipt);
     if (validated.deploymentId !== command.deploymentId) throw new Error("agent receipt deployment scope rejected");
     const proof = validated.executionReceipt;

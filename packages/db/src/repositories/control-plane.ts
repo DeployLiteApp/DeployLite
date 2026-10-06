@@ -39,8 +39,8 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
     return { command: toCommand(existing), created: false };
   }
 
-  async findByIdempotency(actorId: string, idempotencyKey: string): Promise<ControlCommand | null> {
-    const [row] = await this.db.select().from(controlCommands).where(and(eq(controlCommands.actorUserId, actorId), eq(controlCommands.action, "deployment.redeploy"), eq(controlCommands.idempotencyKey, idempotencyKey))).limit(1);
+  async findByIdempotency(actorId: string, idempotencyKey: string, action: "deployment.redeploy" | "deployment.stop" = "deployment.redeploy"): Promise<ControlCommand | null> {
+    const [row] = await this.db.select().from(controlCommands).where(and(eq(controlCommands.actorUserId, actorId), eq(controlCommands.action, action), eq(controlCommands.idempotencyKey, idempotencyKey))).limit(1);
     return row ? toCommand(row) : null;
   }
 
@@ -157,7 +157,7 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
     validateDeploymentAuthority(rows.map(toCommand), request, now);
   }
 
-  async completeDeploymentStop(command: ControlCommand, result: Parameters<ControlStopRepository["completeDeploymentStop"]>[1]): Promise<ControlCommand> {
+  async completeDeploymentStop(command: ControlCommand, result: Parameters<ControlStopRepository["completeDeploymentStop"]>[1], signal?: AbortSignal): Promise<ControlCommand> {
     command = structuredClone(command); result = structuredClone(result);
     return this.db.transaction(async (tx) => {
       const [hint] = await tx.select().from(controlCommands).where(eq(controlCommands.id, command.id)).limit(1);
@@ -173,12 +173,14 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
       validateStopCompletion(related.map(toCommand), current, command, result);
       const authority = command.executionAuthority!;
       const minExpiry = Math.min(authority.projectLease.expiresAt, authority.executionLease.expiresAt, authority.sourceLease?.expiresAt ?? Infinity);
+      signal?.throwIfAborted();
       const [completed] = await tx.update(controlCommands).set({ status: "completed", result, updatedAt: new Date() }).where(and(
         eq(controlCommands.id, command.id), eq(controlCommands.status, "dispatching"),
         sql`${controlCommands.executionAuthority} = ${JSON.stringify(authority)}::jsonb`,
         sql`${controlCommands.expiresAt} > clock_timestamp()`, sql`to_timestamp(${minExpiry} / 1000.0) > clock_timestamp()`
       )).returning();
       if (!completed) throw new FenceError("Stop completion lost authority CAS");
+      signal?.throwIfAborted();
       return toCommand(completed);
     });
   }
