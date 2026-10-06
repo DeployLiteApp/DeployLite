@@ -81,3 +81,87 @@ def validate_image(info, expected):
     require(info.get("healthIntervalNs") == info.get("healthTimeoutNs") == 1000000000 and info.get("healthPath") == "/healthz", "fixture_health_mismatch")
     require(info.get("flavor") == expected["flavor"] in ("a", "h"), "fixture_flavor_mismatch")
     return copy.deepcopy(info)
+
+
+def validate_owned_resource(info, owned, limits):
+    for field in ("id", "kind", "owner", "projectId", "imageId", "imageRef", "networkId"):
+        require(info.get(field) == owned.get(field) and info.get(field) is not None, "resource_identity_mismatch")
+    require(re.fullmatch(HEX, info["id"]) and re.fullmatch(DIGEST, info["imageId"]) and re.fullmatch(HEX, info["networkId"]), "physical_resource_id_required")
+    registry = info["kind"] == "registry"
+    require(info.get("cpuNano") == int(limits["registryCpu" if registry else "fixtureCpu"] * 1000000000), "owned_cpu_mismatch")
+    require(info.get("memoryBytes") == limits["registryMemoryBytes" if registry else "fixtureMemoryBytes"] and info.get("pids") == 64, "owned_memory_or_pid_mismatch")
+    require(info.get("hostIp") == "127.0.0.1" and info.get("hostPort") in ([49172] if registry else [49170, 49171]), "loopback_port_mismatch")
+    require(info.get("readonly") is True and info.get("privileged") is False and info.get("binds") == [] and info.get("labelsVerified") is True, "unsafe_resource_configuration")
+    return copy.deepcopy(info)
+
+
+def preparation_plan(grant, manifest):
+    context = manifest["fixture"]["context"]
+    plan = [{"kind": "input-pull", "image": manifest["fixture"][field], "argv": ["docker", "pull", "--platform", "linux/amd64", manifest["fixture"][field]]} for field in ("base", "registry")]
+    for flavor in ("a", "h"):
+        repository = "127.0.0.1:49172/deploylite-p2/" + grant["runId"] + "-" + flavor
+        plan.extend([
+            {"kind": "build", "target": flavor, "context": context, "argv": ["docker", "build", "--pull=false", "--network=none", "--platform", "linux/amd64", "--target", flavor, "--tag", repository + ":prepared", context]},
+            {"kind": "observe-manifest", "repository": repository, "reference": "observe header and bytes, never config image ID"},
+            {"kind": "pull-derived", "repository": repository, "reference": "exact observed RepoDigest"},
+        ])
+    plan.append({"kind": "registry-removed-before-cases"})
+    return plan
+
+
+def allowed_command(argv, grant, closure):
+    require(isinstance(argv, (list, tuple)) and argv and argv[0] == "docker" and all(isinstance(value, str) for value in argv), "argv_required")
+    op = argv[1] if len(argv) > 1 else ""
+    require(op not in ("system", "update", "context", "login", "logout", "volume"), "shared_daemon_operation_forbidden")
+    if op in ("rm", "stop", "start") or (op == "network" and len(argv) > 2 and argv[2] == "rm"):
+        target = argv[-1]
+        owned = closure.get("ownedIds", []) if closure else grant.get("ownedIds", [])
+        require(re.fullmatch(HEX, target) and target in owned, "exact_recorded_id_required")
+        return
+    if op == "pull":
+        require(argv[-1] in (MANIFEST["fixture"]["base"], MANIFEST["fixture"]["registry"]) or re.fullmatch(REFERENCE, argv[-1]), "pinned_input_required")
+    elif op == "build":
+        require(argv[-1] == MANIFEST["fixture"]["context"] and "--network=none" in argv and "--pull=false" in argv and "--platform" in argv and argv[argv.index("--platform") + 1] == "linux/amd64", "owned_native_fixture_build_required")
+    elif op in ("tag", "push"):
+        require(re.fullmatch(r"127\.0\.0\.1:49172/deploylite-p2/" + re.escape(grant["runId"]) + r"-(a|h):prepared", argv[-1]), "owned_registry_tag_required")
+    else:
+        require(op in ("info", "inspect", "image", "container", "ps", "network", "run"), "unsupported_fixture_operation")
+
+
+def run_effect(argv, grant, boundary, closure=None, max_seconds=None):
+    require(boundary is not None, "explicit_process_boundary_required")
+    now = boundary.now
+    if closure:
+        require(closure.get("kind") == "cleanup", "postexpiry_recovery_unbound")
+        require(grant.get("expiryClosures", {}).get("cleanupMaxMs") == 30000, "explicit_cleanup_permission_required")
+        deadline = closure.get("deadline", 0)
+        require(now < deadline <= now + 30 and bool(closure.get("ownedIds")), "cleanup_deadline_or_scope_invalid")
+        require(closure.setdefault("originalDeadline", deadline) == deadline, "cleanup_deadline_cannot_renew")
+        budget = deadline - now
+    else:
+        wall_ms = getattr(boundary, "wall_ms", now * 1000)
+        require(wall_ms < grant["expiresAtMs"], "fresh_effect_after_expiry")
+        budget = min(120, (grant["expiresAtMs"] - wall_ms) / 1000)
+    if max_seconds is not None:
+        require(max_seconds > 0, "phase_deadline_exhausted")
+        budget = min(budget, max_seconds)
+    allowed_command(argv, grant, closure)
+    actual = ["docker", "--config", grant["dockerConfigDirectory"], "--host", grant["dockerHost"], *argv[1:]]
+    try:
+        result = boundary.run(actual, timeout=budget)
+    except (OSError, subprocess.SubprocessError):
+        raise PhysicalError("owned_process_outcome_unknown") from None
+    require(boundary.now - now < budget and result.get("returncode") == 0, "owned_process_outcome_unknown")
+    return result
+
+
+def cleanup_owned(owned, boundary, deadline):
+    receipts = []
+    for resource in reversed(owned):
+        require(boundary.now < deadline, "cleanup_deadline_exhausted")
+        observed = boundary.inspect(resource["id"], timeout=min(3, deadline - boundary.now))
+        validate_owned_resource(observed, resource, MANIFEST["resourceProposal"])
+        boundary.remove(resource["id"], resource["kind"], timeout=min(3, deadline - boundary.now))
+        require(boundary.now < deadline, "cleanup_outcome_unknown")
+        receipts.append({"id": resource["id"], "verifiedLabels": True, "removed": True})
+    return receipts
