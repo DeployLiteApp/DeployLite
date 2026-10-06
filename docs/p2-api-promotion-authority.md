@@ -9,3 +9,5 @@ Adopts the complete original source and matching tests. Source aliases and injec
 Required quality, PostgreSQL, supply-chain and baseline checks must pass on the exact published head before protected merge.
 
 Rollback uses a scoped revert through the protected PR flow. No production operation or local runtime authorization is implied.
+
+The production API build excludes test modules and recording fixtures; focused and normal source checks still type-check the complete test boundaries.
