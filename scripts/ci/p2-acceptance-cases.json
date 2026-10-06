@@ -1,6 +1,312 @@
 {
   "schemaVersion": 1,
   "purpose": "Expected evidence only; this manifest neither authorizes runtime nor claims PASS",
+  "suites": {
+    "db": {
+      "count": 49,
+      "allowSkipped": false,
+      "cases": [
+        {
+          "fullName": "PostgreSQL auth foundation integration applies migrations to an empty database and seeds canonical roles",
+          "title": "applies migrations to an empty database and seeds canonical roles",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration rejects invalid roles, user FK/status, and env metadata constraints",
+          "title": "rejects invalid roles, user FK/status, and env metadata constraints",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration persists auth users and sessions across a new PostgreSQL client lifecycle",
+          "title": "persists auth users and sessions across a new PostgreSQL client lifecycle",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration persists deployment metadata foundations across a new PostgreSQL client lifecycle",
+          "title": "persists deployment metadata foundations across a new PostgreSQL client lifecycle",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration keeps env metadata value-free at helper and PostgreSQL column boundaries",
+          "title": "keeps env metadata value-free at helper and PostgreSQL column boundaries",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration resolves concurrent idempotency retries once, rejects mismatched reuse, and rolls back a command",
+          "title": "resolves concurrent idempotency retries once, rejects mismatched reuse, and rolls back a command",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration loads only persisted actor/action grants and fails closed for absent or cross-project scopes",
+          "title": "loads only persisted actor/action grants and fails closed for absent or cross-project scopes",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration atomically rejects mismatched, expired, and replayed confirmations with correlated audit evidence",
+          "title": "atomically rejects mismatched, expired, and replayed confirmations with correlated audit evidence",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration durably resolves deployment stop once and replays its completed result",
+          "title": "durably resolves deployment stop once and replays its completed result",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration rolls back a redeploy when its deployment insert fault is injected",
+          "title": "rolls back a redeploy when its deployment insert fault is injected",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration claims one concurrent PostgreSQL redeploy dispatch and preserves one execution identity",
+          "title": "claims one concurrent PostgreSQL redeploy dispatch and preserves one execution identity",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration rejects a non-stop action before confirmation consumption",
+          "title": "rejects a non-stop action before confirmation consumption",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration claims replay once, detects payload conflicts, and replays a receipt after client restart",
+          "title": "claims replay once, detects payload conflicts, and replays a receipt after client restart",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration rejects the old claimant after atomic lease reclaim",
+          "title": "rejects the old claimant after atomic lease reclaim",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration executes receipt/index migrations and keeps both redeploy generations bound to their origin",
+          "title": "executes receipt/index migrations and keeps both redeploy generations bound to their origin",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration atomically stores a failed outcome without proof",
+          "title": "atomically stores a failed outcome without proof",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration atomically stores a canceled outcome without proof",
+          "title": "atomically stores a canceled outcome without proof",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration serializes equal or changed completion races (changed=false)",
+          "title": "serializes equal or changed completion races (changed=false)",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration serializes equal or changed completion races (changed=true)",
+          "title": "serializes equal or changed completion races (changed=true)",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration waits on the command row before locking the deployment row",
+          "title": "waits on the command row before locking the deployment row",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration rolls back deployment/proof and command together after a real PostgreSQL trigger fault",
+          "title": "rolls back deployment/proof and command together after a real PostgreSQL trigger fault",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration rejects generic proof/history changes and isolates read references",
+          "title": "rejects generic proof/history changes and isolates read references",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration reports missing rows and retains initial ordinary/legacy compatibility",
+          "title": "reports missing rows and retains initial ordinary/legacy compatibility",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration rejects mismatched project before any terminal write",
+          "title": "rejects mismatched project before any terminal write",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration rejects mismatched source before any terminal write",
+          "title": "rejects mismatched source before any terminal write",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration rejects mismatched origin before any terminal write",
+          "title": "rejects mismatched origin before any terminal write",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration rejects mismatched hash before any terminal write",
+          "title": "rejects mismatched hash before any terminal write",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration rejects mismatched host before any terminal write",
+          "title": "rejects mismatched host before any terminal write",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration rejects mismatched digest before any terminal write",
+          "title": "rejects mismatched digest before any terminal write",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration rejects mismatched correlation before any terminal write",
+          "title": "rejects mismatched correlation before any terminal write",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration rejects mismatched expected-status before any terminal write",
+          "title": "rejects mismatched expected-status before any terminal write",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration retains initial failed outcomes without a command or proof",
+          "title": "retains initial failed outcomes without a command or proof",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration retains initial canceled outcomes without a command or proof",
+          "title": "retains initial canceled outcomes without a command or proof",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration replays completed proof across a new pool lifecycle",
+          "title": "replays completed proof across a new pool lifecycle",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration serializes competing Stop/redeploy claims behind the same project lock (first=deployment.stop)",
+          "title": "serializes competing Stop/redeploy claims behind the same project lock (first=deployment.stop)",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration serializes competing Stop/redeploy claims behind the same project lock (first=deployment.redeploy)",
+          "title": "serializes competing Stop/redeploy claims behind the same project lock (first=deployment.redeploy)",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration allows a different project claim while one project transaction holds its authority lock",
+          "title": "allows a different project claim while one project transaction holds its authority lock",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration rejects an expired persisted command without allocating an execution claim",
+          "title": "rejects an expired persisted command without allocating an execution claim",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration increments fences on expiry and rejects superseded or same-fence conflicting authority before terminal writes",
+          "title": "increments fences on expiry and rejects superseded or same-fence conflicting authority before terminal writes",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration rolls back confirmed allocation and confirmation when the existing allocation fault fires",
+          "title": "rolls back confirmed allocation and confirmation when the existing allocation fault fires",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration rolls back a claim fault without leaking authority or altering the already admitted allocation",
+          "title": "rolls back a claim fault without leaking authority or altering the already admitted allocation",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration rereads persisted execution authority through a new PostgreSQL pool",
+          "title": "rereads persisted execution authority through a new PostgreSQL pool",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration rejects stale Stop terminal completion after a higher-fence replacement claim",
+          "title": "rejects stale Stop terminal completion after a higher-fence replacement claim",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration rejects Stop terminal completion when persisted expiry changes during its command-row lock wait",
+          "title": "rejects Stop terminal completion when persisted expiry changes during its command-row lock wait",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration replays equal completed Stop terminal evidence after expiry and deleted source without rewriting the ledger",
+          "title": "replays equal completed Stop terminal evidence after expiry and deleted source without rewriting the ledger",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration preserves a reclaimed replay claim against old completion and release (different-owner)",
+          "title": "preserves a reclaimed replay claim against old completion and release (different-owner)",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration preserves a reclaimed replay claim against old completion and release (same-owner)",
+          "title": "preserves a reclaimed replay claim against old completion and release (same-owner)",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration atomically rolls back authority-bearing terminal writes and replays committed proof after expiry",
+          "title": "atomically rolls back authority-bearing terminal writes and replays committed proof after expiry",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration retains proof, command and canonical origin across an owned server restart",
+          "title": "retains proof, command and canonical origin across an owned server restart",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": true
+        }
+      ],
+      "sourceFiles": [
+        "packages/db/src/execution-postgres.integration-cases.ts",
+        "packages/db/src/postgres.integration.test.ts"
+      ]
+    }
+  },
   "singleRestartTitle": "atomic execution PostgreSQL integration retains proof, command and canonical origin across an owned server restart",
   "dockerAuthoredOptOut": {
     "guardPassExpected": 65,
