@@ -305,6 +305,315 @@
         "packages/db/src/execution-postgres.integration-cases.ts",
         "packages/db/src/postgres.integration.test.ts"
       ]
+    },
+    "api": {
+      "count": 6,
+      "allowSkipped": false,
+      "cases": [
+        {
+          "fullName": "DeployLite API PostgreSQL integration verifies bootstrap, restart-stable login, logout revocation, metadata persistence, and log reads",
+          "title": "verifies bootstrap, restart-stable login, logout revocation, metadata persistence, and log reads",
+          "file": "apps/api/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "DeployLite API PostgreSQL integration persists the confirmed delete command and correlated audit while making replay idempotent",
+          "title": "persists the confirmed delete command and correlated audit while making replay idempotent",
+          "file": "apps/api/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "DeployLite API PostgreSQL integration persists synthetic-observation INITIAL and repeated redeploy atomically through default PostgreSQL repositories",
+          "title": "persists synthetic-observation INITIAL and repeated redeploy atomically through default PostgreSQL repositories",
+          "file": "apps/api/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "DeployLite API PostgreSQL integration keeps default PostgreSQL replacement and authority unresolved after a synthetic lost terminal reply",
+          "title": "keeps default PostgreSQL replacement and authority unresolved after a synthetic lost terminal reply",
+          "file": "apps/api/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "DeployLite API PostgreSQL integration retains default PostgreSQL running state and no terminal proof after an actual terminal trigger fault (initial)",
+          "title": "retains default PostgreSQL running state and no terminal proof after an actual terminal trigger fault (initial)",
+          "file": "apps/api/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "DeployLite API PostgreSQL integration retains default PostgreSQL running state and no terminal proof after an actual terminal trigger fault (redeploy)",
+          "title": "retains default PostgreSQL running state and no terminal proof after an actual terminal trigger fault (redeploy)",
+          "file": "apps/api/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        }
+      ],
+      "sourceFiles": [
+        "apps/api/src/postgres.integration.test.ts"
+      ]
+    },
+    "docker": {
+      "guardCases": [
+        {
+          "fullName": "physical Docker acceptance opt-in guard keeps Docker inaccessible for flag undefined",
+          "title": "keeps Docker inaccessible for flag undefined"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard keeps Docker inaccessible for flag 0",
+          "title": "keeps Docker inaccessible for flag 0"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard keeps Docker inaccessible for flag true",
+          "title": "keeps Docker inaccessible for flag true"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard rejects missing authorization before constructing a process runner",
+          "title": "rejects missing authorization before constructing a process runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard rejects missing grantId before constructing a process runner",
+          "title": "rejects missing grantId before constructing a process runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard rejects missing image before constructing a process runner",
+          "title": "rejects missing image before constructing a process runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard rejects missing platform before constructing a process runner",
+          "title": "rejects missing platform before constructing a process runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard rejects missing runtimeHost before constructing a process runner",
+          "title": "rejects missing runtimeHost before constructing a process runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard rejects missing dockerHost before constructing a process runner",
+          "title": "rejects missing dockerHost before constructing a process runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard rejects missing harnessSha256 before constructing a process runner",
+          "title": "rejects missing harnessSha256 before constructing a process runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard rejects missing sourceHashes before constructing a process runner",
+          "title": "rejects missing sourceHashes before constructing a process runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard rejects missing operations before constructing a process runner",
+          "title": "rejects missing operations before constructing a process runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard rejects an unowned CI execution identity {\"GITHUB_ACTIONS\":\"false\"} before any runner",
+          "title": "rejects an unowned CI execution identity {\"GITHUB_ACTIONS\":\"false\"} before any runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard rejects an unowned CI execution identity {\"GITHUB_REPOSITORY\":\"other/repository\"} before any runner",
+          "title": "rejects an unowned CI execution identity {\"GITHUB_REPOSITORY\":\"other/repository\"} before any runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard rejects an unowned CI execution identity {\"GITHUB_RUN_ID\":\"654321\"} before any runner",
+          "title": "rejects an unowned CI execution identity {\"GITHUB_RUN_ID\":\"654321\"} before any runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard rejects an unowned CI execution identity {\"GITHUB_RUN_ATTEMPT\":\"2\"} before any runner",
+          "title": "rejects an unowned CI execution identity {\"GITHUB_RUN_ATTEMPT\":\"2\"} before any runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard rejects an unowned CI execution identity {\"GITHUB_JOB\":\"other-job\"} before any runner",
+          "title": "rejects an unowned CI execution identity {\"GITHUB_JOB\":\"other-job\"} before any runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard rejects an unowned CI execution identity {\"DOCKER_CONFIG\":\"/tmp/ambient-config\"} before any runner",
+          "title": "rejects an unowned CI execution identity {\"DOCKER_CONFIG\":\"/tmp/ambient-config\"} before any runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard rejects owned-resource budget/scope drift {\"containerCpu\":1}",
+          "title": "rejects owned-resource budget/scope drift {\"containerCpu\":1}"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard rejects owned-resource budget/scope drift {\"containerMemoryBytes\":134217728}",
+          "title": "rejects owned-resource budget/scope drift {\"containerMemoryBytes\":134217728}"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard rejects owned-resource budget/scope drift {\"engineScope\":\"shared-daemon\"}",
+          "title": "rejects owned-resource budget/scope drift {\"engineScope\":\"shared-daemon\"}"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard accepts the observed loopback registry RepoDigest without treating an image ID as its digest",
+          "title": "accepts the observed loopback registry RepoDigest without treating an image ID as its digest"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard records the current UUID execution identity without rewriting its logical candidate",
+          "title": "records the current UUID execution identity without rewriting its logical candidate"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard accepts a larger native owned hosted engine and records only per-container budgets",
+          "title": "accepts a larger native owned hosted engine and records only per-container budgets"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard adds pull-never/owned caps and verifies their actual inspection before returning success",
+          "title": "adds pull-never/owned caps and verifies their actual inspection before returning success"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard refuses observed missing/widened owned-container limits {\"cpu\":0,\"memory\":67108864,\"pids\":64} while retaining the exact cleanup ID",
+          "title": "refuses observed missing/widened owned-container limits {\"cpu\":0,\"memory\":67108864,\"pids\":64} while retaining the exact cleanup ID"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard refuses observed missing/widened owned-container limits {\"cpu\":500000000,\"memory\":0,\"pids\":64} while retaining the exact cleanup ID",
+          "title": "refuses observed missing/widened owned-container limits {\"cpu\":500000000,\"memory\":0,\"pids\":64} while retaining the exact cleanup ID"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard refuses observed missing/widened owned-container limits {\"cpu\":500000000,\"memory\":67108864,\"pids\":0} while retaining the exact cleanup ID",
+          "title": "refuses observed missing/widened owned-container limits {\"cpu\":500000000,\"memory\":67108864,\"pids\":0} while retaining the exact cleanup ID"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards rejects non-hosted runner environment undefined before runner",
+          "title": "rejects non-hosted runner environment undefined before runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards rejects non-hosted runner environment  before runner",
+          "title": "rejects non-hosted runner environment  before runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards rejects non-hosted runner environment self-hosted before runner",
+          "title": "rejects non-hosted runner environment self-hosted before runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards rejects private Docker config missing without reading its contents or credentials",
+          "title": "rejects private Docker config missing without reading its contents or credentials"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards rejects private Docker config file without reading its contents or credentials",
+          "title": "rejects private Docker config file without reading its contents or credentials"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards rejects private Docker config symlink without reading its contents or credentials",
+          "title": "rejects private Docker config symlink without reading its contents or credentials"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards rejects private Docker config foreign-owner without reading its contents or credentials",
+          "title": "rejects private Docker config foreign-owner without reading its contents or credentials"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards rejects private Docker config public-mode without reading its contents or credentials",
+          "title": "rejects private Docker config public-mode without reading its contents or credentials"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards rejects private Docker config nonempty without reading its contents or credentials",
+          "title": "rejects private Docker config nonempty without reading its contents or credentials"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards characterizes valid private empty owned config without any process",
+          "title": "characterizes valid private empty owned config without any process"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards rejects expired cached grant before a second case setup",
+          "title": "rejects expired cached grant before a second case setup"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards rejects fresh invocation after grant expiry before recording runner",
+          "title": "rejects fresh invocation after grant expiry before recording runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards rejects closure after its bounded deadline without a runner",
+          "title": "rejects closure after its bounded deadline without a runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards rejects expired closure without explicit closure permission",
+          "title": "rejects expired closure without explicit closure permission"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards characterizes explicitly bounded owned closure after expiry using only a recording runner",
+          "title": "characterizes explicitly bounded owned closure after expiry using only a recording runner"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards rejects false-positive tamper witness unsigned / missing-tamper despite identical no-effect state",
+          "title": "rejects false-positive tamper witness unsigned / missing-tamper despite identical no-effect state"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards rejects false-positive tamper witness signed-other-initial / unchanged-envelope despite identical no-effect state",
+          "title": "rejects false-positive tamper witness signed-other-initial / unchanged-envelope despite identical no-effect state"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards rejects false-positive tamper witness unsigned / unrelated-rejection despite identical no-effect state",
+          "title": "rejects false-positive tamper witness unsigned / unrelated-rejection despite identical no-effect state"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards rejects false-positive tamper witness signed-other-initial / api-unrelated despite identical no-effect state",
+          "title": "rejects false-positive tamper witness signed-other-initial / api-unrelated despite identical no-effect state"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards rejects false-positive tamper witness signed-other-initial / api-uncorrelated despite identical no-effect state",
+          "title": "rejects false-positive tamper witness signed-other-initial / api-uncorrelated despite identical no-effect state"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards characterizes correlated mock tamper witness unsigned without Docker",
+          "title": "characterizes correlated mock tamper witness unsigned without Docker"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards characterizes correlated mock tamper witness signed-other-initial without Docker",
+          "title": "characterizes correlated mock tamper witness signed-other-initial without Docker"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard final closure Docker source guards cancels and settles an in-flight owned cleanup at its single deadline while retaining unknown IDs",
+          "title": "cancels and settles an in-flight owned cleanup at its single deadline while retaining unknown IDs"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard final closure Docker source guards settles closure as unknown at its deadline when the injected runner ignores abort without claiming daemon absence",
+          "title": "settles closure as unknown at its deadline when the injected runner ignores abort without claiming daemon absence"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard final closure Docker source guards bounds the whole cleanup when probe cannot settle",
+          "title": "bounds the whole cleanup when probe cannot settle"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard final closure Docker source guards bounds the whole cleanup when app-close cannot settle",
+          "title": "bounds the whole cleanup when app-close cannot settle"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard final closure Docker source guards blocks subsequent case setup after rejected exact-owned cleanup",
+          "title": "blocks subsequent case setup after rejected exact-owned cleanup"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard final closure Docker source guards blocks subsequent case setup after unknown-status exact-owned cleanup",
+          "title": "blocks subsequent case setup after unknown-status exact-owned cleanup"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard final closure Docker source guards characterizes complete mocked cleanup allowing the next case within the same grant",
+          "title": "characterizes complete mocked cleanup allowing the next case within the same grant"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard final closure Docker source guards final receipt Docker source guards bounds a stalled final receipt after successful cleanup by the same nonrenewable deadline and blocks the next case",
+          "title": "bounds a stalled final receipt after successful cleanup by the same nonrenewable deadline and blocks the next case"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard final closure Docker source guards final receipt Docker source guards settles after exhausted cleanup without starting an unbounded final receipt and retains unknown IDs before blocking the next case",
+          "title": "settles after exhausted cleanup without starting an unbounded final receipt and retains unknown IDs before blocking the next case"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard final closure Docker source guards final receipt Docker source guards fences a late deployment-list continuation from publishing a PASS receipt after the original closure deadline",
+          "title": "fences a late deployment-list continuation from publishing a PASS receipt after the original closure deadline"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard blocks the actual physical-case setup before input reads when integration is off",
+          "title": "blocks the actual physical-case setup before input reads when integration is off"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard refuses manifest cleanup for wrong-owner with a recording guard boundary, never physical proof",
+          "title": "refuses manifest cleanup for wrong-owner with a recording guard boundary, never physical proof"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard refuses manifest cleanup for wrong-physical-id with a recording guard boundary, never physical proof",
+          "title": "refuses manifest cleanup for wrong-physical-id with a recording guard boundary, never physical proof"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard refuses manifest cleanup for wrong-network-owner with a recording guard boundary, never physical proof",
+          "title": "refuses manifest cleanup for wrong-network-owner with a recording guard boundary, never physical proof"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard accepts only the explicit manifest scope and rejects expiry, protected ports, ambient context and PG",
+          "title": "accepts only the explicit manifest scope and rejects expiry, protected ports, ambient context and PG"
+        }
+      ]
     }
   },
   "singleRestartTitle": "atomic execution PostgreSQL integration retains proof, command and canonical origin across an owned server restart",
