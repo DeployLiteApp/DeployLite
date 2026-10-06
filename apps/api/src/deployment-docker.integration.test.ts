@@ -835,6 +835,73 @@ describe("physical Docker acceptance opt-in guard", () => {
       try { expect((await loadGrant(boundary)).manifest.dockerConfigDirectory).toBe(boundary.input.dockerConfigDirectory); }
       finally { vi.unstubAllEnvs(); }
     });
+    function expired() {
+      const manifest = validateManifest(corrected(), correctedEnv); manifest.expiresAt = new Date(Date.now() - 1).toISOString();
+      const f = new PhysicalFixture(manifest, { trustKey: "mock-only", adminPassword: "mock-only" }, "MOCK_EXPIRED");
+      Object.assign(f.ledger, { physicalDocker: false });
+      const run = vi.fn(async (): Promise<DockerProcessExit> => ({ exitCode: 0, signal: null, stdout: "", stderr: "" }));
+      const id = "e".repeat(64), deploymentId = "33333333-3333-4333-8333-333333333333";
+      const intent = { deploymentId, candidateId: `${deploymentId}:candidate:command`, candidate: `deploylite-candidate-${deploymentId}-command`, active: `deploylite-active-${deploymentId}` };
+      f.intents.set(deploymentId, intent); f.containers.set(id, { intent, name: intent.active }); // Explicit recorded mock ownership for the positive closure fixture.
+      Object.assign(f, { raw: { run } }); return { f, run };
+    }
+    const closureInvoke = (f: PhysicalFixture, deadlineMonoMs: number) =>
+      (f as unknown as { invoke(argv: readonly string[], signal: AbortSignal, closure: { kind: "cleanup"; deadlineMonoMs: number }): Promise<DockerProcessExit> })
+        .invoke(["docker", "rm", "--force", "e".repeat(64)], new AbortController().signal, { kind: "cleanup", deadlineMonoMs });
+    it("rejects expired cached grant before a second case setup", async () => {
+      withEnv(); const saved = grant; grant = undefined; const now = Date.now(); vi.useFakeTimers({ toFake: ["Date"] });
+      const load = vi.fn(async () => ({ manifest: validateManifest({ ...corrected(), expiresAt: new Date(now + 1000).toISOString() }, correctedEnv), credentials: { trustKey: "mock-only", adminPassword: "mock-only" } }));
+      const setup = vi.spyOn(PhysicalFixture.prototype, "setup").mockResolvedValue();
+      const cleanup = vi.spyOn(PhysicalFixture.prototype, "cleanup").mockResolvedValue();
+      const persist = vi.spyOn(PhysicalFixture.prototype, "persist").mockResolvedValue();
+      try {
+        await physicalCase("FIRST_MOCK", async () => {}, load); vi.setSystemTime(now + 2000);
+        await expect(physicalCase("SECOND_MOCK", async () => {}, load)).rejects.toThrow();
+        expect(setup).toHaveBeenCalledTimes(1);
+      } finally { setup.mockRestore(); cleanup.mockRestore(); persist.mockRestore(); grant = saved; vi.useRealTimers(); vi.unstubAllEnvs(); }
+    });
+    it("rejects fresh invocation after grant expiry before recording runner", async () => {
+      const { f, run } = expired(); await expect(f.invoke(["docker", "info"])).rejects.toThrow(); expect(run).not.toHaveBeenCalled();
+    });
+    it("rejects closure after its bounded deadline without a runner", async () => {
+      const { f, run } = expired(); await expect(closureInvoke(f, performance.now() - 1)).rejects.toThrow(); expect(run).not.toHaveBeenCalled();
+    });
+    it("rejects expired closure without explicit closure permission", async () => {
+      const { f, run } = expired(); delete (f.manifest as unknown as Record<string, unknown>).expiryClosures;
+      await expect(closureInvoke(f, performance.now() + 1000)).rejects.toThrow(); expect(run).not.toHaveBeenCalled();
+    });
+    it("characterizes explicitly bounded owned closure after expiry using only a recording runner", async () => {
+      const { f, run } = expired(); await expect(closureInvoke(f, performance.now() + 1000)).resolves.toMatchObject({ exitCode: 0 });
+      expect(run).toHaveBeenCalledTimes(1);
+    });
+    function tamperFixture(tamper: Exclude<Tamper, "none">, fault = "valid"): PhysicalFixture {
+      const f = new PhysicalFixture(validateManifest(corrected(), correctedEnv), { trustKey: "mock-only", adminPassword: "mock-only" }, "MOCK_TAMPER");
+      const id = "33333333-3333-5333-8333-333333333333", commandId = "command-1", correlationId = "correlation-1";
+      const hash = "b".repeat(64), originalHash = "a".repeat(64), changedProject = "44444444-4444-4444-8444-444444444444";
+      const authenticated = tamper !== "unsigned";
+      f.envelopes.push({ schemaVersion: 1, commandId, deploymentId: id, projectId: authenticated ? f.projectId : changedProject,
+        snapshotHash: fault === "unchanged-envelope" ? originalHash : hash, requestAuthenticated: authenticated,
+        context: { correlationId } });
+      if (fault !== "missing-tamper") f.event("harness-injected-wire-tamper", { tamper, commandId, deploymentId: id,
+        correlationId, originalProjectId: f.projectId, originalSnapshotHash: originalHash });
+      f.event("receiver-rejection", { commandId, deploymentId: id, correlationId, requestAuthenticated: authenticated,
+        reason: fault === "unrelated-rejection" ? "unrelated transport failure" : authenticated ? "INITIAL immutable execution binding changed" : "agent authentication failed" });
+      f.event("api-response", { action: "INITIAL", statusCode: 502, body: { error: {
+        code: fault === "api-unrelated" ? "UNRELATED_ERROR" : "DEPLOY_DISPATCH_FAILED",
+        correlationId: fault === "api-uncorrelated" ? "different-correlation" : correlationId } } });
+      vi.spyOn(f, "initial").mockRejectedValue(new Error("recording INITIAL rejection"));
+      Object.assign(f, { memory: { deployments: { list: async () => [{ id, projectId: f.projectId, status: "failed" }] } } });
+      return f;
+    }
+    it.each([
+      ["unsigned", "missing-tamper"], ["signed-other-initial", "unchanged-envelope"], ["unsigned", "unrelated-rejection"],
+      ["signed-other-initial", "api-unrelated"], ["signed-other-initial", "api-uncorrelated"]] as const)(
+      "rejects false-positive tamper witness %s / %s despite identical no-effect state", async (tamper, fault) => {
+        await expect(assertWireTamperRejected(tamperFixture(tamper, fault), tamper, "failed")).rejects.toThrow();
+      });
+    it.each(["unsigned", "signed-other-initial"] as const)("characterizes correlated mock tamper witness %s without Docker", async (tamper) => {
+      await expect(assertWireTamperRejected(tamperFixture(tamper), tamper, "failed")).resolves.toBeUndefined();
+    });
   });
   describe("final closure Docker source guards", () => {
     const stubEnvironment = () => { for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value); };
@@ -1031,7 +1098,71 @@ describe("physical Docker acceptance opt-in guard", () => {
       expect(setup).not.toHaveBeenCalled();
     } finally { setup.mockRestore(); vi.unstubAllEnvs(); }
   });
+  it.each(["wrong-owner", "wrong-physical-id", "wrong-network-owner"] as const)(
+    "refuses manifest cleanup for %s with a recording guard boundary, never physical proof", async (fault) => {
+      const manifest = validateManifest(valid(), env);
+      const f = new PhysicalFixture(manifest, { trustKey: "unit-guard-only-hmac-never-used-12345",
+        adminPassword: "unit-guard-only-password-never-used-12345" }, `GUARD_${fault}`);
+      Object.assign(f.ledger, { physicalDocker: false, status: "MOCK_GUARD_ONLY" });
+      const intent = { deploymentId: "dep_fixture", candidateId: "dep_fixture:candidate:command",
+        candidate: "deploylite-candidate-dep_fixture-command", active: "deploylite-active-dep_fixture" };
+      const id = "c".repeat(64); f.configId = `sha256:${"a".repeat(64)}`; f.networkId = "d".repeat(64);
+      const builders = await import("../../agent/src/infrastructure/docker/docker-cli-argv.js");
+      const run = vi.fn(async (input: readonly string[]): Promise<DockerProcessExit> => {
+        const argv = input.filter((word) => !["--config", manifest.dockerConfigDirectory, "--host", manifest.dockerHost].includes(word));
+        const value = argv[1] === "network" ? { id: f.networkId, name: f.network,
+          owner: fault === "wrong-network-owner" ? "other-owner" : f.owner, project: f.projectId,
+          containers: fault === "wrong-owner" ? { [id]: {} } : {} } : {
+          id: fault === "wrong-physical-id" ? "e".repeat(64) : id, name: `/${intent.active}`,
+          imageId: f.configId, owner: fault === "wrong-owner" ? "other-owner" : f.owner,
+          projectId: f.projectId, deploymentId: intent.deploymentId, candidateId: intent.candidateId,
+          effectiveImage: manifest.image, networkMode: f.network, networks: { [f.network]: { networkId: f.networkId } }
+        };
+        return { exitCode: 0, signal: null, stdout: JSON.stringify(value), stderr: "" };
+      });
+      Object.assign(f, { raw: { run }, builders });
+      if (fault !== "wrong-network-owner") f.containers.set(id, { intent, name: intent.active });
+      if (fault === "wrong-owner") f.intents.set(intent.deploymentId, intent);
+      f.allowedFormats.add('{"internal":true}');
+      const persist = vi.spyOn(f, "persist").mockResolvedValue();
+      try {
+        await expect(f.cleanup()).rejects.toThrow("manifest-scoped cleanup incomplete");
+        const calls = run.mock.calls.map(([input]) => input.slice(5)); // Remove only the explicit --config/--host global options.
+        expect(calls.some(([command]) => command === "rm")).toBe(false);
+        if (fault !== "wrong-physical-id") expect(calls.some(([command, operation]) => command === "network" && operation === "rm")).toBe(false);
+        expect(f.ledger.status).toBe("CLEANUP_BLOCKED");
+      } finally { persist.mockRestore(); }
+    });
+  it("accepts only the explicit manifest scope and rejects expiry, protected ports, ambient context and PG", () => {
+    expect(validateManifest(valid(), env).activePort).toBe(49170);
+    for (const change of [{ expiresAt: new Date(0).toISOString() }, { activePort: 3000 }, { maxContainers: 4 }])
+      expect(() => validateManifest({ ...valid(), ...change }, env)).toThrow();
+    expect(() => validateManifest(valid(), { ...env, DOCKER_CONTEXT: "ambient" })).toThrow();
+    expect(() => validateManifest(valid(), { ...env, DATABASE_URL: "postgres://fixture/forbidden" })).toThrow();
+  });
 });
+
+async function assertWireTamperRejected(f: PhysicalFixture, tamper: Exclude<Tamper, "none">, expectedStatus: Deployment["status"] = "failed"): Promise<void> {
+  f.tamper = tamper; const count = f.dockerCount();
+  await expect(f.initial()).rejects.toThrow();
+  expect(f.dockerCount()).toBe(count); expect(f.containers.size).toBe(0);
+  const injections = f.events.filter((event) => event.kind === "harness-injected-wire-tamper" && event.tamper === tamper);
+  expect(injections).toHaveLength(1);
+  const injected = injections[0]!; expect(injected.originalProjectId).toBe(f.projectId);
+  const envelopes = f.envelopes.filter((value) => value.commandId === injected.commandId && value.deploymentId === injected.deploymentId && record(value.context).correlationId === injected.correlationId);
+  expect(envelopes).toHaveLength(1); const envelope = envelopes[0]!;
+  expect(envelope.requestAuthenticated).toBe(tamper !== "unsigned");
+  if (tamper === "unsigned") expect(envelope.projectId).not.toBe(injected.originalProjectId);
+  else { expect(envelope.projectId).toBe(injected.originalProjectId); expect(envelope.snapshotHash).not.toBe(injected.originalSnapshotHash); }
+  const rejections = f.events.filter((event) => event.kind === "receiver-rejection" && event.commandId === injected.commandId && event.deploymentId === injected.deploymentId && event.correlationId === injected.correlationId);
+  expect(rejections).toHaveLength(1);
+  expect(rejections[0]).toMatchObject({ requestAuthenticated: tamper !== "unsigned", reason: tamper === "unsigned" ? "agent authentication failed" : "INITIAL immutable execution binding changed" });
+  const responses = f.events.filter((event) => event.kind === "api-response" && event.action === "INITIAL"); expect(responses).toHaveLength(1);
+  expect(responses[0]).toMatchObject({ statusCode: 502, body: { error: { code: "DEPLOY_DISPATCH_FAILED", correlationId: injected.correlationId } } });
+  const execution = (await f.memory.deployments.list()).find((value) => value.id === injected.deploymentId && value.projectId === f.projectId)!;
+  expect(execution.status).toBe(expectedStatus); expect(execution.executionReceipt).toBeUndefined();
+}
+
 let grant: Awaited<ReturnType<typeof loadGrant>> | undefined;
 let grantCleanupBlocked = false;
 async function physicalCase(id: string, exercise: (fixture: PhysicalFixture) => Promise<void>, load = loadGrant): Promise<void> {
@@ -1053,3 +1184,95 @@ async function physicalCase(id: string, exercise: (fixture: PhysicalFixture) => 
     }
   }
 }
+
+describe.skipIf(process.env.DEPLOYLITE_DOCKER_INTEGRATION !== "1").sequential("physical Docker → signed receiver → API completion", () => {
+  it("INITIAL_B_C_PROOF_REPLAY_STOP", async () => physicalCase("INITIAL_B_C_PROOF_REPLAY_STOP", async (f) => {
+    const A = await f.initial(), B = await f.replacement(A, "A-to-B");
+    expect((await f.observe(A, false)).running).toBe(false);
+    const C = await f.replacement(B, "B-to-C");
+    expect((await f.observe(B, false)).running).toBe(false);
+    expect(new Set([A, B, C].map((value) => value.executionReceipt!.containerId)).size).toBe(3);
+    expect(B.sourceDeploymentId).toBe(A.id); expect(C.sourceDeploymentId).toBe(B.id);
+    for (const value of [A, B, C]) {
+      expect(value.snapshotOriginId).toBe(A.id); expect(value.snapshotHash).toBe(A.snapshotHash);
+      expect(value.executionReceipt).toMatchObject({ projectId: f.projectId, deploymentId: value.id,
+        snapshotOriginId: A.id, snapshotHash: A.snapshotHash, runtimeHost: f.manifest.runtimeHost,
+        effectiveImageDigest: f.manifest.image.split("@")[1], network: f.network, hostPort: 49170, containerPort: 8080 });
+      expect(await f.memory.deployments.findById(value.id)).toEqual(value);
+    }
+    const commandRows = [...f.memory.completion.commands.values()];
+    expect(commandRows).toHaveLength(2);
+    expect(commandRows.every((row) => row.status === "completed" && row.result?.status === "completed")).toBe(true);
+    const count = f.dockerCount();
+    expect((await f.request("redeploy", A, "A-to-B")).statusCode).toBe(200);
+    expect((await f.request("redeploy", B, "B-to-C")).statusCode).toBe(200);
+    expect(f.dockerCount()).toBe(count);
+    const before = structuredClone(C), stop = await (await f.confirm("stop", C, "stop-C"))();
+    expect(stop.statusCode, stop.body).toBe(200);
+    expect((await f.observe(C, false)).running).toBe(false);
+    expect(await f.memory.deployments.findById(C.id)).toEqual(before);
+    const stoppedCount = f.dockerCount(); expect((await f.request("stop", C, "stop-C")).statusCode).toBe(200);
+    expect(f.dockerCount()).toBe(stoppedCount);
+    f.event("completion-state", { deployments: await f.memory.deployments.list(), commands: [...f.memory.completion.commands.values()] });
+  }), 240_000);
+  it.each(["throw-after-stop", "cancel-after-stop"] as const)("POST_STOP_%s_RECOVERS_A", async (fault) => physicalCase(`POST_STOP_${fault}_RECOVERS_A`, async (f) => {
+    const A = await f.initial(), historical = structuredClone(A); f.fault = fault; f.faultArmed = true;
+    const response = await (await f.confirm("redeploy", A, `recover-${fault}`))();
+    f.event("api-response", { statusCode: response.statusCode, body: response.json() });
+    expect(response.statusCode, response.body).toBe(200); await f.assertRecovery(A);
+    const B = (await f.memory.deployments.list()).find((value) => value.sourceDeploymentId === A.id)!;
+    expect(B.status).toBe(fault === "cancel-after-stop" ? "canceled" : "failed"); expect(B.executionReceipt).toBeUndefined();
+    expect(f.replies.at(-1)).toMatchObject({ receipt: { proven: false, rollback: { target: f.manifest.image, result: "restored" } } });
+    expect(await f.memory.deployments.findById(A.id)).toEqual(historical);
+    expect([...f.memory.completion.commands.values()][0]?.status).toBe("completed");
+    if (fault === "cancel-after-stop") expect(f.controller.signal.aborted).toBe(true);
+  }), 180_000);
+  it("PREPARED_REPLACEMENT_EXCLUDES_STOP_A", async () => physicalCase("PREPARED_REPLACEMENT_EXCLUDES_STOP_A", async (f) => {
+    const A = await f.initial(), replace = await f.confirm("redeploy", A, "raced-B"), stop = await f.confirm("stop", A, "raced-stop-A");
+    let entered!: () => void, release!: () => void;
+    const ready = new Promise<void>((done) => { entered = done; }), barrier = new Promise<void>((done) => { release = done; });
+    f.barrier = { entered, wait: barrier }; const replacement = replace();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([ready, new Promise<never>((_done, reject) => {
+        timer = setTimeout(() => reject(new Error("healthy physical candidate barrier not reached")), 30_000);
+      })]);
+      await f.observe(A); const count = f.dockerCount();
+      const raced = await stop(); expect(raced.statusCode, raced.body).toBe(202); expect(f.dockerCount()).toBe(count);
+    } finally { if (timer) clearTimeout(timer); release(); }
+    const response = await replacement; expect(response.statusCode, response.body).toBe(200);
+    await f.observe(response.json().data.deployment as Deployment);
+    expect([...f.memory.completion.commands.values()].find((row) => row.action === "deployment.stop")?.status).toBe("eligible");
+  }), 180_000);
+  it("STOP_LOST_REPLY_RETAINS_EXCLUSION", async () => physicalCase("STOP_LOST_REPLY_RETAINS_EXCLUSION", async (f) => {
+    const A = await f.initial(), historical = structuredClone(A); f.fault = "lost-stop-reply";
+    const confirmStop = await f.confirm("stop", A, "lost-stop"); const response = await confirmStop();
+    expect(response.statusCode).toBe(502); expect(response.json().error.code).toBe("DEPLOY_STOP_OUTCOME_UNKNOWN");
+    expect((await f.observe(A, false)).running).toBe(false); expect(await f.memory.deployments.findById(A.id)).toEqual(historical);
+    const count = f.dockerCount(); const retry = await confirmStop();
+    expect(retry.statusCode).toBe(202); expect(f.dockerCount()).toBe(count);
+    const competing = await (await f.confirm("redeploy", A, "blocked-redeploy"))();
+    expect(competing.statusCode).toBe(202); expect(f.dockerCount()).toBe(count);
+    const stop = [...f.memory.completion.commands.values()].find((row) => row.action === "deployment.stop")!;
+    expect(stop.status).toBe("dispatching"); expect(stop.result).toBeNull(); expect(stop.executionAuthority).toBeDefined();
+    f.event("unresolved-authority", { command: stop, receiptReconciliation: "PENDING" });
+  }), 180_000);
+  it("REPLACEMENT_LOST_REPLY_RETRY_NO_EFFECTS", async () => physicalCase("REPLACEMENT_LOST_REPLY_RETRY_NO_EFFECTS", async (f) => {
+    const A = await f.initial(); f.fault = "lost-replacement-reply";
+    const response = await (await f.confirm("redeploy", A, "lost-B"))(); expect(response.statusCode).toBe(502);
+    const B = (await f.memory.deployments.list()).find((value) => value.sourceDeploymentId === A.id)!;
+    expect(B.status).toBe("running"); expect(B.executionReceipt).toBeUndefined();
+    const actualReply = record(f.replies.at(-1)); const receipt = record(actualReply.receipt);
+    const receivedProof = record(receipt.executionReceipt);
+    const physical = await f.observe({ ...B, executionReceipt: receivedProof as Deployment["executionReceipt"] });
+    expect(physical.running).toBe(true);
+    const count = f.dockerCount(); expect((await f.request("redeploy", A, "lost-B")).statusCode).toBe(202);
+    expect(f.dockerCount()).toBe(count);
+    expect([...f.memory.completion.commands.values()][0]?.status).toBe("dispatching");
+    f.event("unresolved-authority", { receiptReconciliation: "PENDING", actualActiveExecution: B.id });
+    // Received agent proof is used only for observation here, never saved as API proof or reconciled by the harness.
+  }), 180_000);
+  it.each(["unsigned", "signed-other-initial"] as const)("WIRE_%s_REJECTS_BEFORE_EFFECTS", async (tamper) => physicalCase(`WIRE_${tamper}_REJECTS_BEFORE_EFFECTS`, async (f) => {
+    await assertWireTamperRejected(f, tamper);
+  }), 180_000);
+});
