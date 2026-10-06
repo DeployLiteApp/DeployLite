@@ -345,7 +345,7 @@ async function postgresExecutionFixture() {
       port: 8080, description: null, imageTag: null });
     await new DbAgentRepository(requireDb()).save({ id: agentId, name: "Synthetic observation agent",
       endpoint: "https://agent.fixture.test", status: "online", lastHeartbeatAt: new Date().toISOString(), resourceSnapshot: null });
-    await requirePool().query("INSERT INTO control_grants (actor_user_id,action,scope_kind,scope_key) VALUES ($1,'deployment.redeploy','project',$2)", [actorId, projectId]);
+    await requirePool().query("INSERT INTO control_grants (actor_user_id,action,scope_kind,scope_key) VALUES ($1,'deployment.redeploy','platform','platform') ON CONFLICT (actor_user_id,action,scope_kind,scope_key) DO NOTHING", [actorId]);
     const initial = (target = app) => target.inject({ method: "POST", url: `/api/v1/projects/${projectId}/deployments`,
       headers: { ...contentHeaders, cookie, "x-deployment-idempotency-key": initialKey },
       payload: { imageReference: executionImage, agentId, commitSha: "abcdef1" } });
