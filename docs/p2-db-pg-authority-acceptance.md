@@ -4,7 +4,7 @@ Database physical authority interleavings. Adopt the complete planned source and
 
 Refs #294; parent #292 remains open until aggregate acceptance.
 
-Fresh focused checks and normal production consumer types are pending for this exact delivery head. Physical cases remain NOT RUN locally; required hosted acceptance stays authoritative.
+The initial hosted head ran49 DB/6 API with one wrapped-error assertion failure. This correction verifies the PostgreSQL cause message and SQLSTATE P0001 while preserving all rollback/replay assertions. Fresh exact-head hosted acceptance is required.
 
 Required quality, PostgreSQL, supply-chain and baseline checks must pass on the exact published head before protected merge.
 

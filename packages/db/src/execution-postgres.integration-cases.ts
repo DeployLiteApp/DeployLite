@@ -580,7 +580,7 @@ suite("atomic execution PostgreSQL integration", () => {
     await pool.query(`CREATE FUNCTION ${trigger}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'authority terminal fault'; END $$`);
     await pool.query(`CREATE TRIGGER ${trigger} BEFORE UPDATE ON control_commands FOR EACH ROW WHEN (OLD.id='${entry.command.id}'::uuid) EXECUTE FUNCTION ${trigger}()`);
     try {
-      await expect(completion().completeExecution(input)).rejects.toThrow("authority terminal fault");
+      await expect(completion().completeExecution(input)).rejects.toMatchObject({ cause: { message: "authority terminal fault", code: "P0001" } });
       expect((await pool.query("SELECT status,execution_receipt,finished_at FROM deployments WHERE id=$1", [entry.deployment.id])).rows).toEqual([{ status: "running", execution_receipt: null, finished_at: null }]);
       expect((await pool.query("SELECT status,execution_authority,result FROM control_commands WHERE id=$1", [entry.command.id])).rows).toEqual([{ status: "dispatching", execution_authority: authority, result: entry.command.result }]);
     } finally {
