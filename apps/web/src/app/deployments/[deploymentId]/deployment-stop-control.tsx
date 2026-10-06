@@ -142,42 +142,46 @@ function attemptId(): string {
   return typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `stop-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-export function DeploymentStopControl({ deployment, role, apiBaseUrl, fetchImpl }: { deployment: Deployment; role: CanonicalRole; apiBaseUrl: string | null; fetchImpl?: typeof fetch }) {
-  const router = useRouter();
-  const [open, setOpen] = useState(false);
-  const [pending, setPending] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
-  const eligible = deployment.status === "running" && (role === "admin" || role === "operator");
+export function DeploymentStopControl({ deployment, expectedDeploymentId = deployment.id, role, apiBaseUrl, fetchImpl }: { deployment: Deployment; expectedDeploymentId?: string; role: CanonicalRole; apiBaseUrl: string | null; fetchImpl?: typeof fetch }) {
+  const router = useRouter(), submitting = useRef(false);
+  const attempt = useRef<{ key: string; selected: Deployment; confirmation: DeploymentControlAttemptContext } | null>(null);
+  const [open, setOpen] = useState(false), [pending, setPending] = useState(false), [outcome, setOutcome] = useState<StopOutcome | null>(null);
+  const eligible = deployment.id === expectedDeploymentId && (deployment.status === "running" || hasBoundSuccessfulExecution(deployment, expectedDeploymentId)) && (role === "admin" || role === "operator");
   if (!eligible) return null;
-
   async function onConfirm() {
-    if (pending) return;
-    setPending(true);
-    setMessage(null);
-    const outcome = await runDeploymentStop({ deploymentId: deployment.id, apiBaseUrl, idempotencyKey: attemptId(), fetchImpl });
-    setPending(false);
-    setMessage(outcome.message);
-    if (outcome.kind === "success" || outcome.kind === "pending" || outcome.message === stopCopy.terminal) {
-      setOpen(false);
-      router.refresh();
-    }
+    if (submitting.current || outcome?.canPrepareNew) return;
+    attempt.current ??= { key: attemptId(), selected: deploymentSchema.parse(deployment), confirmation: {} };
+    submitting.current = true; setPending(true); setOutcome(null);
+    try {
+      const result = await runDeploymentStop({ deploymentId: attempt.current.selected.id, expectedDeployment: attempt.current.selected, apiBaseUrl, idempotencyKey: attempt.current.key, confirmation: attempt.current.confirmation, fetchImpl });
+      setOutcome(result);
+      if (result.kind !== "error" || result.message === stopCopy.terminal) { setOpen(false); router.refresh(); }
+    } finally { submitting.current = false; setPending(false); }
   }
-
-  return <div className="flex flex-col gap-3" data-testid="deployment-stop-control">
-    <Dialog open={open} onOpenChange={(next) => { if (!pending) setOpen(next); }}>
-      <DialogTrigger render={<Button type="button" variant="outline" className="border-destructive/40 text-destructive hover:bg-destructive/10" data-testid="deployment-stop-trigger">Stop deployment</Button>} />
-      <DialogContent aria-busy={pending} className="max-h-[calc(100dvh-2rem)] overscroll-contain overflow-y-auto sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Stop deployment?</DialogTitle>
-          <DialogDescription>This requests an authenticated stop for deployment {deployment.id}. The status changes only after the server confirms stop evidence.</DialogDescription>
-        </DialogHeader>
-        {pending ? <p role="status" aria-live="polite">Stopping deployment. The action is disabled until the server responds.</p> : null}
-        <DialogFooter className="sm:flex-row">
+  function prepareNew() {
+    if (submitting.current || !outcome?.canPrepareNew || !attempt.current) return;
+    attempt.current = { key: attemptId(), selected: attempt.current.selected, confirmation: {} };
+    setOutcome(null);
+  }
+  const feedback = outcome ? <Alert variant={outcome.kind === "error" ? "destructive" : "default"} role="status" aria-live="polite" aria-atomic="true" data-testid="deployment-stop-result">
+    <AlertTitle>{outcome.kind === "success" ? "Deployment stop" : "Deployment stop not completed"}</AlertTitle><AlertDescription><p>{outcome.message}</p>
+      {outcome.requestId ? <p className="break-all text-xs">Request: {outcome.requestId}{outcome.correlationId ? ` · Correlation: ${outcome.correlationId}` : ""}</p> : null}
+    </AlertDescription></Alert> : null;
+  return <div className="flex flex-col gap-3" data-testid="deployment-stop-control" aria-busy={pending}>
+    <Dialog open={open} onOpenChange={(next) => { if (!submitting.current) setOpen(next); }}>
+      <DialogTrigger render={<Button type="button" variant="outline" className="border-destructive/40 text-destructive hover:bg-destructive/10" data-testid="deployment-stop-trigger" disabled={pending}>Stop deployment</Button>} />
+      <DialogContent showCloseButton={!pending} aria-busy={pending} className="max-h-[calc(100dvh-2rem)] overscroll-contain overflow-y-auto sm:max-w-md">
+        <DialogHeader><DialogTitle>Stop deployment?</DialogTitle><DialogDescription>Request a stop for deployment {attempt.current?.selected.id ?? deployment.id}. The server checks current workload ownership. Completed execution history stays unchanged.</DialogDescription></DialogHeader>
+        {pending ? <p role="status" aria-live="polite">Stopping deployment. The action is disabled until the server responds.</p> : feedback}
+        <DialogFooter className="sm:flex-row sm:flex-wrap">
           <DialogClose render={<Button className="w-full sm:w-auto" type="button" variant="outline" disabled={pending}>Cancel</Button>} />
-          <Button className="w-full sm:w-auto" type="button" variant="destructive" onClick={() => void onConfirm()} disabled={pending} data-testid="deployment-stop-confirm">{pending ? "Stopping deployment…" : "Confirm stop deployment"}</Button>
+          {outcome?.canPrepareNew ? <Button type="button" variant="outline" onClick={prepareNew} disabled={pending}>Prepare new stop request</Button> : null}
+          <Button className="w-full sm:w-auto" type="button" variant="destructive" onClick={() => void onConfirm()} disabled={pending || outcome?.canPrepareNew} data-testid="deployment-stop-confirm">{pending ? "Stopping deployment…" : outcome?.retryable ? "Check same stop request" : "Confirm stop deployment"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
-    {message ? <Alert variant={message === stopCopy.success || message.startsWith("The deployment was already stopped") || message === stopCopy.pending ? "default" : "destructive"} role="status" aria-live="polite" aria-atomic="true" data-testid="deployment-stop-result"><AlertTitle>{message === stopCopy.success || message.startsWith("The deployment was already stopped") ? "Deployment stop" : "Deployment stop not completed"}</AlertTitle><AlertDescription>{message}</AlertDescription></Alert> : null}
+    {!open ? feedback : null}
+    {!open && pending ? <p role="status" aria-live="polite">Checking stop request. Wait for the server response.</p> : null}
+    {!open && outcome?.retryable ? <Button type="button" variant="outline" onClick={() => void onConfirm()} disabled={pending}>Check same stop request</Button> : null}
   </div>;
 }

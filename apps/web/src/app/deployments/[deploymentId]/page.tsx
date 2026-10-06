@@ -178,7 +178,7 @@ export default async function DeploymentLogsPage({ params }: { params: Promise<{
             <Separator />
 
             <DeploymentRedeployControl key={`${deployment.id}:${deployment.snapshotHash ?? "legacy"}`} deployment={deployment} expectedSourceDeploymentId={deploymentId} role={auth.user.role} apiBaseUrl={getAuthApiBaseUrl()} />
-            <DeploymentStopControl deployment={deployment} role={auth.user.role} apiBaseUrl={getAuthApiBaseUrl()} />
+            <DeploymentStopControl expectedDeploymentId={deploymentId} deployment={deployment} role={auth.user.role} apiBaseUrl={getAuthApiBaseUrl()} />
 
             <div className="flex flex-wrap gap-2" data-testid="deployment-next-actions">
               <Link href={`/projects/${deployment.projectId}`}>

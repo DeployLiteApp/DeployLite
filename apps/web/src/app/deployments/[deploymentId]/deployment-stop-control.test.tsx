@@ -145,6 +145,91 @@ describe("review correction: bounded Stop and preserved attempt", () => {
     } finally { release?.(); await fixtureWait(job); vi.useRealTimers(); }
   });
 
+  it("releases Stop controls on the total cross-step deadline and ignores late success", async () => {
+    const user = userEvent.setup();
+    let preparation!: (value: Response) => void, confirmed!: (value: Response) => void;
+    const calls: Request[] = [];
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(recordFetchRequest(url, init));
+      if (calls.length === 1) return new Promise<Response>((resolve) => { preparation = resolve; });
+      if (calls.length === 2) return new Promise<Response>((resolve) => { confirmed = resolve; });
+      return stopStoredReplay(calls[0]!.headers.get("x-control-idempotency-key")!);
+    });
+    render(<DeploymentStopControl deployment={successfulDeployment} expectedDeploymentId="dep-1" role="operator" apiBaseUrl="https://api.test" fetchImpl={fetchImpl} />);
+    try {
+      await fixtureWait(user.click(screen.getByRole("button", { name: "Stop deployment" })));
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+      fireEvent.click(screen.getByRole("button", { name: "Confirm stop deployment" }));
+      await act(() => fixtureWait(advanceClientClock(0)));
+      await act(() => fixtureWait(advanceClientClock(150_000)));
+      preparation(envelope({ commandId: "cmd-1", confirmationId: "confirm-1", confirmationRequired: true }));
+      await act(() => fixtureWait(advanceClientClock(0))); expect(calls).toHaveLength(2);
+      await act(() => fixtureWait(advanceClientClock(30_000)));
+      expect(originalFetchInit.get(calls[1]!)?.signal).toBeInstanceOf(AbortSignal);
+      expect(originalFetchInit.get(calls[1]!)?.signal?.aborted).toBe(true);
+      expect(screen.getByRole("status").textContent).toContain("unresolved");
+      expect((screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(false);
+      vi.useRealTimers();
+      await user.keyboard("{Escape}"); expect(screen.queryByRole("dialog")).toBeNull();
+      confirmed(stopSuccess()); await act(() => fixtureWait(flushFixture()));
+      expect(screen.getByRole("status").textContent).toContain("unresolved");
+      await fixtureWait(user.click(screen.getByRole("button", { name: "Check same stop request" })));
+      expect(calls[2]!.headers.get("x-control-idempotency-key")).toBe(calls[0]!.headers.get("x-control-idempotency-key"));
+      expect(calls[2]!.headers.get("x-control-confirmation-id")).toBe("confirm-1");
+    } finally {
+      preparation?.(envelope({ commandId: "cmd-1", confirmationId: "confirm-1", confirmationRequired: true }));
+      await act(() => fixtureWait(flushFixture())); confirmed?.(stopSuccess());
+      await act(() => fixtureWait(flushFixture())); vi.useRealTimers();
+    }
+  });
+
+  it.each([401, 403])("keeps the unknown attempt after a lost confirmed reply followed by HTTP%s", async (status) => {
+    const calls: Request[] = [];
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(recordFetchRequest(url, init));
+      if (calls.length === 1) return envelope({ commandId: "cmd-1", confirmationId: "confirm-1", confirmationRequired: true });
+      if (calls.length === 2) throw new Error("lost confirmed reply");
+      if (calls.length === 3) return new Response(JSON.stringify({ data: null, error: { code: "SCOPE_DENIED", message: "redacted", correlationId: "denied-corr" }, requestId: "denied" }), { status });
+      return stopStoredReplay(calls[0]!.headers.get("x-control-idempotency-key")!);
+    });
+    const user = userEvent.setup(); render(<DeploymentStopControl deployment={successfulDeployment} expectedDeploymentId="dep-1" role="operator" apiBaseUrl="https://api.test" fetchImpl={fetchImpl} />);
+    await fixtureWait(user.click(screen.getByRole("button", { name: "Stop deployment" }))); await fixtureWait(user.click(screen.getByRole("button", { name: "Confirm stop deployment" })));
+    await vi.waitFor(() => expect(screen.getByRole("status").textContent).toContain("unresolved"));
+    await fixtureWait(user.click(screen.getByRole("button", { name: "Check same stop request" })));
+    await vi.waitFor(() => expect(screen.getByRole("status").textContent).toContain("authorized"));
+    expect(screen.getByRole("status").textContent).toContain("unresolved");
+    expect(screen.getByRole("status").textContent).not.toContain("status was not changed");
+    expect(screen.queryByRole("button", { name: "Prepare new stop request" })).toBeNull();
+    await fixtureWait(user.click(screen.getByRole("button", { name: "Check same stop request" })));
+    expect(calls).toHaveLength(4);
+    for (const request of calls.slice(1)) {
+      expect(request.headers.get("x-control-idempotency-key")).toBe(calls[0]!.headers.get("x-control-idempotency-key"));
+      expect(request.headers.get("x-control-confirmation-id")).toBe("confirm-1");
+    }
+  });
+
+  it.each(["CONFIRMATION_EXPIRED", "CONFIRMATION_REJECTED"])("offers explicit fresh Stop preparation after conclusive %s", async (code) => {
+    const calls: Request[] = [];
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(recordFetchRequest(url, init));
+      if (calls.length === 1) return envelope({ commandId: "cmd-1", confirmationId: "confirm-1", confirmationRequired: true });
+      if (calls.length === 2) return new Response(JSON.stringify({ data: null, error: { code, message: "redacted", correlationId: "corr-1" }, requestId: "rejected" }), { status: 409 });
+      if (calls.length === 3) return envelope({ commandId: "cmd-next", confirmationId: "confirm-next", confirmationRequired: true });
+      const success = await stopSuccess().json(); success.data.command.commandId = "cmd-next"; success.data.receipt.commandId = "cmd-next";
+      return new Response(JSON.stringify(success), { status: 200 });
+    });
+    const user = userEvent.setup(); render(<DeploymentStopControl deployment={successfulDeployment} expectedDeploymentId="dep-1" role="operator" apiBaseUrl="https://api.test" fetchImpl={fetchImpl} />);
+    await fixtureWait(user.click(screen.getByRole("button", { name: "Stop deployment" }))); await fixtureWait(user.click(screen.getByRole("button", { name: "Confirm stop deployment" })));
+    await vi.waitFor(() => expect(screen.getByRole("status").textContent).toContain("rejected"));
+    expect((screen.getByRole("button", { name: "Confirm stop deployment" }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Prepare new stop request" })); expect(calls).toHaveLength(2);
+    await fixtureWait(user.click(screen.getByRole("button", { name: "Confirm stop deployment" })));
+    await vi.waitFor(() => expect(calls).toHaveLength(4));
+    expect(calls[2]!.headers.get("x-control-idempotency-key")).not.toBe(calls[0]!.headers.get("x-control-idempotency-key"));
+    expect(calls[2]!.headers.has("x-control-confirmation-id")).toBe(false);
+    expect(calls[3]!.headers.get("x-control-confirmation-id")).toBe("confirm-next"); expect(calls[2]!.url).toBe(calls[0]!.url);
+  });
+
   it("keeps a prior unknown Stop attempt after a later confirmation rejection", async () => {
     const confirmation = {};
     const options = { deploymentId: deployment.id, apiBaseUrl: "https://api.test", idempotencyKey: "same-stop", confirmation };
@@ -162,6 +247,13 @@ const stopSuccess = (containerId = "physical-A") => { const body = JSON.stringif
 function stopStoredReplay(key: string, reason = "stopped") { return new Response(JSON.stringify({ data: { deployment: successfulDeployment, command: { id: "cmd-1", actorId: "actor", action: "deployment.stop", scope: { kind: "deployment", projectId: deployment.projectId, deploymentId: deployment.id }, idempotencyKey: key, inputDigest: "b".repeat(64), status: "completed", correlationId: "corr-1", expiresAt: "2026-01-01T00:15:00.000Z", result: { ...stopResult, reason } }, idempotent: true }, error: null, requestId: "req-1" }), { status: 200 }); }
 
 describe("selected successful-workload Stop contract", () => {
+  it("offers a request for properly bound succeeded metadata without claiming active ownership", () => {
+    const { rerender } = render(<DeploymentStopControl deployment={successfulDeployment} expectedDeploymentId="dep-1" role="operator" apiBaseUrl="https://api.test" />);
+    expect(screen.getByRole("button", { name: "Stop deployment" })).toBeTruthy();
+    rerender(<DeploymentStopControl deployment={successfulDeployment} expectedDeploymentId="other" role="operator" apiBaseUrl="https://api.test" />); expect(screen.queryByRole("button", { name: "Stop deployment" })).toBeNull();
+    rerender(<DeploymentStopControl deployment={{ ...successfulDeployment, executionReceipt: undefined }} expectedDeploymentId="dep-1" role="operator" apiBaseUrl="https://api.test" />); expect(screen.queryByRole("button", { name: "Stop deployment" })).toBeNull();
+    rerender(<DeploymentStopControl deployment={successfulDeployment} expectedDeploymentId="dep-1" role="auditor" apiBaseUrl="https://api.test" />); expect(screen.queryByRole("button", { name: "Stop deployment" })).toBeNull();
+  });
   it("accepts inspected Stop evidence while succeeded history and proof remain unchanged", async () => {
     const before = structuredClone(successfulDeployment);
     const outcome = await runDeploymentStop({ deploymentId: deployment.id, expectedDeployment: successfulDeployment, apiBaseUrl: "https://api.test", idempotencyKey: "stop-key", fetchImpl: async () => stopSuccess() });
@@ -178,6 +270,15 @@ describe("selected successful-workload Stop contract", () => {
   it.each(["transport-loss", "HTTP502"])("reports %s as unresolved without promising no effects", async (fault) => {
     const outcome = await runDeploymentStop({ deploymentId: deployment.id, apiBaseUrl: "https://api.test", idempotencyKey: "stop-key", fetchImpl: async () => { if (fault === "transport-loss") throw new Error("fixture secret"); return new Response(JSON.stringify({ data: null, error: { code: "DEPLOY_STOP_OUTCOME_UNKNOWN", message: "fixture secret", correlationId: "corr" }, requestId: "req" }), { status: 502 }); } });
     expect(outcome.kind).toBe("error"); expect(outcome.message).toContain("unresolved"); expect(outcome.message).not.toContain("status was not changed"); expect(outcome.message).not.toContain("fixture secret");
+  });
+  it("retains one attempt key and confirmation across a lost reply and explicit retry", async () => {
+    const calls: Request[] = [];
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => { calls.push(recordFetchRequest(url, init)); if (calls.length === 1) return envelope({ commandId: "cmd-1", confirmationId: "confirm-1", confirmationRequired: true }); if (calls.length === 2) throw new Error("lost reply"); return stopStoredReplay(calls[0]!.headers.get("x-control-idempotency-key")!); });
+    const user = userEvent.setup(); render(<DeploymentStopControl deployment={successfulDeployment} expectedDeploymentId="dep-1" role="operator" apiBaseUrl="https://api.test" fetchImpl={fetchImpl} />);
+    await user.click(screen.getByRole("button", { name: "Stop deployment" })); await user.click(screen.getByRole("button", { name: "Confirm stop deployment" }));
+    await vi.waitFor(() => expect(screen.getByRole("status").textContent).toContain("unresolved"));
+    await user.click(screen.getByRole("button", { name: "Check same stop request" })); expect(calls).toHaveLength(3);
+    expect(calls[2]!.headers.get("x-control-idempotency-key")).toBe(calls[0]!.headers.get("x-control-idempotency-key")); expect(calls[2]!.headers.get("x-control-confirmation-id")).toBe("confirm-1"); expect(calls[2]!.url).toBe(calls[0]!.url);
   });
 });
 
