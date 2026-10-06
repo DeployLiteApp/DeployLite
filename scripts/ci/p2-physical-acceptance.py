@@ -165,3 +165,42 @@ def cleanup_owned(owned, boundary, deadline):
         require(boundary.now < deadline, "cleanup_outcome_unknown")
         receipts.append({"id": resource["id"], "verifiedLabels": True, "removed": True})
     return receipts
+
+
+def verify_report(report, titles):
+    try:
+        cases = [case for result in report["testResults"] for case in result["assertionResults"]]
+        names = [case["fullName"] for case in cases]
+        return (report["success"] is True and report["numTotalTests"] == report["numPassedTests"] == len(titles)
+                and report["numPendingTests"] == report["numFailedTests"] == 0 and len(names) == len(set(names)) == len(titles)
+                and set(names) == set(titles) and all(case["status"] == "passed" for case in cases))
+    except (KeyError, TypeError):
+        return False
+
+
+def verify_physical(receipts, grant):
+    try:
+        expected = {case["receiptFile"] for case in MANIFEST["suites"]["docker"]["physicalCases"]}
+        require(len(receipts) == len(expected) and {value["receiptFile"] for value in receipts} == expected, "exact_physical_cases_required")
+        for receipt in receipts:
+            require(receipt["status"] == "PASS" and receipt["physicalDocker"] is True and receipt["postgres"] is False and receipt["grantId"] == grant["grantId"] and receipt["owner"] == grant["owner"], "physical_receipt_binding_mismatch")
+            events = receipt["events"]
+            require(any(e["kind"] == "owned-engine-observation" and e["engineId"] == grant["engineId"] and e["ciJob"] == grant["ciJob"] for e in events), "engine_job_not_observed")
+            require(any(e["kind"] == "docker-command" and e.get("physicalRan") is True and e.get("phase") == "completed" and e.get("exitCode") == 0 for e in events), "physical_process_not_observed")
+            require(not any(e["kind"] == "cleanup-blocked" for e in events), "cleanup_unknown")
+            cleaned = {e["id"] for e in events if e["kind"] == "cleanup-receipt" and e.get("verifiedLabels") is True and e.get("removed") is True}
+            require(all(resource["id"] in cleaned and resource["owner"] == receipt["owner"] and resource["project"] == receipt["projectId"] for resource in receipt["resources"]), "owned_cleanup_incomplete")
+            tamper = receipt["receiptFile"].startswith("WIRE_")
+            if tamper:
+                injected = next(e for e in events if e["kind"] == "harness-injected-wire-tamper")
+                reason = "agent authentication failed" if injected["tamper"] == "unsigned" else "INITIAL immutable execution binding changed"
+                require(any(e["kind"] == "receiver-rejection" and all(e[k] == injected[k] for k in ("commandId", "deploymentId", "correlationId")) and e["reason"] == reason and e["requestAuthenticated"] is (injected["tamper"] != "unsigned") for e in events), "correlated_wire_rejection_required")
+                require(any(e["kind"] == "api-response" and e.get("statusCode") == 502 and e["body"]["error"].get("code") == "DEPLOY_DISPATCH_FAILED" and e["body"]["error"].get("correlationId") == injected["correlationId"] for e in events), "correlated_api_rejection_required")
+            else:
+                proof = next(e["body"]["data"]["deployment"]["executionReceipt"] for e in events if e["kind"] == "api-response" and e.get("action") == "INITIAL" and e.get("statusCode") == 200)
+                require(proof["projectId"] == receipt["projectId"] and proof["hostPort"] == 49170 and proof["containerPort"] == 8080 and re.fullmatch(HEX, proof["containerId"]) and re.fullmatch(DIGEST, proof["effectiveImageDigest"]), "trusted_proof_required")
+                require(any(e["kind"] == "physical-observation" and e["observation"]["id"] == proof["containerId"] and e["observation"]["owner"] == receipt["owner"] and e["observation"]["projectId"] == receipt["projectId"] for e in events), "observed_proof_identity_required")
+                require(any(e["kind"] == "owned-container-budget" and e["containerId"] == proof["containerId"] and e["cpu"] == 500000000 and e["memory"] == 67108864 and e["pids"] == 64 for e in events), "observed_caps_required")
+        return True
+    except (PhysicalError, KeyError, TypeError, StopIteration):
+        return False

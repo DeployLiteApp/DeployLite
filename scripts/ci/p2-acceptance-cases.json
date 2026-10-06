@@ -352,6 +352,133 @@
       ]
     },
     "docker": {
+      "count": 73,
+      "guardCount": 65,
+      "physicalCount": 8,
+      "allowSkipped": false,
+      "guardTitles": [
+        "physical Docker acceptance opt-in guard keeps Docker inaccessible for flag undefined",
+        "physical Docker acceptance opt-in guard keeps Docker inaccessible for flag 0",
+        "physical Docker acceptance opt-in guard keeps Docker inaccessible for flag true",
+        "physical Docker acceptance opt-in guard rejects missing authorization before constructing a process runner",
+        "physical Docker acceptance opt-in guard rejects missing grantId before constructing a process runner",
+        "physical Docker acceptance opt-in guard rejects missing image before constructing a process runner",
+        "physical Docker acceptance opt-in guard rejects missing platform before constructing a process runner",
+        "physical Docker acceptance opt-in guard rejects missing runtimeHost before constructing a process runner",
+        "physical Docker acceptance opt-in guard rejects missing dockerHost before constructing a process runner",
+        "physical Docker acceptance opt-in guard rejects missing harnessSha256 before constructing a process runner",
+        "physical Docker acceptance opt-in guard rejects missing sourceHashes before constructing a process runner",
+        "physical Docker acceptance opt-in guard rejects missing operations before constructing a process runner",
+        "physical Docker acceptance opt-in guard rejects an unowned CI execution identity {\"GITHUB_ACTIONS\":\"false\"} before any runner",
+        "physical Docker acceptance opt-in guard rejects an unowned CI execution identity {\"GITHUB_REPOSITORY\":\"other/repository\"} before any runner",
+        "physical Docker acceptance opt-in guard rejects an unowned CI execution identity {\"GITHUB_RUN_ID\":\"654321\"} before any runner",
+        "physical Docker acceptance opt-in guard rejects an unowned CI execution identity {\"GITHUB_RUN_ATTEMPT\":\"2\"} before any runner",
+        "physical Docker acceptance opt-in guard rejects an unowned CI execution identity {\"GITHUB_JOB\":\"other-job\"} before any runner",
+        "physical Docker acceptance opt-in guard rejects an unowned CI execution identity {\"DOCKER_CONFIG\":\"/tmp/ambient-config\"} before any runner",
+        "physical Docker acceptance opt-in guard rejects owned-resource budget/scope drift {\"containerCpu\":1}",
+        "physical Docker acceptance opt-in guard rejects owned-resource budget/scope drift {\"containerMemoryBytes\":134217728}",
+        "physical Docker acceptance opt-in guard rejects owned-resource budget/scope drift {\"engineScope\":\"shared-daemon\"}",
+        "physical Docker acceptance opt-in guard accepts the observed loopback registry RepoDigest without treating an image ID as its digest",
+        "physical Docker acceptance opt-in guard records the current UUID execution identity without rewriting its logical candidate",
+        "physical Docker acceptance opt-in guard accepts a larger native owned hosted engine and records only per-container budgets",
+        "physical Docker acceptance opt-in guard adds pull-never/owned caps and verifies their actual inspection before returning success",
+        "physical Docker acceptance opt-in guard refuses observed missing/widened owned-container limits {\"cpu\":0,\"memory\":67108864,\"pids\":64} while retaining the exact cleanup ID",
+        "physical Docker acceptance opt-in guard refuses observed missing/widened owned-container limits {\"cpu\":500000000,\"memory\":0,\"pids\":64} while retaining the exact cleanup ID",
+        "physical Docker acceptance opt-in guard refuses observed missing/widened owned-container limits {\"cpu\":500000000,\"memory\":67108864,\"pids\":0} while retaining the exact cleanup ID",
+        "physical Docker acceptance opt-in guard corrective Docker source guards rejects non-hosted runner environment undefined before runner",
+        "physical Docker acceptance opt-in guard corrective Docker source guards rejects non-hosted runner environment  before runner",
+        "physical Docker acceptance opt-in guard corrective Docker source guards rejects non-hosted runner environment self-hosted before runner",
+        "physical Docker acceptance opt-in guard corrective Docker source guards rejects private Docker config missing without reading its contents or credentials",
+        "physical Docker acceptance opt-in guard corrective Docker source guards rejects private Docker config file without reading its contents or credentials",
+        "physical Docker acceptance opt-in guard corrective Docker source guards rejects private Docker config symlink without reading its contents or credentials",
+        "physical Docker acceptance opt-in guard corrective Docker source guards rejects private Docker config foreign-owner without reading its contents or credentials",
+        "physical Docker acceptance opt-in guard corrective Docker source guards rejects private Docker config public-mode without reading its contents or credentials",
+        "physical Docker acceptance opt-in guard corrective Docker source guards rejects private Docker config nonempty without reading its contents or credentials",
+        "physical Docker acceptance opt-in guard corrective Docker source guards characterizes valid private empty owned config without any process",
+        "physical Docker acceptance opt-in guard corrective Docker source guards rejects expired cached grant before a second case setup",
+        "physical Docker acceptance opt-in guard corrective Docker source guards rejects fresh invocation after grant expiry before recording runner",
+        "physical Docker acceptance opt-in guard corrective Docker source guards rejects closure after its bounded deadline without a runner",
+        "physical Docker acceptance opt-in guard corrective Docker source guards rejects expired closure without explicit closure permission",
+        "physical Docker acceptance opt-in guard corrective Docker source guards characterizes explicitly bounded owned closure after expiry using only a recording runner",
+        "physical Docker acceptance opt-in guard corrective Docker source guards rejects false-positive tamper witness unsigned / missing-tamper despite identical no-effect state",
+        "physical Docker acceptance opt-in guard corrective Docker source guards rejects false-positive tamper witness signed-other-initial / unchanged-envelope despite identical no-effect state",
+        "physical Docker acceptance opt-in guard corrective Docker source guards rejects false-positive tamper witness unsigned / unrelated-rejection despite identical no-effect state",
+        "physical Docker acceptance opt-in guard corrective Docker source guards rejects false-positive tamper witness signed-other-initial / api-unrelated despite identical no-effect state",
+        "physical Docker acceptance opt-in guard corrective Docker source guards rejects false-positive tamper witness signed-other-initial / api-uncorrelated despite identical no-effect state",
+        "physical Docker acceptance opt-in guard corrective Docker source guards characterizes correlated mock tamper witness unsigned without Docker",
+        "physical Docker acceptance opt-in guard corrective Docker source guards characterizes correlated mock tamper witness signed-other-initial without Docker",
+        "physical Docker acceptance opt-in guard final closure Docker source guards cancels and settles an in-flight owned cleanup at its single deadline while retaining unknown IDs",
+        "physical Docker acceptance opt-in guard final closure Docker source guards settles closure as unknown at its deadline when the injected runner ignores abort without claiming daemon absence",
+        "physical Docker acceptance opt-in guard final closure Docker source guards bounds the whole cleanup when probe cannot settle",
+        "physical Docker acceptance opt-in guard final closure Docker source guards bounds the whole cleanup when app-close cannot settle",
+        "physical Docker acceptance opt-in guard final closure Docker source guards blocks subsequent case setup after rejected exact-owned cleanup",
+        "physical Docker acceptance opt-in guard final closure Docker source guards blocks subsequent case setup after unknown-status exact-owned cleanup",
+        "physical Docker acceptance opt-in guard final closure Docker source guards characterizes complete mocked cleanup allowing the next case within the same grant",
+        "physical Docker acceptance opt-in guard final closure Docker source guards final receipt Docker source guards bounds a stalled final receipt after successful cleanup by the same nonrenewable deadline and blocks the next case",
+        "physical Docker acceptance opt-in guard final closure Docker source guards final receipt Docker source guards settles after exhausted cleanup without starting an unbounded final receipt and retains unknown IDs before blocking the next case",
+        "physical Docker acceptance opt-in guard final closure Docker source guards final receipt Docker source guards fences a late deployment-list continuation from publishing a PASS receipt after the original closure deadline",
+        "physical Docker acceptance opt-in guard blocks the actual physical-case setup before input reads when integration is off",
+        "physical Docker acceptance opt-in guard refuses manifest cleanup for wrong-owner with a recording guard boundary, never physical proof",
+        "physical Docker acceptance opt-in guard refuses manifest cleanup for wrong-physical-id with a recording guard boundary, never physical proof",
+        "physical Docker acceptance opt-in guard refuses manifest cleanup for wrong-network-owner with a recording guard boundary, never physical proof",
+        "physical Docker acceptance opt-in guard accepts only the explicit manifest scope and rejects expiry, protected ports, ambient context and PG"
+      ],
+      "physicalTitles": [
+        "physical Docker \u2192 signed receiver \u2192 API completion INITIAL_B_C_PROOF_REPLAY_STOP",
+        "physical Docker \u2192 signed receiver \u2192 API completion POST_STOP_throw-after-stop_RECOVERS_A",
+        "physical Docker \u2192 signed receiver \u2192 API completion POST_STOP_cancel-after-stop_RECOVERS_A",
+        "physical Docker \u2192 signed receiver \u2192 API completion PREPARED_REPLACEMENT_EXCLUDES_STOP_A",
+        "physical Docker \u2192 signed receiver \u2192 API completion STOP_LOST_REPLY_RETAINS_EXCLUSION",
+        "physical Docker \u2192 signed receiver \u2192 API completion REPLACEMENT_LOST_REPLY_RETRY_NO_EFFECTS",
+        "physical Docker \u2192 signed receiver \u2192 API completion WIRE_unsigned_REJECTS_BEFORE_EFFECTS",
+        "physical Docker \u2192 signed receiver \u2192 API completion WIRE_signed-other-initial_REJECTS_BEFORE_EFFECTS"
+      ],
+      "sourceFiles": [
+        "apps/api/src/deployment-docker.integration.test.ts"
+      ],
+      "physicalSignatures": "PROVISIONAL; final reconciliation/AHR adaptation required before activation",
+      "physicalCases": [
+        {
+          "fullName": "physical Docker \u2192 signed receiver \u2192 API completion INITIAL_B_C_PROOF_REPLAY_STOP",
+          "title": "INITIAL_B_C_PROOF_REPLAY_STOP",
+          "receiptFile": "INITIAL_B_C_PROOF_REPLAY_STOP.json"
+        },
+        {
+          "fullName": "physical Docker \u2192 signed receiver \u2192 API completion POST_STOP_throw-after-stop_RECOVERS_A",
+          "title": "POST_STOP_throw-after-stop_RECOVERS_A",
+          "receiptFile": "POST_STOP_throw-after-stop_RECOVERS_A.json"
+        },
+        {
+          "fullName": "physical Docker \u2192 signed receiver \u2192 API completion POST_STOP_cancel-after-stop_RECOVERS_A",
+          "title": "POST_STOP_cancel-after-stop_RECOVERS_A",
+          "receiptFile": "POST_STOP_cancel-after-stop_RECOVERS_A.json"
+        },
+        {
+          "fullName": "physical Docker \u2192 signed receiver \u2192 API completion PREPARED_REPLACEMENT_EXCLUDES_STOP_A",
+          "title": "PREPARED_REPLACEMENT_EXCLUDES_STOP_A",
+          "receiptFile": "PREPARED_REPLACEMENT_EXCLUDES_STOP_A.json"
+        },
+        {
+          "fullName": "physical Docker \u2192 signed receiver \u2192 API completion STOP_LOST_REPLY_RETAINS_EXCLUSION",
+          "title": "STOP_LOST_REPLY_RETAINS_EXCLUSION",
+          "receiptFile": "STOP_LOST_REPLY_RETAINS_EXCLUSION.json"
+        },
+        {
+          "fullName": "physical Docker \u2192 signed receiver \u2192 API completion REPLACEMENT_LOST_REPLY_RETRY_NO_EFFECTS",
+          "title": "REPLACEMENT_LOST_REPLY_RETRY_NO_EFFECTS",
+          "receiptFile": "REPLACEMENT_LOST_REPLY_RETRY_NO_EFFECTS.json"
+        },
+        {
+          "fullName": "physical Docker \u2192 signed receiver \u2192 API completion WIRE_unsigned_REJECTS_BEFORE_EFFECTS",
+          "title": "WIRE_unsigned_REJECTS_BEFORE_EFFECTS",
+          "receiptFile": "WIRE_unsigned_REJECTS_BEFORE_EFFECTS.json"
+        },
+        {
+          "fullName": "physical Docker \u2192 signed receiver \u2192 API completion WIRE_signed-other-initial_REJECTS_BEFORE_EFFECTS",
+          "title": "WIRE_signed-other-initial_REJECTS_BEFORE_EFFECTS",
+          "receiptFile": "WIRE_signed-other-initial_REJECTS_BEFORE_EFFECTS.json"
+        }
+      ],
       "guardCases": [
         {
           "fullName": "physical Docker acceptance opt-in guard keeps Docker inaccessible for flag undefined",
