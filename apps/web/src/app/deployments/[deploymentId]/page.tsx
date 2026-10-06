@@ -10,6 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Separator } from "@/components/ui/separator";
 import { DeploymentLogInspector } from "./deployment-log-inspector";
 import { DeploymentStopControl } from "./deployment-stop-control";
+import { DeploymentRedeployControl } from "./deployment-redeploy-control";
 
 export const dynamic = "force-dynamic";
 
@@ -125,6 +126,9 @@ export default async function DeploymentLogsPage({ params }: { params: Promise<{
               <EvidenceField label="Commit">
                 <span className="font-mono text-xs" data-testid="evidence-commit">{deployment.commitSha}</span>
               </EvidenceField>
+              {deployment.sourceDeploymentId ? <EvidenceField label="Source execution"><Link className="break-all font-mono text-xs hover:underline" href={`/deployments/${encodeURIComponent(deployment.sourceDeploymentId)}`}>{deployment.sourceDeploymentId}</Link></EvidenceField> : null}
+              {deployment.snapshotOriginId ? <EvidenceField label="Snapshot origin"><Link className="break-all font-mono text-xs hover:underline" href={`/deployments/${encodeURIComponent(deployment.snapshotOriginId)}`}>{deployment.snapshotOriginId}</Link></EvidenceField> : null}
+              {deployment.snapshotHash ? <EvidenceField label="Snapshot hash"><span className="break-all font-mono text-xs">{deployment.snapshotHash}</span></EvidenceField> : null}
               <EvidenceField label="Started">
                 <span className="text-xs" data-testid="evidence-started">{new Date(deployment.startedAt).toLocaleString()}</span>
               </EvidenceField>
@@ -173,6 +177,7 @@ export default async function DeploymentLogsPage({ params }: { params: Promise<{
 
             <Separator />
 
+            <DeploymentRedeployControl key={`${deployment.id}:${deployment.snapshotHash ?? "legacy"}`} deployment={deployment} expectedSourceDeploymentId={deploymentId} role={auth.user.role} apiBaseUrl={getAuthApiBaseUrl()} />
             <DeploymentStopControl deployment={deployment} role={auth.user.role} apiBaseUrl={getAuthApiBaseUrl()} />
 
             <div className="flex flex-wrap gap-2" data-testid="deployment-next-actions">
