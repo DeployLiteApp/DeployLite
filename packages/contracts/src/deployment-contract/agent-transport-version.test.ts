@@ -1,6 +1,6 @@
 import { trustedPriorExecutionReceiptSchema } from "./prior-execution-receipt.js";
 import { describe, expect, it } from "vitest";
-import { agentExecutionCommandSchema, agentExecutionReceiptSchema, deploymentStopAgentCommandSchema, dockerImageExecutionReceiptSchema } from "./agent-transport.js";
+import { agentExecutionCommandSchema, agentExecutionReceiptSchema, agentReceiptQuerySchema, deploymentStopAgentCommandSchema, dockerImageExecutionReceiptSchema } from "./agent-transport.js";
 
 const command = { agentId: "agent", commandId: "cmd", deploymentId: "execution", projectId: "project", snapshot: {}, snapshotHash: "a".repeat(64), requiredCapabilities: ["deploy.execute"], lease: { leaseId: "lease", deploymentId: "execution", fence: 1, expiresAt: 10 }, context: { requestId: "request", correlationId: "correlation" }, timeoutMs: 1000, cancellationRequested: false };
 const receipt = { commandId: "cmd", deploymentId: "execution", terminalStatus: "succeeded" as const, health: "passed" as const, redacted: true as const, correlationId: "correlation", receipt: { deploymentId: "execution", effectiveImage: `registry.example/app@sha256:${"a".repeat(64)}`, runtimePort: 3000, runtimeConfig: { hostPort: 43000, containerPort: 3000, networkName: "deploylite" }, health: "passed" as const, terminalStatus: "succeeded" as const, rollback: { target: null, result: "not-required" as const }, proven: true as const } };
@@ -140,5 +140,44 @@ describe("optional coordinated replacement and stop wire authority", () => {
     const body = { schemaVersion: 1, action: "deployment.stop", agentId: "agent", commandId: "cmd", projectId: "project", deploymentId: "previous-execution", candidateId: "previous-execution:candidate:prior", effectiveImage: receipt.receipt.effectiveImage, requiredCapabilities: ["deployment.stop"], lease: authority("deployment.stop", "previous-execution").executionLease, authority: authority("deployment.stop", "previous-execution"), context: command.context, timeoutMs: 1000, cancellationRequested: false };
     const parsed = deploymentStopAgentCommandSchema.safeParse(body);
     expect(parsed.success).toBe(true); if (parsed.success) expect(parsed.data).toHaveProperty("authority", body.authority);
+  });
+});
+
+
+describe("explicit registry port wire compatibility", () => {
+  const image = (port: string) => `127.0.0.1:${port}/deploylite-p2/fixture@sha256:${"a".repeat(64)}`;
+  it("accepts source-compatible explicit ports on bound v1 and v2 proof receipts", () => {
+    for (const port of ["1", "49172", "65535"]) for (const version of [1, 2] as const) {
+      const input = proofEnvelope(version);
+      expect(agentExecutionReceiptSchema.safeParse(input).success).toBe(true);
+      const withPort = { ...input, receipt: { ...input.receipt, effectiveImage: image(port) } };
+      const parsed = agentExecutionReceiptSchema.safeParse(withPort);
+      expect(parsed.success).toBe(true);
+      if (parsed.success) expect(parsed.data.receipt).toMatchObject({ effectiveImage: image(port), executionReceipt: input.receipt.executionReceipt });
+    }
+  });
+  function shapes(effectiveImage: string) {
+    const prior = proofEnvelope().receipt.executionReceipt;
+    const stop = { schemaVersion: 1 as const, action: "deployment.stop" as const, agentId: "agent", commandId: "stop-command", projectId: "project", deploymentId: "execution", candidateId: "candidate", effectiveImage, containerId: prior.containerId, requiredCapabilities: ["deployment.stop"], lease: command.lease, context: command.context, timeoutMs: 1000, cancellationRequested: false };
+    const query = { schemaVersion: 1 as const, action: "deployment.stop" as const, agentId: "agent", commandId: stop.commandId, projectId: stop.projectId, deploymentId: stop.deploymentId, candidateId: stop.candidateId, effectiveImage, containerId: stop.containerId, correlationId: command.context.correlationId, authority: null, timeoutMs: 1000 };
+    const replacement = { ...command, schemaVersion: 2, sourceDeploymentId: "source", replacement: { prior, effectiveImage, policy: { maxOutageMs: 30_000, maxRecoveryMs: 60_000 } } };
+    return [deploymentStopAgentCommandSchema.safeParse(stop), agentReceiptQuerySchema.safeParse(query), agentExecutionCommandSchema.safeParse(replacement)];
+  }
+  it("accepts the same immutable port pin in replacement Stop and cache-query shapes", () => {
+    expect(shapes(receipt.receipt.effectiveImage).every((x) => x.success)).toBe(true);
+    expect(shapes(image("49172")).every((x) => x.success)).toBe(true);
+  });
+  it("preserves rejection of invalid ports schemes credentials tags and malformed digests", () => {
+    const invalid = [image("0"), image("65536"), image("999999"), image("-1"), image(""), image("abc"), image("49172").replace("127.0.0.1:", "https://127.0.0.1:"), image("49172").replace("127.0.0.1:", "user@127.0.0.1:"), image("49172").replace("fixture@", "fixture:latest@"), image("49172").replace("a".repeat(64), "a".repeat(63))];
+    for (const effectiveImage of invalid) {
+      expect(dockerImageExecutionReceiptSchema.safeParse({ ...receipt.receipt, effectiveImage }).success).toBe(false);
+      expect(shapes(effectiveImage).some((x) => x.success)).toBe(false);
+    }
+  });
+  it("retains proof digest and strict outer bindings when the image has a valid port", () => {
+    const input = proofEnvelope();
+    for (const patch of [{ effectiveImage: image("49172").replace("a".repeat(64), "b".repeat(64)) }, { effectiveImage: image("49172"), deploymentId: "other" }, { effectiveImage: image("49172"), runtimePort: 8080 }]) {
+      expect(dockerImageExecutionReceiptSchema.safeParse({ ...input.receipt, ...patch }).success).toBe(false);
+    }
   });
 });
