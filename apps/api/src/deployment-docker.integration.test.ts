@@ -230,6 +230,21 @@ class PhysicalFixture {
     await this.receiptWrite(path, text + "\n", { mode: 0o600, ...(deadline === undefined ? {} : { signal: controller!.signal }) });
     fence(); // Cancellation of a write already submitted to the OS never proves that no bytes were published.
   }
+  cleanupClosure(): CleanupClosure {
+    return { kind: "cleanup", deadlineMonoMs: this.cleanupDeadlineMonoMs ??= performance.now() + (this.manifest.expiryClosures?.cleanupMaxMs ?? 30_000) };
+  }
+  async persistFinalReceipt(closure: CleanupClosure): Promise<void> {
+    try { await this.withinCleanup(closure, () => this.persist()); }
+    catch (error) {
+      this.ledger.status = "CLEANUP_BLOCKED";
+      this.event("cleanup-blocked", { finalReceipt: "unverified", containerIds: [...this.containers.keys()],
+        networkId: this.networkId || null, daemonEffectAbsenceProven: false, publicationOutcome: "unknown" });
+      this.cleanupController?.abort(error); throw error;
+    } finally {
+      if (this.cleanupTimer) clearTimeout(this.cleanupTimer);
+      this.cleanupTimer = undefined;
+    }
+  }
   private async withinCleanup<T>(closure: CleanupClosure, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
     assert.equal(closure.deadlineMonoMs, this.cleanupDeadlineMonoMs, "cleanup cannot renew its original deadline");
     const remaining = closure.deadlineMonoMs - performance.now();
@@ -544,6 +559,131 @@ class PhysicalFixture {
     assert.equal(login.statusCode, 200); this.cookie = login.headers["set-cookie"] as string;
     // No app.listen(), agent server, PostgreSQL, real secrets or deployed HTTP boundary is involved.
   }
+  async initial(): Promise<Deployment> {
+    const response = await this.app.inject({ method: "POST", url: `/api/v1/projects/${this.projectId}/deployments`,
+      headers: { cookie: this.cookie, "x-deployment-idempotency-key": this.manifest.runId },
+      payload: { imageReference: this.manifest.image, agentId: this.manifest.runtimeHost, commitSha: "abcdef1",
+        configRevision: "p2-fixture-config-1", runtimeRevision: "p2-fixture-runtime-1" } });
+    this.event("api-response", { action: "INITIAL", statusCode: response.statusCode, body: response.json() });
+    assert.equal(response.statusCode, 200, response.body);
+    const deployment = response.json().data.deployment as Deployment;
+    assert.equal(deployment.status, "succeeded"); assert(deployment.executionReceipt);
+    await this.observe(deployment); this.startProbe(); await this.healthyProbe(); return deployment;
+  }
+  request(action: "redeploy" | "stop", deployment: Deployment, key: string, confirmation?: string) {
+    return this.app.inject({ method: "POST", url: `/api/v1/deployments/${deployment.id}/${action}`,
+      headers: { cookie: this.cookie, "x-control-idempotency-key": key,
+        ...(confirmation ? { "x-control-confirmation-id": confirmation } : {}) },
+      ...(action === "redeploy" ? { payload: { snapshotHash: deployment.snapshotHash } } : {}) });
+  }
+  async confirm(action: "redeploy" | "stop", deployment: Deployment, key: string) {
+    const pending = await this.request(action, deployment, key);
+    assert.equal(pending.statusCode, 202, pending.body); assert.equal(pending.json().data.confirmationRequired, true);
+    return () => this.request(action, deployment, key, pending.json().data.confirmationId);
+  }
+  dockerCount(): number { return this.events.filter((event) => event.kind === "docker-command").length; }
+  private startProbe(): void {
+    if (this.probeRunning) return;
+    this.probeRunning = true;
+    this.probeTask = (async () => {
+      while (this.probeRunning) {
+        await this.probe(); await delay(50);
+      }
+    })();
+  }
+  private async probe(): Promise<boolean> {
+    const begin = performance.now(); let healthy = false;
+    try { const response = await fetch(`http://127.0.0.1:49170${this.manifest.healthPath}`, { signal: AbortSignal.timeout(200), redirect: "error" });
+      healthy = response.status === 200; await response.body?.cancel(); } catch { /* bounded sample records outage */ }
+    this.event("loopback-probe", { beginMonoMs: begin, healthy }); return healthy;
+  }
+  async healthyProbe(): Promise<void> {
+    const deadline = performance.now() + 5_000;
+    while (performance.now() < deadline) { if (await this.probe()) return; await delay(50); }
+    throw new Error("physical fixture loopback health unavailable");
+  }
+  async replacement(source: Deployment, key: string): Promise<Deployment> {
+    await this.healthyProbe();
+    const eventOffset = this.events.length;
+    const call = await this.confirm("redeploy", source, key);
+    const response = await call();
+    this.event("api-response", { action: "redeploy", statusCode: response.statusCode, body: response.json() });
+    assert.equal(response.statusCode, 200, response.body);
+    const next = response.json().data.deployment as Deployment;
+    await this.observe(next); await this.healthyProbe();
+    const stopBoundary = this.events.slice(eventOffset).find((event) => event.kind === "physical-owned-stop" &&
+      event.containerId === source.executionReceipt!.containerId);
+    assert(stopBoundary && Number.isFinite(stopBoundary.lastHealthyProbeBegin), "physical prior-stop/probe boundary missing");
+    const end = performance.now(), lower = Number(stopBoundary.lastHealthyProbeBegin), upperBound = end - lower;
+    // Conservative bracket starts at the last healthy probe before actual stop and includes publication/inspection overhead.
+    assert(upperBound <= policy.maxOutageMs, `physical outage conservative upper bound ${upperBound}ms`);
+    this.event("outage-bracket", { source: source.id, execution: next.id, lowerMonoMs: lower,
+      upperMonoMs: end, upperBoundMs: upperBound, sampleIntervalMs: 50, requestDeadlineMs: 200 });
+    return next;
+  }
+  async assertRecovery(source: Deployment): Promise<void> {
+    assert(this.faultMono !== undefined, "actual post-stop injected fault not observed");
+    await this.observe(source); await this.healthyProbe();
+    const upperBound = performance.now() - this.faultMono;
+    assert(upperBound <= policy.maxRecoveryMs, `physical recovery upper bound ${upperBound}ms`);
+    this.event("recovery-bracket", { prior: source.id, priorPhysicalId: source.executionReceipt!.containerId,
+      faultMonoMs: this.faultMono, upperBoundMs: upperBound, parentAborted: this.controller.signal.aborted });
+  }
+  async cleanup(): Promise<void> {
+    const closure = this.cleanupClosure();
+    try {
+      await this.withinCleanup(closure, async () => {
+        this.probeRunning = false;
+        await this.withinCleanup(closure, () => this.probeTask ?? Promise.resolve());
+        await this.withinCleanup(closure, () => this.app?.close() ?? Promise.resolve());
+        if (!this.raw || !this.networkId) {
+          assert(this.containers.size === 0 && !this.events.some((event) => event.kind === "docker-command" &&
+            Array.isArray(event.argv) && event.argv[1] === "network" && event.argv[2] === "create"), "owned creation outcome requires exact cleanup verification");
+          return;
+        }
+        const failures: string[] = [];
+        // Discover only pre-recorded creation intents if a real run lost its ID reply; persist IDs before cleanup.
+        for (const intent of this.intents.values()) for (const name of [intent.candidate, intent.active]) {
+          try {
+            const value = await this.inspected(name, closure);
+            if (!this.containers.has(value.id)) { this.containers.set(value.id, { intent, name });
+              this.ledger.resources.push({ kind: "container", id: value.id, name, recoveredRunReply: true,
+                owner: this.owner, project: this.projectId, deploymentId: intent.deploymentId, candidateId: intent.candidateId }); }
+          } catch (error) { if (!missingObject(error)) failures.push(`ownership inspection blocked: ${name}`); }
+        }
+        await this.withinCleanup(closure, () => this.persist());
+        for (const [id, entry] of this.containers) {
+          try {
+            const current = await this.inspected(id, closure); assert.equal(current.id, id);
+            await this.invoke(["docker", "rm", "--force", id], undefined, closure);
+            this.event("cleanup-receipt", { resource: "container", id, name: entry.name, verifiedLabels: true, removed: true });
+          } catch (error) {
+            if (missingObject(error)) this.event("cleanup-receipt", { resource: "container", id, alreadyAbsent: true });
+            else failures.push(`refused container removal: ${id}`);
+          }
+        }
+        const format = [...this.allowedFormats].find((value) => value.includes('"internal"'))!;
+        try {
+          const network = JSON.parse((await this.invoke(["docker", "network", "inspect", "--format", format, this.networkId], undefined, closure)).stdout);
+          assert.equal(network.id, this.networkId); assert.equal(network.name, this.network);
+          assert.equal(network.owner, this.owner); assert.equal(network.project, this.projectId);
+          assert.equal(Object.keys(network.containers ?? {}).length, 0);
+          await this.invoke(["docker", "network", "rm", this.networkId], undefined, closure);
+          this.event("cleanup-receipt", { resource: "network", id: this.networkId, verifiedLabels: true, removed: true });
+        } catch { failures.push(`refused network removal: ${this.networkId}`); }
+        this.ledger.status = failures.length ? "CLEANUP_BLOCKED" : this.ledger.status;
+        await this.withinCleanup(closure, () => this.persist()); assert.deepEqual(failures, [], "manifest-scoped cleanup incomplete; no global cleanup attempted");
+      });
+    } catch (error) {
+      this.ledger.status = "CLEANUP_BLOCKED";
+      this.event("cleanup-blocked", { containerIds: [...this.containers.keys()], networkId: this.networkId || null,
+        daemonEffectAbsenceProven: false });
+      this.cleanupController?.abort(error); throw error;
+    } finally {
+      if (this.cleanupTimer) clearTimeout(this.cleanupTimer);
+      this.cleanupTimer = undefined;
+    }
+  }
 }
 
 // These prospective guard assertions are intentionally authored before runtime activation; NOT RUN in preparation.
@@ -696,4 +836,220 @@ describe("physical Docker acceptance opt-in guard", () => {
       finally { vi.unstubAllEnvs(); }
     });
   });
+  describe("final closure Docker source guards", () => {
+    const stubEnvironment = () => { for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value); };
+    function fakeOwnedFixture() {
+      const manifest = validateManifest({ ...valid(), expiryClosures: { cleanupMaxMs: 10, recoveryMaxMs: 60_000 } }, env);
+      const f = new PhysicalFixture(manifest, { trustKey: "mock-only", adminPassword: "mock-only" }, "FINAL_GUARD_ONLY");
+      f.ledger.physicalDocker = false;
+      const id = "e".repeat(64), deploymentId = "33333333-3333-4333-8333-333333333333";
+      const intent = { deploymentId, candidateId: `${deploymentId}:candidate:command`, candidate: `deploylite-candidate-${deploymentId}-command`, active: `deploylite-active-${deploymentId}` };
+      f.intents.set(deploymentId, intent); f.containers.set(id, { intent, name: intent.active });
+      return { f, id };
+    }
+    const track = (work: Promise<unknown>) => {
+      const state = { status: "pending", error: undefined as unknown };
+      void work.then(() => { state.status = "fulfilled"; }, (error) => { state.status = "rejected"; state.error = error; });
+      return state;
+    };
+    async function fakeClock(exercise: (advance: (ms: number) => Promise<void>) => Promise<void>) {
+      let mono = 0; const now = vi.spyOn(performance, "now").mockImplementation(() => mono);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try { await exercise(async (ms) => { mono += ms; await vi.advanceTimersByTimeAsync(ms); }); }
+      finally { vi.clearAllTimers(); vi.useRealTimers(); now.mockRestore(); }
+    }
+    it("cancels and settles an in-flight owned cleanup at its single deadline while retaining unknown IDs", async () => {
+      await fakeClock(async (advance) => {
+        const { f, id } = fakeOwnedFixture(); let forwarded: AbortSignal | undefined; let settled = false;
+        const run = vi.fn((_argv: readonly string[], signal: AbortSignal) => new Promise<DockerProcessExit>((resolveRun, reject) => {
+          forwarded = signal;
+          const timer = setTimeout(() => { settled = true; resolveRun({ exitCode: 0, signal: null, stdout: "late mock success", stderr: "" }); }, 20);
+          signal.addEventListener("abort", () => { clearTimeout(timer); settled = true; reject(new Error("recording process canceled")); }, { once: true });
+        }));
+        Object.assign(f, { raw: { run } });
+        const state = track(f.invoke(["docker", "rm", "--force", id], new AbortController().signal, { kind: "cleanup", deadlineMonoMs: 10 }));
+        await advance(11);
+        expect(state.status).toBe("rejected"); expect(forwarded?.aborted).toBe(true); expect(settled).toBe(true);
+        expect(f.containers.has(id)).toBe(true); expect(f.events.at(-1)).toMatchObject({ phase: "rejected" });
+        await expect(f.invoke(["docker", "rm", "--force", id], new AbortController().signal, { kind: "cleanup", deadlineMonoMs: 10 })).rejects.toThrow();
+        expect(run).toHaveBeenCalledTimes(1);
+      });
+    });
+    it("settles closure as unknown at its deadline when the injected runner ignores abort without claiming daemon absence", async () => {
+      await fakeClock(async (advance) => {
+        const { f, id } = fakeOwnedFixture(); let forwarded: AbortSignal | undefined;
+        const run = vi.fn((_argv: readonly string[], signal: AbortSignal) => { forwarded = signal; return new Promise<DockerProcessExit>(() => {}); });
+        Object.assign(f, { raw: { run } });
+        const state = track(f.invoke(["docker", "rm", "--force", id], new AbortController().signal, { kind: "cleanup", deadlineMonoMs: 10 }));
+        await advance(11);
+        expect(state.status).toBe("rejected"); expect(forwarded?.aborted).toBe(true); expect(f.containers.has(id)).toBe(true);
+        expect(f.events.at(-1)).toMatchObject({ phase: "rejected" });
+        await expect(f.invoke(["docker", "rm", "--force", id], new AbortController().signal, { kind: "cleanup", deadlineMonoMs: 10 })).rejects.toThrow();
+        expect(run).toHaveBeenCalledTimes(1);
+      });
+    });
+    it.each(["probe", "app-close"] as const)("bounds the whole cleanup when %s cannot settle", async (phase) => {
+      await fakeClock(async (advance) => {
+        const { f, id } = fakeOwnedFixture(), close = vi.fn(() => new Promise<void>(() => {}));
+        if (phase === "probe") Object.assign(f, { probeTask: new Promise<void>(() => {}) });
+        else Object.assign(f, { app: { close } });
+        const state = track(f.cleanup()); await advance(11);
+        expect(state.status).toBe("rejected"); expect(f.ledger.status).toBe("CLEANUP_BLOCKED"); expect(f.containers.has(id)).toBe(true);
+        expect(f.dockerCount()).toBe(0);
+      });
+    });
+    async function caseSequence(cleanupFailure: "rejected" | "unknown-status" | "none") {
+      stubEnvironment(); const saved = grant, savedBlocked = grantCleanupBlocked; grant = undefined; grantCleanupBlocked = false;
+      const load = vi.fn(async () => ({ manifest: validateManifest(valid(), env), credentials: { trustKey: "mock-only", adminPassword: "mock-only" } }));
+      const setup = vi.spyOn(PhysicalFixture.prototype, "setup").mockResolvedValue();
+      const cleanup = vi.spyOn(PhysicalFixture.prototype, "cleanup").mockImplementationOnce(async function (this: PhysicalFixture) {
+        if (cleanupFailure === "rejected") throw new Error("recording exact-owned cleanup refused");
+        if (cleanupFailure === "unknown-status") this.ledger.status = "CLEANUP_BLOCKED";
+      }).mockResolvedValue();
+      const persist = vi.spyOn(PhysicalFixture.prototype, "persist").mockResolvedValue(); let effects = 0;
+      try {
+        const first = await physicalCase("MOCK_FIRST", async () => { effects += 3; }, load).then(() => "fulfilled", () => "rejected");
+        const second = await physicalCase("MOCK_SECOND", async () => { effects += 3; }, load).then(() => "fulfilled", () => "rejected");
+        return { first, second, setupCount: setup.mock.calls.length, effects, loadCount: load.mock.calls.length };
+      } finally { setup.mockRestore(); cleanup.mockRestore(); persist.mockRestore(); grant = saved; grantCleanupBlocked = savedBlocked; vi.unstubAllEnvs(); }
+    }
+    it.each(["rejected", "unknown-status"] as const)("blocks subsequent case setup after %s exact-owned cleanup", async (failure) => {
+      expect(await caseSequence(failure)).toEqual({ first: "rejected", second: "rejected", setupCount: 1, effects: 3, loadCount: 1 });
+    });
+    it("characterizes complete mocked cleanup allowing the next case within the same grant", async () => {
+      expect(await caseSequence("none")).toEqual({ first: "fulfilled", second: "fulfilled", setupCount: 2, effects: 6, loadCount: 1 });
+    });
+    describe("final receipt Docker source guards", () => {
+      it("bounds a stalled final receipt after successful cleanup by the same nonrenewable deadline and blocks the next case", async () => {
+        await fakeClock(async (advance) => {
+          stubEnvironment(); const saved = grant, savedBlocked = grantCleanupBlocked; grant = undefined; grantCleanupBlocked = false;
+          const manifest = validateManifest({ ...valid(), expiryClosures: { cleanupMaxMs: 10, recoveryMaxMs: 60_000 } }, env);
+          const load = vi.fn(async () => ({ manifest, credentials: { trustKey: "mock-only", adminPassword: "mock-only" } }));
+          let fixture!: PhysicalFixture, rmEntered!: () => void, finalEntered!: () => void, writes = 0;
+          const rmReady = new Promise<void>((done) => { rmEntered = done; }), finalReady = new Promise<void>((done) => { finalEntered = done; });
+          const id = "e".repeat(64), networkId = "d".repeat(64), image = `sha256:${"a".repeat(64)}`;
+          const setup = vi.spyOn(PhysicalFixture.prototype, "setup").mockImplementation(async function (this: PhysicalFixture) {
+            fixture = this; this.ledger.physicalDocker = false;
+            const deploymentId = "33333333-3333-4333-8333-333333333333";
+            const intent = { deploymentId, candidateId: `${deploymentId}:candidate:command`, candidate: `deploylite-candidate-${deploymentId}-command`, active: `deploylite-active-${deploymentId}` };
+            this.intents.set(deploymentId, intent); this.containers.set(id, { intent, name: intent.active });
+            this.configId = image; this.networkId = networkId; this.allowedFormats.add('{"internal":true}');
+            const builders = await import("../../agent/src/infrastructure/docker/docker-cli-argv.js");
+            const run = vi.fn(async (input: readonly string[]): Promise<DockerProcessExit> => {
+              const argv = input.filter((word) => !["--config", manifest.dockerConfigDirectory, "--host", manifest.dockerHost].includes(word));
+              if (argv[1] === "rm") { rmEntered(); await new Promise<void>((done) => setTimeout(done, 6)); }
+              const observed = argv[1] === "network" ? { id: networkId, name: this.network, owner: this.owner, project: this.projectId, containers: {} } : {
+                id, name: `/${intent.active}`, imageId: image, owner: this.owner, projectId: this.projectId, deploymentId,
+                candidateId: intent.candidateId, effectiveImage: manifest.image, networkMode: this.network, networks: { [this.network]: { networkId } }
+              };
+              return { exitCode: 0, signal: null, stdout: JSON.stringify(observed), stderr: "" };
+            });
+            Object.assign(this, { builders, raw: { run }, receiptWrite: write });
+          });
+          const write = vi.fn(async () => {
+            if (++writes <= 2) return;
+            finalEntered(); return new Promise<void>(() => {}); // Injected final write deliberately ignores the shared abort.
+          });
+          try {
+            const state = track(physicalCase("MOCK_FINAL_RECEIPT_SUCCESS", async () => {}, load));
+            await rmReady; await advance(6); await finalReady;
+            expect(fixture.events.some((event) => event.kind === "cleanup-receipt" && event.resource === "network" && event.removed === true)).toBe(true);
+            expect(Reflect.get(fixture, "cleanupDeadlineMonoMs")).toBe(10); // Cleanup used six milliseconds; final write gets only four.
+            await advance(5);
+            expect(state.status).toBe("rejected"); expect(grantCleanupBlocked).toBe(true); expect(fixture.ledger.status).toBe("CLEANUP_BLOCKED");
+            expect((Reflect.get(fixture, "cleanupController") as AbortController).signal.aborted).toBe(true);
+            expect(fixture.containers.has(id)).toBe(true); expect(fixture.events.some((event) => event.daemonEffectAbsenceProven === true)).toBe(false);
+            await expect(physicalCase("MOCK_AFTER_FINAL_RECEIPT", async () => {}, load)).rejects.toThrow();
+            expect(setup).toHaveBeenCalledTimes(1); expect(load).toHaveBeenCalledTimes(1);
+          } finally { setup.mockRestore(); grant = saved; grantCleanupBlocked = savedBlocked; vi.unstubAllEnvs(); }
+        });
+      });
+      it("settles after exhausted cleanup without starting an unbounded final receipt and retains unknown IDs before blocking the next case", async () => {
+        await fakeClock(async (advance) => {
+          stubEnvironment(); const saved = grant, savedBlocked = grantCleanupBlocked; grant = undefined; grantCleanupBlocked = false;
+          const manifest = validateManifest({ ...valid(), expiryClosures: { cleanupMaxMs: 10, recoveryMaxMs: 60_000 } }, env);
+          const load = vi.fn(async () => ({ manifest, credentials: { trustKey: "mock-only", adminPassword: "mock-only" } }));
+          let fixture!: PhysicalFixture, cleanupEntered!: () => void;
+          const cleanupReady = new Promise<void>((done) => { cleanupEntered = done; });
+          const id = "e".repeat(64), originalCleanup = PhysicalFixture.prototype.cleanup;
+          const setup = vi.spyOn(PhysicalFixture.prototype, "setup").mockImplementation(async function (this: PhysicalFixture) {
+            fixture = this; this.ledger.physicalDocker = false;
+            const deploymentId = "33333333-3333-4333-8333-333333333333";
+            const intent = { deploymentId, candidateId: `${deploymentId}:candidate:command`, candidate: `deploylite-candidate-${deploymentId}-command`, active: `deploylite-active-${deploymentId}` };
+            this.containers.set(id, { intent, name: intent.active }); Object.assign(this, { probeTask: new Promise<void>(() => {}), receiptWrite: write });
+          });
+          const cleanup = vi.spyOn(PhysicalFixture.prototype, "cleanup").mockImplementation(function (this: PhysicalFixture) {
+            const pending = originalCleanup.call(this); cleanupEntered(); return pending;
+          });
+          const write = vi.fn(() => new Promise<void>(() => {}));
+          try {
+            const state = track(physicalCase("MOCK_FINAL_RECEIPT_EXHAUSTED", async () => {}, load));
+            await cleanupReady; await advance(11);
+            expect(state.status).toBe("rejected"); expect(write).not.toHaveBeenCalled();
+            expect(grantCleanupBlocked).toBe(true); expect(fixture.ledger.status).toBe("CLEANUP_BLOCKED");
+            expect(Reflect.get(fixture, "cleanupDeadlineMonoMs")).toBe(10);
+            expect((Reflect.get(fixture, "cleanupController") as AbortController).signal.aborted).toBe(true);
+            expect(fixture.containers.has(id)).toBe(true); expect(fixture.events.at(-1)).toMatchObject({ kind: "cleanup-blocked", daemonEffectAbsenceProven: false });
+            await expect(physicalCase("MOCK_AFTER_EXHAUSTED_RECEIPT", async () => {}, load)).rejects.toThrow();
+            expect(setup).toHaveBeenCalledTimes(1); expect(load).toHaveBeenCalledTimes(1); expect(fixture.dockerCount()).toBe(0);
+          } finally { setup.mockRestore(); cleanup.mockRestore(); grant = saved; grantCleanupBlocked = savedBlocked; vi.unstubAllEnvs(); }
+        });
+      });
+      it("fences a late deployment-list continuation from publishing a PASS receipt after the original closure deadline", async () => {
+        await fakeClock(async (advance) => {
+          stubEnvironment(); const saved = grant, savedBlocked = grantCleanupBlocked; grant = undefined; grantCleanupBlocked = false;
+          const manifest = validateManifest({ ...valid(), expiryClosures: { cleanupMaxMs: 10, recoveryMaxMs: 60_000 } }, env);
+          const load = vi.fn(async () => ({ manifest, credentials: { trustKey: "mock-only", adminPassword: "mock-only" } }));
+          let fixture!: PhysicalFixture, listed!: () => void, release!: (value: Deployment[]) => void;
+          const listReady = new Promise<void>((done) => { listed = done; }), deployments = new Promise<Deployment[]>((done) => { release = done; });
+          const list = vi.fn(() => { listed(); return deployments; }), write = vi.fn(async () => {});
+          const setup = vi.spyOn(PhysicalFixture.prototype, "setup").mockImplementation(async function (this: PhysicalFixture) {
+            fixture = this; this.ledger.physicalDocker = false;
+            Object.assign(this, { memory: { deployments: { list }, completion: { commands: new Map() } }, receiptWrite: write });
+          });
+          try {
+            const state = track(physicalCase("MOCK_LATE_RECEIPT_CONTINUATION", async () => {}, load));
+            await listReady; expect(Reflect.get(fixture, "cleanupDeadlineMonoMs")).toBe(10);
+            await advance(11); const statusAtDeadline = state.status;
+            release([]); await advance(0); // Deterministic late list settlement, not a sleep or renewed grant.
+            expect(write).not.toHaveBeenCalled(); expect(statusAtDeadline).toBe("rejected"); expect(state.status).toBe("rejected");
+            expect(fixture.ledger.status).toBe("CLEANUP_BLOCKED"); expect(grantCleanupBlocked).toBe(true);
+            expect(Reflect.get(fixture, "cleanupDeadlineMonoMs")).toBe(10);
+            expect((Reflect.get(fixture, "cleanupController") as AbortController).signal.aborted).toBe(true);
+            await expect(physicalCase("MOCK_AFTER_LATE_RECEIPT", async () => {}, load)).rejects.toThrow();
+            expect(setup).toHaveBeenCalledTimes(1); expect(load).toHaveBeenCalledTimes(1); expect(fixture.dockerCount()).toBe(0);
+          } finally { release([]); setup.mockRestore(); grant = saved; grantCleanupBlocked = savedBlocked; vi.unstubAllEnvs(); }
+        });
+      });
+    });
+  });
+  it("blocks the actual physical-case setup before input reads when integration is off", async () => {
+    const setup = vi.spyOn(PhysicalFixture.prototype, "setup").mockRejectedValue(new Error("guard crossed into setup"));
+    vi.stubEnv("DEPLOYLITE_DOCKER_INTEGRATION", "0");
+    try {
+      await expect(physicalCase("GUARD_ONLY", async () => {})).rejects.toThrow();
+      expect(setup).not.toHaveBeenCalled();
+    } finally { setup.mockRestore(); vi.unstubAllEnvs(); }
+  });
 });
+let grant: Awaited<ReturnType<typeof loadGrant>> | undefined;
+let grantCleanupBlocked = false;
+async function physicalCase(id: string, exercise: (fixture: PhysicalFixture) => Promise<void>, load = loadGrant): Promise<void> {
+  assert(!grantCleanupBlocked, "previous exact-owned cleanup unresolved; no subsequent setup or renewed grant allowed");
+  grant ??= await load(); // Before any dynamic process runner import or Docker invocation.
+  validateManifest(grant.manifest, process.env); // Cached credentials never extend expiry or hosted-job identity into the next case.
+  const fixture = new PhysicalFixture(grant.manifest, grant.credentials, id);
+  try { await fixture.setup(); await exercise(fixture); fixture.ledger.status = "PASS"; }
+  catch (error) { fixture.ledger.status = "FAIL"; fixture.event("case-failure", { errorKind: (error as Error).name }); throw error; }
+  finally {
+    const closure = fixture.cleanupClosure(); // Capture once before cleanup, shared with final evidence; no finalizer grace window.
+    try {
+      await fixture.cleanup();
+      assert.notEqual(fixture.ledger.status, "CLEANUP_BLOCKED", "exact-owned cleanup remains unknown");
+    } catch (error) { fixture.ledger.status = "CLEANUP_BLOCKED"; grantCleanupBlocked = true; throw error; }
+    finally {
+      try { await fixture.persistFinalReceipt(closure); }
+      catch (error) { grantCleanupBlocked = true; throw error; }
+    }
+  }
+}
