@@ -204,3 +204,186 @@ def verify_physical(receipts, grant):
         return True
     except (PhysicalError, KeyError, TypeError, StopIteration):
         return False
+def private_directory(path, create=False):
+    if create:
+        path.mkdir(mode=0o700)
+    stat = path.lstat()
+    require(path.is_dir() and not path.is_symlink() and stat.st_uid == os.getuid() and stat.st_mode & 0o077 == 0, "private_owned_directory_required")
+def inspect_json(argv, grant, boundary, closure=None, deadline=None):
+    try:
+        value = json.loads(run_effect(argv, grant, boundary, closure, max_seconds=None if deadline is None else deadline - boundary.now)["stdout"])
+        require(deadline is None or boundary.now < deadline, "preparation_inspection_outcome_unknown")
+        return value
+    except (ValueError, TypeError):
+        raise PhysicalError("selected_inspection_invalid") from None
+IMAGE_FORMAT = ('{"id":{{json .Id}},"repoDigests":{{json .RepoDigests}},"os":{{json .Os}},"architecture":{{json .Architecture}},'
+                '"user":{{json .Config.User}},"command":{{json .Config.Cmd}},"health":{{json .Config.Healthcheck}}}')
+def loopback_bytes(url, maximum, deadline, clock=time.monotonic):
+    """Nonblocking selected loopback HTTP with one deadline, including headers/body.
+
+    A timed-out read stays unknown. No worker thread, second period or assertion of
+    absence is used; an already delivered OS operation cannot be undone by this reader.
+    """
+    import errno
+    import select
+    import socket
+    from urllib.parse import urlsplit
+    parsed = urlsplit(url)
+    require(parsed.scheme == "http" and parsed.hostname == "127.0.0.1" and parsed.port in (49172, 49171)
+            and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment
+            and re.fullmatch(r"/[A-Za-z0-9/_.:-]*", parsed.path), "owned_loopback_endpoint_required")
+    require(type(maximum) is int and 0 < maximum <= 1048576, "bounded_response_size_required")
+    sock = None
+
+    def remaining():
+        budget = deadline - clock()
+        require(budget > 0, "loopback_deadline_exhausted")
+        return budget
+
+    def ready(write=False):
+        reads, writes, errors = select.select([] if write else [sock], [sock] if write else [], [sock], remaining())
+        remaining()  # A delayed settlement never becomes a successful response.
+        require(not errors and bool(writes if write else reads), "loopback_settlement_unknown")
+
+    try:
+        remaining()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setblocking(False)
+        status = sock.connect_ex(("127.0.0.1", parsed.port))
+        require(status in (0, errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY), "loopback_connection_unknown")
+        if status != 0:
+            ready(write=True)
+            require(sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR) == 0, "loopback_connection_unknown")
+        request = ("GET " + parsed.path + " HTTP/1.0\r\nHost: 127.0.0.1:" + str(parsed.port) + "\r\n"
+                   "Accept: application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json\r\n"
+                   "Connection: close\r\n\r\n").encode("ascii")
+        offset = 0
+        while offset < len(request):
+            ready(write=True)
+            try: sent = sock.send(request[offset:])
+            except BlockingIOError: continue
+            require(sent > 0, "loopback_request_unknown")
+            offset += sent
+        data, body, headers, content_length = bytearray(), bytearray(), None, None
+        while True:
+            ready()
+            try: part = sock.recv(4096)
+            except BlockingIOError: continue
+            remaining()
+            if not part:
+                require(headers is not None and (content_length is None or len(body) == content_length), "incomplete_loopback_response")
+                return bytes(body), headers.get("docker-content-digest")
+            if headers is None:
+                data.extend(part)
+                separator = data.find(b"\r\n\r\n")
+                require(separator <= 16384 and (separator >= 0 or len(data) <= 16384), "bounded_http_headers_required")
+                if separator < 0: continue
+                head, initial_body = bytes(data[:separator]), bytes(data[separator + 4:])
+                lines = head.decode("ascii").split("\r\n")
+                require(lines[0] in ("HTTP/1.0 200 OK", "HTTP/1.1 200 OK"), "owned_http_200_required")
+                headers = {}
+                for line in lines[1:]:
+                    key, colon, value = line.partition(":")
+                    key = key.lower()
+                    require(colon and key not in headers, "unambiguous_http_headers_required")
+                    headers[key] = value.strip()
+                require(not headers.get("transfer-encoding") and headers.get("content-encoding", "identity") == "identity", "unsupported_http_encoding")
+                if "content-length" in headers:
+                    require(re.fullmatch(r"[0-9]+", headers["content-length"]), "valid_http_length_required")
+                    content_length = int(headers["content-length"])
+                    require(content_length <= maximum, "bounded_response_size_required")
+                body.extend(initial_body)
+            else:
+                body.extend(part)
+            require(len(body) <= maximum and (content_length is None or len(body) <= content_length), "bounded_response_size_required")
+            if content_length is not None and len(body) == content_length:
+                remaining()
+                return bytes(body), headers.get("docker-content-digest")
+    except (OSError, ValueError, UnicodeError):
+        raise PhysicalError("owned_loopback_outcome_unknown") from None
+    finally:
+        if sock is not None: sock.close()
+
+
+def wait_loopback(url, deadline, expected=None):
+    while time.monotonic() < deadline:
+        try:
+            body, header = loopback_bytes(url, 1048576, deadline)
+            if expected is not None:
+                require(body.decode().strip() == expected, "fixture_version_mismatch")
+            return body, header
+        except (OSError, PhysicalError):
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(min(0.1, deadline - time.monotonic()))
+    raise PhysicalError("owned_loopback_readiness_unverified")
+
+
+def validate_native_inputs(env):
+    """Gate before constructing a process; only the explicitly approved future job enters."""
+    require(env.get("DEPLOYLITE_DOCKER_RUNTIME_GRANT") == "P2_PHYSICAL_DOCKER_APPROVED", "explicit_runtime_scope_required")
+    require(env.get("GITHUB_ACTIONS") == "true" and env.get("RUNNER_ENVIRONMENT") == "github-hosted" and env.get("GITHUB_JOB") == "p2-docker-acceptance", "hosted_job_required")
+    require(re.fullmatch(r"[a-f0-9]{40}", env.get("GITHUB_SHA", "")) and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", env.get("GITHUB_REPOSITORY", "")), "source_job_binding_required")
+    require(all(re.fullmatch(r"[1-9][0-9]*", env.get(k, "")) for k in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")), "run_identity_required")
+    require(env.get("DOCKER_HOST") == "unix:///var/run/docker.sock" and not any(env.get(k) for k in ("DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH")), "native_socket_required")
+    require(not env.get("DATABASE_URL") and env.get("DEPLOYLITE_DB_INTEGRATION") != "1" and env.get("DEPLOYLITE_API_DB_INTEGRATION") != "1", "postgres_scope_forbidden")
+    root = Path(env.get("RUNNER_TEMP", ""))
+    require(root.is_absolute() and root.is_dir() and not root.is_symlink() and root.lstat().st_uid == os.getuid(), "owned_runner_temp_required")
+    return root
+
+
+def preparation_root(env, create=False):
+    runner = validate_native_inputs(env)
+    root = Path(env.get("DEPLOYLITE_DOCKER_PREPARATION_ROOT", ""))
+    require(root == runner / "deploylite-p2-docker-evidence", "exact_evidence_root_required")
+    private_directory(root, create)
+    return root
+
+
+def inspect_config(env):
+    config = Path(env.get("DOCKER_CONFIG", ""))
+    require(config == Path(env["RUNNER_TEMP"]) / "deploylite-p2-empty-docker-config", "exact_private_config_required")
+    stat = config.lstat()
+    validate_config({"directory": config.is_dir(), "symlink": config.is_symlink(), "owned": stat.st_uid == os.getuid(), "mode": stat.st_mode}, list(config.iterdir()))
+
+
+def harness_contract():
+    source = (ROOT / "apps/api/src/deployment-docker.integration.test.ts").read_text()
+    require(hashlib.sha256(source.encode()).hexdigest() == MANIFEST["preparedFrom"]["dockerFrozenSha256"], "reviewed_harness_changed_reconciliation_required")
+    def strings(name):
+        selected = re.search(r"const " + name + r" = \[(.*?)\] as const;", source, re.S)
+        require(selected is not None, "reviewed_harness_contract_missing")
+        return re.findall(r'"([^"\n]+)"', selected.group(1))
+    return strings("sourcePaths"), strings("operations")
+
+
+def normalized_digest_reference(reference):
+    require(isinstance(reference, str) and reference.count("@") == 1, "digest_reference_required")
+    name, digest = reference.split("@")
+    require(re.fullmatch(DIGEST, digest) and re.fullmatch(r"[a-z0-9][a-z0-9._:/-]*", name), "exact_digest_repository_required")
+    parent, separator, leaf = name.rpartition("/")
+    leaf = leaf.split(":", 1)[0]  # A tag does not form part of RepoDigest identity.
+    name = (parent + separator + leaf) if separator else leaf
+    components = name.split("/")
+    if len(components) == 1 or not ("." in components[0] or ":" in components[0] or components[0] == "localhost"):
+        components.insert(0, "docker.io")
+    if components[0] == "index.docker.io": components[0] = "docker.io"
+    if components[0] == "docker.io" and len(components) == 2: components.insert(1, "library")
+    require(all(components), "nonempty_repository_required")
+    return "/".join(components), digest
+
+
+def validate_input_image(info, reference, platform):
+    expected = normalized_digest_reference(reference)
+    observed = [normalized_digest_reference(value) for value in info["repoDigests"]]
+    require(expected in observed and info["os"] + "/" + info["architecture"] == platform, "observed_registry_pin_required")
+    return info
+
+
+def observe_image(reference, grant, boundary, deadline=None):
+    data = inspect_json(["docker", "image", "inspect", "--format", IMAGE_FORMAT, reference], grant, boundary, deadline=deadline)
+    health = data.pop("health")
+    data.update(platform=data.pop("os") + "/" + data.pop("architecture"), healthIntervalNs=health["Interval"], healthTimeoutNs=health["Timeout"])
+    require(health["Test"] == ["CMD", "/bin/busybox", "wget", "-q", "-T", "1", "-Y", "off", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"], "actual_fixture_health_command_mismatch")
+    data["healthPath"] = "/healthz"
+    return data

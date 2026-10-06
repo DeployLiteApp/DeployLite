@@ -227,6 +227,25 @@ class CorrectivePhysicalGuards(unittest.TestCase):
     receipts = ProspectivePhysicalGuards.receipts
     resource = ProspectivePhysicalGuards.resource
 
+    def test_native_tagged_dockerhub_pin_accepts_canonical_observed_repository_digest(self):
+        digest = M["fixture"]["registry"].split("@", 1)[1]
+        for alias in ("registry", "library/registry", "docker.io/library/registry", "index.docker.io/library/registry"):
+            with self.subTest(alias=alias):
+                info = {"repoDigests": [alias + "@" + digest], "os": "linux", "architecture": "amd64"}
+                error = None
+                try: H["validate_input_image"](info, M["fixture"]["registry"], "linux/amd64")
+                except H["PhysicalError"] as caught: error = str(caught)
+                self.assertIsNone(error, "a documented tagless DockerHub alias must retain the exact pinned repository/digest")
+
+    def test_native_input_pin_rejects_foreign_repository_digest_and_platform(self):
+        digest = M["fixture"]["registry"].split("@", 1)[1]
+        for reference, os_name, arch in (("foreign@" + digest, "linux", "amd64"), ("registry@sha256:" + "e" * 64, "linux", "amd64"),
+                                         ("foreign.example/library/registry@" + digest, "linux", "amd64"),
+                                         (M["fixture"]["registry"], "windows", "amd64"), (M["fixture"]["registry"], "linux", "arm64")):
+            with self.subTest(reference=reference, os=os_name, arch=arch):
+                with self.assertRaises(H["PhysicalError"]):
+                    H["validate_input_image"]({"repoDigests": [reference], "os": os_name, "architecture": arch}, M["fixture"]["registry"], "linux/amd64")
+
     def realistic_receipts(self):
         receipts = self.receipts()
         for receipt in receipts[-2:]:
@@ -247,6 +266,81 @@ class CorrectivePhysicalGuards(unittest.TestCase):
                     next(e for e in receipts[-1]["events"] if e["kind"] == "receiver-rejection")["correlationId"] = "foreign"
                 else: response["body"]["error"][fault] = "foreign"
                 self.assertFalse(H["verify_physical"](receipts, self.grant))
+
+    def clocked_http(self, headers_drip, completes=False):
+        from unittest.mock import patch
+        class ClockedNetwork:
+            def __init__(self):
+                self.now = 0.0; self.socket_closed = False; self.socket_calls = 0
+                header = b"HTTP/1.1 200 OK\r\nContent-Length: 2048\r\nDocker-Content-Digest: sha256:" + b"e" * 64 + b"\r\n\r\n"
+                self.headers = [bytes([b]) for b in header] if headers_drip else [header]
+                self.body = [b"x"] * 2048
+                if completes:
+                    payload = b'{"schemaVersion":2}'
+                    self.headers = [b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(payload)).encode() + b"\r\nDocker-Content-Digest: sha256:" + b"e" * 64 + b"\r\n\r\n"]
+                    self.body = [payload]
+                self.packets = list(self.headers + self.body)
+                self.ready_at = 0.1
+            def open_socket(self, *args): self.socket_calls += 1; return self
+            def setblocking(self, value): self.assert_nonblocking = value is False
+            def connect_ex(self, address):
+                if address != ("127.0.0.1", 49172): raise AssertionError("only exact loopback fixture endpoint")
+                return 0
+            def getsockopt(self, *args): return 0
+            def send(self, data): return len(data)
+            def recv(self, size):
+                if not self.packets: return b""
+                chunk = self.packets.pop(0)
+                if len(chunk) > size: self.packets.insert(0, chunk[size:]); chunk = chunk[:size]
+                self.ready_at = self.now + 0.1
+                return chunk
+            def wait(self, reads, writes, errors, timeout):
+                if writes: return ([], writes, [])
+                delay = max(0, self.ready_at - self.now)
+                if timeout < delay: self.now += timeout; return ([], [], [])
+                self.now += delay; return (reads, [], [])
+            def close(self): self.socket_closed = True
+            # Model v1's urllib buffered header/body calls: individual bytes arrive before
+            # each socket timeout, but the full blocking read lasts beyond the total deadline.
+            def open(self, request, timeout):
+                self.now += len(self.headers) * 0.1; return self
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self, maximum): self.now += len(self.body) * 0.1; return b"x" * min(maximum, 2048)
+            @property
+            def headers(self): return self._headers
+            @headers.setter
+            def headers(self, value): self._headers = value
+        fake = ClockedNetwork()
+        # urllib response headers normally expose .get; keep the buffered path's input valid.
+        class BufferedResponse:
+            headers = {"Docker-Content-Digest": "sha256:" + "e" * 64}
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self, maximum): return fake.read(maximum)
+        class Opener:
+            def open(self, request, timeout): fake.now += len(fake.headers) * 0.1; return BufferedResponse()
+        with patch("urllib.request.build_opener", return_value=Opener()), patch("socket.socket", side_effect=fake.open_socket), patch("select.select", side_effect=fake.wait):
+            error = None
+            try: result = H["loopback_bytes"]("http://127.0.0.1:49172/v2/fixture/manifests/prepared", 4096, 10, clock=lambda: fake.now)
+            except H["PhysicalError"] as caught: error = str(caught)
+        if completes:
+            self.assertIsNone(error, "a complete in-budget response must not be rejected by a blanket failure stub")
+            self.assertEqual(result, (b'{"schemaVersion":2}', "sha256:" + "e" * 64))
+            self.assertTrue(fake.socket_closed)
+        else:
+            self.assertIsNotNone(error, "a timed-out response must never become verified")
+        self.assertLessEqual(fake.now, 10, "header/body drip must settle at the original deadline, without a new period or unbounded thread")
+        return fake
+
+    def test_characterizes_complete_in_budget_http_bytes_digest_and_socket_settlement(self):
+        self.clocked_http(headers_drip=False, completes=True)
+
+    def test_dripping_http_headers_settle_within_the_single_supplied_deadline(self):
+        self.clocked_http(headers_drip=True)
+
+    def test_dripping_http_body_settles_within_the_single_supplied_deadline(self):
+        self.clocked_http(headers_drip=False)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
