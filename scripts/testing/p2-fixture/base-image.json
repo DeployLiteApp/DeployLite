@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-10-04T21:21:22.911979+00:00",
+  "repository": "docker.io/library/busybox",
+  "tag": "1.37.0-musl",
+  "indexDigest": "sha256:5cec3fc171c87218698e85a52af7087de727372aae264a787b8112901a5b0092",
+  "mediaType": "application/vnd.oci.image.index.v1+json",
+  "platforms": [
+    {
+      "platform": "linux/amd64",
+      "manifestDigest": "sha256:dc88b80842580654294472735332ec7c7789a4010ec9a68b69f9b88c19abede6",
+      "compressedBytes": 871090
+    },
+    {
+      "platform": "linux/arm64/v8",
+      "manifestDigest": "sha256:c542a2b3cb3c982440890284aac884e89dbf468d5ff1c206fd2ba8ea23257420",
+      "compressedBytes": 899665
+    }
+  ],
+  "provenance": {
+    "tagMetadata": "https://hub.docker.com/v2/repositories/library/busybox/tags/1.37.0-musl",
+    "officialManifestReport": "https://github.com/docker-library/repo-info/blob/master/repos/busybox/remote/1.37.0-musl.md",
+    "officialBuilder": "https://github.com/docker-library/busybox/blob/4c1756d5e2fd5dc60276cba8c01b366e5eb667ef/latest-1/musl/Dockerfile.builder",
+    "upstreamSource": "https://busybox.net/downloads/busybox-1.37.0.tar.bz2",
+    "upstreamSourceSha256": "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
+  },
+  "derivedImages": {
+    "a": null,
+    "h": null
+  },
+  "runtimeVerification": "NOT_RUN"
+}
