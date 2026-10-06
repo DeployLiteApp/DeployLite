@@ -284,7 +284,7 @@ export class AgentStatusService {
 
 type BoundDeployment = Deployment & { snapshotOriginId?: string };
 type BoundReceipt = TrustedPriorExecutionReceiptV1 & { snapshotOriginId: string };
-const immutableDeploymentFields: readonly (keyof BoundDeployment)[] = ["projectId", "agentId", "commitSha", "startedAt", "sourceDeploymentId", "snapshotOriginId", "snapshotHash", "executionReceipt"];
+const immutableDeploymentFields: readonly (keyof BoundDeployment)[] = ["projectId", "agentId", "commitSha", "startedAt", "sourceDeploymentId", "activeDeploymentId", "snapshotOriginId", "snapshotHash", "executionReceipt"];
 const terminalDeploymentStatuses: readonly Deployment["status"][] = ["succeeded", "failed", "canceled"];
 const semanticallyEqual = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
 

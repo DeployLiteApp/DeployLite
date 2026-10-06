@@ -1,7 +1,7 @@
 import { FenceError, deploymentExecutionAuthoritySchema, type DeploymentExecutionAuthorityV1 } from "@deploylite/contracts";
 import { and, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
-import type { ConfirmedDeploymentRedeployInput, ConfirmedDeploymentRedeployOutcome, ConfirmedDeploymentStopInput, ConfirmedDeploymentStopOutcome, ConfirmedProjectDeleteInput, ConfirmedProjectDeleteOutcome, ControlCommand, ControlCommandRepository, ControlConfirmation, ControlConfirmationRepository, ControlDeleteRepository, ControlGrant, ControlGrantRepository, ConfirmationOutcome, ControlRedeployRepository, ControlStopRepository } from "@deploylite/domain";
-import { claimDeploymentAuthority, validateStopCompletion, validateDeploymentAuthority, validateInitialExecution, IdempotencyConflictError, scopeKey } from "@deploylite/domain";
+import type { ConfirmedDeploymentRedeployInput, ConfirmedDeploymentRedeployOutcome, ConfirmedDeploymentStopInput, ConfirmedDeploymentStopOutcome, ConfirmedProjectDeleteInput, ConfirmedProjectDeleteOutcome, ControlCommand, ControlCommandRepository, ControlConfirmation, ControlConfirmationRepository, ControlDeleteRepository, ControlGrant, ControlGrantRepository, ConfirmationOutcome, ControlRollbackRepository, ControlRedeployRepository, ControlStopRepository } from "@deploylite/domain";
+import { claimDeploymentAuthority, validateStopCompletion, validateDeploymentAuthority, validateInitialExecution, validateRollbackReservation, isRollbackAdmissionBound, isRollbackClaimBound, createConfirmation, evaluateConfirmation, ConfirmationRejectedError, IdempotencyConflictError, scopeKey } from "@deploylite/domain";
 
 import type { DeployLiteDb } from "../client.js";
 import { auditEvents, controlCommandAudits, controlCommandConfirmations, controlCommands, controlGrants, deployments, projects, type ControlCommandRow, type ControlGrantRow } from "../schema.js";
@@ -22,15 +22,26 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
   constructor(private readonly db: DeployLiteDb, private readonly injectFault?: (stage: ControlDeleteFaultStage) => void | Promise<void>) {}
 
   async resolve(command: ControlCommand): Promise<{ command: ControlCommand; created: boolean }> {
+    if (command.action === "deployment.rollback") return this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`deploylite:rollback:${command.actorId}:${command.idempotencyKey}`}, 0))`);
+      const [row] = await tx.select().from(controlCommands).where(and(eq(controlCommands.actorUserId, command.actorId), eq(controlCommands.action, command.action), eq(controlCommands.idempotencyKey, command.idempotencyKey))).limit(1);
+      if (row) { const current = toCommand(row); validateRollbackReservation(current, command); return { command: current, created: false }; }
+      validateRollbackReservation(command, command);
+      return this.resolveOn(command, tx);
+    });
+    return this.resolveOn(command, this.db);
+  }
+
+  private async resolveOn(command: ControlCommand, db: Pick<DeployLiteDb, "insert" | "select">): Promise<{ command: ControlCommand; created: boolean }> {
     const key = scopeKey(command.scope);
-    const [created] = await this.db.insert(controlCommands).values({
+    const [created] = await db.insert(controlCommands).values({
       id: command.id, actorUserId: command.actorId, action: command.action, scopeKind: command.scope.kind, scopeKey: key,
       inputDigest: command.inputDigest, idempotencyKey: command.idempotencyKey, correlationId: command.correlationId,
       status: command.status, expiresAt: command.expiresAt, result: command.result ?? null
     }).onConflictDoNothing().returning();
     if (created) return { command: toCommand(created), created: true };
 
-    const [existing] = await this.db.select().from(controlCommands).where(and(
+    const [existing] = await db.select().from(controlCommands).where(and(
       eq(controlCommands.actorUserId, command.actorId), eq(controlCommands.action, command.action),
       eq(controlCommands.scopeKey, key), eq(controlCommands.idempotencyKey, command.idempotencyKey)
     )).limit(1);
@@ -39,9 +50,29 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
     return { command: toCommand(existing), created: false };
   }
 
-  async findByIdempotency(actorId: string, idempotencyKey: string, action: "deployment.redeploy" | "deployment.stop" = "deployment.redeploy"): Promise<ControlCommand | null> {
+  async findByIdempotency(actorId: string, idempotencyKey: string, action: "deployment.redeploy" | "deployment.stop" | "deployment.rollback" = "deployment.redeploy"): Promise<ControlCommand | null> {
     const [row] = await this.db.select().from(controlCommands).where(and(eq(controlCommands.actorUserId, actorId), eq(controlCommands.action, action), eq(controlCommands.idempotencyKey, idempotencyKey))).limit(1);
     return row ? toCommand(row) : null;
+  }
+
+  async resolveRollbackConfirmation(command: ControlCommand, now?: Date): Promise<ControlConfirmation | null> {
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx.select().from(controlCommands).where(eq(controlCommands.id, command.id)).limit(1).for("update");
+      if (!row) return null;
+      const current = toCommand(row); validateRollbackReservation(current, command);
+      if (current.status !== "pending_confirmation" || current.expiresAt <= (now ?? new Date())) return null;
+      let [stored] = await tx.select().from(controlCommandConfirmations).where(eq(controlCommandConfirmations.commandId, current.id)).limit(1);
+      if (!stored) {
+        const confirmation = createConfirmation({ command: current, classification: "destructive" });
+        await tx.insert(controlCommandConfirmations).values({ id: confirmation.id, commandId: confirmation.commandId, actorUserId: confirmation.actorId, action: confirmation.action, scopeKind: confirmation.scope.kind, scopeKey: scopeKey(confirmation.scope), inputDigest: confirmation.inputDigest, classification: confirmation.classification, expiresAt: confirmation.expiresAt, consumedAt: null }).onConflictDoNothing();
+        [stored] = await tx.select().from(controlCommandConfirmations).where(eq(controlCommandConfirmations.commandId, current.id)).limit(1);
+      }
+      if (!stored || stored.scopeKind !== current.scope.kind || stored.scopeKey !== scopeKey(current.scope)) return null;
+      const confirmation: ControlConfirmation = { id: stored.id, commandId: stored.commandId, actorId: stored.actorUserId, action: stored.action as ControlConfirmation["action"], scope: current.scope, inputDigest: stored.inputDigest, classification: stored.classification as ControlConfirmation["classification"], expiresAt: stored.expiresAt, consumedAt: stored.consumedAt };
+      try { evaluateConfirmation(current, confirmation, now ?? new Date()); }
+      catch (error) { if (error instanceof ConfirmationRejectedError) return null; throw error; }
+      return confirmation;
+    });
   }
 
   async bind(confirmation: ControlConfirmation): Promise<void> {
@@ -136,7 +167,14 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
       if (!row) throw new Error("Control command was not found");
       const current = toCommand(row);
       const related = await tx.select().from(controlCommands).where(and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${projectId}`));
-      const executionId = current.action === "deployment.stop" ? hinted.scope.deploymentId : current.result?.action === "deployment.redeploy" ? current.result.deploymentId : null;
+      const executionId = current.action === "deployment.stop" ? hinted.scope.deploymentId : (current.result?.action === "deployment.redeploy" || current.result?.action === "deployment.rollback") ? current.result.deploymentId : null;
+      if (current.action === "deployment.rollback") {
+        validateRollbackReservation(current, command);
+        const result = current.result as import("@deploylite/contracts").DeploymentRollbackCommandResult;
+        const [execution] = await tx.select().from(deployments).where(eq(deployments.id, result.deploymentId)).limit(1).for("update");
+        const [historical] = await tx.select().from(deployments).where(eq(deployments.id, result.sourceDeploymentId)).limit(1).for("share");
+        if (!isRollbackClaimBound(current, execution ? toDeployment(execution) : null, historical ? toDeployment(historical) : null, new Date())) return { command: current, claimed: false };
+      }
       const authority = executionId ? claimDeploymentAuthority(related.map(toCommand), current, executionId) : null;
       if (!authority) return { command: current, claimed: false };
       const [saved] = await tx.update(controlCommands).set({ status: "dispatching", executionAuthority: authority, updatedAt: new Date() }).where(and(eq(controlCommands.id, current.id), eq(controlCommands.status, "eligible"))).returning();
@@ -206,7 +244,7 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
 
   async claimDeploymentRedeploy(command: ControlCommand) {
     const claim = await this.claimExecutionAuthority(command);
-    const id = claim.command.result?.action === "deployment.redeploy" ? claim.command.result.deploymentId : null;
+    const id = (claim.command.result?.action === "deployment.redeploy" || claim.command.result?.action === "deployment.rollback") ? claim.command.result.deploymentId : null;
     const row = id ? (await this.db.select().from(deployments).where(eq(deployments.id, id)).limit(1))[0] : null;
     return { ...claim, deployment: row ? toDeployment(row) : null };
   }
@@ -218,6 +256,32 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
     const [completed] = await this.db.update(controlCommands).set({ status: "completed", result, updatedAt: new Date() }).where(and(eq(controlCommands.id, command.id), or(eq(controlCommands.status, "eligible"), eq(controlCommands.status, "dispatching")))).returning();
     if (completed) return toCommand(completed); const [current] = await this.db.select().from(controlCommands).where(eq(controlCommands.id, command.id)).limit(1); if (!current) throw new Error("Control command was not found"); return toCommand(current);
   }
+
+  async executeConfirmedDeploymentRollback({ command, confirmation, deployment, now = new Date() }: Parameters<ControlRollbackRepository["executeConfirmedDeploymentRollback"]>[0]) {
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx.select().from(controlCommands).where(eq(controlCommands.id, command.id)).limit(1).for("update");
+      if (!row) throw new Error("Rollback command was not found");
+      const current = toCommand(row); validateRollbackReservation(current, command);
+      const reserved = current.result as import("@deploylite/contracts").DeploymentRollbackCommandResult;
+      if (current.status === "completed") return { command: current, accepted: true, reason: null, result: reserved, deployment: null, alreadyCompleted: true };
+      if (current.status === "eligible" || current.status === "dispatching") {
+        const [existing] = await tx.select().from(deployments).where(eq(deployments.id, reserved.deploymentId)).limit(1);
+        return { command: current, accepted: true, reason: null, result: reserved, deployment: existing ? toDeployment(existing) : null, alreadyCompleted: false };
+      }
+      const [historical] = await tx.select().from(deployments).where(eq(deployments.id, reserved.sourceDeploymentId)).limit(1).for("share");
+      if (!isRollbackAdmissionBound(current, deployment, historical ? toDeployment(historical) : null, now)) return { command: current, accepted: false, reason: "execution_binding_rejected", result: null, deployment: null, alreadyCompleted: false };
+      const [consumed] = await tx.update(controlCommandConfirmations).set({ consumedAt: now }).where(and(eq(controlCommandConfirmations.id, confirmation.id), eq(controlCommandConfirmations.commandId, current.id), eq(controlCommandConfirmations.actorUserId, current.actorId), eq(controlCommandConfirmations.action, "deployment.rollback"), eq(controlCommandConfirmations.scopeKind, current.scope.kind), eq(controlCommandConfirmations.scopeKey, scopeKey(current.scope)), eq(controlCommandConfirmations.inputDigest, current.inputDigest), eq(controlCommandConfirmations.classification, "destructive"), isNull(controlCommandConfirmations.consumedAt), gt(controlCommandConfirmations.expiresAt, now), lte(controlCommandConfirmations.expiresAt, current.expiresAt))).returning();
+      if (!consumed) return { command: current, accepted: false, reason: "confirmation_rejected", result: null, deployment: null, alreadyCompleted: false };
+      await tx.insert(deployments).values({ id: deployment.id, projectId: deployment.projectId, agentId: deployment.agentId, status: deployment.status, commitSha: deployment.commitSha, snapshotHash: deployment.snapshotHash, startedAt: new Date(deployment.startedAt), finishedAt: null, metadata: { activeDeploymentId: deployment.activeDeploymentId, sourceDeploymentId: deployment.sourceDeploymentId, snapshotOriginId: deployment.snapshotOriginId } });
+      await this.fault("redeploy-deployment-inserted");
+      const result = { ...reserved, status: "eligible" as const };
+      const [eligible] = await tx.update(controlCommands).set({ status: "eligible", result, updatedAt: now }).where(and(eq(controlCommands.id, current.id), eq(controlCommands.status, "pending_confirmation"))).returning();
+      if (!eligible) throw new Error("Rollback command lost confirmation CAS");
+      await tx.insert(controlCommandAudits).values({ commandId: current.id, confirmationId: confirmation.id, correlationId: current.correlationId, outcome: "accepted", reason: null });
+      return { command: toCommand(eligible), accepted: true, reason: null, result, deployment, alreadyCompleted: false };
+    });
+  }
+  async claimDeploymentRollback(command: ControlCommand) { return this.claimDeploymentRedeploy(command); }
 
   private async fault(stage: ControlDeleteFaultStage): Promise<void> { await this.injectFault?.(stage); }
 }
