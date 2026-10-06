@@ -1,5 +1,5 @@
 import { signAgentTransport, validateAgentTransportKey } from "@deploylite/config";
-import { agentCapabilityHandshakeSchema, agentExecutionReceiptSchema, deploymentStopAgentReceiptSchema, dockerImageExecutionReceiptSchema, promotionPolicySchema, type AgentExecutionCommand, type AgentReplacementV1, type DeploymentExecutionAuthorityV1, type DeploymentSnapshotV1, type LeaseV1, TransportCanceledError, TransportError, TransportTimeoutError } from "@deploylite/contracts";
+import { agentCachedReceiptSchema, agentReceiptQuerySchema, type AgentReceiptQuery, agentCapabilityHandshakeSchema, agentExecutionReceiptSchema, deploymentStopAgentReceiptSchema, dockerImageExecutionReceiptSchema, promotionPolicySchema, type AgentExecutionCommand, type AgentReplacementV1, type DeploymentExecutionAuthorityV1, type DeploymentSnapshotV1, type LeaseV1, TransportCanceledError, TransportError, TransportTimeoutError } from "@deploylite/contracts";
 import { awaitAbortable, type DockerImageExecutionReceiptV1 } from "@deploylite/domain";
 
 export type AgentTransportOptions = Readonly<{ endpoint: string; trustKey: string; agentId: string; allowInsecureInternal?: boolean; fetch?: typeof globalThis.fetch; timeoutMs?: number; now?: () => number }>;
@@ -40,6 +40,38 @@ export class AuthenticatedAgentDeploymentTransport {
     const receipt = dockerImageExecutionReceiptSchema.parse(result.receipt) as DockerImageExecutionReceiptV1;
     if (v2) { if (result.schemaVersion !== 2 || result.sourceDeploymentId !== sourceDeploymentId || result.snapshotHash !== snapshot.hash || result.correlationId !== (context?.correlationId ?? commandId)) throw new TransportError("agent receipt identity mismatch"); return { ...receipt, projectId: snapshot.projectId, sourceDeploymentId, snapshotHash: snapshot.hash, correlationId: result.correlationId }; }
     if (result.schemaVersion !== 1) throw new TransportError("agent receipt identity mismatch"); return receipt;
+    });
+  }
+
+  async readExecutionReceipt(snapshot: DeploymentSnapshotV1, commandId: string, context?: AgentDispatchContext): Promise<DockerImageExecutionReceiptV1 | DeploymentDispatchReceipt | null> {
+    snapshot = structuredClone(snapshot); context = context ? { ...context, authority: context.authority ? structuredClone(context.authority) : undefined, replacement: context.replacement ? structuredClone(context.replacement) : undefined } : undefined;
+    const query = agentReceiptQuerySchema.parse({ schemaVersion: 1, action: "deploy.execute", agentId: context?.agentId ?? this.#options.agentId, commandId, projectId: snapshot.projectId, deploymentId: context?.executionDeploymentId ?? snapshot.deploymentId, sourceDeploymentId: context?.executionDeploymentId === undefined ? null : context.sourceDeploymentId ?? snapshot.deploymentId, snapshot: { ...snapshot, canonicalBytes: undefined }, snapshotHash: snapshot.hash, correlationId: context?.correlationId ?? commandId, authority: context?.authority ?? null, replacement: context?.replacement ?? null, timeoutMs: this.#options.timeoutMs ?? 30_000 });
+    const result = await this.readCached(query, context?.signal);
+    if (result.action !== "deploy.execute" || query.action !== "deploy.execute") throw new TransportError("agent cached receipt identity mismatch");
+    if (!result.receipt) return null;
+    const receipt = result.receipt;
+    if (receipt.commandId !== query.commandId || receipt.deploymentId !== query.deploymentId || receipt.receipt.deploymentId !== query.deploymentId || (query.sourceDeploymentId === null ? receipt.schemaVersion !== 1 : receipt.schemaVersion !== 2 || receipt.sourceDeploymentId !== query.sourceDeploymentId || receipt.snapshotHash !== query.snapshotHash || receipt.correlationId !== query.correlationId)) throw new TransportError("agent cached execution identity mismatch");
+    return query.action === "deploy.execute" && query.sourceDeploymentId !== null ? { ...result.receipt.receipt, projectId: query.projectId, sourceDeploymentId: query.sourceDeploymentId, snapshotHash: query.snapshotHash, correlationId: query.correlationId } : result.receipt.receipt;
+  }
+  async readStopReceipt(input: AgentStopDispatchInput, context: AgentDispatchContext): Promise<ReturnType<typeof deploymentStopAgentReceiptSchema.parse> | null> {
+    input = structuredClone(input); context = { ...context, authority: context.authority ? structuredClone(context.authority) : undefined };
+    const query = agentReceiptQuerySchema.parse({ schemaVersion: 1, action: "deployment.stop", agentId: context.agentId, commandId: input.commandId, projectId: input.projectId, deploymentId: input.deploymentId, candidateId: input.candidateId, effectiveImage: input.effectiveImage, containerId: input.containerId ?? null, correlationId: context.correlationId, authority: context.authority ?? null, timeoutMs: this.#options.timeoutMs ?? 30_000 });
+    const result = await this.readCached(query, context.signal);
+    if (result.action !== "deployment.stop" || query.action !== "deployment.stop") throw new TransportError("agent cached receipt identity mismatch");
+    const receipt = result.receipt;
+    if (receipt && (receipt.agentId !== this.#options.agentId || receipt.commandId !== query.commandId || receipt.projectId !== query.projectId || receipt.deploymentId !== query.deploymentId || receipt.candidateId !== query.candidateId || receipt.effectiveImage !== query.effectiveImage || (receipt.containerId ?? null) !== query.containerId || receipt.correlationId !== query.correlationId)) throw new TransportError("agent cached Stop identity mismatch");
+    return receipt;
+  }
+  private async readCached(query: AgentReceiptQuery, parent?: AbortSignal) {
+    if (!this.available()) throw new TransportError("agent transport is not configured");
+    if (query.agentId !== this.#options.agentId) throw new TransportError("agent transport identity mismatch");
+    const payload = JSON.stringify(query);
+    return this.operate(query.timeoutMs, parent, async (signal, sent) => {
+      sent(); const response = await awaitAbortable(() => this.#fetch(`${this.#options.endpoint.replace(/\/$/, "")}/deployments/receipt`, { method: "POST", headers: { "content-type": "application/json", "x-deploylite-signature": signAgentTransport(`POST /deployments/receipt\n${payload}`, this.#options.trustKey) }, body: payload, signal }), signal);
+      if (!response.ok) throw new TransportError(`agent cache returned HTTP ${response.status}`);
+      const result = agentCachedReceiptSchema.parse(await awaitAbortable(() => response.json(), signal));
+      if (result.action !== query.action || result.agentId !== this.#options.agentId || result.commandId !== query.commandId || result.correlationId !== query.correlationId) throw new TransportError("agent cached receipt identity mismatch");
+      return result;
     });
   }
 
