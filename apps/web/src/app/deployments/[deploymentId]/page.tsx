@@ -1,6 +1,6 @@
 import Link from "next/link";
 import React from "react";
-import { loadRequestAuthSession, loadRequestDeploymentLogMetadata } from "../../../lib/server-auth";
+import { loadRequestAuthSession, loadRequestDeploymentLogMetadata, loadRequestProjectDetailMetadata } from "../../../lib/server-auth";
 import { getAuthApiBaseUrl } from "../../../lib/auth-boundary";
 import { AppShell } from "@/components/app-shell";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -11,6 +11,8 @@ import { Separator } from "@/components/ui/separator";
 import { DeploymentLogInspector } from "./deployment-log-inspector";
 import { DeploymentStopControl } from "./deployment-stop-control";
 import { DeploymentRedeployControl } from "./deployment-redeploy-control";
+import { DeploymentRollbackControl } from "./deployment-rollback-control";
+import { hasBoundSuccessfulExecution } from "@/lib/deployment-redeploy";
 
 export const dynamic = "force-dynamic";
 
@@ -75,6 +77,8 @@ export default async function DeploymentLogsPage({ params }: { params: Promise<{
   }
 
   const deployment = logView.data.deployment;
+  const history = hasBoundSuccessfulExecution(deployment, deploymentId) ? await loadRequestProjectDetailMetadata(deployment.projectId) : null;
+  const historicalDeployments = history?.kind === "ready" && history.data.project.id === deployment.projectId ? history.data.deployments : null;
   const events = logView.data.events;
   const lastEvent = events.at(-1) ?? null;
   const lastEventId = lastEvent?.sequence ?? null;
@@ -178,6 +182,7 @@ export default async function DeploymentLogsPage({ params }: { params: Promise<{
             <Separator />
 
             <DeploymentRedeployControl key={`${deployment.id}:${deployment.snapshotHash ?? "legacy"}`} deployment={deployment} expectedSourceDeploymentId={deploymentId} role={auth.user.role} apiBaseUrl={getAuthApiBaseUrl()} />
+            {historicalDeployments ? <DeploymentRollbackControl deployment={deployment} expectedActiveDeploymentId={deploymentId} historicalDeployments={historicalDeployments} role={auth.user.role} apiBaseUrl={getAuthApiBaseUrl()} /> : null}
             <DeploymentStopControl expectedDeploymentId={deploymentId} deployment={deployment} role={auth.user.role} apiBaseUrl={getAuthApiBaseUrl()} />
 
             <div className="flex flex-wrap gap-2" data-testid="deployment-next-actions">
