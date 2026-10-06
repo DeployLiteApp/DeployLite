@@ -440,7 +440,18 @@ class PhysicalFixture {
     if (argv[1] === "stop") this.event("physical-owned-stop", { containerId: before.id, priorRunning: before.running,
       lastHealthyProbeBegin: this.events.filter((event) => event.kind === "loopback-probe" && event.healthy).at(-1)?.beginMonoMs });
     const result = await this.invoke(argv, signal);
-    if (argv[1] === "rm") this.containers.delete(before.id);
+    if (argv[1] === "rm") {
+      const fence = () => {
+        signal.throwIfAborted();
+        assert.equal(result.exitCode, 0, "removal proof requires observed exit zero");
+        assert.equal(result.signal, null, "interrupted removal cannot prove cleanup");
+        assert(Date.now() < Date.parse(this.manifest.expiresAt), "late removal cannot prove cleanup after grant expiry");
+      };
+      fence();
+      this.event("cleanup-receipt", { resource: "container", id: before.id, name: target, verifiedLabels: true, removed: true });
+      await this.persist(); // Keep historical resource IDs and persist their removal before dropping live cleanup ownership.
+      fence(); this.containers.delete(before.id);
+    }
     if (argv[1] === "rename") this.containers.get(before.id)!.name = argv[3]!;
     if (argv[1] === "stop" && this.faultArmed && ["throw-after-stop", "cancel-after-stop"].includes(this.fault)) {
       this.faultArmed = false; this.faultMono = performance.now();
@@ -788,6 +799,33 @@ describe("physical Docker acceptance opt-in guard", () => {
     expect(args.slice(1, 5)).toEqual(["--config", jobEnv.DOCKER_CONFIG, "--host", f.manifest.dockerHost]);
     expect(run.mock.calls.some(([argv]) => argv.includes("inspect") && argv.at(-1) === "e".repeat(64))).toBe(true);
     expect(f.events.some((event) => event.kind === "owned-container-budget" && event.cpu === 500_000_000 && event.memory === 67108864)).toBe(true);
+  });
+  it("records exact temporary removal proof while retaining resource history", async () => {
+    const { f, run, execute } = await recordingRun();
+    await execute(); // Record a real runProduction creation before exercising its lifecycle removal.
+    const id = "e".repeat(64), intent = [...f.intents.values()][0]!;
+    f.configId = `sha256:${"a".repeat(64)}`; f.networkId = "d".repeat(64);
+    const observation: Container = { id, name: `/${intent.candidate}`, imageId: f.configId,
+      owner: f.owner, projectId: f.projectId, deploymentId: intent.deploymentId,
+      candidateId: intent.candidateId, effectiveImage: f.manifest.image, running: false,
+      health: null, hostBindings: {}, portBindings: {}, networkMode: f.network,
+      networks: { [f.network]: { networkId: f.networkId, endpointId: "b".repeat(64) } } };
+    run.mockImplementationOnce(async () => ({ exitCode: 0, signal: null, stdout: JSON.stringify(observation), stderr: "" }))
+      .mockImplementationOnce(async () => ({ exitCode: 0, signal: null, stdout: "", stderr: "" }));
+    const builders = await import("../../agent/src/infrastructure/docker/docker-cli-argv.js");
+    const remove = builders.buildDockerRemoveArgv(intent.candidate);
+    const history = structuredClone(f.ledger.resources);
+    await (f as unknown as { runProduction(argv: readonly string[], signal: AbortSignal): Promise<DockerProcessExit> })
+      .runProduction(remove, new AbortController().signal);
+
+    expect(run.mock.calls.at(-2)?.[0].at(-1)).toBe(intent.candidate);
+    expect(run.mock.calls.at(-1)?.[0]).toEqual(["docker", "--config", f.manifest.dockerConfigDirectory,
+      "--host", f.manifest.dockerHost, ...remove.slice(1)]);
+    expect(f.ledger.resources).toEqual(history);
+    expect(f.events.filter((event) => event.kind === "cleanup-receipt")).toEqual([
+      expect.objectContaining({ resource: "container", id, name: intent.candidate, verifiedLabels: true, removed: true })
+    ]);
+    expect(f.containers.has(id)).toBe(false);
   });
   it.each([{ cpu: 0, memory: 67108864, pids: 64 }, { cpu: 500000000, memory: 0, pids: 64 }, { cpu: 500000000, memory: 67108864, pids: 0 }])(
     "refuses observed missing/widened owned-container limits %j while retaining the exact cleanup ID", async (limits) => {

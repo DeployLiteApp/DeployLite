@@ -40,21 +40,24 @@ No Docker operation is authorized by this source. The user must separately
 authorize resources and operations; root verifies and executes that scope. The
 grant must identify the disposable native Linux engine/socket/ID, owner/run IDs,
 expiry, platform and resource budget before build/pull/run/push or removal.
-The proposed 2 CPU/2 GiB whole-engine and 512 MiB new fixture/cache ceilings are
-not accepted user budgets; reconciliation of limits for owned resources remains
-pending. Proposed loopback ports are 49172 for preparation and 49170/49171 for
-later physical cases. Do not use protected ports or alter a shared daemon.
-Preparation and cases run serially. No QEMU, privileged containers, host bind
-mounts or ambient Docker configuration/credentials are needed.
+The current proposal caps the owned registry at 0.5 CPU/256 MiB and each
+smoke/application container at 0.5 CPU/64 MiB with 64 PIDs. Preparation uses at
+most two containers serially; later cases use at most three. The proposed
+512 MiB storage ceiling requires observed verification before acceptance.
+These per-owned-resource limits require the later concrete user approval.
+Engine CPU/memory information does not impose a whole-daemon ceiling or permit
+daemon changes. Proposed loopback ports are 49172 for preparation and
+49170/49171 for cases; protected ports remain excluded. Use native execution,
+private owned empty Docker configuration, and exact recorded resource IDs.
 
 The existing provider is GitHub Actions (`.github/workflows/baseline.yml`,
 `ubuntu-24.04`); an owned preparation on that provider or an approved disposable
 host is feasible without a new provider or registry account. A default hosted
-runner is not assumed to meet the physical harness's engine-information ceiling.
-The current private whole-engine gate is a proposal awaiting reconciliation;
-root will resolve an owned-resource budget before the final harness. No stock
-runner compliance, shared-daemon change or new runtime grant is inferred.
-No workflow is changed or triggered here.
+runner still requires observed engine, platform, job identity and resource
+verification. The CI helper/workflow source binds future evidence to the exact
+repository/run/attempt/job/commit and owned operations. Generated manifests do
+not grant permission. Hosted execution and stock-runner acceptance remain NOT
+RUN; no workflow has been triggered for these sources.
 
 After approval, verify source hashes and the native engine/platform, fetch only
 the pinned public base, then build targets `a` and `h` serially with networking
