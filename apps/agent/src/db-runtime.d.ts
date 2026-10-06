@@ -10,6 +10,7 @@ declare module "@deploylite/db" {
   export class DbAgentReplayStore {
     readonly durable: true;
     constructor(db: unknown, owner: string);
+    lookup(commandId: string, fingerprint: string): Promise<Record<string, unknown> | null>;
     claim(commandId: string, fingerprint: string, lease: unknown): Promise<{ claimed: boolean; receipt?: any }>;
     wait(commandId: string): Promise<any>;
     complete(commandId: string, value: unknown): Promise<void>;

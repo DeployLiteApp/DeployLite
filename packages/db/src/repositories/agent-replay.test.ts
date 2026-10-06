@@ -51,3 +51,39 @@ describe("replay release claim-token CAS", () => {
     await store.release("command", "other"); expect(pool.row?.claimToken).toBe("current");
   });
 });
+
+
+describe("read-only completed receipt lookup", () => {
+  function cached(status = "completed", fingerprint = "original") {
+    const pool = new RecordingPool(); pool.row = { commandId: "command", fingerprint, status, claimOwner: "original-owner", claimToken: "original-token", leaseId: "original-lease", leaseExpiresAt: new Date(Date.now() + 60_000), receipt: { physicalId: "original-observed-container" } };
+    const store = new DbAgentReplayStore(createDbClient(pool as unknown as Pool), "restarted-owner");
+    return { pool, store };
+  }
+  it("reads a completed original receipt across recreated owners without claiming or waiting", async () => {
+    const { pool, store } = cached(), before = structuredClone(pool.row);
+    expect(await store.lookup("command", "original")).toEqual({ physicalId: "original-observed-container" });
+    expect(pool.row).toEqual(before); expect(pool.queries.every((query) => query.text.startsWith("select"))).toBe(true);
+  });
+  it.each(["in_progress", "expired", "expiry-boundary"])("leaves %s original evidence unresolved without changing its claim", async (fault) => {
+    const { pool, store } = cached();
+    if (fault === "in_progress") pool.row!.status = "in_progress";
+    else pool.row!.leaseExpiresAt = new Date(fault === "expired" ? Date.now() - 1 : Date.now());
+    const before = structuredClone(pool.row);
+    expect(await store.lookup("command", "original")).toBeNull(); expect(pool.row).toEqual(before);
+    expect(pool.queries.every((query) => query.text.startsWith("select"))).toBe(true);
+  });
+  it("rejects a different original fingerprint without mutating evidence", async () => {
+    const { pool, store } = cached(), before = structuredClone(pool.row);
+    await expect(store.lookup("command", "different")).rejects.toThrow("replay"); expect(pool.row).toEqual(before);
+  });
+  it("keeps missing commands unresolved without allocating a replay owner", async () => {
+    const { pool, store } = cached(); expect(await store.lookup("missing", "original")).toBeNull();
+    expect(pool.queries.every((query) => query.text.startsWith("select"))).toBe(true);
+  });
+  it("returns an independent clone rather than making cached evidence mutable by its caller", async () => {
+    const { pool, store } = cached(); const first = await store.lookup("command", "original");
+    expect(first).not.toBeNull(); first!.physicalId = "forged";
+    expect(await store.lookup("command", "original")).toEqual({ physicalId: "original-observed-container" });
+    expect(pool.row?.receipt).toEqual({ physicalId: "original-observed-container" });
+  });
+});

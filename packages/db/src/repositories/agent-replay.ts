@@ -6,12 +6,19 @@ import { agentReplay } from "../schema.js";
 
 export type AgentReplayReceipt = Record<string, unknown>;
 export type AgentReplayClaim = { claimed: boolean; claimToken?: string; receipt?: AgentReplayReceipt };
-export type AgentReplayStore = { readonly durable: true; claim(commandId: string, fingerprint: string, lease: LeaseV1): Promise<AgentReplayClaim>; wait(commandId: string): Promise<AgentReplayReceipt>; complete(commandId: string, value: { fingerprint: string; claimToken: string; receipt: AgentReplayReceipt }): Promise<void>; release(commandId: string, claimToken?: string): Promise<void> };
+export type AgentReplayStore = { readonly durable: true; lookup(commandId: string, fingerprint: string): Promise<AgentReplayReceipt | null>; claim(commandId: string, fingerprint: string, lease: LeaseV1): Promise<AgentReplayClaim>; wait(commandId: string): Promise<AgentReplayReceipt>; complete(commandId: string, value: { fingerprint: string; claimToken: string; receipt: AgentReplayReceipt }): Promise<void>; release(commandId: string, claimToken?: string): Promise<void> };
 
 export class DbAgentReplayStore implements AgentReplayStore {
   readonly durable = true as const;
   readonly #owned = new Set<string>();
   constructor(private readonly db: DeployLiteDb, private readonly owner: string) { if (!owner.trim()) throw new Error("replay owner is required"); }
+  async lookup(commandId: string, fingerprint: string): Promise<AgentReplayReceipt | null> {
+    const [row] = await this.db.select().from(agentReplay).where(eq(agentReplay.commandId, commandId)).limit(1);
+    if (!row) return null;
+    if (row.fingerprint !== fingerprint) throw new ReplayConflictError();
+    if (row.status !== "completed" || row.leaseExpiresAt.getTime() <= Date.now()) return null;
+    return row.receipt ? structuredClone(row.receipt) : null;
+  }
   async claim(commandId: string, fingerprint: string, lease: LeaseV1): Promise<AgentReplayClaim> {
     const now = new Date();
     if (lease.expiresAt <= now.getTime()) throw new Error("replay lease is expired");

@@ -77,3 +77,17 @@ export const deploymentStopAgentReceiptSchema = z.object({
   correlationId: id, reason: z.string().max(512).nullable()
 }).strict();
 export type DeploymentStopAgentReceipt = z.infer<typeof deploymentStopAgentReceiptSchema>;
+
+// Cache queries carry original immutable scope, never a new execution lease.
+const cachedQueryFields = { schemaVersion: z.literal(1), agentId: id, commandId: id, projectId: id, deploymentId: id, correlationId: id, authority: deploymentExecutionAuthoritySchema.nullable(), timeoutMs: z.number().int().positive().max(300_000) };
+export const agentReceiptQuerySchema = z.discriminatedUnion("action", [
+  z.object({ ...cachedQueryFields, action: z.literal("deploy.execute"), sourceDeploymentId: id.nullable(), snapshot: z.record(z.unknown()), snapshotHash: z.string().regex(/^[a-f0-9]{64}$/), replacement: agentReplacementSchema.nullable() }).strict(),
+  z.object({ ...cachedQueryFields, action: z.literal("deployment.stop"), candidateId: id, effectiveImage: digestImage, containerId: trustedPriorExecutionReceiptSchema.shape.containerId.nullable() }).strict()
+]);
+const cachedResponseFields = { schemaVersion: z.literal(1), agentId: id, commandId: id, correlationId: id };
+export const agentCachedReceiptSchema = z.discriminatedUnion("action", [
+  z.object({ ...cachedResponseFields, action: z.literal("deploy.execute"), receipt: agentExecutionReceiptSchema.nullable() }).strict(),
+  z.object({ ...cachedResponseFields, action: z.literal("deployment.stop"), receipt: deploymentStopAgentReceiptSchema.nullable() }).strict()
+]);
+export type AgentReceiptQuery = z.infer<typeof agentReceiptQuerySchema>;
+export type AgentCachedReceipt = z.infer<typeof agentCachedReceiptSchema>;

@@ -67,14 +67,15 @@ export type ControlDeleteRepository = ControlCommandRepository & ControlConfirma
   executeConfirmedProjectDelete(input: ConfirmedProjectDeleteInput): Promise<ConfirmedProjectDeleteOutcome>;
 };
 export type ControlStopRepository = ControlCommandRepository & ControlConfirmationRepository & {
+  findByIdempotency?(actorId: string, idempotencyKey: string, action?: "deployment.redeploy" | "deployment.stop"): Promise<ControlCommand | null>;
   validateDeploymentAuthority?(authority: DeploymentExecutionAuthorityV1, now?: number): Promise<void>;
   executeConfirmedDeploymentStop(input: ConfirmedDeploymentStopInput): Promise<ConfirmedDeploymentStopOutcome>;
   claimDeploymentStop(command: ControlCommand): Promise<{ command: ControlCommand; claimed: boolean; authority?: DeploymentExecutionAuthorityV1 }>;
-  completeDeploymentStop(command: ControlCommand, result: DeploymentStopCommandResult): Promise<ControlCommand>;
+  completeDeploymentStop(command: ControlCommand, result: DeploymentStopCommandResult, signal?: AbortSignal): Promise<ControlCommand>;
 };
 export type ControlRedeployRepository = ControlCommandRepository & ControlConfirmationRepository & {
   validateDeploymentAuthority?(authority: DeploymentExecutionAuthorityV1, now?: number): Promise<void>;
-  findByIdempotency(actorId: string, idempotencyKey: string): Promise<ControlCommand | null>;
+  findByIdempotency(actorId: string, idempotencyKey: string, action?: "deployment.redeploy" | "deployment.stop"): Promise<ControlCommand | null>;
   executeConfirmedDeploymentRedeploy(input: ConfirmedDeploymentRedeployInput): Promise<ConfirmedDeploymentRedeployOutcome>;
   claimDeploymentRedeploy(command: ControlCommand): Promise<{ command: ControlCommand; claimed: boolean; deployment: Deployment | null; authority?: DeploymentExecutionAuthorityV1 }>;
   completeDeploymentRedeploy(command: ControlCommand, result: DeploymentRedeployCommandResult): Promise<ControlCommand>;
