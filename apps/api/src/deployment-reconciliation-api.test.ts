@@ -38,6 +38,39 @@ async function fixture() {
   const confirm = async (action: "stop" | "redeploy", key = action) => { const pending = await request(action, key); expect(pending.statusCode, pending.body).toBe(202); return () => request(action, key, pending.json().data.confirmationId); };
   return { setQueryHook: (value: typeof queryHook) => { queryHook = value; }, abortCurrent: () => { currentRaw.emit("aborted"); }, app, runtime, memory, docker, records, snapshots, complete, stopComplete, claim, wait, release, lookup, queries, bodies, A, request, confirm, initial, setCache: (value: boolean) => { cache = value; }, lose: (value: typeof lose) => { lose = value; } };
 }
+describe("same command cached evidence reconciliation", () => {
+  it.each(["redeploy", "stop"] as const)("reconciles %s lost reply immediately from original cache without another effect/claim", async (action) => {
+    const f = await fixture(); f.lose(action); const before = structuredClone(f.A);
+    const response = await (await f.confirm(action))(); expect(response.statusCode, response.body).toBe(200);
+    expect(f.queries).toHaveLength(1); expect(f.claim).toHaveBeenCalledTimes(2); expect(f.lookup).toHaveBeenCalledOnce(); expect(f.wait).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+    expect([...f.memory.completion.commands.values()][0]?.status).toBe("completed"); expect(await f.memory.deployments.findById(f.A.id)).toEqual(before);
+    if (action === "redeploy") { expect(response.json().data.deployment.executionReceipt).toEqual(f.records.get(f.queries[0].commandId)!.receipt.executionReceipt); expect(f.complete).toHaveBeenCalledOnce(); }
+    else expect(f.stopComplete).toHaveBeenCalledOnce();
+  });
+  it.each(["redeploy", "stop"] as const)("reconciles %s on same-key retry with original correlation while unavailable evidence remains pending", async (action) => {
+    const f = await fixture(); f.lose(action); f.setCache(false);
+    const unknown = await (await f.confirm(action))(); expect(unknown.statusCode, unknown.body).toBe(502); expect([...f.memory.completion.commands.values()][0]?.status).toBe("dispatching");
+    const effects = f.docker.calls.length, claims = f.claim.mock.calls.length; f.setCache(true);
+    const replay = await f.request(action, action, undefined, "retry-new-correlation"); expect(replay.statusCode, replay.body).toBe(200);
+    expect(f.queries.at(-1)).toMatchObject({ correlationId: "original-correlation" }); expect(f.docker.calls).toHaveLength(effects); expect(f.claim).toHaveBeenCalledTimes(claims); expect(f.wait).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+    if (action === "stop") expect((await f.memory.deployments.listLogs(f.A.id)).find((log) => log.message === "Authenticated agent stop confirmed.")).toMatchObject({ correlationId: "original-correlation", requestId: "retry-new-correlation" });
+    const lookups = f.lookup.mock.calls.length; await f.memory.deployments.remove(f.A.id); await f.runtime.state.projects.remove(f.A.projectId); f.snapshots.clear();
+    expect((await f.request(action, action, undefined, "different-replay-correlation")).statusCode).toBe(200); expect(f.lookup).toHaveBeenCalledTimes(lookups);
+    expect((await f.request(action, action, undefined, "changed", "c".repeat(64), "other-source")).statusCode).toBe(409);
+  });
+  it("completes cached redeploy after storage failure preserving the original receipt and durable finishedAt", async () => {
+    const f = await fixture(); f.complete.mockRejectedValueOnce(new Error("storage unavailable"));
+    const failure = await (await f.confirm("redeploy"))(); expect(failure.statusCode).toBe(500);
+    const B = (await f.memory.deployments.list()).find((value) => value.sourceDeploymentId === f.A.id)!; expect(B.status).toBe("running"); const effects = f.docker.calls.length, claims = f.claim.mock.calls.length;
+    const response = await f.request("redeploy", "redeploy", undefined, "retry-correlation"); expect(response.statusCode, response.body).toBe(200); expect(response.json().data.deployment.executionReceipt).toEqual(f.records.get(`deploy_${B.id}`)!.receipt.executionReceipt);
+    const finishedAt = response.json().data.deployment.finishedAt; expect(finishedAt).toBeTruthy(); expect((await f.request("redeploy", "redeploy")).json().data.deploymentId).toBe(B.id); expect((await f.memory.deployments.findById(B.id))!.finishedAt).toBe(finishedAt); expect(f.docker.calls).toHaveLength(effects); expect(f.claim).toHaveBeenCalledTimes(claims);
+  });
+  it.each(["expired", "superseded"] as const)("keeps cached success unresolved when %s authority loses the atomic CAS", async (fault) => {
+    const f = await fixture(); f.lose("redeploy"); f.setCache(false); expect((await (await f.confirm("redeploy"))()).statusCode).toBe(502); f.setCache(true);
+    f.complete.mockImplementationOnce(async (input) => { const current = [...f.memory.completion.commands.values()][0]!; if (fault === "expired") current.executionAuthority!.projectLease.expiresAt = Date.now() - 1; else f.memory.completion.commands.set("newer", { ...structuredClone(current), id: "newer", executionAuthority: { ...structuredClone(current.executionAuthority!), commandId: "newer", projectLease: { ...current.executionAuthority!.projectLease, fence: current.executionAuthority!.projectLease.fence + 1 } } }); return InMemoryExecutionState.prototype.completeExecution.call(f.memory.completion, input); });
+    const response = await f.request("redeploy", "redeploy"); expect(response.statusCode, response.body).toBe(409); const B = (await f.memory.deployments.list()).find((value) => value.sourceDeploymentId === f.A.id)!; expect(B.status).toBe("running"); expect(B.executionReceipt).toBeUndefined(); expect([...f.memory.completion.commands.values()][0]?.status).toBe("dispatching"); expect((await f.memory.deployments.listLogs(B.id)).some((row) => row.message === "Agent redeploy succeeded.")).toBe(false);
+  });
+});
 
 it("reads the Stop action from the existing persisted command ledger without matching same-key redeploy", async () => {
   const { createDbClient, DbControlCommandRepository } = await import("@deploylite/db");
@@ -75,6 +108,29 @@ it.each(["expired", "superseded"] as const)("preserves Stop cached outcome unres
   const retry = await f.request("stop", "stop"); expect(retry.statusCode, retry.body).toBe(409); expect([...f.memory.completion.commands.values()][0]?.status).toBe("dispatching"); expect(await f.memory.deployments.findById(f.A.id)).toEqual(before); expect((await f.memory.deployments.listLogs(f.A.id)).some((log) => log.message === "Authenticated agent stop confirmed.")).toBe(false);
 });
 
+it.each(["initial", "redeploy", "stop"] as const)("settles aborted %s cached retry and rejects late evidence before terminal publication", async (action) => {
+  const f = await fixture(); f.lose(action); f.setCache(false); if (action === "initial") f.docker.containers.clear();
+  const first = action === "initial" ? await f.initial("aborted-initial") : await (await f.confirm(action))(); expect(first.statusCode).toBe(502); f.setCache(true);
+  let started!: () => void, release!: () => void; const ready = new Promise<void>((resolve) => { started = resolve; }), barrier = new Promise<void>((resolve) => { release = resolve; }); f.setQueryHook(async () => { started(); await barrier; });
+  const request = action === "initial" ? f.initial("aborted-initial") : f.request(action, action); const outcome = request.then(() => "settled", () => "settled"); await ready; f.abortCurrent(); await new Promise<void>((resolve) => setImmediate(resolve));
+  try { expect(await Promise.race([outcome, Promise.resolve("still-pending")])).toBe("settled"); } finally { release(); await request; }
+  if (action === "stop") expect([...f.memory.completion.commands.values()][0]?.status).toBe("dispatching"); else { const execution = (await f.memory.deployments.list()).find((row) => row.id !== f.A.id && row.snapshotHash)!; expect(execution.status).toBe("running"); expect(execution.executionReceipt).toBeUndefined(); }
+});
+
+
+it.each(["initial", "redeploy"] as const)("rejects aborted cached %s after the post-cache deployment read before completion handoff", async (action) => {
+  const f = await fixture(); f.lose(action); if (action === "initial") f.docker.containers.clear();
+  let executionId: string;
+  if (action === "redeploy") { f.setCache(false); expect((await (await f.confirm(action))()).statusCode).toBe(502); executionId = (await f.memory.deployments.list()).find((row) => row.sourceDeploymentId === f.A.id)!.id; f.setCache(true); }
+  else executionId = "";
+  let started!: () => void, release!: () => void; const ready = new Promise<void>((resolve) => { started = resolve; }), barrier = new Promise<void>((resolve) => { release = resolve; });
+  const original = f.memory.deployments.findById.bind(f.memory.deployments); let paused = false;
+  vi.spyOn(f.memory.deployments, "findById").mockImplementation(async (id) => { if (!paused && f.queries.length >= (action === "initial" ? 1 : 2) && id !== f.A.id) { paused = true; executionId = id; started(); await barrier; } return original(id); });
+  const request = action === "initial" ? f.initial("post-cache-abort") : f.request(action, action); await ready; const claims = f.claim.mock.calls.length, effects = f.docker.calls.length; f.abortCurrent(); release(); await request;
+  expect(f.complete).not.toHaveBeenCalled(); const persisted = await original(executionId); expect(persisted).toMatchObject({ status: "running", finishedAt: null }); expect(persisted!.executionReceipt).toBeUndefined();
+  expect((await f.memory.deployments.listLogs(executionId)).some((row) => row.message === "Agent execution succeeded." || row.message === "Agent redeploy succeeded.")).toBe(false);
+  expect(f.claim).toHaveBeenCalledTimes(claims); expect(f.docker.calls).toHaveLength(effects); expect(f.wait).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+});
 it.each(["initial", "stop"] as const)("rejects aborted cached %s while its terminal port waits before publication", async (action) => {
   const f = await fixture(); f.lose(action); f.setCache(false); if (action === "initial") f.docker.containers.clear();
   expect((action === "initial" ? await f.initial("abort-handoff") : await (await f.confirm(action))()).statusCode).toBe(502); f.setCache(true);
@@ -99,4 +155,30 @@ it("keeps a concurrent confirmed Stop authoritative when immediate INITIAL cache
   f.setQueryHook(async () => { const id = f.queries.at(-1).deploymentId; const pending = await f.request("stop", "cache-stop", undefined, "stop-correlation", f.A.snapshotHash!, id); expect(pending.statusCode).toBe(202); expect((await f.request("stop", "cache-stop", pending.json().data.confirmationId, "stop-correlation", f.A.snapshotHash!, id)).statusCode).toBe(200); stopped = (await f.memory.deployments.findById(id))!; });
   f.lookup.mockImplementationOnce(async (id) => { const receipt = structuredClone(f.records.get(id)!.receipt); delete receipt.executionReceipt; return receipt; });
   const save = vi.spyOn(f.memory.deployments, "save"), response = await f.initial("proofless-concurrent-stop"); expect(response.statusCode, response.body).toBe(409); expect(response.json().error.code).toBe("EXECUTION_PROOF_INVALID"); expect(await f.memory.deployments.findById(stopped!.id)).toEqual(stopped); expect(stopped!.status).toBe("canceled"); expect(save.mock.calls.some(([row]) => row.status === "succeeded")).toBe(false); expect(f.complete).not.toHaveBeenCalled(); expect((await f.memory.deployments.listLogs(stopped!.id)).some((row) => row.message === "Agent execution succeeded.")).toBe(false);
+});
+
+it("publishes one terminal log and audit for concurrent same-command cached redeploy recovery", async () => {
+  const f = await fixture(); f.lose("redeploy"); f.setCache(false);
+  expect((await (await f.confirm("redeploy"))()).statusCode).toBe(502); f.setCache(true);
+  const effects = f.docker.calls.length, claims = f.claim.mock.calls.length;
+  const audit = vi.spyOn(f.runtime.auth.audit, "append"), outcomes: string[] = [];
+  let arrived = 0, release!: () => void;
+  const barrier = new Promise<void>((resolve) => { release = resolve; });
+  f.complete.mockImplementation(async (input, signal) => {
+    if (++arrived === 2) release(); await barrier;
+    const outcome = await InMemoryExecutionState.prototype.completeExecution.call(f.memory.completion, input, signal);
+    outcomes.push(outcome.kind); return outcome;
+  });
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    const responses = await Promise.all([f.request("redeploy", "redeploy", undefined, "retry-one"), f.request("redeploy", "redeploy", undefined, "retry-two")]);
+    expect(responses.map((response) => response.statusCode)).toEqual([200, 200]);
+    expect(outcomes.sort()).toEqual(["committed", "replayed"]);
+    const B = responses[0]!.json().data.deployment;
+    expect(responses[1]!.json().data.deployment).toEqual(B); expect((await f.memory.deployments.findById(B.id))!.finishedAt).toBe(B.finishedAt);
+    expect((await f.memory.deployments.listLogs(B.id)).filter((log) => log.message === "Agent redeploy succeeded.")).toHaveLength(1);
+    expect(audit.mock.calls.filter(([event]) => event.action === "deployment.redeploy.succeeded" && event.targetId === B.id)).toHaveLength(1);
+    expect(await f.memory.deployments.findById(f.A.id)).toEqual(f.A); expect([...f.memory.completion.commands.values()][0]?.status).toBe("completed");
+    expect(f.docker.calls).toHaveLength(effects); expect(f.claim).toHaveBeenCalledTimes(claims); expect(f.wait).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  } finally { vi.useRealTimers(); }
 });
