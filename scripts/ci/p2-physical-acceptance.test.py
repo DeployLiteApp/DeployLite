@@ -267,6 +267,51 @@ class CorrectivePhysicalGuards(unittest.TestCase):
                 else: response["body"]["error"][fault] = "foreign"
                 self.assertFalse(H["verify_physical"](receipts, self.grant))
 
+    def inspection(self, image=False):
+        grant = copy.deepcopy(self.grant)
+        grant["expiresAtMs"] = 1200000
+        owned = {**self.resource(), "containerPort": 5000}
+        data = self.resource()
+        for field in ("kind", "networkId", "hostIp", "hostPort", "labelsVerified"): data.pop(field)
+        data.update(ports={"5000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "49172"}]}, networks={"owned": {"NetworkID": "f" * 64}})
+        if image:
+            data = {"id": IMAGE, "repoDigests": ["127.0.0.1:49172/deploylite-p2/fixture@sha256:" + "e" * 64], "os": "linux", "architecture": "amd64",
+                    "user": "65532:65532", "command": ["/bin/busybox", "httpd", "-f", "-p", "8080", "-h", "/www"],
+                    "health": {"Interval": 1000000000, "Timeout": 1000000000, "Test": ["CMD", "/bin/busybox", "wget", "-q", "-T", "1", "-Y", "off", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]}}
+        fake = FakeBoundary()
+        def run(argv, **options):
+            fake.calls.append((argv, options)); fake.now += 2
+            return {"returncode": 0, "stdout": json.dumps(data), "stderr": ""}
+        fake.run = run
+        coordinator = H["Coordinator"](grant, {"events": [], "resources": []}, Path("/recorded-no-files"), fake)
+        return grant, owned, fake, coordinator
+
+    def test_container_inspection_receives_only_original_preparation_time_and_fences_late_settlement(self):
+        grant, owned, fake, coordinator = self.inspection()
+        fake.now = 599
+        error = None
+        try: coordinator.container(owned)
+        except H["PhysicalError"] as caught: error = str(caught)
+        self.assertIsNotNone(error, "late inspection must remain unknown instead of returning a verified resource")
+        self.assertLessEqual(fake.calls[0][1]["timeout"], 1)
+        self.assertEqual(coordinator.preparation_deadline, 600)
+
+    def test_no_container_inspection_can_start_after_original_preparation_deadline(self):
+        grant, owned, fake, coordinator = self.inspection()
+        fake.now = 601
+        with self.assertRaises(H["PhysicalError"]): coordinator.container(owned)
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(coordinator.preparation_deadline, 600)
+
+    def test_raw_image_inspection_uses_remaining_original_preparation_budget(self):
+        grant, owned, fake, coordinator = self.inspection(image=True)
+        fake.now = 599
+        error = None
+        try: H["observe_image"]("127.0.0.1:49172/deploylite-p2/fixture@sha256:" + "e" * 64, grant, fake, deadline=600)
+        except H["PhysicalError"] as caught: error = str(caught)
+        self.assertIsNotNone(error)
+        self.assertLessEqual(fake.calls[0][1]["timeout"], 1)
+
     def clocked_http(self, headers_drip, completes=False):
         from unittest.mock import patch
         class ClockedNetwork:
