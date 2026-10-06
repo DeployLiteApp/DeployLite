@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { claimDeploymentAuthority, validateStopCompletion, validateDeploymentAuthority, validateInitialExecution } from "@deploylite/domain";
+import { createHash, randomUUID } from "node:crypto";
 import { createAuditLogRecord, createCorrelationContext, createRequestId, parseDeployLiteEnv, redactSecrets, type DeployLiteEnv, createEnvSecretCipher, EnvSecretKeyInvalidError, EnvSecretKeyMissingError, ENCRYPTION_KEY_VERSION, loadEnvSecretKey, type EnvSecretCipher } from "@deploylite/config";
 import { materializeMockDeploy, redactEnvFileForLog, type EncryptedEnvRecord } from "@deploylite/agent";
 import {
@@ -91,7 +92,7 @@ import {
 } from "@deploylite/domain";
 import { ProtocolError, TransportCanceledError } from "@deploylite/contracts";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import { AuthenticatedAgentDeploymentTransport, type AgentDispatchContext, type DeploymentDispatchReceipt } from "./agent-transport.js";
+import { isAgentPreDispatchRejection, AuthenticatedAgentDeploymentTransport, type AgentDispatchContext, type DeploymentDispatchReceipt } from "./agent-transport.js";
 import { z } from "zod";
 
 declare module "fastify" {
@@ -506,7 +507,7 @@ class RedeployReceiptMismatchError extends Error {}
 
 export type DeploymentStopDispatcher = {
   available(): boolean;
-  dispatchStop(input: { projectId: string; deploymentId: string; candidateId: string; effectiveImage: string; commandId: string }, context: AgentDispatchContext): Promise<import("@deploylite/contracts").DeploymentStopAgentReceipt>;
+  dispatchStop(input: { projectId: string; deploymentId: string; candidateId: string; effectiveImage: string; containerId?: string; commandId: string }, context: AgentDispatchContext): Promise<import("@deploylite/contracts").DeploymentStopAgentReceipt>;
 };
 
 class UnavailableDeploymentDispatcher implements DeploymentDispatcher {
@@ -659,19 +660,28 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
     return { command: structuredClone(current), accepted: true, reason: null, result: stopCommandResult(current, "eligible"), alreadyCompleted: false };
   }
 
+  async validateInitialExecution(projectId: string, executionId: string, binding: import("@deploylite/domain").InitialExecutionBinding): Promise<void> {
+    validateInitialExecution([...this.executionState.commands.values()], this.executionState.deployments.get(executionId), projectId, executionId, binding);
+  }
+  async validateDeploymentAuthority(authority: import("@deploylite/contracts").DeploymentExecutionAuthorityV1, now = Date.now()): Promise<void> {
+    validateDeploymentAuthority([...this.executionState.commands.values()], authority, now);
+  }
+
   async claimDeploymentStop(command: ControlCommand) {
     const current = [...this.executionState.commands.values()].find((candidate) => candidate.id === command.id);
     if (!current) throw new Error("Control command was not found");
-    if (current.status !== "eligible") return { command: structuredClone(current), claimed: false };
-    current.status = "dispatching";
-    return { command: structuredClone(current), claimed: true };
+    const authority = claimDeploymentAuthority([...this.executionState.commands.values()], current, current.scope.kind === "deployment" ? current.scope.deploymentId : "");
+    return { command: structuredClone(current), claimed: authority !== null, ...(authority ? { authority } : {}) };
   }
 
   async completeDeploymentStop(command: ControlCommand, result: import("@deploylite/contracts").DeploymentStopCommandResult): Promise<ControlCommand> {
-    if (result.commandId !== command.id || result.action !== "deployment.stop") throw new Error("Deployment stop result does not match command");
+    command = structuredClone(command); result = structuredClone(result);
     const current = [...this.executionState.commands.values()].find((candidate) => candidate.id === command.id);
     if (!current) throw new Error("Control command was not found");
-    if (current.status === "eligible" || current.status === "dispatching") { current.status = "completed"; current.result = result; }
+    if (!validateStopCompletion([...this.executionState.commands.values()], current, command, result)) {
+      // No await can interleave a newer claim between validation and this publication.
+      current.status = "completed"; current.result = result;
+    }
     return structuredClone(current);
   }
 
@@ -699,7 +709,7 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
     if (current.status === "eligible" || current.status === "dispatching") { current.status = "completed"; current.result = result; } return structuredClone(current);
   }
 
-  async claimDeploymentRedeploy(command: ControlCommand) { const current = [...this.executionState.commands.values()].find((candidate) => candidate.id === command.id); if (!current) throw new Error("Control command was not found"); const id = (current.result as import("@deploylite/contracts").DeploymentRedeployCommandResult | undefined)?.deploymentId; const deployment = id ? await this.deployments?.findById(id) ?? null : null; if (current.status !== "eligible") return { command: structuredClone(current), claimed: false, deployment }; current.status = "dispatching"; return { command: structuredClone(current), claimed: true, deployment }; }
+  async claimDeploymentRedeploy(command: ControlCommand) { const current = [...this.executionState.commands.values()].find((candidate) => candidate.id === command.id); if (!current) throw new Error("Control command was not found"); const id = (current.result as import("@deploylite/contracts").DeploymentRedeployCommandResult | undefined)?.deploymentId; const deployment = id ? await this.deployments?.findById(id) ?? null : null; const authority = id ? claimDeploymentAuthority([...this.executionState.commands.values()], current, id) : null; return { command: structuredClone(current), claimed: authority !== null, deployment, ...(authority ? { authority } : {}) }; }
 
   constructor(private readonly projects: ProjectRepository, private readonly audit: AuditRepository, private readonly deployments?: DeploymentRepository, private readonly executionState = new InMemoryExecutionState()) {}
 
@@ -840,7 +850,7 @@ export class DeployRunner {
     const next = (this.#sequenceByDeployment.get(deployment.id) ?? 0) + 1;
     this.#sequenceByDeployment.set(deployment.id, next);
     await this.deployments.appendLog({
-      id: `log_${createRequestId()}`,
+      id: randomUUID(),
       deploymentId: deployment.id,
       sequence: next,
       level,
@@ -935,6 +945,8 @@ function createDbAuthAdapters(env: DeployLiteEnv, options: BuildApiAppOptions): 
     close: options.db?.pool ? undefined : () => closePool(pool),
     shouldSeedMockData: false,
     state: createApiState(env, {
+      deploymentDispatcher: options.state?.deploymentDispatcher,
+      deploymentStopDispatcher: options.state?.deploymentStopDispatcher,
       agents: options.state?.agents ?? new DbAgentRepository(db),
       deployments,
       executionCompletion: options.state?.executionCompletion ?? (deployments instanceof DbDeploymentRepository ? new DbDeploymentExecutionRepository(db) : undefined),
@@ -1571,7 +1583,8 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
     }
     const commitSha = body.commitSha ?? "0000000";
     const replayKey = body.imageReference === undefined ? null : getHeaderValue(request, "x-deployment-idempotency-key");
-    const deploymentId = replayKey ? `dep_${createHash("sha256").update(`${project.id}:${replayKey}`).digest("hex").slice(0, 32)}` : `dep_${createRequestId()}`;
+    const replayDigest = replayKey ? createHash("sha256").update(`${project.id}:${replayKey}`).digest("hex") : null;
+    const deploymentId = replayDigest ? `${replayDigest.slice(0, 8)}-${replayDigest.slice(8, 12)}-5${replayDigest.slice(13, 16)}-${((parseInt(replayDigest[16]!, 16) & 3) | 8).toString(16)}${replayDigest.slice(17, 20)}-${replayDigest.slice(20, 32)}` : randomUUID();
     const existing = await state.deployments.findById(deploymentId);
     if (existing) {
       await appendAudit(adapters.audit, request, { action: "deployment.replayed", targetType: "deployment", targetId: deploymentId, metadata: { projectId: project.id } });
@@ -1609,7 +1622,7 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
        const stopTarget = { candidateId: `${deployment.id}:candidate:deploy_${deployment.id}`, effectiveImage: snapshot.source.sourceMode === "image" ? snapshot.source.image.reference : "" };
        const running: Deployment = { ...deployment, status: "running", stopTarget };
       await state.deployments.save(running);
-      await state.deployments.appendLog({ id: `log_${createRequestId()}`, deploymentId: deployment.id, sequence: 1, level: "info", message: "Agent accepted digest snapshot and started execution.", timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId });
+      await state.deployments.appendLog({ id: randomUUID(), deploymentId: deployment.id, sequence: 1, level: "info", message: "Agent accepted digest snapshot and started execution.", timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId });
       const completeInitial = async (terminalStatus: "succeeded" | "failed" | "canceled", terminalStopTarget = running.stopTarget, proof: TrustedPriorExecutionReceiptV1 | null = null): Promise<ExecutionCompletionOutcome> => {
         // Equal completion includes finishedAt; reuse durable time when reconciling an already committed receipt.
         const persisted = await state.deployments.findById(running.id);
@@ -1638,7 +1651,7 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
         const terminalStatus = error instanceof TransportCanceledError ? "canceled" : "failed";
         const completion = await completeInitial(terminalStatus);
         if (completion.kind === "conflict" || completion.kind === "not-found") return rejectCompletion(completion.kind);
-        await state.deployments.appendLog({ id: `log_${createRequestId()}`, deploymentId: deployment.id, sequence: 2, level: "error", message: `Agent execution ${terminalStatus} before a terminal receipt was returned.`, timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId });
+        await state.deployments.appendLog({ id: randomUUID(), deploymentId: deployment.id, sequence: 2, level: "error", message: `Agent execution ${terminalStatus} before a terminal receipt was returned.`, timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId });
         await appendAudit(adapters.audit, request, { action: "deployment.dispatch.rejected", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, snapshotHash: snapshot.hash, reason: classification } });
         return reply.code(502).send(errorEnvelope(request, "DEPLOY_DISPATCH_FAILED", "Digest deployment dispatch failed."));
       } finally {
@@ -1663,7 +1676,7 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
           if (!("deployment" in completion)) return rejectCompletion(completion.kind);
           terminal = completion.deployment;
         }
-        await state.deployments.appendLog({ id: `log_${createRequestId()}`, deploymentId: deployment.id, sequence: 2, level: result.terminalStatus === "succeeded" ? "info" : "error", message: `Agent execution ${result.terminalStatus}.`, timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId });
+        await state.deployments.appendLog({ id: randomUUID(), deploymentId: deployment.id, sequence: 2, level: result.terminalStatus === "succeeded" ? "info" : "error", message: `Agent execution ${result.terminalStatus}.`, timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId });
         await appendAudit(adapters.audit, request, { action: `deployment.${result.terminalStatus}`, targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, snapshotHash: snapshot.hash, health: result.health, rollback: result.rollback } });
         return ok(request, { deployment: terminal, snapshotHash: snapshot.hash, execution: result });
       }
@@ -1700,7 +1713,9 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
     }
     await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "deployment.stop.requested", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, commandId: resolved.command.id } });
     if (resolved.command.status === "completed") return ok(request, { deployment, command: resolved.command, idempotent: true });
-    if (["succeeded", "failed", "canceled"].includes(deployment.status)) return reply.code(409).send(errorEnvelope(request, "DEPLOYMENT_TERMINAL", "Deployment is already terminal."));
+    const activeProof = trustedPriorExecutionReceiptSchema.safeParse(deployment.executionReceipt);
+    const succeededWorkload = deployment.status === "succeeded" && activeProof.success && activeProof.data.projectId === deployment.projectId && activeProof.data.deploymentId === deployment.id && activeProof.data.runtimeHost === deployment.agentId && activeProof.data.snapshotOriginId === deployment.snapshotOriginId && activeProof.data.snapshotHash === deployment.snapshotHash && activeProof.data.candidateId === deployment.stopTarget?.candidateId && activeProof.data.effectiveImageDigest === deployment.stopTarget?.effectiveImage.split("@")[1];
+    if (["failed", "canceled"].includes(deployment.status) || (deployment.status === "succeeded" && !succeededWorkload)) return reply.code(409).send(errorEnvelope(request, "DEPLOYMENT_TERMINAL", "Deployment is already terminal."));
     const confirmationId = getHeaderValue(request, "x-control-confirmation-id");
     if (resolved.created && !confirmationId) {
       const confirmation = createConfirmation({ command: resolved.command, classification: "destructive" });
@@ -1719,9 +1734,13 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
     }
     const claimed = await state.controlDeletes.claimDeploymentStop(admitted.command);
     if (!claimed.claimed) return reply.code(202).send(ok(request, { commandId: claimed.command.id, pending: true }));
+    const finishStop = async (result: import("@deploylite/contracts").DeploymentStopCommandResult) => {
+      try { return await state.controlDeletes.completeDeploymentStop(claimed.command, result); }
+      catch (error) { reply.code(error instanceof ProtocolError || error instanceof IdempotencyConflictError ? 409 : 502).send(errorEnvelope(request, "DEPLOY_STOP_OUTCOME_UNKNOWN", "Stop terminal authority could not be committed; prior status was preserved.")); return undefined; }
+    };
     if (!state.deploymentStopDispatcher.available()) {
       const result = stopCommandResult(admitted.command, "completed", "capability_unavailable");
-       await state.controlDeletes.completeDeploymentStop(claimed.command, result);
+       if (!await finishStop(result)) return reply;
       await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "deployment.stop.failed", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, commandId: admitted.command.id, reason: "capability_unavailable" } });
       return reply.code(503).send(errorEnvelope(request, "DEPLOY_STOP_UNAVAILABLE", "Deployment stop capability is unavailable."));
     }
@@ -1733,34 +1752,32 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
       if (!target) receipt = { schemaVersion: 1, action: "deployment.stop", agentId: deployment.agentId, commandId: admitted.command.id, projectId: project.id, deploymentId: deployment.id, candidateId: `${deployment.id}:absent`, effectiveImage: `registry.example.com/absent@sha256:${"0".repeat(64)}`, status: "absent", redacted: true, correlationId: request.correlationContext.correlationId, reason: "container_absent" };
       else {
         const abort = new AbortController(); const onAbort = () => abort.abort(); request.raw.once("aborted", onAbort); if (request.raw.aborted) abort.abort();
-        try { receipt = deploymentStopAgentReceiptSchema.parse(await state.deploymentStopDispatcher.dispatchStop({ ...target, projectId: project.id, deploymentId: deployment.id, commandId: admitted.command.id }, { agentId: deployment.agentId, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId, signal: abort.signal })); }
+        try { receipt = deploymentStopAgentReceiptSchema.parse(await state.deploymentStopDispatcher.dispatchStop({ ...target, ...(activeProof.success ? { containerId: activeProof.data.containerId } : {}), projectId: project.id, deploymentId: deployment.id, commandId: admitted.command.id }, { agentId: deployment.agentId, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId, signal: abort.signal, authority: claimed.authority })); }
         finally { request.raw.removeListener("aborted", onAbort); }
       }
     } catch (error) {
       const reason = error instanceof ProtocolError ? error.code : "transport-failed";
-       await state.controlDeletes.completeDeploymentStop(claimed.command, stopCommandResult(claimed.command, "completed", reason));
+       if (isAgentPreDispatchRejection(error) && !await finishStop(stopCommandResult(claimed.command, "completed", reason))) return reply;
       await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "deployment.stop.failed", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, commandId: admitted.command.id, reason } });
-      return reply.code(502).send(errorEnvelope(request, "DEPLOY_STOP_FAILED", "Deployment stop failed; prior status was preserved."));
+      return reply.code(502).send(errorEnvelope(request, isAgentPreDispatchRejection(error) ? "DEPLOY_STOP_FAILED" : "DEPLOY_STOP_OUTCOME_UNKNOWN", "Deployment stop outcome is unresolved; prior status was preserved."));
     }
-    if (receipt.commandId !== admitted.command.id || receipt.projectId !== project.id || receipt.deploymentId !== deployment.id || receipt.agentId !== deployment.agentId || receipt.correlationId !== request.correlationContext.correlationId || (target && (receipt.candidateId !== target.candidateId || receipt.effectiveImage !== target.effectiveImage))) {
-       await state.controlDeletes.completeDeploymentStop(claimed.command, stopCommandResult(claimed.command, "completed", "receipt-identity-mismatch"));
+    if (receipt.commandId !== admitted.command.id || receipt.projectId !== project.id || receipt.deploymentId !== deployment.id || receipt.agentId !== deployment.agentId || receipt.correlationId !== request.correlationContext.correlationId || (target && (receipt.candidateId !== target.candidateId || receipt.effectiveImage !== target.effectiveImage)) || (succeededWorkload && activeProof.success && receipt.containerId !== activeProof.data.containerId)) {
       await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "deployment.stop.failed", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, commandId: admitted.command.id, reason: "receipt-identity-mismatch" } });
-      return reply.code(502).send(errorEnvelope(request, "DEPLOY_STOP_FAILED", "Agent stop evidence was invalid; prior status was preserved."));
+      return reply.code(502).send(errorEnvelope(request, "DEPLOY_STOP_OUTCOME_UNKNOWN", "Agent stop evidence was invalid; prior status and authority were preserved."));
     }
     const publishedReceipt = { ...receipt, reason: receipt.status === "failed" ? "docker_stop_failed" : receipt.status === "canceled" ? "canceled" : receipt.status === "absent" ? "container_absent" : null };
     const successful = receipt.status === "stopped" || receipt.status === "already-stopped";
      const result = stopCommandResult(claimed.command, "completed", successful ? receipt.status : `agent_${receipt.status}`);
+     if (!await finishStop(result)) return reply;
      if (successful) {
-       const canceled: Deployment = { ...deployment, status: "canceled", finishedAt: new Date().toISOString() };
-       const saved = await state.deployments.saveIfStatus(canceled, deployment.status);
-       if (!saved) return reply.code(409).send(errorEnvelope(request, "DEPLOYMENT_TERMINAL", "Deployment changed while stopping."));
+       const stopped: Deployment = succeededWorkload ? deployment : { ...deployment, status: "canceled", finishedAt: new Date().toISOString() };
+       if (!succeededWorkload && !await state.deployments.saveIfStatus(stopped, deployment.status)) return reply.code(409).send(errorEnvelope(request, "DEPLOYMENT_TERMINAL", "Deployment changed while stopping."));
+       // Active workload control belongs to the command ledger; historical success/proof is immutable.
        const logs = await state.deployments.listLogs(deployment.id);
-       await state.deployments.appendLog({ id: `log_${createRequestId()}`, deploymentId: deployment.id, sequence: (logs.at(-1)?.sequence ?? 0) + 1, level: "info", message: "Authenticated agent stop confirmed.", timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId });
-       await state.controlDeletes.completeDeploymentStop(claimed.command, result);
+       await state.deployments.appendLog({ id: randomUUID(), deploymentId: deployment.id, sequence: (logs.at(-1)?.sequence ?? 0) + 1, level: "info", message: "Authenticated agent stop confirmed.", timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId });
       await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "deployment.stop.succeeded", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, commandId: admitted.command.id, status: receipt.status } });
-      return ok(request, { deployment: canceled, receipt: publishedReceipt, command: result });
+      return ok(request, { deployment: stopped, receipt: publishedReceipt, command: result });
     }
-     await state.controlDeletes.completeDeploymentStop(claimed.command, result);
      await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "deployment.stop.rejected", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, commandId: claimed.command.id, reason: result.reason } });
     return reply.code(409).send(errorEnvelope(request, "DEPLOY_STOP_NOT_CONFIRMED", "Agent did not confirm a stopped container; prior status was preserved."));
   });
@@ -1804,7 +1821,7 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
      if (resolved.command.status === "eligible" || resolved.command.status === "dispatching") return reply.code(202).send(ok(request, { command: resolved.command, pending: true, correlationId: request.correlationContext.correlationId }));
     if (!confirmationId) return reply.code(409).send(errorEnvelope(request, "CONFIRMATION_REQUIRED", "An explicit confirmation is required for deployment redeploy."));
     const confirmation = { id: confirmationId, commandId: resolved.command.id, actorId: resolved.command.actorId, action: resolved.command.action, scope: resolved.command.scope, inputDigest: resolved.command.inputDigest, classification: "destructive" as const, expiresAt: resolved.command.expiresAt, consumedAt: null };
-    const deployment: Deployment = { id: `dep_${createRequestId()}`, projectId: snapshot.projectId, agentId: snapshot.agentId, status: "queued", commitSha: snapshot.commitSha, startedAt: new Date().toISOString(), finishedAt: null, sourceDeploymentId: source.id, snapshotOriginId: snapshot.deploymentId, snapshotHash: snapshot.hash };
+    const deployment: Deployment = { id: randomUUID(), projectId: snapshot.projectId, agentId: snapshot.agentId, status: "queued", commitSha: snapshot.commitSha, startedAt: new Date().toISOString(), finishedAt: null, sourceDeploymentId: source.id, snapshotOriginId: snapshot.deploymentId, snapshotHash: snapshot.hash };
      const admitted = await state.controlRedeploy.executeConfirmedDeploymentRedeploy({ command: resolved.command, confirmation, deployment, requestId: request.correlationContext.requestId, snapshotHash: snapshot.hash });
      if (!admitted.accepted) return reply.code(409).send(errorEnvelope(request, "CONFIRMATION_REJECTED", "Confirmation is not eligible for this command."));
      const result = admitted.result;
@@ -1813,19 +1830,27 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
      if (!claim.claimed) return reply.code(202).send(ok(request, { command: claim.command, pending: true, correlationId: request.correlationContext.correlationId }));
      if (!claim.deployment) throw new Error("Redeploy command deployment was not persisted");
      const queued = claim.deployment;
+     const authority = claim.authority ? structuredClone(claim.authority) : undefined;
+     const validateAuthority = state.controlRedeploy.validateDeploymentAuthority?.bind(state.controlRedeploy);
+     if (!authority || !validateAuthority) return reply.code(503).send(errorEnvelope(request, "EXECUTION_AUTHORITY_UNAVAILABLE", "Persisted execution authority is required for replacement."));
      const running: Deployment = { ...queued, status: "running", stopTarget: { candidateId: `${queued.id}:candidate:deploy_${queued.id}`, effectiveImage: snapshot.source.sourceMode === "image" ? `${snapshot.source.image.registryHost}/${snapshot.source.image.repository}@${imageDigest}` : "" } };
      await state.deployments.save(running);
      if (!state.executionCompletion) return reply.code(503).send(errorEnvelope(request, "EXECUTION_COMPLETION_UNAVAILABLE", "Atomic redeploy completion is unavailable."));
+     try { await validateAuthority(authority); } catch { return reply.code(409).send(errorEnvelope(request, "EXECUTION_AUTHORITY_LOST", "Replacement authority was lost before dispatch.")); }
      let execution: "dispatched" | DockerImageExecutionReceiptV1 | DeploymentDispatchReceipt | undefined;
      let dispatchError: unknown; let dispatchFailed = false;
      const available = state.deploymentDispatcher.available();
      if (available) {
-       await state.deployments.appendLog({ id: `log_${createRequestId()}`, deploymentId: queued.id, sequence: 1, level: "info", message: "Agent accepted redeploy snapshot and started execution.", timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: claim.command.correlationId });
+       await state.deployments.appendLog({ id: randomUUID(), deploymentId: queued.id, sequence: 1, level: "info", message: "Agent accepted redeploy snapshot and started execution.", timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: claim.command.correlationId });
        const abort = new AbortController(); const onAbort = () => abort.abort(); request.raw.once("aborted", onAbort); if (request.raw.aborted) abort.abort();
-       try { execution = await state.deploymentDispatcher.dispatch(snapshot, `deploy_${queued.id}`, { agentId: queued.agentId!, requestId: request.correlationContext.requestId, correlationId: claim.command.correlationId, executionDeploymentId: queued.id, sourceDeploymentId: source.id, signal: abort.signal }); }
+       try { execution = await state.deploymentDispatcher.dispatch(snapshot, `deploy_${queued.id}`, { agentId: queued.agentId!, requestId: request.correlationContext.requestId, correlationId: claim.command.correlationId, executionDeploymentId: queued.id, sourceDeploymentId: source.id, authority, replacement: { prior: sourceProof.data!, effectiveImage: running.stopTarget!.effectiveImage, policy: { maxOutageMs: 30_000, maxRecoveryMs: 60_000 } }, signal: abort.signal }); }
        catch (error) { dispatchFailed = true; dispatchError = error; }
        finally { request.raw.removeListener("aborted", onAbort); }
      }
+     const persisted = await state.deployments.findById(running.id);
+     const persistedCommand = await state.controlRedeploy.findByIdempotency(claim.command.actorId, claim.command.idempotencyKey);
+     if (persistedCommand && (!persisted || !["succeeded", "failed", "canceled"].includes(persisted.status))) { try { await validateAuthority(authority); } catch { return reply.code(409).send(errorEnvelope(request, "EXECUTION_AUTHORITY_LOST", "Replacement authority was lost; execution remains unresolved.")); } }
+     if (dispatchFailed) return reply.code(502).send(errorEnvelope(request, "REDEPLOY_OUTCOME_UNKNOWN", "Agent terminal recovery evidence was not received; execution and authority remain unresolved."));
      if (execution === "dispatched") return reply.code(202).send(ok(request, { command: claim.command, deployment: running, pending: true, correlationId: claim.command.correlationId }));
      let terminalStatus: "succeeded" | "failed" | "canceled" = dispatchError instanceof TransportCanceledError ? "canceled" : "failed";
      let proof: TrustedPriorExecutionReceiptV1 | null = null;
@@ -1841,10 +1866,9 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
      }
      const terminal = { ...result, status: "completed" as const, reason: !available ? "deploy.execute-unavailable" : dispatchFailed ? "agent-dispatch-failed" : terminalStatus === "succeeded" ? null : `agent-${terminalStatus}` };
      // Completion failures must never enter the dispatch catch or fall back to separate writes.
-     const persisted = await state.deployments.findById(running.id);
-     const completion = await state.executionCompletion.completeExecution({ commandId: claim.command.id, commandResult: terminal, proof, expectedStatus: running.status, executionId: running.id, projectId: running.projectId, sourceExecutionId: source.id, snapshotOriginId: snapshot.deploymentId, snapshotHash: snapshot.hash, runtimeHost: running.agentId!, effectiveImageDigest: imageDigest!, terminalStatus, finishedAt: persisted?.finishedAt ?? new Date().toISOString() });
+     const completion = await state.executionCompletion.completeExecution({ commandId: claim.command.id, authority, commandResult: terminal, proof, expectedStatus: running.status, executionId: running.id, projectId: running.projectId, sourceExecutionId: source.id, snapshotOriginId: snapshot.deploymentId, snapshotHash: snapshot.hash, runtimeHost: running.agentId!, effectiveImageDigest: imageDigest!, terminalStatus, finishedAt: persisted?.finishedAt ?? new Date().toISOString() });
      if (!("deployment" in completion)) return reply.code(completion.kind === "conflict" ? 409 : 404).send(errorEnvelope(request, completion.kind === "conflict" ? "EXECUTION_COMPLETION_CONFLICT" : "NOT_FOUND", "Redeploy completion could not be persisted."));
-     await state.deployments.appendLog({ id: `log_${createRequestId()}`, deploymentId: running.id, sequence: available ? 2 : 1, level: terminalStatus === "succeeded" ? "info" : "error", message: `Agent redeploy ${terminalStatus}.`, timestamp: completion.deployment.finishedAt!, redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: claim.command.correlationId });
+     await state.deployments.appendLog({ id: randomUUID(), deploymentId: running.id, sequence: available ? 2 : 1, level: terminalStatus === "succeeded" ? "info" : "error", message: `Agent redeploy ${terminalStatus}.`, timestamp: completion.deployment.finishedAt!, redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: claim.command.correlationId });
      await appendAudit(adapters.audit, request, { action: `deployment.redeploy.${terminalStatus}`, targetType: "deployment", targetId: queued.id, metadata: { projectId: queued.projectId, sourceDeploymentId: source.id, snapshotHash: snapshot.hash, reason: terminal.reason } });
      if (!available || dispatchFailed) return reply.code(!available ? 503 : 502).send(errorEnvelope(request, !available ? "DEPLOY_EXECUTE_UNAVAILABLE" : "REDEPLOY_DISPATCH_FAILED", "Redeploy execution failed."));
      return ok(request, { deployment: completion.deployment, command: completion.command!.result, snapshotHash: snapshot.hash, sourceDeploymentId: source.id, execution });
