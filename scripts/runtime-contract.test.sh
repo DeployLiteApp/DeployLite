@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 readonly EXPECTED_NODE_VERSION="24.20.0"
 readonly EXPECTED_PNPM_VERSION="9.15.4"
-readonly EXPECTED_LOCK_SHA256="75114c9d6edb3594936fccea2c4ceb8d218b1c7e0bc957c43a9eba4fc5aa5e73"
+readonly EXPECTED_LOCK_SHA256="103822279910c97c222dfa6dc915b157dc0271667d0fe84fd51dea8d6a5184bd"
 readonly NODE_IMAGE="node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf"
 
 fail() {
