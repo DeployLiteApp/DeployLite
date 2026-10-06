@@ -37,7 +37,7 @@ export const bootstrapInitialAdminRequestSchema = z.object({
 
 export const canonicalRoleSchema = z.enum(["admin", "operator", "read-only", "auditor"]);
 
-export const controlPlaneActionSchema = z.enum(["project.delete", "project.deploy", "project.update", "deployment.stop", "deployment.redeploy", "platform.agent.register"]);
+export const controlPlaneActionSchema = z.enum(["project.delete", "project.deploy", "project.update", "deployment.stop", "deployment.redeploy", "deployment.rollback", "platform.agent.register"]);
 export const controlPlaneScopeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("platform") }),
   z.object({ kind: z.literal("project"), projectId: idSchema }),
@@ -72,6 +72,18 @@ export const deploymentStopCommandResultSchema = z.object({
 export const deploymentRedeployCommandResultSchema = z.object({
   commandId: idSchema, action: z.literal("deployment.redeploy"), projectId: idSchema, sourceDeploymentId: idSchema,
   deploymentId: idSchema.nullable(), snapshotHash: z.string().regex(/^[a-f0-9]{64}$/), status: z.enum(["eligible", "completed", "rejected"]), correlationId: idSchema, reason: z.string().min(1).nullable()
+}).strict();
+
+export const deploymentRollbackCommandRequestSchema = controlCommandRequestSchema.extend({
+  action: z.literal("deployment.rollback"),
+  scope: z.object({ kind: z.literal("deployment"), projectId: idSchema, deploymentId: idSchema }).strict()
+}).strict();
+export const deploymentRollbackCommandResultSchema = z.object({
+  commandId: idSchema, action: z.literal("deployment.rollback"), projectId: idSchema,
+  activeDeploymentId: idSchema, sourceDeploymentId: idSchema, deploymentId: z.string().uuid(),
+  snapshotHash: z.string().regex(/^[a-f0-9]{64}$/),
+  status: z.enum(["pending_confirmation", "eligible", "completed", "rejected"]),
+  correlationId: idSchema, reason: z.string().min(1).nullable()
 }).strict();
 
 export const safeAuthUserSchema = z.object({
@@ -261,6 +273,7 @@ export const deploymentSchema = z.object({
   startedAt: isoDateSchema,
   finishedAt: isoDateSchema.nullable(),
   sourceDeploymentId: idSchema.optional(),
+  activeDeploymentId: idSchema.optional(),
   snapshotOriginId: idSchema.optional(),
   snapshotHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   stopTarget: z.object({
@@ -332,6 +345,8 @@ export type DeploymentStopCommandRequest = z.infer<typeof deploymentStopCommandR
 export type DeploymentRedeployCommandRequest = z.infer<typeof deploymentRedeployCommandRequestSchema>;
 export type DeploymentStopCommandResult = z.infer<typeof deploymentStopCommandResultSchema>;
 export type DeploymentRedeployCommandResult = z.infer<typeof deploymentRedeployCommandResultSchema>;
+export type DeploymentRollbackCommandRequest = z.infer<typeof deploymentRollbackCommandRequestSchema>;
+export type DeploymentRollbackCommandResult = z.infer<typeof deploymentRollbackCommandResultSchema>;
 export type ConfirmationClassification = z.infer<typeof confirmationClassificationSchema>;
 export type ControlCommandStatus = z.infer<typeof controlCommandStatusSchema>;
 export type ConfirmationLifecycleResult = z.infer<typeof confirmationLifecycleResultSchema>;
