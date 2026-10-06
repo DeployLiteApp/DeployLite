@@ -8,7 +8,7 @@ const leaseSchema = z.object({ leaseId: id, deploymentId: id, fence: z.number().
 
 // Reuse deployment leases for project, immediate source and new execution authority.
 export const deploymentExecutionAuthoritySchema = z.object({
-  projectId: id, commandId: id, action: z.enum(["deployment.redeploy", "deployment.stop"]),
+  projectId: id, commandId: id, action: z.enum(["deployment.redeploy", "deployment.stop", "deployment.rollback"]),
   projectLease: leaseSchema, executionLease: leaseSchema, sourceLease: leaseSchema.optional()
 }).strict();
 export type DeploymentExecutionAuthorityV1 = z.infer<typeof deploymentExecutionAuthoritySchema>;
@@ -21,8 +21,10 @@ export type AgentReplacementV1 = z.infer<typeof agentReplacementSchema>;
 
 const agentExecutionFields = { agentId: id, commandId: id, deploymentId: id, projectId: id, snapshot: z.record(z.unknown()), snapshotHash: z.string().regex(/^[a-f0-9]{64}$/), requiredCapabilities: z.array(z.string().min(1).max(128)).max(8), lease: leaseSchema, context: requestContextSchema, timeoutMs: z.number().int().positive().max(300_000), cancellationRequested: z.boolean() };
 const agentExecutionCommandV1Schema = z.object({ schemaVersion: z.literal(1), ...agentExecutionFields }).strict();
-const agentExecutionCommandV2Schema = z.object({ schemaVersion: z.literal(2), ...agentExecutionFields, sourceDeploymentId: id, authority: deploymentExecutionAuthoritySchema.optional(), replacement: agentReplacementSchema.optional() }).strict();
-export const agentExecutionCommandSchema = z.union([agentExecutionCommandV1Schema, agentExecutionCommandV2Schema]);
+const agentExecutionCommandV2Schema = z.object({ schemaVersion: z.literal(2), ...agentExecutionFields, sourceDeploymentId: id, activeDeploymentId: id.optional(), authority: deploymentExecutionAuthoritySchema.optional(), replacement: agentReplacementSchema.optional() }).strict();
+export const agentExecutionCommandSchema = z.union([agentExecutionCommandV1Schema, agentExecutionCommandV2Schema]).superRefine((command, context) => {
+  if (command.schemaVersion === 2) validateRollbackRoles(command, context);
+});
 export type AgentExecutionCommand = z.infer<typeof agentExecutionCommandSchema>;
 
 const runtimeConfigSchema = z.object({ hostPort: z.number().int().min(1024).max(65535), containerPort: z.number().int().min(1).max(65535), networkName: z.string().regex(/^[a-z0-9][a-z0-9_.-]{0,62}$/).optional() }).strict();
@@ -51,7 +53,7 @@ export const dockerImageExecutionReceiptSchema = z.object({
 export type DockerImageExecutionReceipt = z.infer<typeof dockerImageExecutionReceiptSchema>;
 const agentExecutionReceiptFields = { commandId: id, deploymentId: id, terminalStatus: z.enum(["succeeded", "failed", "canceled"]), health: z.enum(["passed", "failed"]), redacted: z.literal(true), receipt: dockerImageExecutionReceiptSchema };
 const agentExecutionReceiptV1Schema = z.object({ schemaVersion: z.literal(1), ...agentExecutionReceiptFields, correlationId: id.optional() }).strict();
-const agentExecutionReceiptV2Schema = z.object({ schemaVersion: z.literal(2), ...agentExecutionReceiptFields, correlationId: id, sourceDeploymentId: id, snapshotHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+const agentExecutionReceiptV2Schema = z.object({ schemaVersion: z.literal(2), ...agentExecutionReceiptFields, correlationId: id, sourceDeploymentId: id, activeDeploymentId: id.optional(), snapshotHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 export const agentExecutionReceiptSchema = z.union([agentExecutionReceiptV1Schema, agentExecutionReceiptV2Schema]).superRefine((envelope, context) => {
   const receipt = envelope.receipt;
   const proof = receipt.executionReceipt;
@@ -81,9 +83,11 @@ export type DeploymentStopAgentReceipt = z.infer<typeof deploymentStopAgentRecei
 // Cache queries carry original immutable scope, never a new execution lease.
 const cachedQueryFields = { schemaVersion: z.literal(1), agentId: id, commandId: id, projectId: id, deploymentId: id, correlationId: id, authority: deploymentExecutionAuthoritySchema.nullable(), timeoutMs: z.number().int().positive().max(300_000) };
 export const agentReceiptQuerySchema = z.discriminatedUnion("action", [
-  z.object({ ...cachedQueryFields, action: z.literal("deploy.execute"), sourceDeploymentId: id.nullable(), snapshot: z.record(z.unknown()), snapshotHash: z.string().regex(/^[a-f0-9]{64}$/), replacement: agentReplacementSchema.nullable() }).strict(),
+  z.object({ ...cachedQueryFields, action: z.literal("deploy.execute"), sourceDeploymentId: id.nullable(), activeDeploymentId: id.optional(), snapshot: z.record(z.unknown()), snapshotHash: z.string().regex(/^[a-f0-9]{64}$/), replacement: agentReplacementSchema.nullable() }).strict(),
   z.object({ ...cachedQueryFields, action: z.literal("deployment.stop"), candidateId: id, effectiveImage: digestImage, containerId: trustedPriorExecutionReceiptSchema.shape.containerId.nullable() }).strict()
-]);
+]).superRefine((query, context) => {
+  if (query.action === "deploy.execute") validateRollbackRoles(query, context);
+});
 const cachedResponseFields = { schemaVersion: z.literal(1), agentId: id, commandId: id, correlationId: id };
 export const agentCachedReceiptSchema = z.discriminatedUnion("action", [
   z.object({ ...cachedResponseFields, action: z.literal("deploy.execute"), receipt: agentExecutionReceiptSchema.nullable() }).strict(),
@@ -91,3 +95,19 @@ export const agentCachedReceiptSchema = z.discriminatedUnion("action", [
 ]);
 export type AgentReceiptQuery = z.infer<typeof agentReceiptQuerySchema>;
 export type AgentCachedReceipt = z.infer<typeof agentCachedReceiptSchema>;
+
+
+function validateRollbackRoles(value: { projectId: string; deploymentId: string; sourceDeploymentId: string | null; activeDeploymentId?: string; authority?: DeploymentExecutionAuthorityV1 | null; replacement?: AgentReplacementV1 | null }, context: z.RefinementCtx): void {
+  const authority = value.authority;
+  if (authority?.action !== "deployment.rollback") {
+    if (value.activeDeploymentId !== undefined) context.addIssue({ code: z.ZodIssueCode.custom, path: ["activeDeploymentId"], message: "active replacement identity requires rollback authority" });
+    return;
+  }
+  const active = value.activeDeploymentId;
+  if (!active || !value.sourceDeploymentId || value.deploymentId === active || value.sourceDeploymentId === value.deploymentId
+    || authority.projectId !== value.projectId || authority.projectLease.deploymentId !== value.projectId
+    || authority.executionLease.deploymentId !== value.deploymentId || authority.sourceLease?.deploymentId !== active
+    || value.replacement?.prior.deploymentId !== active || value.replacement?.prior.projectId !== value.projectId) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["activeDeploymentId"], message: "rollback A/H/R authority and replacement bindings must agree" });
+  }
+}
