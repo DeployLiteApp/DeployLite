@@ -131,6 +131,78 @@ class ProspectivePhysicalGuards(unittest.TestCase):
             with self.subTest(argv=argv):
                 with self.assertRaises(H["PhysicalError"]): H["run_effect"](argv,self.grant,self.fake)
         self.assertEqual(self.fake.calls,[])
+    def report(self):
+        titles=M["suites"]["docker"]["guardTitles"]+M["suites"]["docker"]["physicalTitles"]
+        return {"success":True,"numTotalTests":len(titles),"numPassedTests":len(titles),"numPendingTests":0,"numFailedTests":0,
+                "testResults":[{"assertionResults":[{"fullName":t,"title":next(c["title"] for c in M["suites"]["docker"]["guardCases"]+M["suites"]["docker"]["physicalCases"] if c["fullName"]==t),"status":"passed"} for t in titles]}]}
+    def verify(self,report):
+        expected=M["suites"]["docker"]["guardTitles"]+M["suites"]["docker"]["physicalTitles"]
+        return H["verify_report"](report,expected)
+    def test_old_guard_only_report_cannot_count_as_physical_acceptance(self):
+        report=self.report();count=M["suites"]["docker"]["guardCount"];report["testResults"][0]["assertionResults"]=report["testResults"][0]["assertionResults"][:count]
+        report.update(numTotalTests=count,numPassedTests=count)
+        self.assertFalse(self.verify(report))
+    def test_missing_duplicate_changed_unexpected_or_skipped_expected_title_is_rejected(self):
+        original=self.report()
+        for fault in ("missing","duplicate","changed","unexpected","skipped"):
+            with self.subTest(fault=fault):
+                report=copy.deepcopy(original);cases=report["testResults"][0]["assertionResults"]
+                if fault=="missing":cases.pop()
+                elif fault=="duplicate":cases[-1]=copy.deepcopy(cases[0])
+                elif fault=="changed":cases[-1]["fullName"]="stale-title"
+                elif fault=="unexpected":cases.append({"fullName":"unreviewed title","status":"passed"})
+                else:cases[-1]["status"]="skipped"
+                report.update(numTotalTests=len(cases),numPassedTests=len(cases))
+                self.assertFalse(self.verify(report))
+    def test_failed_empty_or_count_inconsistent_reports_are_rejected(self):
+        for field,value in [("numTotalTests",0),("numPassedTests",0),("numFailedTests",1),("numPendingTests",1),("testResults",[])]:
+            with self.subTest(field=field): self.assertFalse(self.verify({**self.report(),field:value}))
+    def receipts(self):
+        values=[]
+        for index,title in enumerate(M["suites"]["docker"]["physicalTitles"]):
+            cid=f"{index+1:064x}";network="f"*64
+            proof={"containerId":cid,"runtimeHost":"22222222-2222-4222-8222-222222222222","projectId":self.grant["projectId"],
+                   "snapshotOriginId":"origin-fixture","snapshotHash":"d"*64,"effectiveImageDigest":"sha256:"+"e"*64,
+                   "network":"p2v-fixture","hostPort":49170,"containerPort":8080}
+            events=[{"kind":"owned-engine-observation","engineId":self.grant["engineId"],"ciJob":JOB.copy()},
+                    {"kind":"docker-command","physicalRan":True,"phase":"completed","exitCode":0,"argv":["docker","run","--pull=never"]},
+                    {"kind":"owned-container-budget","containerId":cid,"id":cid,"cpu":500000000,"memory":67108864,"pids":64},
+                    {"kind":"physical-observation","observation":{"id":cid,"owner":self.grant["owner"],"projectId":self.grant["projectId"]}},
+                    {"kind":"api-response","action":"INITIAL","statusCode":200,"body":{"data":{"deployment":{"executionReceipt":proof}}}},
+                    {"kind":"cleanup-receipt","resource":"container","id":cid,"verifiedLabels":True,"removed":True},
+                    {"kind":"cleanup-receipt","resource":"network","id":network,"verifiedLabels":True,"removed":True}]
+            resources=[{"kind":"container","id":cid,"owner":self.grant["owner"],"project":self.grant["projectId"]},
+                       {"kind":"network","id":network,"owner":self.grant["owner"],"project":self.grant["projectId"]}]
+            if title.endswith("WIRE_unsigned_REJECTS_BEFORE_EFFECTS") or title.endswith("WIRE_signed-other-initial_REJECTS_BEFORE_EFFECTS"):
+                tamper="unsigned" if title.endswith("WIRE_unsigned_REJECTS_BEFORE_EFFECTS") else "signed-other-initial"
+                # Tamper cases require rejection/no proof; they cannot satisfy a generic successful-INITIAL proof rule.
+                events=[events[0],events[1],events[-1],
+                        {"kind":"harness-injected-wire-tamper","tamper":tamper,"commandId":"command-1","deploymentId":"deployment-1","correlationId":"correlation-1"},
+                        {"kind":"receiver-rejection","commandId":"command-1","deploymentId":"deployment-1","correlationId":"correlation-1", "requestAuthenticated":tamper!="unsigned",
+                         "reason":"agent authentication failed" if tamper=="unsigned" else "INITIAL immutable execution binding changed"},
+                        {"kind":"api-response","action":"INITIAL","statusCode":502,"body":{"error":{"code":"DEPLOY_DISPATCH_FAILED","correlationId":"correlation-1"}}}]
+                resources=resources[-1:]
+            values.append({"status":"PASS","physicalDocker":True,"postgres":False,"grantId":self.grant["grantId"],"owner":self.grant["owner"],
+                           "projectId":self.grant["projectId"],"receiptFile":M["suites"]["docker"]["physicalCases"][index]["receiptFile"],"events":events,"resources":resources})
+        return values
+    def test_missing_stale_job_engine_duplicate_or_unproven_physical_evidence_is_rejected(self):
+        for fault in ("missing","duplicate","wrong-job","wrong-engine","no-effects","no-proof","cleanup-blocked","widened-cap"):
+            with self.subTest(fault=fault):
+                receipts=self.receipts()
+                if fault=="missing":receipts.pop()
+                elif fault=="duplicate":receipts[-1]=copy.deepcopy(receipts[0])
+                elif fault=="wrong-job":receipts[-1]["events"][0]["ciJob"]["runId"]="foreign"
+                elif fault=="wrong-engine":receipts[-1]["events"][0]["engineId"]="foreign"
+                elif fault=="no-effects":receipts[-1]["events"]=[e for e in receipts[-1]["events"] if e["kind"]!="docker-command"]
+                elif fault=="no-proof":receipts[0]["events"][4]["body"]["data"]["deployment"].pop("executionReceipt")
+                elif fault=="cleanup-blocked":receipts[-1]["events"]=[e for e in receipts[-1]["events"] if e["kind"]!="cleanup-receipt"]
+                else:receipts[0]["events"][2]["memory"]=0
+                self.assertFalse(H["verify_physical"](receipts,self.grant))
+    def test_characterizes_distinct_raw_tamper_and_success_receipt_unit_fixtures(self):
+        self.assertTrue(H["verify_physical"](self.receipts(),self.grant))
+        for receipt in self.receipts()[-2:]:
+            self.assertEqual([r["kind"] for r in receipt["resources"]],["network"])
+            self.assertEqual(next(e for e in receipt["events"] if e["kind"]=="api-response")["statusCode"],502)
     def test_characterizes_valid_declared_job_without_implicit_runtime_effects(self):
         self.assertEqual(H["validate_context"](self.grant,self.env,0),self.grant);self.assertEqual(self.fake.calls,[])
     def test_characterizes_private_empty_config_metadata_without_contents(self):
@@ -142,10 +214,39 @@ class ProspectivePhysicalGuards(unittest.TestCase):
         expected={"reference":self.image()["repoDigests"][0],"platform":"linux/amd64","flavor":"a"}
         self.assertEqual(H["validate_image"](self.image(),expected),self.image())
         self.assertEqual(H["validate_owned_resource"](self.resource(),self.resource(),self.grant["bounds"]),self.resource())
+    def test_characterizes_full_unique_73_title_report_without_physical_credit(self):
+        self.assertTrue(self.verify(self.report()))
     def test_neutral_recorded_boundaries_do_not_construct_a_native_process(self):
         with self.assertRaises(H["PhysicalError"]):
             H["run_effect"](["docker","info"],self.grant,None)
         self.assertEqual(self.fake.calls,[])
+
+class CorrectivePhysicalGuards(unittest.TestCase):
+    """H1–H3 only: source assertions; recorded processes and clocked sockets, never actual I/O."""
+    setUp = ProspectivePhysicalGuards.setUp
+    receipts = ProspectivePhysicalGuards.receipts
+    resource = ProspectivePhysicalGuards.resource
+
+    def realistic_receipts(self):
+        receipts = self.receipts()
+        for receipt in receipts[-2:]:
+            event = next(e for e in receipt["events"] if e["kind"] == "api-response")
+            event["body"]["error"]["message"] = "The agent rejected the deployment command"
+        return receipts
+
+    def test_actual_message_bearing_correlated_wire_rejections_are_accepted(self):
+        self.assertTrue(H["verify_physical"](self.realistic_receipts(), self.grant))
+
+    def test_message_bearing_wire_rejections_still_require_502_code_and_correlation(self):
+        for fault in ("status", "code", "correlationId", "receiver-correlation"):
+            with self.subTest(fault=fault):
+                receipts = self.realistic_receipts()
+                response = next(e for e in receipts[-1]["events"] if e["kind"] == "api-response")
+                if fault == "status": response["statusCode"] = 200
+                elif fault == "receiver-correlation":
+                    next(e for e in receipts[-1]["events"] if e["kind"] == "receiver-rejection")["correlationId"] = "foreign"
+                else: response["body"]["error"][fault] = "foreign"
+                self.assertFalse(H["verify_physical"](receipts, self.grant))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
