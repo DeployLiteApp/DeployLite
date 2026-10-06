@@ -91,3 +91,8 @@ describe("deployment metadata persistence mapping", () => {
     expect(toDeployment(deploymentRow({ metadata: { owner: "keep", stopTarget: { candidateId: "candidate-1", effectiveImage: `registry.example.com/team/app@sha256:${"a".repeat(64)}` } } }))).toMatchObject({ stopTarget: { candidateId: "candidate-1" } });
   });
 });
+
+it("retains independent active A and historical H in rollback metadata", () => {
+  const mapped = toDeployment(deploymentRow({ metadata: { activeDeploymentId: "active-A", sourceDeploymentId: "historical-H", snapshotOriginId: "origin-H" }, snapshotHash: "a".repeat(64) }));
+  expect(mapped).toMatchObject({ activeDeploymentId: "active-A", sourceDeploymentId: "historical-H", snapshotOriginId: "origin-H" });
+});

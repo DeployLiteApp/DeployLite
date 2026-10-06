@@ -19,7 +19,7 @@ export function claimDeploymentAuthority(commands: readonly ControlCommand[], cu
   const lease = (deploymentId: string, kind: string) => ({ deploymentId, fence, leaseId: `${current.id}:${kind}:${fence}`, expiresAt: current.expiresAt.getTime() });
   const authority = deploymentExecutionAuthoritySchema.parse({ projectId, commandId: current.id, action: current.action,
     projectLease: lease(projectId, "project"), executionLease: lease(executionId, "execution"),
-    ...(current.action === "deployment.redeploy" ? { sourceLease: lease(current.scope.deploymentId, "source") } : {}) });
+    ...((current.action === "deployment.redeploy" || current.action === "deployment.rollback") ? { sourceLease: lease(current.scope.deploymentId, "source") } : {}) });
   current.executionAuthority = structuredClone(authority);
   current.status = "dispatching";
   return authority;

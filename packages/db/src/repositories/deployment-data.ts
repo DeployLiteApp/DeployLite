@@ -123,6 +123,7 @@ export class DbDeploymentRepository implements DeploymentRepository, DeploymentS
   async save(deployment: Deployment): Promise<Deployment> {
     const next = structuredClone(deployment);
     const metadataValue = {
+      ...(next.activeDeploymentId ? { activeDeploymentId: next.activeDeploymentId } : {}),
       ...(next.sourceDeploymentId ? { sourceDeploymentId: next.sourceDeploymentId } : {}),
       ...(next.snapshotOriginId ? { snapshotOriginId: next.snapshotOriginId } : {}),
       ...(next.stopTarget ? { stopTarget: next.stopTarget } : {})
@@ -261,6 +262,7 @@ function genericDeploymentWriteGuard(next: Deployment) {
   return and(
     eq(deployments.projectId, next.projectId), eq(deployments.agentId, next.agentId), eq(deployments.commitSha, next.commitSha),
     sql`coalesce(${deployments.startedAt}, ${deployments.createdAt}) = ${next.startedAt}::timestamptz`,
+    sql`${deployments.metadata}->>'activeDeploymentId' is not distinct from ${next.activeDeploymentId ?? null}`,
     sql`${deployments.metadata}->>'sourceDeploymentId' is not distinct from ${next.sourceDeploymentId ?? null}`,
     sql`${deployments.metadata}->>'snapshotOriginId' is not distinct from ${next.snapshotOriginId ?? null}`,
     // Omitted hashes retain evidence attached by saveSnapshot before a legacy lifecycle update.
@@ -317,6 +319,7 @@ export function toDeployment(row: typeof deployments.$inferSelect): Deployment |
     finishedAt: row.finishedAt?.toISOString() ?? null,
     ...(row.metadata && typeof row.metadata === "object" && row.metadata["stopTarget"] ? { stopTarget: row.metadata["stopTarget"] as Deployment["stopTarget"] } : {}),
     ...(row.metadata && typeof row.metadata === "object" && typeof row.metadata["sourceDeploymentId"] === "string" ? { sourceDeploymentId: row.metadata["sourceDeploymentId"] } : {}),
+    ...(typeof row.metadata?.["activeDeploymentId"] === "string" ? { activeDeploymentId: row.metadata["activeDeploymentId"] } : {}),
     ...(typeof row.metadata?.["snapshotOriginId"] === "string" ? { snapshotOriginId: row.metadata["snapshotOriginId"] } : {}),
     ...(row.snapshotHash ? { snapshotHash: row.snapshotHash } : {}),
     ...(row.executionReceipt ? { executionReceipt: trustedPriorExecutionReceiptSchema.parse(row.executionReceipt) } : {})

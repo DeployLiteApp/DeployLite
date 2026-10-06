@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { CanonicalRole, ConfirmationClassification, ControlCommandStatus, ControlPlaneAction, ControlPlaneScope, Deployment, DeploymentRedeployCommandResult, DeploymentStopCommandResult, DeploymentExecutionAuthorityV1 } from "@deploylite/contracts";
+import type { CanonicalRole, ConfirmationClassification, ControlCommandStatus, ControlPlaneAction, ControlPlaneScope, Deployment, DeploymentRollbackCommandResult, DeploymentRedeployCommandResult, DeploymentStopCommandResult, DeploymentExecutionAuthorityV1 } from "@deploylite/contracts";
 
 export type ControlGrant = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope };
 export type ControlGrantRepository = { listForActor(actorId: string): Promise<ControlGrant[]> };
 export type PolicyRequest = { actorId: string; role: CanonicalRole; action: ControlPlaneAction; scope: ControlPlaneScope; correlationId: string; grants: ControlGrant[] };
 export type PolicyDecision = { allowed: true; grantId: string; correlationId: string } | { allowed: false; code: "FORBIDDEN" | "ROLE_DENIED" | "SCOPE_DENIED"; correlationId: string };
-export type ControlCommand = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; idempotencyKey: string; correlationId: string; status: ControlCommandStatus; expiresAt: Date; result?: DeploymentStopCommandResult | DeploymentRedeployCommandResult; executionAuthority?: DeploymentExecutionAuthorityV1 };
+export type ControlCommand = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; idempotencyKey: string; correlationId: string; status: ControlCommandStatus; expiresAt: Date; result?: DeploymentStopCommandResult | DeploymentRedeployCommandResult | DeploymentRollbackCommandResult; executionAuthority?: DeploymentExecutionAuthorityV1 };
 export type ControlConfirmation = { id: string; commandId: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; classification: ConfirmationClassification; expiresAt: Date; consumedAt: Date | null };
 export type ConfirmationOutcome = { command: ControlCommand; accepted: boolean; reason: string | null };
 export type ConfirmedProjectDeleteInput = { command: ControlCommand; confirmation: ControlConfirmation; projectId: string; requestId: string; now?: Date };
@@ -67,7 +67,7 @@ export type ControlDeleteRepository = ControlCommandRepository & ControlConfirma
   executeConfirmedProjectDelete(input: ConfirmedProjectDeleteInput): Promise<ConfirmedProjectDeleteOutcome>;
 };
 export type ControlStopRepository = ControlCommandRepository & ControlConfirmationRepository & {
-  findByIdempotency?(actorId: string, idempotencyKey: string, action?: "deployment.redeploy" | "deployment.stop"): Promise<ControlCommand | null>;
+  findByIdempotency?(actorId: string, idempotencyKey: string, action?: "deployment.redeploy" | "deployment.stop" | "deployment.rollback"): Promise<ControlCommand | null>;
   validateDeploymentAuthority?(authority: DeploymentExecutionAuthorityV1, now?: number): Promise<void>;
   executeConfirmedDeploymentStop(input: ConfirmedDeploymentStopInput): Promise<ConfirmedDeploymentStopOutcome>;
   claimDeploymentStop(command: ControlCommand): Promise<{ command: ControlCommand; claimed: boolean; authority?: DeploymentExecutionAuthorityV1 }>;
@@ -75,7 +75,7 @@ export type ControlStopRepository = ControlCommandRepository & ControlConfirmati
 };
 export type ControlRedeployRepository = ControlCommandRepository & ControlConfirmationRepository & {
   validateDeploymentAuthority?(authority: DeploymentExecutionAuthorityV1, now?: number): Promise<void>;
-  findByIdempotency(actorId: string, idempotencyKey: string, action?: "deployment.redeploy" | "deployment.stop"): Promise<ControlCommand | null>;
+  findByIdempotency(actorId: string, idempotencyKey: string, action?: "deployment.redeploy" | "deployment.stop" | "deployment.rollback"): Promise<ControlCommand | null>;
   executeConfirmedDeploymentRedeploy(input: ConfirmedDeploymentRedeployInput): Promise<ConfirmedDeploymentRedeployOutcome>;
   claimDeploymentRedeploy(command: ControlCommand): Promise<{ command: ControlCommand; claimed: boolean; deployment: Deployment | null; authority?: DeploymentExecutionAuthorityV1 }>;
   completeDeploymentRedeploy(command: ControlCommand, result: DeploymentRedeployCommandResult): Promise<ControlCommand>;
@@ -99,4 +99,40 @@ function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   if (value && typeof value === "object") return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`).join(",")}}`;
   return JSON.stringify(value);
+}
+
+/** Compare retry intent using the durable reservation, never a second tentative UUID. */
+export function validateRollbackReservation(current: ControlCommand, submitted: ControlCommand): void {
+  const prior = current.result, next = submitted.result;
+  if (current.action !== "deployment.rollback" || submitted.action !== current.action || current.actorId !== submitted.actorId || current.idempotencyKey !== submitted.idempotencyKey || current.scope.kind !== "deployment" || submitted.scope.kind !== "deployment" || prior?.action !== "deployment.rollback" || next?.action !== "deployment.rollback") throw new IdempotencyConflictError();
+  const digest = (command: ControlCommand, result: DeploymentRollbackCommandResult, executionId = result.deploymentId) => digestControlInput({ actorId: command.actorId, projectId: result.projectId, activeDeploymentId: result.activeDeploymentId, sourceDeploymentId: result.sourceDeploymentId, deploymentId: executionId, snapshotHash: result.snapshotHash });
+  if (prior.commandId !== current.id || next.commandId !== submitted.id || prior.projectId !== current.scope.projectId || prior.activeDeploymentId !== current.scope.deploymentId || next.projectId !== submitted.scope.projectId || next.activeDeploymentId !== submitted.scope.deploymentId || digest(current, prior) !== current.inputDigest || digest(submitted, next) !== submitted.inputDigest || digest(submitted, next, prior.deploymentId) !== current.inputDigest) throw new IdempotencyConflictError();
+}
+
+/** Admission uses durable R and historical H; the active recovery target stays independent. */
+export function isRollbackAdmissionBound(command: ControlCommand, deployment: Deployment, historical: Deployment | null | undefined, now: Date): boolean {
+  const result = command.result;
+  return command.status === "pending_confirmation" && command.expiresAt > now && result?.action === "deployment.rollback"
+    && deployment.id === result.deploymentId && deployment.projectId === result.projectId
+    && deployment.activeDeploymentId === result.activeDeploymentId && deployment.sourceDeploymentId === result.sourceDeploymentId
+    && deployment.snapshotHash === result.snapshotHash && deployment.status === "queued" && deployment.finishedAt === null && !deployment.executionReceipt
+    && Boolean(historical) && historical!.id === result.sourceDeploymentId && historical!.projectId === result.projectId
+    && historical!.snapshotHash === result.snapshotHash && Boolean(historical!.snapshotOriginId)
+    && deployment.snapshotOriginId === historical!.snapshotOriginId && Boolean(historical!.agentId) && deployment.agentId === historical!.agentId;
+}
+
+export type ConfirmedDeploymentRollbackInput = Omit<ConfirmedDeploymentRedeployInput, "snapshotHash">;
+export type ConfirmedDeploymentRollbackOutcome = ConfirmationOutcome & { result: DeploymentRollbackCommandResult | null; deployment: Deployment | null; alreadyCompleted: boolean };
+export type ControlRollbackRepository = ControlCommandRepository & ControlConfirmationRepository & {
+  resolveRollbackConfirmation?(command: ControlCommand, now?: Date): Promise<ControlConfirmation | null>;
+  findByIdempotency(actorId: string, idempotencyKey: string, action?: "deployment.redeploy" | "deployment.stop" | "deployment.rollback"): Promise<ControlCommand | null>;
+  validateDeploymentAuthority?(authority: DeploymentExecutionAuthorityV1, now?: number): Promise<void>;
+  executeConfirmedDeploymentRollback(input: ConfirmedDeploymentRollbackInput): Promise<ConfirmedDeploymentRollbackOutcome>;
+  claimDeploymentRollback(command: ControlCommand): ReturnType<ControlRedeployRepository["claimDeploymentRedeploy"]>;
+};
+
+/** Only an unchanged admitted execution with no prior effect claim may resume. */
+export function isRollbackClaimBound(command: ControlCommand, deployment: Deployment | null | undefined, historical: Deployment | null | undefined, now: Date): boolean {
+  return command.status === "eligible" && !command.executionAuthority && command.result?.action === "deployment.rollback" && command.result.status === "eligible"
+    && Boolean(deployment) && isRollbackAdmissionBound({ ...command, status: "pending_confirmation" }, deployment!, historical, now);
 }
