@@ -1,5 +1,5 @@
 import { and, eq, gt, sql } from "drizzle-orm";
-import { deploymentExecutionAuthoritySchema, deploymentRedeployCommandResultSchema, type Deployment } from "@deploylite/contracts";
+import { deploymentExecutionAuthoritySchema, deploymentRedeployCommandResultSchema, deploymentRollbackCommandResultSchema, type Deployment } from "@deploylite/contracts";
 import {
   completeExecutionAtomically, validateDeploymentAuthority, validateInitialExecution,
   type DeploymentExecutionRepository,
@@ -80,14 +80,14 @@ export class DbDeploymentExecutionRepository implements DeploymentExecutionRepos
 class ExecutionCompletionConflict extends Error {}
 
 function toExecutionCommand(row: ControlCommandRow): ExecutionCommandRecord {
-  const parsed = deploymentRedeployCommandResultSchema.safeParse(row.result);
-  if (!parsed.success || row.action !== "deployment.redeploy" || row.scopeKind !== "deployment"
+  const parsed = (row.action === "deployment.rollback" ? deploymentRollbackCommandResultSchema : deploymentRedeployCommandResultSchema).safeParse(row.result);
+  if (!parsed.success || (row.action !== "deployment.redeploy" && row.action !== "deployment.rollback") || row.scopeKind !== "deployment"
     || (row.status !== "dispatching" && row.status !== "completed")) throw new ExecutionCompletionConflict();
   const result = parsed.data;
   let scope: unknown;
   try { scope = JSON.parse(row.scopeKey); } catch { throw new ExecutionCompletionConflict(); }
-  if (!Array.isArray(scope) || scope.length !== 2 || scope[0] !== result.projectId || scope[1] !== result.sourceDeploymentId
+  if (!Array.isArray(scope) || scope.length !== 2 || scope[0] !== result.projectId || scope[1] !== (result.action === "deployment.rollback" ? result.activeDeploymentId : result.sourceDeploymentId)
     || row.id !== result.commandId || row.correlationId !== result.correlationId
     || result.status !== (row.status === "completed" ? "completed" : "eligible")) throw new ExecutionCompletionConflict();
-  return { id: row.id, status: row.status, result, ...(row.executionAuthority ? { executionAuthority: deploymentExecutionAuthoritySchema.parse(row.executionAuthority) } : {}) };
+  return { id: row.id, action: row.action, scope: { kind: "deployment", projectId: result.projectId, deploymentId: String(scope[1]) }, status: row.status, result, ...(row.executionAuthority ? { executionAuthority: deploymentExecutionAuthoritySchema.parse(row.executionAuthority) } : {}) };
 }

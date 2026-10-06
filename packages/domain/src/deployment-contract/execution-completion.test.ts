@@ -97,6 +97,7 @@ class FakeTransactionalStore implements ExecutionCompletionStore {
     const before = structuredClone({ deployment: this.deployment, command: this.command });
     try {
       return await work({
+        validateAuthority: async () => true,
         lockCommand: async (id) => { this.locks.push(`command:${id}`); return structuredClone(this.command); },
         lockDeployment: async (id) => { this.locks.push(`deployment:${id}`); this.onDeploymentLock?.(); return structuredClone(this.deployment); },
         saveDeployment: async (value) => { this.deployment = structuredClone(value); this.onDeploymentSaved?.(); if (this.failAfterDeployment) throw new Error("injected write failure"); },
@@ -206,4 +207,69 @@ it("rejects abort at the actual shared-memory map publication boundary", async (
   const before = structuredClone({ deployments: state.deployments, commands: state.commands }), original = state.transaction.bind(state);
   state.transaction = (async (work: Parameters<typeof state.transaction>[0], signal?: AbortSignal) => (original as any)(async (transaction: ExecutionCompletionTransaction) => { const result = await work(transaction); controller.abort(new Error("cache publication canceled")); return result; }, signal)) as typeof state.transaction;
   await expect((state.completeExecution as any)(input(), controller.signal)).rejects.toThrow("cache publication canceled"); expect({ deployments: state.deployments, commands: state.commands }).toEqual(before);
+});
+
+
+describe("rollback atomic independent active and historical bindings", () => {
+  it("publishes R proof/status/result while retaining active A and historical H independently", async () => {
+    const store = new FakeTransactionalStore(), R = "00000000-0000-4000-8000-000000000010";
+    const rollback = { ...commandResult(), action: "deployment.rollback" as const, activeDeploymentId: "active-A", sourceDeploymentId: "historical-H", deploymentId: R };
+    store.deployment = { ...deployment(), id: R, sourceDeploymentId: "historical-H", activeDeploymentId: "active-A" };
+    const authority = rollbackCompletion().submitted.authority;
+    store.command = { id: "command-1", action: "deployment.rollback", scope: { kind: "deployment", projectId: "project-1", deploymentId: "active-A" }, status: "dispatching", result: rollback, executionAuthority: authority } as unknown as ExecutionCommandRecord;
+    const submitted = { ...input(), authority, executionId: R, sourceExecutionId: "historical-H", activeDeploymentId: "active-A", commandResult: { ...rollback, status: "completed" as const }, proof: proof({ deploymentId: R }) };
+    const outcome = await completeExecutionAtomically(store, submitted as unknown as ExecutionCompletionInput);
+    expect(outcome).toMatchObject({ kind: "committed", deployment: { status: "succeeded", activeDeploymentId: "active-A", sourceDeploymentId: "historical-H" }, command: { status: "completed", result: { activeDeploymentId: "active-A", sourceDeploymentId: "historical-H", deploymentId: R } } });
+  });
+  it("claims A as source authority while R is execution and H remains historical lineage", async () => {
+    const { claimDeploymentAuthority } = await import("./deployment-authority.js");
+    const R = "00000000-0000-4000-8000-000000000010";
+    const current = createControlCommand({ actorId: "actor", action: "deployment.rollback", scope: { kind: "deployment", projectId: "project-1", deploymentId: "active-A" }, input: {}, idempotencyKey: "rollback", correlationId: "original" });
+    current.status = "eligible"; current.result = { commandId: current.id, action: "deployment.rollback", projectId: "project-1", activeDeploymentId: "active-A", sourceDeploymentId: "historical-H", deploymentId: R, snapshotHash: hash, status: "eligible", correlationId: "original", reason: null };
+    expect(claimDeploymentAuthority([current], current, R)).toMatchObject({ action: "deployment.rollback", sourceLease: { deploymentId: "active-A" }, executionLease: { deploymentId: R } });
+    expect(current.result.sourceDeploymentId).toBe("historical-H");
+  });
+});
+function rollbackCompletion() {
+  const R = "00000000-0000-4000-8000-000000000010", lease = (deploymentId: string) => ({ deploymentId, leaseId: `${deploymentId}:rollback`, fence: 2, expiresAt: Date.now() + 200_000 });
+  const authority = { action: "deployment.rollback" as const, commandId: "command-1", projectId: "project-1", projectLease: lease("project-1"), sourceLease: lease("active-A"), executionLease: lease(R) };
+  const result = { ...commandResult(), action: "deployment.rollback" as const, activeDeploymentId: "active-A", sourceDeploymentId: "historical-H", deploymentId: R };
+  const current = { ...deployment(), id: R, sourceDeploymentId: "historical-H", activeDeploymentId: "active-A" };
+  const submitted = { ...input(), authority, executionId: R, sourceExecutionId: "historical-H", activeDeploymentId: "active-A", commandResult: { ...result, status: "completed" as const }, proof: proof({ deploymentId: R }) };
+  const state = new InMemoryExecutionState(); state.deployments.set(R, structuredClone(current));
+  state.commands.set("rollback", { ...createControlCommand({ actorId: "actor", action: "deployment.rollback", scope: { kind: "deployment", projectId: "project-1", deploymentId: "active-A" }, input: {}, idempotencyKey: "rollback", correlationId: "correlation-1" }), id: "command-1", status: "dispatching", result, executionAuthority: authority });
+  return { state, submitted, current, result };
+}
+describe("rollback completion guards at actual shared memory publication", () => {
+  it.each(["submitted-A", "persisted-A", "expected-A", "result-A", "missing-authority", "source-lease-H"])("rejects %s without status/proof/result publication", async (variant) => {
+    const f = rollbackCompletion(), value = structuredClone(f.submitted);
+    if (variant === "submitted-A") value.activeDeploymentId = "other-A";
+    if (variant === "persisted-A") f.state.deployments.get(value.executionId)!.activeDeploymentId = "other-A";
+    if (variant === "expected-A") (f.state.commands.get("rollback")!.result as any).activeDeploymentId = "other-A";
+    if (variant === "result-A") value.commandResult.activeDeploymentId = "other-A";
+    if (variant === "missing-authority") { delete (value as any).authority; delete f.state.commands.get("rollback")!.executionAuthority; }
+    if (variant === "source-lease-H") { value.authority.sourceLease.deploymentId = "historical-H"; f.state.commands.get("rollback")!.executionAuthority = structuredClone(value.authority); }
+    const before = structuredClone({ deployments: f.state.deployments, commands: f.state.commands });
+    expect(await f.state.completeExecution(value)).toEqual({ kind: "conflict" });
+    expect({ deployments: f.state.deployments, commands: f.state.commands }).toEqual(before);
+  });
+  it("commits and replays a canonical-equal rollback before expired authority/deleted mutable dependencies", async () => {
+    const f = rollbackCompletion(); expect((await f.state.completeExecution(f.submitted)).kind).toBe("committed");
+    const command = f.state.commands.get("rollback")!; command.expiresAt = new Date(0);
+    // An equal durable receipt retains the original immutable authority instead of refreshing it.
+    expect((await f.state.completeExecution(f.submitted)).kind).toBe("replayed");
+    expect(await f.state.completeExecution({ ...f.submitted, activeDeploymentId: "changed-A" })).toEqual({ kind: "conflict" });
+  });
+});
+
+
+describe("rollback completion keeps the persisted command scope/action bound", () => {
+  it.each(["scope", "action"])("rejects changed command %s at actual shared publication", async (variant) => {
+    const f = rollbackCompletion(), command = f.state.commands.get("rollback")!;
+    if (variant === "scope") command.scope = { kind: "deployment", projectId: "project-1", deploymentId: "historical-H" };
+    else command.action = "deployment.redeploy";
+    const before = structuredClone({ deployments: f.state.deployments, commands: f.state.commands });
+    expect(await f.state.completeExecution(f.submitted)).toEqual({ kind: "conflict" });
+    expect({ deployments: f.state.deployments, commands: f.state.commands }).toEqual(before);
+  });
 });

@@ -249,3 +249,18 @@ describe("cached completion cancellation under the PostgreSQL transaction", () =
     await expect((repository.completeExecution as any)(input, controller.signal)).rejects.toThrow("cache publication canceled"); expect(client.state).toEqual(before); expect(client.queries.at(-1)?.text).toBe("rollback");
   });
 });
+
+
+describe("recording PostgreSQL rollback terminal roles", () => {
+  it("maps rollback scope A and atomically completes R/H proof/result", async () => {
+    const { client, repository } = harness(), R = "00000000-0000-4000-8000-000000000010";
+    const lease = (deploymentId: string) => ({ deploymentId, leaseId: `${deploymentId}:owner`, fence: 2, expiresAt: Date.now() + 200_000 });
+    const authority = { projectId: input.projectId, commandId: input.commandId!, action: "deployment.rollback" as const, projectLease: lease(input.projectId), sourceLease: lease("active-A"), executionLease: lease(R) };
+    const rollback = { ...result, action: "deployment.rollback" as const, activeDeploymentId: "active-A", sourceDeploymentId: "historical-H", deploymentId: R };
+    Object.assign(client.state.command!, { action: "deployment.rollback", scopeKey: JSON.stringify([input.projectId, "active-A"]), executionAuthority: authority, result: rollback, expiresAt: new Date(authority.projectLease.expiresAt) });
+    Object.assign(client.state.deployment!, { id: R, metadata: { activeDeploymentId: "active-A", sourceDeploymentId: "historical-H", snapshotOriginId: input.snapshotOriginId } });
+    const submitted = { ...input, authority, executionId: R, activeDeploymentId: "active-A", sourceExecutionId: "historical-H", commandResult: { ...rollback, status: "completed" as const }, proof: { ...input.proof!, deploymentId: R } };
+    expect(await repository.completeExecution(submitted)).toMatchObject({ kind: "committed", deployment: { activeDeploymentId: "active-A", sourceDeploymentId: "historical-H", status: "succeeded" }, command: { result: { action: "deployment.rollback", activeDeploymentId: "active-A", deploymentId: R } } });
+    expect(client.queries.filter(({ text }) => text.startsWith("update"))).toHaveLength(2);
+  });
+});
