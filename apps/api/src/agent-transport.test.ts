@@ -379,3 +379,20 @@ it.each(["deploy.execute", "deployment.stop"] as const)("rejects caller-selected
   const read = action === "deploy.execute" ? transport.readExecutionReceipt(snapshot, "original-command", context) : transport.readStopReceipt({ projectId: snapshot.projectId, deploymentId: "A", commandId: "original-command", candidateId: "candidate", effectiveImage: receipt.effectiveImage }, context);
   await expect(read).rejects.toThrow("identity"); expect(fetch).not.toHaveBeenCalled();
 });
+
+describe("rollback API transport independent active role", () => {
+  it.each(["dispatch", "cache"] as const)("forwards and binds active A separately from H/R for %s", async (operation) => {
+    const executionId = "R", historicalId = "H", A = "active-A", authority = { ...coordinatedAuthority("deployment.redeploy", executionId), action: "deployment.rollback" as const, sourceLease: { ...coordinatedAuthority("deployment.redeploy", executionId).sourceLease!, deploymentId: A } };
+    const observed = { schemaVersion: 2, commandId: "deploy_R", deploymentId: executionId, activeDeploymentId: A, sourceDeploymentId: historicalId, snapshotHash: snapshot.hash, correlationId: "original", terminalStatus: "succeeded", health: "passed", redacted: true, receipt: { ...receipt, deploymentId: executionId } };
+    expect(agentExecutionReceiptSchema.safeParse(observed).success).toBe(true);
+    let sent: any;
+    const transport = new AuthenticatedAgentDeploymentTransport({ endpoint: "https://agent.test", trustKey: "transport_test_key_123", agentId: "agent-1", fetch: async (url, init) => {
+      if (String(url).endsWith("/capabilities")) return new Response(JSON.stringify({ schemaVersion: 1, agentId: "agent-1", capabilities: ["deploy.execute"], protocolVersions: [1, 2] }), { headers: { "x-deploylite-request-signature": String((init?.headers as Record<string, string>)["x-deploylite-signature"]) } });
+      sent = JSON.parse(String(init?.body)); return new Response(JSON.stringify(operation === "cache" ? { schemaVersion: 1, action: "deploy.execute", agentId: "agent-1", commandId: "deploy_R", correlationId: "original", receipt: observed } : observed));
+    } });
+    const context = { agentId: "agent-1", requestId: "fresh-request", correlationId: "original", executionDeploymentId: executionId, activeDeploymentId: A, sourceDeploymentId: historicalId, authority, replacement: { ...replacement(), prior: { ...replacement().prior, deploymentId: A } } };
+    const outcome = await transport[operation === "cache" ? "readExecutionReceipt" : "dispatch"](snapshot, "deploy_R", context).then((value) => ({ value, error: null }), (error: Error) => ({ value: null, error: error.message }));
+    expect(outcome).toMatchObject({ error: null, value: { activeDeploymentId: A, sourceDeploymentId: historicalId, deploymentId: executionId } });
+    expect(sent).toMatchObject({ activeDeploymentId: A, sourceDeploymentId: historicalId, deploymentId: executionId });
+  });
+});

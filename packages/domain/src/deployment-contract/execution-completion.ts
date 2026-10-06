@@ -1,5 +1,5 @@
 import type { InitialExecutionBinding } from "./deployment-authority.js";
-import { deploymentExecutionAuthoritySchema, protocolPayloadFingerprint, type DeploymentExecutionAuthorityV1, trustedPriorExecutionReceiptSchema, type Deployment, type DeploymentRedeployCommandResult, type TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
+import { deploymentExecutionAuthoritySchema, protocolPayloadFingerprint, type DeploymentExecutionAuthorityV1, trustedPriorExecutionReceiptSchema, type Deployment, type ControlPlaneScope, type DeploymentRollbackCommandResult, type DeploymentRedeployCommandResult, type TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
 
 export type ExecutionTerminalStatus = Extract<Deployment["status"], "succeeded" | "failed" | "canceled">;
 
@@ -10,20 +10,23 @@ export type ExecutionCompletionInput = Readonly<{
   executionId: string;
   projectId: string;
   sourceExecutionId: string | null;
+  activeDeploymentId?: string;
   snapshotOriginId: string;
   snapshotHash: string;
   runtimeHost: string;
   effectiveImageDigest: string;
   terminalStatus: ExecutionTerminalStatus;
   finishedAt: string;
-  commandResult: DeploymentRedeployCommandResult | null;
+  commandResult: DeploymentRedeployCommandResult | DeploymentRollbackCommandResult | null;
   proof: TrustedPriorExecutionReceiptV1 | null;
 }>;
 
 export type ExecutionCommandRecord = Readonly<{
   id: string;
+  action?: "deployment.redeploy" | "deployment.rollback";
+  scope?: ControlPlaneScope;
   status: "eligible" | "dispatching" | "completed";
-  result: DeploymentRedeployCommandResult;
+  result: DeploymentRedeployCommandResult | DeploymentRollbackCommandResult;
   executionAuthority?: DeploymentExecutionAuthorityV1;
 }>;
 
@@ -109,15 +112,21 @@ function parseInput(input: ExecutionCompletionInput): ExecutionCompletionInput {
 function bindingsMatch(deployment: Deployment, command: ExecutionCommandRecord | null, input: ExecutionCompletionInput): boolean {
   if (deployment.id !== input.executionId || deployment.projectId !== input.projectId || deployment.agentId !== input.runtimeHost || (deployment.sourceDeploymentId ?? null) !== input.sourceExecutionId || deployment.snapshotOriginId !== input.snapshotOriginId || deployment.snapshotHash !== input.snapshotHash) return false;
   if (input.proof && (input.proof.deploymentId !== input.executionId || input.proof.projectId !== input.projectId || input.proof.snapshotOriginId !== input.snapshotOriginId || input.proof.snapshotHash !== input.snapshotHash || input.proof.runtimeHost !== input.runtimeHost || input.proof.effectiveImageDigest !== input.effectiveImageDigest)) return false;
-  if (!command) return input.commandId === null && input.commandResult === null;
+  if ((deployment.activeDeploymentId ?? null) !== (input.activeDeploymentId ?? null)) return false;
+  if (!command) return input.commandId === null && input.commandResult === null && input.activeDeploymentId === undefined;
   if (command.status !== "dispatching" && command.status !== "completed") return false;
   const result = input.commandResult;
   const expected = command.result;
   if (command.id !== input.commandId || !result) return false;
+  if (result.action !== expected.action) return false;
+  if (result.action === "deployment.rollback") {
+    if (command.action !== "deployment.rollback" || command.scope?.kind !== "deployment" || command.scope.projectId !== input.projectId || command.scope.deploymentId !== input.activeDeploymentId) return false;
+    if (!input.authority || !input.activeDeploymentId || result.activeDeploymentId !== input.activeDeploymentId || expected.action !== "deployment.rollback" || expected.activeDeploymentId !== input.activeDeploymentId || input.executionId === input.activeDeploymentId || input.executionId === input.sourceExecutionId) return false;
+  } else if (input.activeDeploymentId !== undefined) return false;
   if (Boolean(command.executionAuthority) !== Boolean(input.authority)) return false;
-  if (input.authority && (protocolPayloadFingerprint(command.executionAuthority) !== protocolPayloadFingerprint(input.authority) || input.authority.commandId !== command.id || input.authority.action !== "deployment.redeploy" || input.authority.projectId !== input.projectId || input.authority.projectLease.deploymentId !== input.projectId || input.authority.executionLease.deploymentId !== input.executionId || input.authority.sourceLease?.deploymentId !== input.sourceExecutionId)) return false;
+  if (input.authority && (protocolPayloadFingerprint(command.executionAuthority) !== protocolPayloadFingerprint(input.authority) || input.authority.commandId !== command.id || input.authority.action !== result.action || input.authority.projectId !== input.projectId || input.authority.projectLease.deploymentId !== input.projectId || input.authority.executionLease.deploymentId !== input.executionId || input.authority.sourceLease?.deploymentId !== (result.action === "deployment.rollback" ? result.activeDeploymentId : input.sourceExecutionId))) return false;
   if (command.status === "completed") return true;
-  return result.commandId === command.id && result.action === "deployment.redeploy" && result.status === "completed"
+  return result.commandId === command.id && (result.action === "deployment.redeploy" || result.action === "deployment.rollback") && result.status === "completed"
     && result.projectId === input.projectId && result.sourceDeploymentId === input.sourceExecutionId
     && result.deploymentId === input.executionId && result.snapshotHash === input.snapshotHash
     && result.correlationId === expected.correlationId && expected.status === "eligible"

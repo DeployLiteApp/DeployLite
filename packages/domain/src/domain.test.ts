@@ -96,8 +96,8 @@ describe("domain foundation", () => {
     const snapshots = new InMemorySnapshotStore();
     const input = snapshot();
     const saved = snapshots.save(input);
-    input.projectId = "mutated_input";
-    saved.configRevision = "mutated_output";
+    Object.assign(input, { projectId: "mutated_input" });
+    Object.assign(saved, { configRevision: "mutated_output" });
 
     let replay;
     expect(() => { replay = snapshots.save(snapshot()); }).not.toThrow();
@@ -148,5 +148,16 @@ describe("domain foundation", () => {
     expect(logs).toHaveLength(1);
     expect(logs[0]?.message).toBe("deployed with token [REDACTED]");
     await expect(deployments.appendLog({ ...logs[0]!, id: "log_2" })).rejects.toThrow("unique");
+  });
+});
+
+
+describe("rollback active role immutability", () => {
+  it("rejects changing active A while retaining historical source H and canonical origin", async () => {
+    const deployments = new InMemoryDeploymentRepository();
+    const value = { ...deployment(), sourceDeploymentId: "historical-H", activeDeploymentId: "active-A" };
+    await deployments.save(value);
+    await expect(deployments.save({ ...value, activeDeploymentId: "other-A" })).rejects.toThrow("immutable");
+    expect(await deployments.findById(value.id)).toMatchObject({ activeDeploymentId: "active-A", sourceDeploymentId: "historical-H", snapshotOriginId: "dep_origin" });
   });
 });

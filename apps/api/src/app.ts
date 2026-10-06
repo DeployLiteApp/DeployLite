@@ -72,6 +72,11 @@ import {
   type ControlDeleteRepository,
   type ControlStopRepository,
   type ControlRedeployRepository,
+  type ControlRollbackRepository,
+  validateRollbackReservation,
+  isRollbackAdmissionBound,
+  isRollbackClaimBound,
+  evaluateConfirmation,
   type ControlConfirmation,
   type ControlConfirmationRepository,
   type ControlGrant,
@@ -482,6 +487,7 @@ type PlatformRepositoryOptions = {
   executionCompletion?: DeploymentExecutionRepository;
   controlDeletes?: ControlDeleteRepository & ControlStopRepository;
   controlRedeploy?: ControlRedeployRepository;
+  controlRollback?: ControlRollbackRepository;
   controlGrants?: ControlGrantRepository;
 };
 
@@ -580,7 +586,7 @@ export function createInMemoryExecutionRepositories(projects: ProjectRepository 
 function createApiState(env: EnvSecretKeySource, overrides: Partial<PlatformRepositoryOptions> = {}, audit?: AuditRepository): PlatformRepositories {
   const agents = overrides.agents ?? new InMemoryAgentRepository();
   const projects = overrides.projects ?? new InMemoryProjectRepository();
-  const memory = !overrides.deployments && !overrides.controlDeletes && !overrides.controlRedeploy ? createInMemoryExecutionRepositories(projects, audit ?? new InMemoryAuditRepository()) : null;
+  const memory = !overrides.deployments && !overrides.controlDeletes && !overrides.controlRedeploy && !overrides.controlRollback ? createInMemoryExecutionRepositories(projects, audit ?? new InMemoryAuditRepository()) : null;
   const deployments = overrides.deployments ?? memory?.deployments ?? new InMemoryDeploymentRepository();
   const executionCompletion = overrides.executionCompletion ?? memory?.completion;
   const envMetadata = overrides.envMetadata ?? new InMemoryEnvVariableMetadataRepository();
@@ -594,7 +600,7 @@ function createApiState(env: EnvSecretKeySource, overrides: Partial<PlatformRepo
   const controlDeletes = overrides.controlDeletes ?? memory?.controls ?? new InMemoryControlDeleteRepository(projects, audit ?? new InMemoryAuditRepository(), deployments);
   const agentStatus = new AgentStatusService(agents);
   const deployRunner = new DeployRunner(deployments, envMetadata, agentStatus, envSecretCipher);
-  return { agents, deployments, executionCompletion, projects, envMetadata, envSecretValues, envSecretCipher, agentStatus, deployRunner, runtimeActivationDispatcher, deploymentDispatcher, deploymentStopDispatcher, snapshots, controlDeletes, controlRedeploy: overrides.controlRedeploy ?? memory?.controls ?? (controlDeletes as unknown as ControlRedeployRepository), controlGrants: overrides.controlGrants ?? new InMemoryControlGrantRepository() };
+  return { agents, deployments, executionCompletion, projects, envMetadata, envSecretValues, envSecretCipher, agentStatus, deployRunner, runtimeActivationDispatcher, deploymentDispatcher, deploymentStopDispatcher, snapshots, controlDeletes, controlRedeploy: overrides.controlRedeploy ?? memory?.controls ?? (controlDeletes as unknown as ControlRedeployRepository), controlRollback: overrides.controlRollback ?? memory?.controls ?? (typeof (controlDeletes as any).executeConfirmedDeploymentRollback === "function" ? controlDeletes as unknown as ControlRollbackRepository : undefined), controlGrants: overrides.controlGrants ?? new InMemoryControlGrantRepository() };
 }
 
 class InMemoryControlGrantRepository implements ControlGrantRepository {
@@ -608,6 +614,11 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
   readonly #confirmations = new Map<string, ControlConfirmation>();
 
   async resolve(command: ControlCommand): Promise<{ command: ControlCommand; created: boolean }> {
+    if (command.action === "deployment.rollback") {
+      const prior = [...this.executionState.commands.values()].find((candidate) => candidate.actorId === command.actorId && candidate.action === command.action && candidate.idempotencyKey === command.idempotencyKey);
+      if (prior) { validateRollbackReservation(prior, command); return { command: structuredClone(prior), created: false }; }
+      validateRollbackReservation(command, command);
+    }
     const key = `${command.actorId}:${command.action}:${scopeKey(command.scope)}:${command.idempotencyKey}`;
     const existing = this.executionState.commands.get(key);
     if (existing) {
@@ -618,9 +629,21 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
     return { command: structuredClone(command), created: true };
   }
 
-  async findByIdempotency(actorId: string, idempotencyKey: string, action: "deployment.redeploy" | "deployment.stop" = "deployment.redeploy"): Promise<ControlCommand | null> {
+  async findByIdempotency(actorId: string, idempotencyKey: string, action: "deployment.redeploy" | "deployment.stop" | "deployment.rollback" = "deployment.redeploy"): Promise<ControlCommand | null> {
     const command = [...this.executionState.commands.values()].find((candidate) => candidate.actorId === actorId && candidate.action === action && candidate.idempotencyKey === idempotencyKey);
     return command ? structuredClone(command) : null;
+  }
+
+  async resolveRollbackConfirmation(command: ControlCommand, now = new Date()): Promise<ControlConfirmation | null> {
+    const current = [...this.executionState.commands.values()].find((value) => value.id === command.id);
+    if (!current) return null;
+    validateRollbackReservation(current, command);
+    if (current.status !== "pending_confirmation" || current.expiresAt <= now) return null;
+    let confirmation = [...this.#confirmations.values()].find((value) => value.commandId === current.id);
+    if (!confirmation) { confirmation = createConfirmation({ command: current, classification: "destructive" }); this.#confirmations.set(confirmation.id, confirmation); }
+    try { evaluateConfirmation(current, confirmation, now); }
+    catch (error) { if (error instanceof ConfirmationRejectedError) return null; throw error; }
+    return structuredClone(confirmation);
   }
 
   async bind(confirmation: ControlConfirmation): Promise<void> { this.#confirmations.set(confirmation.id, structuredClone(confirmation)); }
@@ -714,6 +737,32 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
   }
 
   async claimDeploymentRedeploy(command: ControlCommand) { const current = [...this.executionState.commands.values()].find((candidate) => candidate.id === command.id); if (!current) throw new Error("Control command was not found"); const id = (current.result as import("@deploylite/contracts").DeploymentRedeployCommandResult | undefined)?.deploymentId; const deployment = id ? await this.deployments?.findById(id) ?? null : null; const authority = id ? claimDeploymentAuthority([...this.executionState.commands.values()], current, id) : null; return { command: structuredClone(current), claimed: authority !== null, deployment, ...(authority ? { authority } : {}) }; }
+
+  async executeConfirmedDeploymentRollback({ command, confirmation, deployment, now = new Date() }: Parameters<ControlRollbackRepository["executeConfirmedDeploymentRollback"]>[0]) {
+    const current = [...this.executionState.commands.values()].find((value) => value.id === command.id);
+    if (!current) throw new Error("Rollback command was not found"); validateRollbackReservation(current, command);
+    const reserved = current.result as import("@deploylite/contracts").DeploymentRollbackCommandResult;
+    if (current.status === "completed") return { command: structuredClone(current), accepted: true, reason: null, result: reserved, deployment: null, alreadyCompleted: true };
+    if (current.status === "eligible" || current.status === "dispatching") return { command: structuredClone(current), accepted: true, reason: null, result: reserved, deployment: structuredClone(this.executionState.deployments.get(reserved.deploymentId) ?? null), alreadyCompleted: false };
+    if (!isRollbackAdmissionBound(current, deployment, this.executionState.deployments.get(reserved.sourceDeploymentId), now)) return { command: structuredClone(current), accepted: false, reason: "execution_binding_rejected", result: null, deployment: null, alreadyCompleted: false };
+    const stored = this.#confirmations.get(confirmation.id);
+    if (!stored || stored.commandId !== current.id || stored.actorId !== current.actorId || stored.action !== current.action || scopeKey(stored.scope) !== scopeKey(current.scope) || stored.inputDigest !== current.inputDigest || stored.classification !== "destructive" || stored.consumedAt || stored.expiresAt <= now || stored.expiresAt > current.expiresAt) return { command: structuredClone(current), accepted: false, reason: "confirmation_rejected", result: null, deployment: null, alreadyCompleted: false };
+    const queued = deploymentSchema.parse(deployment), result = { ...reserved, status: "eligible" as const };
+    // Shared maps and confirmation are published synchronously; no await exposes partial admission.
+    this.executionState.deployments.set(queued.id, structuredClone(queued)); stored.consumedAt = now; current.status = "eligible"; current.result = result;
+    return { command: structuredClone(current), accepted: true, reason: null, result, deployment: queued, alreadyCompleted: false };
+  }
+  async claimDeploymentRollback(command: ControlCommand) {
+    const current = [...this.executionState.commands.values()].find((value) => value.id === command.id);
+    if (!current) throw new Error("Rollback command was not found");
+    validateRollbackReservation(current, command);
+    const result = current.result as import("@deploylite/contracts").DeploymentRollbackCommandResult;
+    const deployment = this.executionState.deployments.get(result.deploymentId) ?? null;
+    // No await separates fresh queued/binding validation from the shared project claim.
+    const authority = isRollbackClaimBound(current, deployment, this.executionState.deployments.get(result.sourceDeploymentId), new Date())
+      ? claimDeploymentAuthority([...this.executionState.commands.values()], current, result.deploymentId) : null;
+    return { command: structuredClone(current), deployment: structuredClone(deployment), claimed: authority !== null, ...(authority ? { authority } : {}) };
+  }
 
   constructor(private readonly projects: ProjectRepository, private readonly audit: AuditRepository, private readonly deployments?: DeploymentRepository, private readonly executionState = new InMemoryExecutionState()) {}
 
@@ -961,6 +1010,7 @@ function createDbAuthAdapters(env: DeployLiteEnv, options: BuildApiAppOptions): 
       envSecretCipher: options.state?.envSecretCipher,
       controlDeletes: options.state?.controlDeletes ?? new DbControlCommandRepository(db),
       controlRedeploy: options.state?.controlRedeploy ?? new DbControlCommandRepository(db),
+      controlRollback: options.state?.controlRollback ?? new DbControlCommandRepository(db),
       controlGrants: options.state?.controlGrants ?? new DbControlGrantRepository(db)
     })
   };
