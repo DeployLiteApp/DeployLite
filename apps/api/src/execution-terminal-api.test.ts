@@ -134,7 +134,7 @@ describe("initial digest terminal API draft", () => {
     const dispatcher: DeploymentDispatcher = { available: () => true, async dispatch() { throw error; } };
     const { app, headers, deploy } = await fixture(dispatcher);
     const response = await deploy();
-    const executionId = `dep_${createHash("sha256").update("project_mock_1:initial-terminal").digest("hex").slice(0, 32)}`;
+    const executionId = complete.mock.calls[0]![0].executionId;
     const detail = await app.inject({ method: "GET", url: `/api/v1/deployments/${executionId}`, headers });
     expect(detail.json().data.deployment).toMatchObject({ status: terminalStatus, finishedAt: expect.any(String) });
     expect(complete).toHaveBeenCalledOnce();

@@ -4,6 +4,7 @@ import { TransportCanceledError, type Deployment, type DeploymentSnapshotV1 } fr
 import { parseDeployLiteEnv } from "@deploylite/config";
 import { AuthenticatedAgentCommandReceiver, DigestDeploymentDispatcher } from "@deploylite/agent";
 import { InMemoryProtocolTransport, type ExecutionCompletionInput, type ExecutionCompletionOutcome } from "@deploylite/domain";
+import { createPromotionDockerRunner } from "./testing/promotion-docker-runner.js";
 import { AuthenticatedAgentDeploymentTransport } from "./agent-transport.js";
 import { buildApiApp, createInMemoryExecutionRepositories, createRuntimeRepositories, InMemoryAuthUserRepository, type DeploymentDispatcher } from "./app.js";
 
@@ -12,19 +13,11 @@ const image = `registry.example.com/team/lineage@${digest}`;
 const apps: Awaited<ReturnType<typeof buildApiApp>>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); vi.restoreAllMocks(); });
 
-function observedAgent() {
-  const calls: string[][] = [], bodies: any[] = []; const receipts = new Map<string, any>(), settled = new Map<string, any>(); let labels: Record<string, string> = {};
-  const bindings = { "3000/tcp": [{ HostIp: "127.0.0.1", HostPort: "43000" }] }, imageId = `sha256:${"a".repeat(64)}`;
-  const dispatcher = new DigestDeploymentDispatcher({ hostPort: 43000, containerPort: 3000, owner: "configured-owner", trustedHosts: ["registry.example.com"], protocol: new InMemoryProtocolTransport({ clock: { now: () => 1 }, leasePolicy: { ttlMs: 30000 }, retryPolicy: { maxAttempts: 1, deadlineMs: 0, backoffMs: () => 0 }, capabilities: ["deploy.execute"] }), runner: { run: async (argv) => {
-    calls.push([...argv]);
-    if (argv[1] === "run") labels = Object.fromEntries(argv.filter((value) => value.startsWith("com.deploylite.")).map((value) => value.split(/=(.*)/s).slice(0, 2)));
-    const deploymentId = labels["com.deploylite.deployment"]!;
-    const stdout = argv[1] === "container" ? JSON.stringify({ id: createHash("sha256").update(`physical-${deploymentId}`).digest("hex"), name: `/deploylite-active-${deploymentId}`, imageId, owner: "configured-owner", projectId: labels["com.deploylite.project"], deploymentId, candidateId: labels["com.deploylite.candidate"], effectiveImage: labels["com.deploylite.image"], running: true, health: "healthy", hostBindings: bindings, portBindings: bindings, networkMode: "default", networks: { bridge: { networkId: "d".repeat(64), endpointId: "e".repeat(64) } } })
-      : argv[1] === "image" ? JSON.stringify(imageId) : (argv[3] ?? "").includes("State.Health") ? "healthy" : (argv[3] ?? "").includes("com.deploylite.owner") ? `configured-owner|${deploymentId}|${labels["com.deploylite.candidate"]}|${labels["com.deploylite.image"]}` : "";
-    return { exitCode: 0, signal: null, stdout, stderr: "" };
-  } } });
-  const receiver = new AuthenticatedAgentCommandReceiver({ agentId: "agent_mock_1", trustKey: "transport_test_key_123", capabilities: ["deploy.execute"], dispatcher, now: () => 1, replayStore: { claim: async (id, fingerprint) => { const prior = settled.get(id); if (prior) { if (prior.fingerprint !== fingerprint) throw new Error("replay conflict"); return { claimed: false, receipt: prior.receipt }; } return { claimed: true, claimToken: "claim" }; }, wait: async (id) => settled.get(id).receipt, complete: async (id, value) => { settled.set(id, structuredClone(value)); }, release: async () => {} } });
-  const transport = new AuthenticatedAgentDeploymentTransport({ endpoint: "https://agent.test", agentId: "agent_mock_1", trustKey: "transport_test_key_123", now: () => 1, fetch: async (url, init) => {
+function observedAgent(controls: ReturnType<typeof createInMemoryExecutionRepositories>["controls"]) {
+  const docker = createPromotionDockerRunner(), calls = docker.calls, bodies: any[] = [], receipts = new Map<string, any>(), settled = new Map<string, any>();
+  const dispatcher = new DigestDeploymentDispatcher({ hostPort: 43000, temporaryHostPort: 43001, containerPort: 3000, owner: "configured-owner", trustedHosts: ["registry.example.com"], promotionPolicy: { maxOutageMs: 30_000, maxRecoveryMs: 60_000 }, protocol: new InMemoryProtocolTransport({ clock: { now: Date.now }, leasePolicy: { ttlMs: 30000 }, retryPolicy: { maxAttempts: 1, deadlineMs: 0, backoffMs: () => 0 }, capabilities: ["deploy.execute"] }), runner: docker.runner });
+  const receiver = new AuthenticatedAgentCommandReceiver({ agentId: "agent_mock_1", trustKey: "transport_test_key_123", capabilities: ["deploy.execute"], dispatcher, authorityValidator: controls, replayStore: { claim: async (id, fingerprint) => { const prior = settled.get(id); if (prior) { if (prior.fingerprint !== fingerprint) throw new Error("replay conflict"); return { claimed: false, receipt: prior.receipt }; } return { claimed: true, claimToken: "claim" }; }, wait: async (id) => settled.get(id).receipt, complete: async (id, value) => { settled.set(id, structuredClone(value)); }, release: async () => {} } });
+  const transport = new AuthenticatedAgentDeploymentTransport({ endpoint: "https://agent.test", agentId: "agent_mock_1", trustKey: "transport_test_key_123", fetch: async (url, init) => {
     const signature = String((init?.headers as Record<string, string>)["x-deploylite-signature"]);
     if (String(url).endsWith("/capabilities")) { expect(receiver.verifyRequest("GET /capabilities", signature)).toBe(true); return new Response(JSON.stringify({ schemaVersion: 1, agentId: receiver.agentId, capabilities: receiver.capabilities, protocolVersions: [1, 2] }), { headers: { "x-deploylite-request-signature": signature } }); }
     const body = JSON.parse(String(init?.body)); bodies.push(body); const receipt = await receiver.receive(body, signature); receipts.set(body.deploymentId, receipt); return new Response(JSON.stringify(receipt));
@@ -36,7 +29,7 @@ async function fixture(legacyInitial = false) {
   const runtime = await createRuntimeRepositories(parseDeployLiteEnv({ NODE_ENV: "test", DEPLOYLITE_BCRYPT_COST: "10" }));
   const admin = (await runtime.auth.users.findByEmail("admin@example.test"))!;
   const auth = { ...runtime.auth, users: new InMemoryAuthUserRepository([admin, { ...admin, id: "different-actor", email: "other@example.test", emailNormalized: "other@example.test" }]) };
-  const memory = createInMemoryExecutionRepositories(runtime.state.projects, runtime.auth.audit), agent = observedAgent(), snapshots = new Map<string, DeploymentSnapshotV1>();
+  const memory = createInMemoryExecutionRepositories(runtime.state.projects, runtime.auth.audit), agent = observedAgent(memory.controls), snapshots = new Map<string, DeploymentSnapshotV1>();
   let grantsEnabled = true, available = true;
   let dispatch: DeploymentDispatcher["dispatch"] = async (...args) => { const result = await agent.transport.dispatch(...args); if (legacyInitial) { const { executionReceipt, ...legacy } = result; return legacy; } return result; };
   let fault: ((input: ExecutionCompletionInput) => Promise<ExecutionCompletionOutcome>) | undefined;
@@ -83,10 +76,18 @@ describe("repeated redeploy lineage and atomic command completion", () => {
     const logs = await f.app.inject({ method: "GET", url: `/api/v1/deployments/${B.id}/logs/stream`, headers: { cookie: f.cookie } }); expect(logs.body).not.toContain('"status":"succeeded"'); expect(logs.body).not.toContain("Agent redeploy succeeded.");
   });
 
-  it.each(["failed", "canceled", "transport error"] as const)("atomically completes %s without success proof or separate command save", async (kind) => {
+  it.each(["failed", "canceled", "transport error"] as const)("handles %s without invented proof or separate command save", async (kind) => {
     const f = await fixture(); f.setDispatch(async (snapshot, commandId, context) => { if (kind === "transport error") throw new TransportCanceledError(); const received = await f.agent.transport.dispatch(snapshot, commandId, context); const { executionReceipt, ...terminal } = received; return { ...terminal, proven: false, terminalStatus: kind, health: "failed" }; });
-    const response = await (await f.admit())(); expect(response.statusCode, response.body).toBe(kind === "transport error" ? 502 : 200); expect(f.complete).toHaveBeenCalledOnce(); expect(f.complete.mock.calls[0]?.[0]).toMatchObject({ proof: null, terminalStatus: kind === "transport error" ? "canceled" : kind, commandResult: { status: "completed" } });
-    const B = (await f.memory.deployments.list()).find((value) => value.sourceDeploymentId === f.A.id)!; expect(B.status).toBe(kind === "transport error" ? "canceled" : kind); expect(B.executionReceipt).toBeUndefined(); expect([...f.memory.completion.commands.values()][0]?.status).toBe("completed"); expect(f.separate).not.toHaveBeenCalled();
+    const response = await (await f.admit())(); expect(response.statusCode, response.body).toBe(kind === "transport error" ? 502 : 200);
+    const B = (await f.memory.deployments.list()).find((value) => value.sourceDeploymentId === f.A.id)!;
+    if (kind === "transport error") {
+      // With active-port replacement, transport loss cannot establish terminal recovery.
+      expect(f.complete).not.toHaveBeenCalled(); expect(B.status).toBe("running"); expect([...f.memory.completion.commands.values()][0]?.status).toBe("dispatching");
+    } else {
+      expect(f.complete).toHaveBeenCalledOnce(); expect(f.complete.mock.calls[0]?.[0]).toMatchObject({ proof: null, terminalStatus: kind, commandResult: { status: "completed" } });
+      expect(B.status).toBe(kind); expect([...f.memory.completion.commands.values()][0]?.status).toBe("completed");
+    }
+    expect(B.executionReceipt).toBeUndefined(); expect(f.separate).not.toHaveBeenCalled();
   });
 
   it.each([["missing", null], ["origin", { snapshotOriginId: "immediate-B" }], ["host", { runtimeHost: "wrong-agent" }], ["digest", { effectiveImageDigest: `sha256:${"c".repeat(64)}` }], ["candidate", { candidateId: "wrong" }], ["configuration", { hostPort: 44000 }]] as const)("rejects %s proof before any terminal or command publication", async (_field, patch) => {
@@ -114,8 +115,21 @@ describe("repeated redeploy lineage and atomic command completion", () => {
   it("reconciles already committed equal completion with durable finishedAt and no duplicate effects", async () => {
     const f = await fixture(), finishedAt = "2026-10-04T16:00:00.000Z";
     f.setDispatch(async (...args) => { const received = await f.agent.transport.dispatch(...args); const command = [...f.memory.completion.commands.values()][0]!; const eligible = command.result as any;
-      const committed = await f.memory.completion.completeExecution({ commandId: command.id, commandResult: { ...eligible, status: "completed" }, expectedStatus: "running", executionId: received.deploymentId, projectId: f.A.projectId, sourceExecutionId: f.A.id, snapshotOriginId: f.A.id, snapshotHash: f.A.snapshotHash!, runtimeHost: "agent_mock_1", effectiveImageDigest: digest, terminalStatus: "succeeded", finishedAt, proof: received.executionReceipt! }); expect(committed.kind).toBe("committed"); return received;
+      const committed = await f.memory.completion.completeExecution({ commandId: command.id, authority: command.executionAuthority, commandResult: { ...eligible, status: "completed" }, expectedStatus: "running", executionId: received.deploymentId, projectId: f.A.projectId, sourceExecutionId: f.A.id, snapshotOriginId: f.A.id, snapshotHash: f.A.snapshotHash!, runtimeHost: "agent_mock_1", effectiveImageDigest: digest, terminalStatus: "succeeded", finishedAt, proof: received.executionReceipt! }); expect(committed.kind).toBe("committed"); return received;
     });
     const response = await (await f.admit())(); expect(response.statusCode, response.body).toBe(200); expect(response.json().data.deployment.finishedAt).toBe(finishedAt); expect(f.complete.mock.calls[0]?.[0].finishedAt).toBe(finishedAt); await expect(f.complete.mock.results[0]?.value).resolves.toMatchObject({ kind: "replayed" }); expect(f.separate).not.toHaveBeenCalled();
   });
+});
+
+
+it("generates PostgreSQL-compatible UUID INITIAL/redeploy IDs and replays the same initial key without another execution", async () => {
+  const f = await fixture(); const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  expect(f.A.id).toMatch(uuid);
+  const calls = f.agent.calls.length;
+  const replay = await f.app.inject({ method: "POST", url: "/api/v1/projects/project_mock_1/deployments", headers: { cookie: f.cookie, "x-deployment-idempotency-key": "initial-A" }, payload: { imageReference: image, agentId: "agent_mock_1", commitSha: "abcdef1" } });
+  expect(replay.statusCode, replay.body).toBe(200); expect(replay.json().data.deployment.id).toBe(f.A.id); expect(f.agent.calls).toHaveLength(calls);
+  const B = await (await f.admit())(); expect(B.statusCode, B.body).toBe(200); expect(B.json().data.deployment.id).toMatch(uuid);
+  expect(B.json().data.deployment.snapshotOriginId).toBe(f.A.id);
+  const logs = [...await f.memory.deployments.listLogs(f.A.id), ...await f.memory.deployments.listLogs(B.json().data.deployment.id)];
+  expect(logs.length).toBeGreaterThan(0); expect(logs.every((event) => uuid.test(event.id))).toBe(true);
 });
