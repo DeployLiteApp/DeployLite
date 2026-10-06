@@ -2,13 +2,16 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { promisify } from "node:util";
+import { setImmediate as yieldToLoop } from "node:timers/promises";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createDeploymentSnapshot, createSourceIntent, type TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
-import type { ExecutionCompletionInput } from "@deploylite/domain";
+import { createDeploymentSnapshot, createSourceIntent, deploymentRedeployCommandResultSchema, type Deployment, type DeploymentExecutionAuthorityV1, type TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
+import { createConfirmation, createControlCommand, type ControlCommand, type ExecutionCompletionInput } from "@deploylite/domain";
 import { createDbClient, createDbPool } from "./client.js";
 import { DbDeploymentRepository } from "./repositories/deployment-data.js";
 import { DbDeploymentExecutionRepository } from "./repositories/execution-completion.js";
+import { DbControlCommandRepository } from "./repositories/control-plane.js";
+import { DbAgentReplayStore } from "./repositories/agent-replay.js";
 
 const enabled = process.env.DEPLOYLITE_DB_INTEGRATION === "1";
 const suite = enabled ? describe : describe.skip;
@@ -72,6 +75,94 @@ async function seedCommand(input: ExecutionCompletionInput, actorId: string) {
   await pool.query("INSERT INTO control_commands (id,actor_user_id,action,scope_kind,scope_key,input_digest,idempotency_key,correlation_id,status,result,expires_at) VALUES ($1,$2,'deployment.redeploy','deployment',$3,'fixture',$6,$4,'dispatching',$5,now()+interval '1 hour')", [
     input.commandId, actorId, JSON.stringify([input.projectId, input.sourceExecutionId]), result.correlationId, result, input.commandId
   ]);
+}
+
+
+// Acceptance-only fixtures. Container observations are synthetic; PostgreSQL is real only when opted in.
+const controls = () => new DbControlCommandRepository(createDbClient(pool));
+type AuthorityFixture = Awaited<ReturnType<typeof seed>>;
+type AuthorityEntry = { command: ControlCommand; confirmation: ReturnType<typeof createConfirmation>; deployment: Deployment | null };
+
+async function authorityFixture() {
+  const fixture = await seed(false);
+  expect((await completion().completeExecution(fixture.input)).kind).toBe("committed");
+  return fixture;
+}
+
+async function prepareAuthorityCommand(fixture: AuthorityFixture, action: "deployment.stop" | "deployment.redeploy"): Promise<AuthorityEntry> {
+  const sourceId = fixture.input.executionId;
+  const command = createControlCommand({ actorId: fixture.actorId, action,
+    scope: { kind: "deployment", projectId: fixture.input.projectId, deploymentId: sourceId },
+    input: { projectId: fixture.input.projectId, sourceDeploymentId: sourceId, snapshotHash: fixture.snapshot.hash },
+    idempotencyKey: randomUUID(), correlationId: randomUUID(), expiresAt: new Date(Date.now() + 600_000) });
+  const confirmation = createConfirmation({ command, classification: "destructive" });
+  await controls().resolve(command);
+  await controls().bind(confirmation);
+  return { command, confirmation, deployment: action === "deployment.redeploy"
+    ? { ...fixture.deployment(randomUUID(), sourceId), status: "queued" } : null };
+}
+
+async function admitAuthorityCommand(fixture: AuthorityFixture, action: "deployment.stop" | "deployment.redeploy") {
+  const entry = await prepareAuthorityCommand(fixture, action);
+  const admitted = entry.deployment
+    ? await controls().executeConfirmedDeploymentRedeploy({ ...entry, deployment: entry.deployment, requestId: randomUUID(), snapshotHash: fixture.snapshot.hash })
+    : await controls().executeConfirmedDeploymentStop({ command: entry.command, confirmation: entry.confirmation, requestId: randomUUID() });
+  expect(admitted.accepted).toBe(true);
+  expect(admitted.command.status).toBe("eligible");
+  return { ...entry, command: admitted.command };
+}
+
+function claimAuthority(repository: DbControlCommandRepository, entry: AuthorityEntry) {
+  return entry.command.action === "deployment.stop"
+    ? repository.claimDeploymentStop(entry.command) : repository.claimDeploymentRedeploy(entry.command);
+}
+
+function requireAuthority(claim: { claimed: boolean; authority?: DeploymentExecutionAuthorityV1 }) {
+  expect(claim.claimed).toBe(true);
+  if (!claim.authority) throw new Error("Expected persisted execution authority");
+  return claim.authority;
+}
+
+function authorityCompletion(fixture: AuthorityFixture, entry: AuthorityEntry, authority: DeploymentExecutionAuthorityV1): ExecutionCompletionInput {
+  if (!entry.deployment) throw new Error("Expected replacement execution fixture");
+  return { ...fixture.input, commandId: entry.command.id, executionId: entry.deployment.id,
+    sourceExecutionId: fixture.input.executionId, proof: fixture.proof(entry.deployment.id), authority,
+    commandResult: deploymentRedeployCommandResultSchema.parse({ ...entry.command.result, status: "completed", reason: null }) };
+}
+
+function latch() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function waitForProjectLock(application: string) {
+  const deadline = Date.now() + 5_000;
+  do {
+    const activity = await pool.query<{ blocked: boolean }>(
+      "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock' AND query LIKE '%pg_advisory_xact_lock%') AS blocked", [application]);
+    if (activity.rows[0]?.blocked) return;
+    await yieldToLoop();
+  } while (Date.now() < deadline);
+  throw new Error("Contender did not reach the controlled project lock barrier");
+}
+
+
+function stopTerminal(entry: AuthorityEntry) {
+  if (entry.command.scope.kind !== "deployment") throw new Error("Expected deployment control scope");
+  return { commandId: entry.command.id, action: "deployment.stop" as const, projectId: entry.command.scope.projectId,
+    deploymentId: entry.command.scope.deploymentId, status: "completed" as const, correlationId: entry.command.correlationId, reason: "stopped" };
+}
+
+async function waitForCommandLock(application: string) {
+  const deadline = Date.now() + 5_000;
+  do {
+    const activity = await pool.query<{ blocked: boolean }>(
+      "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock' AND query LIKE '%control_commands%') AS blocked", [application]);
+    if (activity.rows[0]?.blocked) return;
+    await yieldToLoop();
+  } while (Date.now() < deadline);
+  throw new Error("Stop completion did not reach its controlled command-row barrier");
 }
 
 suite("atomic execution PostgreSQL integration", () => {
@@ -263,9 +354,257 @@ suite("atomic execution PostgreSQL integration", () => {
     await expect(deployments().findById(input.executionId)).resolves.toMatchObject({ executionReceipt: input.proof });
   });
 
+
+  it.each(["deployment.stop", "deployment.redeploy"] as const)("serializes competing Stop/redeploy claims behind the same project lock (first=%s)", async (firstAction) => {
+    const fixture = await authorityFixture();
+    const firstEntry = await admitAuthorityCommand(fixture, firstAction);
+    const secondEntry = await admitAuthorityCommand(fixture, firstAction === "deployment.stop" ? "deployment.redeploy" : "deployment.stop");
+    const application = `p2_authority_${randomUUID()}`;
+    const poolA = createDbPool(databaseUrl, { max: 1, statement_timeout: 10_000 });
+    const poolB = createDbPool(databaseUrl, { max: 1, application_name: application, statement_timeout: 10_000 });
+    const reached = latch(), unblock = latch();
+    let first: ReturnType<typeof claimAuthority> | undefined, second: ReturnType<typeof claimAuthority> | undefined;
+    try {
+      const owner = new DbControlCommandRepository(createDbClient(poolA), async (stage) => {
+        if (stage === "authority-claimed") { reached.resolve(); await unblock.promise; }
+      });
+      first = claimAuthority(owner, firstEntry);
+      await Promise.race([reached.promise, first.then(() => { throw new Error("Claim bypassed controlled barrier"); })]);
+      second = claimAuthority(new DbControlCommandRepository(createDbClient(poolB)), secondEntry);
+      await waitForProjectLock(application);
+      const before = await pool.query("SELECT status,execution_authority FROM control_commands WHERE id=ANY($1::uuid[])", [[firstEntry.command.id, secondEntry.command.id]]);
+      expect(before.rows).toEqual([expect.objectContaining({ status: "eligible", execution_authority: null }), expect.objectContaining({ status: "eligible", execution_authority: null })]);
+      unblock.resolve();
+      const [winner, loser] = await Promise.all([first, second]);
+      const authority = requireAuthority(winner);
+      expect(loser.claimed).toBe(false);
+      expect(authority).toMatchObject({ projectId: fixture.input.projectId, projectLease: { fence: 2 } });
+      await expect(controls().validateDeploymentAuthority(authority)).resolves.toBeUndefined();
+      const rows = await pool.query("SELECT id,status,execution_authority FROM control_commands WHERE id=ANY($1::uuid[])", [[firstEntry.command.id, secondEntry.command.id]]);
+      expect(rows.rows).toEqual(expect.arrayContaining([
+        { id: firstEntry.command.id, status: "dispatching", execution_authority: authority },
+        { id: secondEntry.command.id, status: "eligible", execution_authority: null }
+      ]));
+    } finally {
+      unblock.resolve();
+      await Promise.allSettled([first, second]);
+      await Promise.all([poolA.end(), poolB.end()]);
+    }
+  }, 30_000);
+
+  it("allows a different project claim while one project transaction holds its authority lock", async () => {
+    const fixtureA = await authorityFixture(), fixtureB = await authorityFixture();
+    const entryA = await admitAuthorityCommand(fixtureA, "deployment.redeploy");
+    const entryB = await admitAuthorityCommand(fixtureB, "deployment.stop");
+    const poolA = createDbPool(databaseUrl, { max: 1, statement_timeout: 10_000 });
+    const poolB = createDbPool(databaseUrl, { max: 1, statement_timeout: 5_000 });
+    const reached = latch(), unblock = latch();
+    let first: ReturnType<typeof claimAuthority> | undefined;
+    try {
+      const owner = new DbControlCommandRepository(createDbClient(poolA), async (stage) => {
+        if (stage === "authority-claimed") { reached.resolve(); await unblock.promise; }
+      });
+      first = claimAuthority(owner, entryA);
+      await Promise.race([reached.promise, first.then(() => { throw new Error("Claim bypassed controlled barrier"); })]);
+      const independent = await claimAuthority(new DbControlCommandRepository(createDbClient(poolB)), entryB);
+      const authorityB = requireAuthority(independent);
+      expect(authorityB.projectId).toBe(fixtureB.input.projectId);
+      await expect(controls().validateDeploymentAuthority(authorityB)).resolves.toBeUndefined();
+      expect((await pool.query("SELECT status FROM control_commands WHERE id=$1", [entryA.command.id])).rows).toEqual([{ status: "eligible" }]);
+      unblock.resolve();
+      expect(requireAuthority(await first).projectId).toBe(fixtureA.input.projectId);
+    } finally {
+      unblock.resolve();
+      await first?.catch(() => undefined);
+      await Promise.all([poolA.end(), poolB.end()]);
+    }
+  }, 30_000);
+
+  it("rejects an expired persisted command without allocating an execution claim", async () => {
+    const fixture = await authorityFixture();
+    const entry = await admitAuthorityCommand(fixture, "deployment.stop");
+    await pool.query("UPDATE control_commands SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1", [entry.command.id]);
+    await expect(claimAuthority(controls(), entry)).resolves.toMatchObject({ claimed: false });
+    expect((await pool.query("SELECT status,execution_authority FROM control_commands WHERE id=$1", [entry.command.id])).rows).toEqual([{ status: "eligible", execution_authority: null }]);
+  }, 30_000);
+
+  it("increments fences on expiry and rejects superseded or same-fence conflicting authority before terminal writes", async () => {
+    const fixture = await authorityFixture();
+    const entry = await admitAuthorityCommand(fixture, "deployment.redeploy");
+    if (!entry.deployment) throw new Error("Expected execution fixture");
+    await deployments().save({ ...entry.deployment, status: "running" });
+    const old = requireAuthority(await claimAuthority(controls(), entry));
+    await expect(controls().validateDeploymentAuthority(old, old.projectLease.expiresAt)).rejects.toThrow();
+    const conflicting = structuredClone(old);
+    conflicting.projectLease.leaseId = "same-fence-other-owner";
+    await expect(controls().validateDeploymentAuthority(conflicting)).rejects.toThrow();
+    await pool.query("UPDATE control_commands SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1", [entry.command.id]);
+    const successor = await admitAuthorityCommand(fixture, "deployment.stop");
+    const current = requireAuthority(await claimAuthority(controls(), successor));
+    expect(current.projectLease.fence).toBe(old.projectLease.fence + 1);
+    expect(current.executionLease.fence).toBe(current.projectLease.fence);
+    await expect(controls().validateDeploymentAuthority(old)).rejects.toThrow();
+    await expect(completion().completeExecution(authorityCompletion(fixture, entry, old))).resolves.toEqual({ kind: "conflict" });
+    expect((await pool.query("SELECT status,execution_receipt,finished_at FROM deployments WHERE id=$1", [entry.deployment.id])).rows).toEqual([{ status: "running", execution_receipt: null, finished_at: null }]);
+    expect((await pool.query("SELECT status,execution_authority FROM control_commands WHERE id=$1", [successor.command.id])).rows).toEqual([{ status: "dispatching", execution_authority: current }]);
+    await expect(controls().validateDeploymentAuthority(current)).resolves.toBeUndefined();
+  }, 30_000);
+
+  it("rolls back confirmed allocation and confirmation when the existing allocation fault fires", async () => {
+    const fixture = await authorityFixture();
+    const entry = await prepareAuthorityCommand(fixture, "deployment.redeploy");
+    if (!entry.deployment) throw new Error("Expected execution fixture");
+    const repository = new DbControlCommandRepository(createDbClient(pool), (stage) => {
+      if (stage === "redeploy-deployment-inserted") throw new Error("acceptance allocation fault");
+    });
+    await expect(repository.executeConfirmedDeploymentRedeploy({ ...entry, deployment: entry.deployment, requestId: randomUUID(), snapshotHash: fixture.snapshot.hash })).rejects.toThrow("acceptance allocation fault");
+    expect((await pool.query("SELECT id FROM deployments WHERE id=$1", [entry.deployment.id])).rowCount).toBe(0);
+    expect((await pool.query("SELECT status,result,execution_authority FROM control_commands WHERE id=$1", [entry.command.id])).rows).toEqual([{ status: "pending_confirmation", result: null, execution_authority: null }]);
+    expect((await pool.query("SELECT consumed_at FROM control_command_confirmations WHERE id=$1", [entry.confirmation.id])).rows).toEqual([{ consumed_at: null }]);
+    expect((await pool.query("SELECT id FROM control_command_audits WHERE command_id=$1", [entry.command.id])).rowCount).toBe(0);
+  }, 30_000);
+
+  it("rolls back a claim fault without leaking authority or altering the already admitted allocation", async () => {
+    const fixture = await authorityFixture();
+    const entry = await admitAuthorityCommand(fixture, "deployment.redeploy");
+    if (!entry.deployment) throw new Error("Expected execution fixture");
+    const before = await deployments().findById(entry.deployment.id);
+    const repository = new DbControlCommandRepository(createDbClient(pool), (stage) => {
+      if (stage === "authority-claimed") throw new Error("acceptance claim fault");
+    });
+    await expect(claimAuthority(repository, entry)).rejects.toThrow("acceptance claim fault");
+    expect((await pool.query("SELECT status,execution_authority FROM control_commands WHERE id=$1", [entry.command.id])).rows).toEqual([{ status: "eligible", execution_authority: null }]);
+    await expect(deployments().findById(entry.deployment.id)).resolves.toEqual(before);
+    expect((await pool.query("SELECT count(*)::int AS count FROM deployments WHERE id=$1", [entry.deployment.id])).rows).toEqual([{ count: 1 }]);
+    requireAuthority(await claimAuthority(controls(), entry));
+  }, 30_000);
+
+  it("rereads persisted execution authority through a new PostgreSQL pool", async () => {
+    const fixture = await authorityFixture();
+    const entry = await admitAuthorityCommand(fixture, "deployment.redeploy");
+    const authority = requireAuthority(await claimAuthority(controls(), entry));
+    await pool.end();
+    pool = createDbPool(databaseUrl, { max: 3 });
+    expect((await pool.query("SELECT execution_authority FROM control_commands WHERE id=$1", [entry.command.id])).rows).toEqual([{ execution_authority: authority }]);
+    await expect(controls().validateDeploymentAuthority(authority)).resolves.toBeUndefined();
+    const changed = structuredClone(authority);
+    changed.executionLease.fence++;
+    await expect(controls().validateDeploymentAuthority(changed)).rejects.toThrow();
+  }, 30_000);
+
+
+  it("rejects stale Stop terminal completion after a higher-fence replacement claim", async () => {
+    const fixture = await authorityFixture();
+    const stop = await admitAuthorityCommand(fixture, "deployment.stop");
+    const oldClaim = await claimAuthority(controls(), stop), old = requireAuthority(oldClaim);
+    await pool.query("UPDATE control_commands SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1", [stop.command.id]);
+    const replacement = await admitAuthorityCommand(fixture, "deployment.redeploy");
+    const current = requireAuthority(await claimAuthority(controls(), replacement));
+    expect(current.projectLease.fence).toBe(old.projectLease.fence + 1);
+    const before = await pool.query("SELECT id,status,result,execution_authority,updated_at FROM control_commands WHERE id=ANY($1::uuid[]) ORDER BY id", [[stop.command.id, replacement.command.id]]);
+    await expect(controls().completeDeploymentStop(oldClaim.command, stopTerminal(stop))).rejects.toThrow();
+    expect((await pool.query("SELECT id,status,result,execution_authority,updated_at FROM control_commands WHERE id=ANY($1::uuid[]) ORDER BY id", [[stop.command.id, replacement.command.id]])).rows).toEqual(before.rows);
+    await expect(controls().validateDeploymentAuthority(current)).resolves.toBeUndefined();
+    await expect(deployments().findById(fixture.input.executionId)).resolves.toMatchObject({ status: "succeeded", executionReceipt: fixture.input.proof });
+  }, 30_000);
+
+  it("rejects Stop terminal completion when persisted expiry changes during its command-row lock wait", async () => {
+    const fixture = await authorityFixture();
+    const stop = await admitAuthorityCommand(fixture, "deployment.stop");
+    const claim = await claimAuthority(controls(), stop), authority = requireAuthority(claim);
+    const blocker = await pool.connect(), application = `p2_stop_lock_${randomUUID()}`;
+    const contender = createDbPool(databaseUrl, { max: 1, application_name: application, statement_timeout: 10_000 });
+    let work: ReturnType<DbControlCommandRepository["completeDeploymentStop"]> | undefined;
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT id FROM control_commands WHERE id=$1 FOR UPDATE", [stop.command.id]);
+      work = new DbControlCommandRepository(createDbClient(contender)).completeDeploymentStop(claim.command, stopTerminal(stop));
+      void work.catch(() => undefined);
+      await waitForCommandLock(application);
+      await blocker.query("UPDATE control_commands SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1", [stop.command.id]);
+      await blocker.query("COMMIT");
+      await expect(work).rejects.toThrow();
+      expect((await pool.query("SELECT status,execution_authority FROM control_commands WHERE id=$1", [stop.command.id])).rows).toEqual([{ status: "dispatching", execution_authority: authority }]);
+    } finally {
+      await blocker.query("ROLLBACK"); blocker.release();
+      await work?.catch(() => undefined);
+      await contender.end();
+    }
+  }, 30_000);
+
+  it("replays equal completed Stop terminal evidence after expiry and deleted source without rewriting the ledger", async () => {
+    const fixture = await authorityFixture();
+    const stop = await admitAuthorityCommand(fixture, "deployment.stop");
+    const claim = await claimAuthority(controls(), stop); requireAuthority(claim);
+    const terminal = stopTerminal(stop);
+    await expect(controls().completeDeploymentStop(claim.command, terminal)).resolves.toMatchObject({ status: "completed", result: terminal });
+    await pool.query("UPDATE control_commands SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1", [stop.command.id]);
+    await pool.query("DELETE FROM deployments WHERE id=$1", [fixture.input.executionId]);
+    const before = await pool.query("SELECT status,result,execution_authority,updated_at FROM control_commands WHERE id=$1", [stop.command.id]);
+    await expect(controls().completeDeploymentStop(claim.command, terminal)).resolves.toMatchObject({ status: "completed", result: terminal });
+    expect((await pool.query("SELECT status,result,execution_authority,updated_at FROM control_commands WHERE id=$1", [stop.command.id])).rows).toEqual(before.rows);
+  }, 30_000);
+
+  it.each(["different-owner", "same-owner"])("preserves a reclaimed replay claim against old completion and release (%s)", async (ownership) => {
+    const commandId = randomUUID(), executionId = randomUUID();
+    const poolA = createDbPool(databaseUrl, { max: 1 }), poolB = createDbPool(databaseUrl, { max: 1 });
+    try {
+      const owner = `acceptance-${randomUUID()}`;
+      const first = new DbAgentReplayStore(createDbClient(poolA), owner);
+      const second = new DbAgentReplayStore(createDbClient(poolB), ownership === "same-owner" ? owner : `${owner}-new`);
+      const lease = { leaseId: "old", deploymentId: executionId, fence: 2, expiresAt: Date.now() + 60_000 };
+      const old = await first.claim(commandId, "acceptance-payload", lease);
+      await pool.query("UPDATE agent_replay SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE command_id=$1", [commandId]);
+      const current = await second.claim(commandId, "acceptance-payload", { ...lease, leaseId: "current", fence: 3, expiresAt: Date.now() + 60_000 });
+      expect(old.claimed).toBe(true); expect(current.claimed).toBe(true);
+      expect(current.claimToken).not.toBe(old.claimToken);
+      const receipt = { deploymentId: executionId, acceptanceFixture: true };
+      await expect(first.complete(commandId, { fingerprint: "acceptance-payload", claimToken: old.claimToken!, receipt })).rejects.toThrow("stale");
+      await first.release(commandId, old.claimToken);
+      expect((await pool.query("SELECT status,claim_token FROM agent_replay WHERE command_id=$1", [commandId])).rows).toEqual([{ status: "in_progress", claim_token: current.claimToken }]);
+      await second.release(commandId, current.claimToken);
+      expect((await pool.query("SELECT command_id FROM agent_replay WHERE command_id=$1", [commandId])).rowCount).toBe(0);
+    } finally {
+      await Promise.all([poolA.end(), poolB.end()]);
+    }
+  }, 30_000);
+
+  it("atomically rolls back authority-bearing terminal writes and replays committed proof after expiry", async () => {
+    const fixture = await authorityFixture();
+    const entry = await admitAuthorityCommand(fixture, "deployment.redeploy");
+    if (!entry.deployment) throw new Error("Expected execution fixture");
+    await deployments().save({ ...entry.deployment, status: "running" });
+    const authority = requireAuthority(await claimAuthority(controls(), entry));
+    const input = authorityCompletion(fixture, entry, authority);
+    const trigger = `p2_authority_fault_${randomUUID().replaceAll("-", "")}`;
+    await pool.query(`CREATE FUNCTION ${trigger}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'authority terminal fault'; END $$`);
+    await pool.query(`CREATE TRIGGER ${trigger} BEFORE UPDATE ON control_commands FOR EACH ROW WHEN (OLD.id='${entry.command.id}'::uuid) EXECUTE FUNCTION ${trigger}()`);
+    try {
+      await expect(completion().completeExecution(input)).rejects.toThrow("authority terminal fault");
+      expect((await pool.query("SELECT status,execution_receipt,finished_at FROM deployments WHERE id=$1", [entry.deployment.id])).rows).toEqual([{ status: "running", execution_receipt: null, finished_at: null }]);
+      expect((await pool.query("SELECT status,execution_authority,result FROM control_commands WHERE id=$1", [entry.command.id])).rows).toEqual([{ status: "dispatching", execution_authority: authority, result: entry.command.result }]);
+    } finally {
+      await pool.query(`DROP TRIGGER ${trigger} ON control_commands`);
+      await pool.query(`DROP FUNCTION ${trigger}()`);
+    }
+    expect((await completion().completeExecution(input)).kind).toBe("committed");
+    await pool.query("UPDATE control_commands SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1", [entry.command.id]);
+    expect((await completion().completeExecution(input)).kind).toBe("replayed");
+    expect((await pool.query("SELECT d.status AS execution_status,d.execution_receipt,c.status AS command_status FROM deployments d JOIN control_commands c ON c.id=$1 WHERE d.id=$2", [entry.command.id, entry.deployment.id])).rows).toEqual([{ execution_status: "succeeded", execution_receipt: input.proof, command_status: "completed" }]);
+  }, 30_000);
+
   it.skipIf(!process.env.DEPLOYLITE_PG_RESTART_HELPER)("retains proof, command and canonical origin across an owned server restart", async () => {
     const { input, snapshot } = await seed();
     expect((await completion().completeExecution(input)).kind).toBe("committed");
+    const fixture = await authorityFixture();
+    const replacement = await admitAuthorityCommand(fixture, "deployment.redeploy");
+    if (!replacement.deployment) throw new Error("Expected execution fixture");
+    await deployments().save({ ...replacement.deployment, status: "running" });
+    const stale = requireAuthority(await claimAuthority(controls(), replacement));
+    await pool.query("UPDATE control_commands SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1", [replacement.command.id]);
+    const stop = await admitAuthorityCommand(fixture, "deployment.stop");
+    const current = requireAuthority(await claimAuthority(controls(), stop));
+    expect(current.projectLease.fence).toBe(stale.projectLease.fence + 1);
     await pool.end();
     await maintenance.end();
     await promisify(execFile)("python3", [process.env.DEPLOYLITE_PG_RESTART_HELPER!]);
@@ -277,5 +616,10 @@ suite("atomic execution PostgreSQL integration", () => {
     expect((await completion().completeExecution(input)).kind).toBe("replayed");
     await expect(deployments().findByHash(input.snapshotHash)).resolves.toEqual(snapshot);
     await expect(deployments().findById(input.executionId)).resolves.toMatchObject({ status: "succeeded", executionReceipt: input.proof });
+    expect((await pool.query("SELECT execution_authority FROM control_commands WHERE id=$1", [stop.command.id])).rows).toEqual([{ execution_authority: current }]);
+    await expect(controls().validateDeploymentAuthority(current)).resolves.toBeUndefined();
+    await expect(controls().validateDeploymentAuthority(stale)).rejects.toThrow();
+    await expect(completion().completeExecution(authorityCompletion(fixture, replacement, stale))).resolves.toEqual({ kind: "conflict" });
+    expect((await pool.query("SELECT status,execution_receipt,finished_at FROM deployments WHERE id=$1", [replacement.deployment.id])).rows).toEqual([{ status: "running", execution_receipt: null, finished_at: null }]);
   }, 30_000);
 });
