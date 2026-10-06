@@ -1907,6 +1907,116 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
      await appendAudit(adapters.audit, request, { actorUserId: request.auth!.user.id, action: "deployment.stop.rejected", targetType: "deployment", targetId: deployment.id, metadata: { projectId: project.id, commandId: claimed.command.id, reason: result.reason } });
     return reply.code(409).send(errorEnvelope(request, "DEPLOY_STOP_NOT_CONFIRMED", "Agent did not confirm a stopped container; prior status was preserved."));
   }));
+  app.post(`${API_PREFIX}/deployments/:deploymentId/rollback`, { preHandler: [requireAuth, requireMutationRole] }, async (request, reply) => withRequestPublication(request, reply, async (publicationSignal) => {
+    const { deploymentId: activeId } = z.object({ deploymentId: z.string().min(1) }).parse(request.params);
+    const body = z.object({ historicalDeploymentId: z.string().min(1), snapshotHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict().parse(request.body);
+    const key = getHeaderValue(request, "x-control-idempotency-key"), controls = state.controlRollback;
+    const pending = (command: ControlCommand) => reply.code(202).send(ok(request, { command, pending: true }));
+    if (!key) return reply.code(400).send(errorEnvelope(request, "IDEMPOTENCY_KEY_REQUIRED", "A rollback idempotency key is required."));
+    if (!controls) return reply.code(503).send(errorEnvelope(request, "ROLLBACK_UNAVAILABLE", "Rollback repository is unavailable."));
+    const contextFor = (command: ControlCommand, running: Deployment, proof: TrustedPriorExecutionReceiptV1, effectiveImage: string, signal?: AbortSignal): AgentDispatchContext => ({ agentId: running.agentId!, requestId: request.correlationContext.requestId, correlationId: command.correlationId, executionDeploymentId: running.id, activeDeploymentId: running.activeDeploymentId!, sourceDeploymentId: running.sourceDeploymentId!, authority: command.executionAuthority, replacement: { prior: proof, effectiveImage, policy: { maxOutageMs: 30_000, maxRecoveryMs: 60_000 } }, signal });
+    const finish = async (command: ControlCommand, running: Deployment, snapshot: DeploymentSnapshotV1, activeProof: TrustedPriorExecutionReceiptV1, received: DockerImageExecutionReceiptV1 | DeploymentDispatchReceipt) => {
+      const result = command.result;
+      if (result?.action !== "deployment.rollback" || !state.executionCompletion) return reply.code(503).send(errorEnvelope(request, "EXECUTION_COMPLETION_UNAVAILABLE", "Atomic rollback completion is unavailable."));
+      const receipt = received as DeploymentDispatchReceipt;
+      const { projectId: _project, activeDeploymentId: _active, sourceDeploymentId: _source, snapshotHash: _hash, correlationId: _correlation, ...inner } = receipt;
+      const parsed = dockerImageExecutionReceiptSchema.safeParse(inner);
+      const digest = running.stopTarget!.effectiveImage.split("@")[1]!;
+      if (!parsed.success || receipt.projectId !== result.projectId || receipt.activeDeploymentId !== result.activeDeploymentId || receipt.sourceDeploymentId !== result.sourceDeploymentId || receipt.deploymentId !== result.deploymentId || receipt.snapshotHash !== result.snapshotHash || receipt.correlationId !== command.correlationId || parsed.data.effectiveImage !== running.stopTarget!.effectiveImage || parsed.data.runtimePort !== snapshot.runtimePort) return reply.code(502).send(errorEnvelope(request, "ROLLBACK_EVIDENCE_INVALID", "Original rollback terminal evidence does not match the command."));
+      const proof = parsed.data.executionReceipt ?? null;
+      if (parsed.data.terminalStatus === "succeeded" && (!proof || proof.deploymentId !== running.id || proof.projectId !== running.projectId || proof.runtimeHost !== running.agentId || proof.candidateId !== running.stopTarget!.candidateId || proof.snapshotOriginId !== snapshot.deploymentId || proof.snapshotHash !== snapshot.hash || proof.effectiveImageDigest !== digest || proof.containerPort !== snapshot.runtimePort || proof.hostPort !== activeProof.hostPort || proof.network !== activeProof.network)) return reply.code(502).send(errorEnvelope(request, "ROLLBACK_EVIDENCE_INVALID", "Rollback success requires independently observed R proof."));
+      const persisted = await state.deployments.findById(running.id);
+      publicationSignal.throwIfAborted();
+      const terminal = { ...result, status: "completed" as const, reason: parsed.data.terminalStatus === "succeeded" ? null : `agent-${parsed.data.terminalStatus}` };
+      const completionInput = { commandId: command.id, authority: command.executionAuthority, commandResult: terminal, expectedStatus: "running", executionId: running.id, projectId: running.projectId, sourceExecutionId: result.sourceDeploymentId, activeDeploymentId: result.activeDeploymentId, snapshotOriginId: snapshot.deploymentId, snapshotHash: snapshot.hash, runtimeHost: running.agentId!, effectiveImageDigest: digest, terminalStatus: parsed.data.terminalStatus, finishedAt: persisted?.finishedAt ?? new Date().toISOString(), proof } as const;
+      let completion = await state.executionCompletion.completeExecution(completionInput, publicationSignal);
+      if (completion.kind === "conflict") {
+        const durable = await state.deployments.findById(running.id);
+        publicationSignal.throwIfAborted();
+        if (durable && durable.status === completionInput.terminalStatus && durable.finishedAt) completion = await state.executionCompletion.completeExecution({ ...completionInput, finishedAt: durable.finishedAt }, publicationSignal);
+      }
+      if (!("deployment" in completion)) return reply.code(completion.kind === "conflict" ? 409 : 404).send(errorEnvelope(request, "EXECUTION_COMPLETION_CONFLICT", "Rollback completion remains unresolved."));
+      if (completion.kind === "committed") {
+        await state.deployments.appendLog({ id: randomUUID(), deploymentId: running.id, sequence: 2, level: parsed.data.terminalStatus === "succeeded" ? "info" : "error", message: `Agent rollback ${parsed.data.terminalStatus}.`, timestamp: completion.deployment.finishedAt!, redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: command.correlationId });
+        await appendAudit(adapters.audit, request, { action: `deployment.rollback.${parsed.data.terminalStatus}`, targetType: "deployment", targetId: running.id, metadata: { activeDeploymentId: result.activeDeploymentId, sourceDeploymentId: result.sourceDeploymentId, snapshotHash: snapshot.hash } });
+      }
+      return ok(request, { deployment: completion.deployment, command: completion.command!.result, execution: parsed.data });
+    };
+    const reconcile = async (command: ControlCommand) => {
+      const result = command.result;
+      if (result?.action !== "deployment.rollback" || !command.executionAuthority || !state.deploymentDispatcher.readExecutionReceipt) return pending(command);
+      const running = await state.deployments.findById(result.deploymentId), active = await state.deployments.findById(result.activeDeploymentId), snapshot = await state.snapshots.findByHash(result.snapshotHash);
+      const proof = trustedPriorExecutionReceiptSchema.safeParse(active?.executionReceipt);
+      if (!running || !snapshot || !proof.success || !active?.stopTarget || running.activeDeploymentId !== result.activeDeploymentId || running.sourceDeploymentId !== result.sourceDeploymentId || running.snapshotOriginId !== snapshot.deploymentId || running.snapshotHash !== result.snapshotHash) return pending(command);
+      let received: DockerImageExecutionReceiptV1 | DeploymentDispatchReceipt | null = null;
+      try { received = await readOriginalForRequest(publicationSignal, (signal) => state.deploymentDispatcher.readExecutionReceipt!(snapshot, `deploy_${running.id}`, contextFor(command, running, proof.data, active.stopTarget!.effectiveImage, signal))); } catch { /* Cache reads never claim, wait, release or execute the original effect again. */ }
+      return received ? finish(command, running, snapshot, proof.data, received) : pending(command);
+    };
+    let command = await controls.findByIdempotency(request.auth!.user.id, key, "deployment.rollback");
+    const projectId = command?.scope.kind === "deployment" ? command.scope.projectId : (await state.deployments.findById(activeId))?.projectId;
+    if (!projectId) return reply.code(404).send(errorEnvelope(request, "NOT_FOUND", "Expected active deployment was not found."));
+    const scope = { kind: "deployment" as const, projectId, deploymentId: activeId };
+    let R = command?.result?.action === "deployment.rollback" ? command.result.deploymentId : randomUUID();
+    const input = { actorId: request.auth!.user.id, projectId, activeDeploymentId: activeId, sourceDeploymentId: body.historicalDeploymentId, deploymentId: R, snapshotHash: body.snapshotHash };
+    const tentative = createControlCommand({ actorId: request.auth!.user.id, action: "deployment.rollback", scope, input, idempotencyKey: key, correlationId: request.correlationContext.correlationId });
+    tentative.result = { projectId, activeDeploymentId: activeId, sourceDeploymentId: body.historicalDeploymentId, deploymentId: R, snapshotHash: body.snapshotHash, commandId: tentative.id, action: "deployment.rollback", status: "pending_confirmation", correlationId: tentative.correlationId, reason: null };
+    if (command) {
+      try { validateRollbackReservation(command, tentative); } catch { return reply.code(409).send(errorEnvelope(request, "IDEMPOTENCY_CONFLICT", "Rollback input changed.")); }
+      if (command.status === "completed") return ok(request, { command, deploymentId: R, idempotent: true });
+      if (command.status === "dispatching") return reconcile(command);
+      if (command.status === "rejected") return reply.code(409).send(errorEnvelope(request, "ROLLBACK_REJECTED", "Rollback command was rejected."));
+    }
+    const decision = new PolicyEvaluator().evaluate({ actorId: request.auth!.user.id, role: request.auth!.user.role, action: "deployment.rollback", scope: { kind: "project", projectId }, correlationId: request.correlationContext.correlationId, grants: await state.controlGrants.listForActor(request.auth!.user.id) });
+    if (!decision.allowed) return reply.code(403).send(errorEnvelope(request, decision.code, "Rollback is not authorized."));
+    const active = await state.deployments.findById(activeId), historical = await state.deployments.findById(body.historicalDeploymentId), snapshot = await state.snapshots.findByHash(body.snapshotHash), project = await state.projects.findById(projectId);
+    if (!active || !historical || !snapshot || !project) return reply.code(404).send(errorEnvelope(request, "ROLLBACK_SOURCE_MISSING", "Active workload or selected historical snapshot was not found."));
+    const activeProof = trustedPriorExecutionReceiptSchema.safeParse(active.executionReceipt), historicalProof = trustedPriorExecutionReceiptSchema.safeParse(historical.executionReceipt);
+    let canonical = true; try { validateDockerImageSnapshot(snapshot, { sha256: (bytes) => createHash("sha256").update(bytes).digest("hex") }); } catch { canonical = false; }
+    const digest = snapshot.source.sourceMode === "image" ? (snapshot.source.image.selector.kind === "digest" ? snapshot.source.image.selector.value : snapshot.resolvedDigest) : undefined;
+    const bound = (deployment: Deployment, proof: TrustedPriorExecutionReceiptV1) => deployment.status === "succeeded" && deployment.projectId === projectId && deployment.agentId === snapshot.agentId && proof.deploymentId === deployment.id && proof.projectId === projectId && proof.runtimeHost === deployment.agentId && proof.candidateId === deployment.stopTarget?.candidateId && proof.snapshotOriginId === deployment.snapshotOriginId && proof.snapshotHash === deployment.snapshotHash && proof.effectiveImageDigest === deployment.stopTarget?.effectiveImage.split("@")[1];
+    if (!canonical || !activeProof.success || !historicalProof.success || !bound(active, activeProof.data) || !bound(historical, historicalProof.data) || historical.snapshotHash !== snapshot.hash || historical.snapshotOriginId !== snapshot.deploymentId || historicalProof.data.effectiveImageDigest !== digest || snapshot.projectId !== projectId || !snapshot.agentId || !snapshot.commitSha || createDeploymentPlan(snapshot).status !== "executable" || snapshot.configRevision !== "default" || snapshot.runtimeRevision !== "default" || snapshot.secretRefs.length !== 0 || snapshot.runtimePort !== project.port || activeProof.data.containerPort !== snapshot.runtimePort || historicalProof.data.containerPort !== snapshot.runtimePort || activeProof.data.hostPort !== historicalProof.data.hostPort || activeProof.data.network !== historicalProof.data.network) return reply.code(409).send(errorEnvelope(request, "ROLLBACK_SNAPSHOT_INELIGIBLE", "Historical state is outside the current supported runtime subset or binding."));
+    let created = false;
+    if (!command) {
+      try { const resolved = await controls.resolve(tentative); command = resolved.command; created = resolved.created; R = command.result!.deploymentId!; }
+      catch (error) { if (error instanceof IdempotencyConflictError) return reply.code(409).send(errorEnvelope(request, error.code, error.message)); throw error; }
+    }
+    const confirmationId = getHeaderValue(request, "x-control-confirmation-id");
+    if (command.status === "pending_confirmation" && (created || !confirmationId)) {
+      publicationSignal.throwIfAborted();
+      if (!controls.resolveRollbackConfirmation) return reply.code(503).send(errorEnvelope(request, "ROLLBACK_UNAVAILABLE", "Durable confirmation lookup is required."));
+      const confirmation = await controls.resolveRollbackConfirmation(command);
+      publicationSignal.throwIfAborted();
+      if (!confirmation) return reply.code(409).send(errorEnvelope(request, "CONFIRMATION_REJECTED", "Original rollback confirmation is no longer eligible."));
+      if (created) await appendAudit(adapters.audit, request, { action: "deployment.rollback.pending_confirmation", targetType: "deployment", targetId: activeId, metadata: { commandId: command.id, activeDeploymentId: activeId, sourceDeploymentId: historical.id, deploymentId: R, snapshotHash: snapshot.hash } });
+      return reply.code(202).send(ok(request, { commandId: command.id, deploymentId: R, confirmationId: confirmation.id, confirmationRequired: true, correlationId: command.correlationId }));
+    }
+    if (command.status === "completed") return ok(request, { command, deploymentId: R, idempotent: true });
+    if (command.status === "dispatching") return reconcile(command);
+    if (!state.executionCompletion || !state.deploymentDispatcher.available() || !controls.validateDeploymentAuthority) return reply.code(503).send(errorEnvelope(request, "ROLLBACK_UNAVAILABLE", "Atomic execution, transport and persisted authority are required."));
+    publicationSignal.throwIfAborted();
+    if (command.status === "pending_confirmation") {
+      if (!confirmationId) return pending(command);
+      const confirmation = { id: confirmationId, commandId: command.id, actorId: command.actorId, action: command.action, scope: command.scope, inputDigest: command.inputDigest, classification: "destructive" as const, expiresAt: command.expiresAt, consumedAt: null };
+      const deployment: Deployment = { id: R, projectId, agentId: snapshot.agentId, status: "queued", commitSha: snapshot.commitSha, startedAt: new Date().toISOString(), finishedAt: null, activeDeploymentId: active.id, sourceDeploymentId: historical.id, snapshotOriginId: snapshot.deploymentId, snapshotHash: snapshot.hash };
+      const admitted = await controls.executeConfirmedDeploymentRollback({ command, confirmation, deployment, requestId: request.correlationContext.requestId });
+      if (!admitted.accepted) return reply.code(409).send(errorEnvelope(request, "CONFIRMATION_REJECTED", "Rollback confirmation is not eligible."));
+      command = admitted.command;
+    }
+    publicationSignal.throwIfAborted();
+    const claim = await controls.claimDeploymentRollback(command);
+    publicationSignal.throwIfAborted();
+    if (!claim.claimed || !claim.deployment || !claim.authority) return pending(claim.command);
+    const running = await state.deployments.save({ ...claim.deployment, status: "running", stopTarget: { candidateId: `${R}:candidate:deploy_${R}`, effectiveImage: `${snapshot.source.sourceMode === "image" ? `${snapshot.source.image.registryHost}/${snapshot.source.image.repository}` : ""}@${digest}` } });
+    await controls.validateDeploymentAuthority(claim.authority);
+    await state.deployments.appendLog({ id: randomUUID(), deploymentId: R, sequence: 1, level: "info", message: "Agent accepted historical snapshot for rollback execution.", timestamp: new Date().toISOString(), redactionApplied: true, requestId: request.correlationContext.requestId, correlationId: claim.command.correlationId });
+    const context = contextFor(claim.command, running, activeProof.data, active.stopTarget!.effectiveImage, publicationSignal);
+    let received: "dispatched" | DockerImageExecutionReceiptV1 | DeploymentDispatchReceipt | undefined;
+    try { received = await state.deploymentDispatcher.dispatch(snapshot, `deploy_${R}`, context); }
+    catch { try { received = await readOriginalForRequest(publicationSignal, (signal) => state.deploymentDispatcher.readExecutionReceipt?.(snapshot, `deploy_${R}`, { ...context, signal }) ?? Promise.resolve(null)) ?? undefined; } catch { /* Unknown physical outcomes retain R running and the original claim. */ } }
+    if (!received) return reply.code(502).send(errorEnvelope(request, "ROLLBACK_OUTCOME_UNKNOWN", "Original terminal recovery evidence was not received."));
+    if (received === "dispatched") return pending(claim.command);
+    return finish(claim.command, running, snapshot, activeProof.data, received);
+  }));
   app.post(`${API_PREFIX}/deployments/:deploymentId/redeploy`, { preHandler: [requireAuth, requireMutationRole] }, async (request, reply) => withRequestPublication(request, reply, async (publicationSignal) => {
     const params = z.object({ deploymentId: z.string().min(1) }).parse(request.params);
     const body = z.object({ snapshotHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict().parse(request.body ?? {});
