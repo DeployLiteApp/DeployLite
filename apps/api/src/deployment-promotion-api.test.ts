@@ -39,7 +39,7 @@ async function fixture(options?: { stopFault?: "lost" | "timeout" | "canceled" |
   expect(initial.statusCode, initial.body).toBe(options?.initialStatus ?? 200); const A = initial.statusCode === 200 ? initial.json().data.deployment as Deployment : (await memory.deployments.list()).find((value) => value.snapshotHash)!; if (initial.statusCode === 200) expect(A.executionReceipt).toBeDefined(); complete.mockClear();
   const request = (action: "stop" | "redeploy", id: string, key: string, confirmation?: string) => app.inject({ method: "POST", url: `/api/v1/deployments/${id}/${action}`, headers: { cookie, "x-control-idempotency-key": key, ...(confirmation ? { "x-control-confirmation-id": confirmation } : {}) }, ...(action === "redeploy" ? { payload: { snapshotHash: A.snapshotHash } } : {}) });
   const confirm = async (action: "stop" | "redeploy", id = A.id, key: string = action) => { const pending = await request(action, id, key); expect(pending.statusCode, pending.body).toBe(202); expect(pending.json().data.confirmationRequired).toBe(true); return () => request(action, id, key, pending.json().data.confirmationId); };
-  return { app, A, memory, docker, bodies, complete, request, confirm, loseReply: () => { loseReply = true; } };
+  return { app, initial, A, memory, docker, bodies, complete, request, confirm, loseReply: () => { loseReply = true; } };
 }
 describe("API signed promotion and shared execute-stop authority", () => {
   it("rejects validly signed alternative INITIAL canonical configuration against the persisted execution before effects", async () => {
@@ -49,7 +49,7 @@ describe("API signed promotion and shared execute-stop authority", () => {
   });
   it.each(["before-executor", "before-promotion"])("fences a paused INITIAL candidate %s after confirmed Stop so no late workload or success appears", async (stage) => {
     let stoppedId = "", cutoff = 0;
-    const f = await fixture({ initialStatus: 409, configureInitial: ({ app, memory, docker, cookie, dispatcher }) => {
+    const f = await fixture({ initialStatus: stage === "before-executor" ? 502 : 409, configureInitial: ({ app, memory, docker, cookie, dispatcher }) => {
       let prepared!: () => void, resume!: () => void;
       const ready = new Promise<void>((resolve) => { prepared = resolve; }), barrier = new Promise<void>((resolve) => { resume = resolve; });
       const dispatch = dispatcher.dispatch.bind(dispatcher);
@@ -66,6 +66,11 @@ describe("API signed promotion and shared execute-stop authority", () => {
         cutoff = docker.calls.length; resume();
       };
     } });
+    if (stage === "before-executor") {
+      // No terminal receipt was received after the fence; preserve truthful unknown state.
+      expect(f.initial.json().error.code).toBe("DEPLOY_OUTCOME_UNKNOWN");
+      expect(f.A.status).toBe("running"); expect(f.A.finishedAt).toBeNull();
+    }
     expect(f.docker.containers.has(`deploylite-active-${stoppedId}`)).toBe(false);
     expect(f.A.executionReceipt).toBeUndefined(); expect(f.A.status).not.toBe("succeeded");
     expect(f.docker.calls.slice(cutoff).some((argv) => ["run", "rename", "start"].includes(argv[1]!))).toBe(false);
