@@ -13,7 +13,11 @@ export const deploymentExecutionAuthoritySchema = z.object({
 }).strict();
 export type DeploymentExecutionAuthorityV1 = z.infer<typeof deploymentExecutionAuthoritySchema>;
 
-const digestImage = z.string().min(1).max(1024).regex(/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[0-9a-f]{64}$/);
+// Match the existing source-intent registry-port range without changing the immutable reference.
+const digestImage = z.string().min(1).max(1024).regex(/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[0-9a-f]{64}$/).refine((reference) => {
+  const host = reference.slice(0, reference.indexOf("/")), separator = host.indexOf(":");
+  return separator < 0 || (Number(host.slice(separator + 1)) >= 1 && Number(host.slice(separator + 1)) <= 65535);
+}, "registry port must be between 1 and 65535");
 export const promotionPolicySchema = z.object({ maxOutageMs: z.number().int().positive().max(300_000), maxRecoveryMs: z.number().int().positive().max(300_000) }).strict();
 export type PromotionPolicy = z.infer<typeof promotionPolicySchema>;
 export const agentReplacementSchema = z.object({ prior: trustedPriorExecutionReceiptSchema, effectiveImage: digestImage, policy: promotionPolicySchema }).strict();
