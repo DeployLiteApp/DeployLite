@@ -245,6 +245,9 @@ def verify_physical(receipts, grant):
 
 class NativeBoundary:
     """Explicit runner; no process is constructed by imports or pure guards."""
+    def __init__(self, buildx_config=None):
+        self.buildx_config = buildx_config
+
     @property
     def now(self):
         return time.monotonic()
@@ -255,6 +258,9 @@ class NativeBoundary:
 
     def run(self, argv, timeout):
         safe_env = {key: value for key, value in os.environ.items() if key in ("PATH", "LANG", "LC_ALL")}
+        if self.buildx_config is not None:
+            private_directory(self.buildx_config)
+            safe_env["BUILDX_CONFIG"] = str(self.buildx_config)
         result = subprocess.run(argv, cwd=ROOT, env=safe_env, check=False, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
         return {"returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
@@ -607,12 +613,14 @@ def prepare(env):
     require(config == runner / "deploylite-p2-empty-docker-config", "exact_private_config_required")
     private_directory(config, create=True)
     inspect_config(env)
+    buildx_config = runner / "deploylite-p2-buildx-state"
+    private_directory(buildx_config, create=True)
     hashes = current_sources()
     sources, operations = harness_contract()
     context_files = sorted(str(path.relative_to(ROOT)) for path in (ROOT / MANIFEST["fixture"]["context"]).rglob("*") if path.is_file())
     require(context_files == sorted(MANIFEST["fixture"]["files"]) and not any((ROOT / path).is_symlink() for path in context_files), "exact_fixture_context_required")
     # Engine identity is an actual selected read after all input gates, never an invented image/container digest.
-    boundary = NativeBoundary()
+    boundary = NativeBoundary(buildx_config)
     preparation_deadline = boundary.now + MANIFEST["resourceProposal"]["prepMaxSeconds"]
     selected = ["docker", "--config", str(config), "--host", env["DOCKER_HOST"], "info", "--format", ENGINE_FORMAT]
     engine_result = boundary.run(selected, timeout=min(15, preparation_deadline - boundary.now))
@@ -662,6 +670,7 @@ def prepare(env):
             coordinator.save()
         coordinator.cleanup()  # Registry/network removed before any physical case starts.
         require(journal["cleanupStatus"] == "verified", "preparation_cleanup_unverified")
+        inspect_config(env)  # Build metadata must never populate the selected empty auth config.
         private = runner / "deploylite-p2-private-inputs"
         private_directory(private, create=True)
         credentials = private / "credentials.json"

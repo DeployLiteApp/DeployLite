@@ -222,7 +222,7 @@ jobs:
           DEPLOYLITE_API_DB_INTEGRATION: '0'
         run: |
           set -Eeuo pipefail
-          pnpm --filter @deploylite/api test src/deployment-docker.integration.test.ts --maxWorkers=1 --no-file-parallelism --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/deploylite-p2-docker-evidence/docker.json" 2>&1 | tee "$RUNNER_TEMP/deploylite-p2-docker-evidence/docker.log"
+          pnpm --filter @deploylite/api run test src/deployment-docker.integration.test.ts --maxWorkers=1 --no-file-parallelism --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/deploylite-p2-docker-evidence/docker.json" 2>&1 | tee "$RUNNER_TEMP/deploylite-p2-docker-evidence/docker.log"
       - name: Verify or close only recorded owned fixture resources
         if: always()
         env:

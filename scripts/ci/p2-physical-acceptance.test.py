@@ -508,6 +508,30 @@ class HostedPreparationFailureGuards(unittest.TestCase):
         coordinator.save = lambda: None
         return coordinator, journal
 
+    def test_native_buildx_state_is_selected_private_and_never_inherits_ambient_config(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        selected = Path("/owned-runner/deploylite-p2-buildx-state")
+        boundary = H["NativeBoundary"]()
+        boundary.buildx_config = selected
+        calls = []; checked = []
+        def recorded_run(argv, **options):
+            calls.append((argv, options))
+            return SimpleNamespace(returncode=0, stdout="recorded-only", stderr="")
+        ambient = {"PATH": "/recorded-tools", "BUILDX_CONFIG": "/foreign", "DOCKER_CONFIG": "/foreign-auth",
+                   "HOME": "/foreign-home", "BUILDX_BAKE_GIT_AUTH_TOKEN": "recorded-secret-never-forward"}
+        with patch.dict("os.environ", ambient, clear=True), patch("subprocess.run", recorded_run), \
+                patch.dict(H["NativeBoundary"].run.__globals__, {"private_directory": lambda path: checked.append(path)}):
+            boundary.run(["docker", "--config", "/owned-empty-config", "--host", "unix:///var/run/docker.sock", "build", "recorded-context"], 3)
+        self.assertEqual(calls[0][1]["env"].get("BUILDX_CONFIG"), str(selected), "build metadata must not populate the empty auth-config directory")
+        self.assertEqual(checked, [selected])
+        self.assertEqual(set(calls[0][1]["env"]), {"PATH", "BUILDX_CONFIG"})
+        calls.clear()
+        def rejected_state(path): raise H["PhysicalError"]("private_owned_directory_required")
+        with patch("subprocess.run", recorded_run), patch.dict(H["NativeBoundary"].run.__globals__, {"private_directory": rejected_state}):
+            with self.assertRaises(H["PhysicalError"]): boundary.run(["docker", "info"], 3)
+        self.assertEqual(calls, [], "replaced or unsafe state directory must fail before process construction")
+
     def test_preparation_network_supports_loopback_publication_without_host_or_shared_network(self):
         import ast
         source = ast.parse(Path(__file__).with_name("p2-physical-acceptance.py").read_text())
@@ -611,7 +635,7 @@ class HostedPreparationFailureGuards(unittest.TestCase):
         replacements = {"validate_native_inputs": lambda env: runner, "preparation_root": lambda *args, **kwargs: runner / "deploylite-p2-docker-evidence",
                         "private_directory": lambda *args, **kwargs: None, "inspect_config": lambda env: None,
                         "current_sources": lambda: self.grant["sourceHashes"], "harness_contract": lambda: ([], []),
-                        "NativeBoundary": lambda: self.fake, "write_private": lambda *args, **kwargs: None, "Coordinator": RecordedCoordinator}
+                        "NativeBoundary": lambda *args: self.fake, "write_private": lambda *args, **kwargs: None, "Coordinator": RecordedCoordinator}
         failure = None
         with patch.dict(H["prepare"].__globals__, replacements):
             try: H["prepare"](inputs)
