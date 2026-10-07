@@ -20,6 +20,23 @@ let db: DeployLiteDb | null = null;
 let databaseName = "";
 let databaseUrl = "";
 
+const testPoolClientEnds = new Map<ReturnType<typeof createDbPool>, Promise<void>[]>();
+function createObservedTestPool(url: string) {
+  const created = createDbPool(url, { max: 2 });
+  const clientEnds: Promise<void>[] = [];
+  created.on("connect", (client) => {
+    clientEnds.push(new Promise<void>((resolve) => { client.once("end", resolve); }));
+  });
+  testPoolClientEnds.set(created, clientEnds);
+  return created;
+}
+async function closeObservedTestPool(closing: ReturnType<typeof createDbPool>) {
+  await closeDbPool(closing);
+  // pg-pool can resolve end() before the final client's actual socket end.
+  await Promise.all(testPoolClientEnds.get(closing) ?? []);
+  testPoolClientEnds.delete(closing);
+}
+
 describeIntegration("DeployLite API PostgreSQL integration", () => {
   beforeAll(async () => {
     databaseName = `deploylite_api_verify_${randomUUID().replaceAll("-", "_")}`;
@@ -34,13 +51,13 @@ describeIntegration("DeployLite API PostgreSQL integration", () => {
     databaseUrl = testDatabaseUrl.toString();
 
     await applyMigrations(databaseUrl);
-    pool = createDbPool(databaseUrl, { max: 2 });
+    pool = createObservedTestPool(databaseUrl);
     db = createDbClient(pool);
   }, 30_000);
 
   afterAll(async () => {
     if (pool) {
-      await closeDbPool(pool);
+      await closeObservedTestPool(pool);
       pool = null;
       db = null;
     }
@@ -223,8 +240,8 @@ describeIntegration("DeployLite API PostgreSQL integration", () => {
       expect(canonical).toMatchObject({ deploymentId: a.id, projectId: fixture.projectId, hash: snapshotHash });
       const persisted = structuredClone(rows.rows);
       await app.close();
-      await closeDbPool(requirePool());
-      pool = createDbPool(databaseUrl, { max: 2 }); db = createDbClient(pool);
+      await closeObservedTestPool(requirePool());
+      pool = createObservedTestPool(databaseUrl); db = createDbClient(pool);
       app = await createPostgresApp(); // unavailable transport: completed replay must precede mutable dispatch availability.
       const replay = await second.replay(app);
       expect(replay.statusCode, replay.body).toBe(200);

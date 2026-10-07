@@ -497,5 +497,76 @@ class FinalAhrAcceptanceGuards(unittest.TestCase):
                 with self.assertRaises(H["PhysicalError"]):H["run_effect"](["docker","rm","--force",ID],self.grant,self.fake,closure)
         self.assertEqual(self.fake.calls,[])
 
+
+class HostedPreparationFailureGuards(unittest.TestCase):
+    setUp = ProspectivePhysicalGuards.setUp
+
+    def coordinator(self, events=None, engine=None):
+        journal = {"resources": [], "events": [] if events is None else events}
+        self.fake.run = lambda argv, **options: {"returncode": 0, "stdout": json.dumps(engine or {"id": self.grant["engineId"], "os": "linux"}), "stderr": ""}
+        coordinator = H["Coordinator"](self.grant, journal, Path("/unused-recorded-only"), self.fake)
+        coordinator.save = lambda: None
+        return coordinator, journal
+
+    def test_empty_owned_cleanup_observes_engine_without_authorizing_removal(self):
+        from unittest.mock import patch
+        coordinator, journal = self.coordinator()
+        failure = None
+        with patch.dict(H["Coordinator"].cleanup.__globals__, {"current_sources": lambda: self.grant["sourceHashes"]}):
+            try: coordinator.cleanup()
+            except H["PhysicalError"] as error: failure = error
+        self.assertIsNone(failure, "empty recorded scope must permit only the selected readonly engine observation")
+        self.assertEqual(journal["cleanupStatus"], "verified")
+        self.assertEqual(journal["cleanupClosure"]["ownedIds"], [])
+        self.assertEqual(journal["cleanupClosure"]["deadline"], journal["cleanupClosure"]["originalDeadline"])
+
+    def test_empty_cleanup_does_not_admit_effects_variants_missing_scope_or_renewed_deadline(self):
+        closure = {"kind": "cleanup", "deadline": 30, "originalDeadline": 30, "ownedIds": []}
+        for argv in (["docker", "rm", "--force", ID], ["docker", "pull", M["fixture"]["registry"]],
+                     ["docker", "info"], ["docker", "info", "--format", "foreign"]):
+            with self.subTest(argv=argv), self.assertRaises(H["PhysicalError"]):
+                H["run_effect"](argv, self.grant, self.fake, copy.deepcopy(closure))
+        selected = ["docker", "info", "--format", H["ENGINE_FORMAT"]]
+        for invalid in ({key: value for key, value in closure.items() if key != "ownedIds"},
+                        {**closure, "deadline": 31}, {**closure, "originalDeadline": 29}):
+            with self.subTest(closure=invalid), self.assertRaises(H["PhysicalError"]):
+                H["run_effect"](selected, self.grant, self.fake, invalid)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_empty_cleanup_keeps_unknown_for_foreign_engine_or_unsettled_intent(self):
+        from unittest.mock import patch
+        for events, engine in (([], {"id": "foreign-engine", "os": "linux"}),
+                               ([{"phase": "intent", "argv": ["docker", "network", "create", "recorded"]}], None)):
+            with self.subTest(events=events, engine=engine):
+                coordinator, journal = self.coordinator(events, engine)
+                with patch.dict(H["Coordinator"].cleanup.__globals__, {"current_sources": lambda: self.grant["sourceHashes"]}):
+                    with self.assertRaises(H["PhysicalError"]): coordinator.cleanup()
+                self.assertEqual(journal["cleanupStatus"], "UNKNOWN")
+
+    def test_preparation_retains_primary_failure_when_its_cleanup_also_fails(self):
+        from unittest.mock import patch
+        captured = []
+        class RecordedCoordinator:
+            def __init__(self, grant, journal, *args): self.journal = journal; captured.append(journal)
+            def save(self): pass
+            def command(self, *args): raise ValueError("recorded primary preparation failure")
+            def cleanup(self): raise H["PhysicalError"]("recorded cleanup failure")
+        self.fake.wall_ms = 0
+        self.fake.run = lambda argv, **options: {"returncode": 0, "stdout": json.dumps({"id": self.grant["engineId"], "os": "linux", "architecture": "amd64"}), "stderr": ""}
+        runner = Path("/unused-recorded-runner")
+        inputs = {**self.env, "DOCKER_CONFIG": str(runner / "deploylite-p2-empty-docker-config")}
+        replacements = {"validate_native_inputs": lambda env: runner, "preparation_root": lambda *args, **kwargs: runner / "deploylite-p2-docker-evidence",
+                        "private_directory": lambda *args, **kwargs: None, "inspect_config": lambda env: None,
+                        "current_sources": lambda: self.grant["sourceHashes"], "harness_contract": lambda: ([], []),
+                        "NativeBoundary": lambda: self.fake, "write_private": lambda *args, **kwargs: None, "Coordinator": RecordedCoordinator}
+        failure = None
+        with patch.dict(H["prepare"].__globals__, replacements):
+            try: H["prepare"](inputs)
+            except Exception as error: failure = error
+        self.assertIsInstance(failure, ValueError, "cleanup must not replace the original preparation exception")
+        self.assertEqual(str(failure), "recorded primary preparation failure")
+        self.assertEqual(captured[0]["primaryFailure"], {"type": "ValueError", "message": str(failure)})
+        self.assertEqual(captured[0]["cleanupFailure"], {"type": "PhysicalError", "message": "recorded cleanup failure"})
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

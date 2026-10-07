@@ -135,7 +135,8 @@ def run_effect(argv, grant, boundary, closure=None, max_seconds=None):
         require(closure.get("kind") == "cleanup", "postexpiry_recovery_unbound")
         require(grant.get("expiryClosures", {}).get("cleanupMaxMs") == 30000, "explicit_cleanup_permission_required")
         deadline = closure.get("deadline", 0)
-        require(now < deadline <= now + 30 and bool(closure.get("ownedIds")), "cleanup_deadline_or_scope_invalid")
+        empty_engine_read = closure.get("ownedIds") == [] and argv == ["docker", "info", "--format", ENGINE_FORMAT]
+        require(now < deadline <= now + 30 and (bool(closure.get("ownedIds")) or empty_engine_read), "cleanup_deadline_or_scope_invalid")
         require(closure.setdefault("originalDeadline", deadline) == deadline, "cleanup_deadline_cannot_renew")
         budget = deadline - now
     else:
@@ -297,6 +298,8 @@ def inspect_json(argv, grant, boundary, closure=None, deadline=None):
 ENGINE_FORMAT = '{"id":{{json .ID}},"os":{{json .OSType}},"architecture":{{json .Architecture}}}'
 IMAGE_FORMAT = ('{"id":{{json .Id}},"repoDigests":{{json .RepoDigests}},"os":{{json .Os}},"architecture":{{json .Architecture}},'
                 '"user":{{json .Config.User}},"command":{{json .Config.Cmd}},"health":{{json .Config.Healthcheck}}}')
+INPUT_IMAGE_FORMAT = ('{"id":{{json .Id}},"repoDigests":{{json .RepoDigests}},'
+                      '"os":{{json .Os}},"architecture":{{json .Architecture}}}')
 CONTAINER_FORMAT = ('{"id":{{json .Id}},"imageId":{{json .Image}},"imageRef":{{json .Config.Image}},'
                     '"owner":{{json (index .Config.Labels "com.deploylite.owner")}},'
                     '"projectId":{{json (index .Config.Labels "com.deploylite.project")}},'
@@ -621,7 +624,7 @@ def prepare(env):
     try:
         for ref in (MANIFEST["fixture"]["base"], MANIFEST["fixture"]["registry"]):
             coordinator.command(["docker", "pull", "--platform", "linux/amd64", ref])
-        registry = inspect_json(["docker", "image", "inspect", "--format", IMAGE_FORMAT, MANIFEST["fixture"]["registry"]], grant, boundary, deadline=coordinator.preparation_deadline)
+        registry = inspect_json(["docker", "image", "inspect", "--format", INPUT_IMAGE_FORMAT, MANIFEST["fixture"]["registry"]], grant, boundary, deadline=coordinator.preparation_deadline)
         validate_input_image(registry, MANIFEST["fixture"]["registry"], "linux/amd64")
         network = {"kind": "network", "name": "p2v-prep-" + run_id, "owner": grant["owner"], "projectId": grant["projectId"]}
         network["id"] = coordinator.command(["docker", "network", "create", "--internal", "--label", "com.deploylite.owner=" + grant["owner"], "--label", "com.deploylite.project=" + grant["projectId"], network["name"]])
@@ -664,11 +667,16 @@ def prepare(env):
         journal.update(status="PREPARED", finishedAtMs=boundary.wall_ms, harnessManifest={key: value for key, value in harness.items() if key != "credentialsFile"})
         coordinator.save()
         return {"status": "PREPARED", "grantId": grant["grantId"], "runtimeAcceptance": "NOT YET VERIFIED"}
-    except BaseException:
+    except BaseException as error:
         journal["status"] = "UNKNOWN"
+        journal["primaryFailure"] = {"type": type(error).__name__, "message": str(error)}
         coordinator.save()
-        # No second grace period: this uses the same durable cleanup closure if already begun.
-        coordinator.cleanup()
+        # No second grace period, and cleanup never replaces the primary failure.
+        try:
+            coordinator.cleanup()
+        except Exception as cleanup_error:
+            journal["cleanupFailure"] = {"type": type(cleanup_error).__name__, "message": str(cleanup_error)}
+            coordinator.save()
         raise
 
 
