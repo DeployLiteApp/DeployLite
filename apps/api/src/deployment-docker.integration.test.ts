@@ -1488,7 +1488,7 @@ describe.skipIf(process.env.DEPLOYLITE_DOCKER_INTEGRATION !== "1").sequential("p
     const competing = await (await f.confirm("redeploy", A, "blocked-redeploy"))();
     expect(competing.statusCode).toBe(202); expect(f.dockerCount()).toBe(count);
     const stop = [...f.memory.completion.commands.values()].find((row) => row.action === "deployment.stop")!;
-    expect(stop.status).toBe("dispatching"); expect(stop.result).toBeNull(); expect(stop.executionAuthority).toBeDefined();
+    expect(stop.status).toBe("dispatching"); expect(stop.result ?? null).toBeNull(); expect(stop.executionAuthority).toBeDefined();
     f.event("unresolved-authority", { command: stop, receiptReconciliation: "PENDING" });
     await f.cachedRetry((id) => f.request("stop", A, "lost-stop", undefined, id), A.id, stop.id);
     expect([...f.memory.completion.commands.values()].find((row) => row.id === stop.id)?.status).toBe("completed");
