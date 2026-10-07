@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 
-import { closeDbPool, createDbClient, createDbPool, DbAgentRepository, DbControlCommandRepository, DbDeploymentRepository, DbProjectRepository, type DeployLiteDb } from "@deploylite/db";
+import { closeDbPool, createDbClient, createDbPool, DbAgentRepository, DbAgentReplayStore, DbControlCommandRepository, DbDeploymentRepository, DbProjectRepository, type DeployLiteDb } from "@deploylite/db";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { dockerImageExecutionReceiptSchema, trustedPriorExecutionReceiptSchema, type TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
-import { buildApiApp, type DeploymentDispatcher } from "./app.js";
+import { buildApiApp, type DeploymentDispatcher, type DeploymentStopDispatcher } from "./app.js";
 
 const integrationEnabled = process.env.DEPLOYLITE_API_POSTGRES_INTEGRATION === "1";
 const describeIntegration = integrationEnabled ? describe : describe.skip;
@@ -286,13 +286,77 @@ describeIntegration("DeployLite API PostgreSQL integration", () => {
     }
   }, 30_000);
 
+  it("executes default PostgreSQL A/H/R with stable original confirmation and immutable history", async () => {
+    const f = await signedPostgresFixture();
+    try {
+      const { A, H } = await f.prepareAhr(), before = structuredClone([A, H]), pending = await f.rollback(A, H);
+      expect(pending.statusCode, pending.body).toBe(202); const R = pending.json().data.deploymentId;
+      const response = await f.rollback(A, H, pending.json().data.confirmationId); expect(response.statusCode, response.body).toBe(200);
+      const result = response.json().data.deployment;
+      expect(result).toMatchObject({ id: R, activeDeploymentId: A.id, sourceDeploymentId: H.id, snapshotOriginId: H.snapshotOriginId, snapshotHash: H.snapshotHash, status: "succeeded", executionReceipt: { containerId: f.docker.containers.get(`deploylite-active-${R}`)!.id, effectiveImageDigest: f.images.h.split("@")[1] } });
+      expect(f.bodies.find((body) => body.authority?.action === "deployment.rollback")).toMatchObject({ activeDeploymentId: A.id, sourceDeploymentId: H.id, authority: { sourceLease: { deploymentId: A.id } }, replacement: { prior: A.executionReceipt, effectiveImage: f.images.a } });
+      const repository = new DbDeploymentRepository(requireDb()); expect(await Promise.all(before.map((value) => repository.findById(value.id)))).toEqual(before);
+      expect((await repository.findByHash(H.snapshotHash))!).toMatchObject({ configRevision: "default", runtimeRevision: "default", secretRefs: [] });
+      const effects=f.counts(); expect((await f.rollback(A,H)).statusCode).toBe(200); expect(f.counts()).toEqual(effects);
+      const stop=await f.control("stop",result,"stop-R");expect(stop.statusCode,stop.body).toBe(200);expect(await repository.findById(R)).toEqual(result);
+    } finally { await f.app.close(); }
+  }, 30_000);
+  it.each(["INITIAL", "redeploy", "rollback", "Stop"] as const)("reconciles original cached %s receipt through signed receiver and default PostgreSQL repositories", async (kind) => {
+    const f = await signedPostgresFixture();
+    let trigger: string | undefined;
+    try {
+      let call: (requestId?: string) => ReturnType<typeof f.initial>, executionId="", commandId: string | null=null;
+      if (kind === "INITIAL") { f.lose("initial"); call=(requestId)=>f.initial("a","lost-A",requestId); }
+      else {
+        const { A,H }=kind==="rollback" ? await f.prepareAhr() : { A:(await f.initial()).json().data.deployment,H:null };
+        if(kind==="Stop") { const pending=await f.request("stop",A,"lost-stop"); commandId=pending.json().data.commandId; executionId=A.id; call=(id)=>f.request("stop",A,"lost-stop",pending.json().data.confirmationId,id);f.lose("stop"); }
+        else if(kind==="redeploy") { const pending=await f.request("redeploy",A,"lost-B");commandId=pending.json().data.commandId;call=(id)=>f.request("redeploy",A,"lost-B",pending.json().data.confirmationId,id);f.lose("redeploy"); }
+        else { const pending=await f.rollback(A,H);commandId=pending.json().data.commandId;executionId=pending.json().data.deploymentId;call=(id)=>f.rollback(A,H,pending.json().data.confirmationId,id);f.lose("rollback"); }
+      }
+      const unknown=await call("original-request");expect(unknown.statusCode,unknown.body).toBe(502);
+      if(kind==="INITIAL")executionId=(await requirePool().query("SELECT id FROM deployments WHERE project_id=$1",[f.projectId])).rows[0].id;
+      else if(kind==="redeploy")executionId=(await requirePool().query("SELECT result->>'deploymentId' AS id FROM control_commands WHERE id=$1",[commandId])).rows[0].id;
+      const previous = (await requirePool().query("SELECT status,execution_receipt,finished_at FROM deployments WHERE id=$1",[executionId])).rows;
+      expect(previous).toEqual([expect.objectContaining({status:kind==="Stop"?"succeeded":"running",finished_at:kind==="Stop"?expect.any(Date):null})]);
+      const before=f.counts(), cacheBefore=(await requirePool().query("SELECT * FROM agent_replay WHERE command_id=$1",[kind==="Stop"?commandId:`deploy_${executionId}`])).rows;
+      expect(cacheBefore).toHaveLength(1);expect(cacheBefore[0].status).toBe("completed");f.enableCache();
+      if(kind==="rollback") {
+        trigger=`pg_cache_fault_${randomUUID().replaceAll("-","")}`;
+        await requirePool().query(`CREATE FUNCTION ${trigger}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'cached terminal fault'; END $$`);
+        await requirePool().query(`CREATE TRIGGER ${trigger} BEFORE UPDATE ON control_commands FOR EACH ROW WHEN (OLD.id='${commandId}'::uuid) EXECUTE FUNCTION ${trigger}()`);
+        const failed=await call("storage-retry");expect(failed.statusCode,failed.body).toBe(500);expect(f.counts()).toEqual(before);
+        expect((await requirePool().query("SELECT status,execution_receipt,finished_at FROM deployments WHERE id=$1",[executionId])).rows).toEqual(previous);
+        await requirePool().query(`DROP TRIGGER ${trigger} ON control_commands`);await requirePool().query(`DROP FUNCTION ${trigger}()`);trigger=undefined;
+      }
+      const recovered=await call("fresh-retry-request");expect(recovered.statusCode,recovered.body).toBe(200);expect(f.counts()).toEqual(before);
+      expect((await requirePool().query("SELECT * FROM agent_replay WHERE command_id=$1",[kind==="Stop"?commandId:`deploy_${executionId}`])).rows).toEqual(cacheBefore);
+      const query=f.bodies.at(-1)!;expect(query.commandId).toBe(kind==="Stop"?commandId:`deploy_${executionId}`);
+      const logs=await new DbDeploymentRepository(requireDb()).listLogs(executionId);expect(logs).toEqual(expect.arrayContaining([expect.objectContaining({requestId:"fresh-retry-request",correlationId:query.correlationId})]));
+      const committed=(await requirePool().query("SELECT status,execution_receipt,finished_at FROM deployments WHERE id=$1",[executionId])).rows;
+      expect(committed[0]).toMatchObject({status:"succeeded",execution_receipt:expect.any(Object)});
+      expect((await call("completed-replay")).statusCode).toBe(200);expect(f.counts()).toEqual(before);
+      expect((await requirePool().query("SELECT status,execution_receipt,finished_at FROM deployments WHERE id=$1",[executionId])).rows).toEqual(committed);
+    } finally { if(trigger){await requirePool().query(`DROP TRIGGER IF EXISTS ${trigger} ON control_commands`);await requirePool().query(`DROP FUNCTION IF EXISTS ${trigger}()`);}await f.app.close(); }
+  }, 30_000);
+  it("retries the same queued unclaimed PostgreSQL rollback after claim contention without new reservation", async () => {
+    const f=await signedPostgresFixture(true);
+    try {
+      const {A,H}=await f.prepareAhr(); f.armClaimFault(); const pending=await f.rollback(A,H), R=pending.json().data.deploymentId, before=f.counts();
+      const failed=await f.rollback(A,H,pending.json().data.confirmationId);expect(failed.statusCode,failed.body).toBe(500);expect(f.counts()).toEqual(before);
+      const row=(await requirePool().query("SELECT status,result,execution_authority FROM control_commands WHERE id=$1",[pending.json().data.commandId])).rows[0];expect(row).toMatchObject({status:"eligible",execution_authority:null,result:{deploymentId:R}});
+      const retried=await f.rollback(A,H);expect(retried.statusCode,retried.body).toBe(200);expect(retried.json().data.deployment.id).toBe(R);
+      expect((await requirePool().query("SELECT id FROM deployments WHERE id=$1",[R])).rowCount).toBe(1);
+      expect((await requirePool().query("SELECT id FROM control_commands WHERE action='deployment.rollback' AND scope_key::jsonb->>0=$1",[f.projectId])).rowCount).toBe(1);
+    } finally {await f.app.close();}
+  },30_000);
+
 });
 
-async function createPostgresApp(deploymentDispatcher?: DeploymentDispatcher): Promise<FastifyInstance> {
+async function createPostgresApp(deploymentDispatcher?: DeploymentDispatcher, deploymentStopDispatcher?: DeploymentStopDispatcher, controlRollback?: DbControlCommandRepository): Promise<FastifyInstance> {
   return buildApiApp({
     authConfig: { cookieName: "dl_pg_session", cookieSecure: false, sessionTtlSeconds: 3600 },
     db: { pool: requirePool(), client: requireDb() },
-    state: deploymentDispatcher ? { deploymentDispatcher } : undefined,
+    state: deploymentDispatcher ? { deploymentDispatcher, ...(deploymentStopDispatcher ? { deploymentStopDispatcher } : {}), ...(controlRollback ? { controlRollback } : {}) } : undefined,
     env: { ...process.env, NODE_ENV: "test", DATABASE_URL: databaseUrl, DEPLOYLITE_AGENT_URL: undefined, DEPLOYLITE_AGENT_TRUST_KEY: undefined, DEPLOYLITE_AGENT_ID: undefined, DEPLOYLITE_BCRYPT_COST: "10", DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE: "true" }
   });
 }
@@ -355,6 +419,44 @@ async function postgresExecutionFixture() {
     await app.close();
     throw error;
   }
+}
+
+async function signedPostgresFixture(claimFault=false) {
+  const [{AuthenticatedAgentCommandReceiver,DigestDeploymentDispatcher},{InMemoryProtocolTransport},{AuthenticatedAgentDeploymentTransport},{createPromotionDockerRunner}]=await Promise.all([import("@deploylite/agent"),import("@deploylite/domain"),import("./agent-transport.js"),import("./testing/promotion-docker-runner.js")]);
+  const projectId=randomUUID(),agentId=randomUUID(),docker=createPromotionDockerRunner(),images={a:`registry.example.com/pg/app@sha256:${"e".repeat(64)}`,h:`registry.example.com/pg/app@sha256:${"f".repeat(64)}`};
+  // Decorate only synthetic image observations so H and A have distinct config IDs, just as the real two-image Docker lane requires.
+  const runner={run:async (...args:Parameters<typeof docker.runner.run>)=>{const result=await docker.runner.run(...args),argv=args[0];
+    if(argv[1]==="image")return {...result,stdout:JSON.stringify(`sha256:${createHash("sha256").update(argv.at(-1)!).digest("hex")}`)};
+    if(argv[1]==="container" && result.exitCode===0){const value=JSON.parse(result.stdout);if(value.imageId)value.imageId=`sha256:${createHash("sha256").update(value.effectiveImage).digest("hex")}`;return {...result,stdout:JSON.stringify(value)};}return result;}};
+  let fault=false;const controls=new DbControlCommandRepository(requireDb(),async(stage)=>{if(fault&&stage==="authority-claimed"){fault=false;throw new Error("queued rollback claim fault");}});
+  const dispatcher=new DigestDeploymentDispatcher({protocol:new InMemoryProtocolTransport({clock:{now:Date.now},leasePolicy:{ttlMs:180_000},retryPolicy:{maxAttempts:1,deadlineMs:0,backoffMs:()=>0},capabilities:["deploy.execute"]}),runner,owner:"pg-recording-owner",hostPort:49170,temporaryHostPort:49171,containerPort:8080,trustedHosts:["registry.example.com"],promotionPolicy:{maxOutageMs:30_000,maxRecoveryMs:60_000}});
+  const nativeCache=new DbAgentReplayStore(requireDb(),`pg-receiver-${projectId}`), counts={dispatch:0,claim:0,wait:0,release:0}, bodies:any[]=[];
+  let loss:string|undefined, cacheAvailable=true, dropped=false;
+  const replayStore={durable:true as const,lookup:async(...args:Parameters<typeof nativeCache.lookup>)=>cacheAvailable?nativeCache.lookup(...args):null,claim:async(...args:Parameters<typeof nativeCache.claim>)=>{counts.claim++;return nativeCache.claim(...args);},wait:async(...args:Parameters<typeof nativeCache.wait>)=>{counts.wait++;return nativeCache.wait(...args);},complete:nativeCache.complete.bind(nativeCache),release:async(...args:Parameters<typeof nativeCache.release>)=>{counts.release++;return nativeCache.release(...args);}};
+  const receiver=new AuthenticatedAgentCommandReceiver({agentId,trustKey:"pg-source-only-trust-key-123456789",capabilities:["deploy.execute","deployment.stop"],dispatcher,stopDispatcher:dispatcher,replayStore,authorityValidator:controls});
+  const transport=new AuthenticatedAgentDeploymentTransport({endpoint:"https://agent.fixture.test",agentId,trustKey:"pg-source-only-trust-key-123456789",fetch:async(url,init)=>{
+    const signature=String((init?.headers as Record<string,string>)["x-deploylite-signature"]);
+    if(String(url).endsWith("/capabilities")){expect(receiver.verifyRequest("GET /capabilities",signature)).toBe(true);return new Response(JSON.stringify({schemaVersion:1,agentId,capabilities:receiver.capabilities,protocolVersions:[1,2]}),{headers:{"x-deploylite-request-signature":signature}});}
+    const body=JSON.parse(String(init?.body));bodies.push(body);
+    if(String(url).endsWith("/receipt"))return new Response(JSON.stringify(await receiver.readReceipt(body,signature,init?.signal??undefined)));
+    counts.dispatch++;const receipt=await receiver.receive(body,signature,init?.signal??undefined);
+    const kind=body.action==="deployment.stop"?"stop":body.authority?.action==="deployment.rollback"?"rollback":body.schemaVersion===2?"redeploy":"initial";
+    if(!dropped&&loss===kind){dropped=true;throw new Error("drop original cached terminal reply once");}return new Response(JSON.stringify(receipt));
+  }});
+  const app=await createPostgresApp(transport,transport,controls);
+  try {
+    if((await app.inject({method:"GET",url:"/api/v1/bootstrap/status"})).json().data.setupRequired)expect((await app.inject({method:"POST",url:"/api/v1/bootstrap/initial-admin",headers:contentHeaders,payload:{email:"Admin@Example.TEST",password:adminPassword}})).statusCode).toBe(200);
+    const login=await app.inject({method:"POST",url:"/api/v1/auth/login",headers:contentHeaders,payload:{email:"admin@example.test",password:adminPassword}});expect(login.statusCode).toBe(200);const cookie=login.headers["set-cookie"] as string,actor=login.json().data.user.id;
+    await new DbProjectRepository(requireDb()).save({id:projectId,name:"AHR PostgreSQL fixture",repoUrl:"https://example.test/pg",defaultBranch:"main",buildCommand:null,runCommand:null,port:8080,description:null,imageTag:null});
+    await new DbAgentRepository(requireDb()).save({id:agentId,name:"Recording CLI agent",endpoint:"https://agent.fixture.test",status:"online",lastHeartbeatAt:new Date().toISOString(),resourceSnapshot:null});
+    for(const action of ["deployment.redeploy","deployment.stop","deployment.rollback"])await requirePool().query("INSERT INTO control_grants (actor_user_id,action,scope_kind,scope_key) VALUES ($1,$2,'platform','platform') ON CONFLICT (actor_user_id,action,scope_kind,scope_key) DO NOTHING",[actor,action]);
+    const initial=(flavor:"a"|"h"="a",key="initial-A",id: string=randomUUID())=>app.inject({method:"POST",url:`/api/v1/projects/${projectId}/deployments`,headers:{cookie,"x-deployment-idempotency-key":key,"x-request-id":id},payload:{imageReference:images[flavor],agentId,commitSha:"abcdef1",configRevision:"default",runtimeRevision:"default"}});
+    const request=(action:"redeploy"|"stop",A:any,key:string,confirmation?:string,id: string=randomUUID())=>app.inject({method:"POST",url:`/api/v1/deployments/${A.id}/${action}`,headers:{cookie,"x-control-idempotency-key":key,"x-request-id":id,...(confirmation?{"x-control-confirmation-id":confirmation}:{})},...(action==="redeploy"?{payload:{snapshotHash:A.snapshotHash}}:{})});
+    const control=async(action:"redeploy"|"stop",A:any,key:string)=>{const pending=await request(action,A,key);expect(pending.statusCode,pending.body).toBe(202);return request(action,A,key,pending.json().data.confirmationId);};
+    const prepareAhr=async()=>{const historical=await initial("h","initial-H");expect(historical.statusCode,historical.body).toBe(200);const H=historical.json().data.deployment;expect((await control("stop",H,"stop-H")).statusCode).toBe(200);const current=await initial();expect(current.statusCode,current.body).toBe(200);return {A:current.json().data.deployment,H};};
+    const rollback=(A:any,H:any,confirmation?:string,id: string=randomUUID())=>app.inject({method:"POST",url:`/api/v1/deployments/${A.id}/rollback`,headers:{cookie,"x-control-idempotency-key":"A-H-R","x-request-id":id,...(confirmation?{"x-control-confirmation-id":confirmation}:{})},payload:{historicalDeploymentId:H.id,snapshotHash:H.snapshotHash}});
+    return {app,cookie,projectId,images,docker,bodies,initial,request,control,prepareAhr,rollback,armClaimFault:()=>{fault=claimFault;},counts:()=>({docker:docker.calls.length,...counts}),lose:(kind:string)=>{loss=kind;cacheAvailable=false;},enableCache:()=>{cacheAvailable=true;}};
+  } catch(error){await app.close();throw error;}
 }
 
 async function confirmedPostgresRedeploy(app: FastifyInstance, cookie: string, sourceId: string, snapshotHash: string) {

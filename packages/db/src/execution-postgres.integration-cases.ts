@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createDeploymentSnapshot, createSourceIntent, deploymentRedeployCommandResultSchema, type Deployment, type DeploymentExecutionAuthorityV1, type TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
+import { createDeploymentSnapshot, createSourceIntent, deploymentRedeployCommandResultSchema, deploymentRollbackCommandResultSchema, type Deployment, type DeploymentExecutionAuthorityV1, type TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
 import { createConfirmation, createControlCommand, type ControlCommand, type ExecutionCompletionInput } from "@deploylite/domain";
 import { createDbClient, createDbPool } from "./client.js";
 import { DbDeploymentRepository } from "./repositories/deployment-data.js";
@@ -163,6 +163,55 @@ async function waitForCommandLock(application: string) {
     await yieldToLoop();
   } while (Date.now() < deadline);
   throw new Error("Stop completion did not reach its controlled command-row barrier");
+}
+
+// Final A/H/R acceptance fixture: real SQL, synthetic observations; no Docker or listener.
+async function rollbackFixture() {
+  const seedH = await seed(false), H_id = seedH.input.executionId;
+  const imageH = `registry.example.com/app@sha256:${"f".repeat(64)}`, imageA = `registry.example.com/app@sha256:${"e".repeat(64)}`;
+  // Fresh fixture rows have not executed; configure them before binding canonical snapshots.
+  await pool.query("DELETE FROM deployments WHERE id=$1", [H_id]);
+  const makeSnapshot = (id: string, image: string) => createDeploymentSnapshot({ schemaVersion: 1, deploymentId: id,
+    projectId: seedH.input.projectId, agentId: seedH.input.runtimeHost, commitSha: "abcdef1",
+    source: createSourceIntent({ sourceMode: "image", requestedReference: image }, { policyVersion: "p1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }),
+    configRevision: "default", runtimeRevision: "default", runtimePort: 8080, secretRefs: [], policyVersion: "p1" }, { sha256: (bytes) => createHash("sha256").update(bytes).digest("hex") });
+  const makeInitial = async (id: string, image: string) => {
+    const snapshot = makeSnapshot(id, image), physical = createHash("sha256").update(`synthetic-${id}`).digest("hex");
+    const proof: TrustedPriorExecutionReceiptV1 = { ...seedH.proof(id), snapshotOriginId: id, snapshotHash: snapshot.hash,
+      effectiveImageDigest: image.split("@")[1]!, containerId: physical, hostPort: 49170, containerPort: 8080 };
+    await deployments().save({ ...seedH.deployment(id), snapshotOriginId: id, snapshotHash: snapshot.hash });
+    await deployments().saveSnapshot(snapshot);
+    const input: ExecutionCompletionInput = { ...seedH.input, executionId: id, snapshotOriginId: id, snapshotHash: snapshot.hash, effectiveImageDigest: proof.effectiveImageDigest, proof };
+    expect((await completion().completeExecution(input)).kind).toBe("committed");
+    return { deployment: (await deployments().findById(id))!, snapshot, input };
+  };
+  const H = await makeInitial(H_id, imageH), A = await makeInitial(randomUUID(), imageA);
+  const tentative = (id = randomUUID(), key = randomUUID(), actorId = seedH.actorId) => {
+    const value = createControlCommand({ actorId, action: "deployment.rollback", scope: { kind: "deployment", projectId: seedH.input.projectId, deploymentId: A.deployment.id },
+      input: { actorId, projectId: seedH.input.projectId, activeDeploymentId: A.deployment.id, sourceDeploymentId: H.deployment.id, deploymentId: id, snapshotHash: H.snapshot.hash }, idempotencyKey: key, correlationId: randomUUID() });
+    return { ...value, result: deploymentRollbackCommandResultSchema.parse({ commandId: value.id, action: "deployment.rollback", projectId: seedH.input.projectId, activeDeploymentId: A.deployment.id, sourceDeploymentId: H.deployment.id, deploymentId: id, snapshotHash: H.snapshot.hash, status: "pending_confirmation", correlationId: value.correlationId, reason: null }) };
+  };
+  const reserve = async (value = tentative()) => {
+    const { command } = await controls().resolve(value), confirmation = createConfirmation({ command, classification: "destructive" });
+    await controls().bind(confirmation);
+    const result = deploymentRollbackCommandResultSchema.parse(command.result);
+    const deployment: Deployment = { ...seedH.deployment(result.deploymentId, H.deployment.id), snapshotOriginId: H.snapshot.deploymentId,
+      snapshotHash: H.snapshot.hash, activeDeploymentId: A.deployment.id, status: "queued" };
+    return { command, confirmation, deployment };
+  };
+  const admit = async (entry: Awaited<ReturnType<typeof reserve>>) => {
+    const accepted = await controls().executeConfirmedDeploymentRollback({ ...entry, requestId: randomUUID() });
+    expect(accepted.accepted).toBe(true); return { ...entry, command: accepted.command };
+  };
+  const run = async (entry: Awaited<ReturnType<typeof reserve>>) => {
+    const claim = await controls().claimDeploymentRollback(entry.command), authority = requireAuthority(claim);
+    await deployments().save({ ...entry.deployment, status: "running" });
+    const proof = { ...H.input.proof!, deploymentId: entry.deployment.id, candidateId: `candidate-${entry.deployment.id}`, container: `deploylite-${entry.deployment.id}`, containerId: createHash("sha256").update(`R-${entry.deployment.id}`).digest("hex") };
+    const input: ExecutionCompletionInput = { ...H.input, commandId: entry.command.id, authority, executionId: entry.deployment.id, activeDeploymentId: A.deployment.id, sourceExecutionId: H.deployment.id, proof,
+      commandResult: deploymentRollbackCommandResultSchema.parse({ ...claim.command.result, status: "completed" }) };
+    return { claim, input };
+  };
+  return { H, A, actorId: seedH.actorId, projectId: seedH.input.projectId, tentative, reserve, admit, run };
 }
 
 suite("atomic execution PostgreSQL integration", () => {
@@ -593,9 +642,112 @@ suite("atomic execution PostgreSQL integration", () => {
     expect((await pool.query("SELECT d.status AS execution_status,d.execution_receipt,c.status AS command_status FROM deployments d JOIN control_commands c ON c.id=$1 WHERE d.id=$2", [entry.command.id, entry.deployment.id])).rows).toEqual([{ execution_status: "succeeded", execution_receipt: input.proof, command_status: "completed" }]);
   }, 30_000);
 
+  it("converges concurrent A/H/R reservation and original confirmation across PostgreSQL clients", async () => {
+    const f = await rollbackFixture(), key = randomUUID(), one = f.tentative(randomUUID(), key), two = f.tentative(randomUUID(), key);
+    const [a, b] = await Promise.all([controls().resolve(one), controls().resolve(two)]);
+    expect(a.command).toEqual(b.command); expect([one.result.deploymentId,two.result.deploymentId]).toContain(a.command.result?.deploymentId);
+    const confirmation = createConfirmation({ command: a.command, classification: "destructive" }); await controls().bind(confirmation);
+    expect(await controls().resolveRollbackConfirmation(b.command)).toEqual(confirmation);
+    await expect(controls().findByIdempotency(f.actorId, key, "deployment.stop")).resolves.toBeNull();
+    expect((await pool.query("SELECT id FROM control_commands WHERE actor_user_id=$1 AND idempotency_key=$2", [f.actorId, key])).rowCount).toBe(1);
+  });
+  it("resumes a queued unclaimed rollback after competing project authority completes", async () => {
+    const f = await rollbackFixture(), entry = await f.admit(await f.reserve());
+    const value = createControlCommand({ actorId: f.actorId, action: "deployment.stop", scope: { kind: "deployment", projectId: f.projectId, deploymentId: f.A.deployment.id }, input: {}, idempotencyKey: randomUUID(), correlationId: randomUUID() });
+    await controls().resolve(value); const confirmation = createConfirmation({ command: value, classification: "destructive" }); await controls().bind(confirmation);
+    const admitted = await controls().executeConfirmedDeploymentStop({ command: value, confirmation, requestId: randomUUID() });
+    const current = await controls().claimDeploymentStop(admitted.command); requireAuthority(current);
+    expect((await controls().claimDeploymentRollback(entry.command)).claimed).toBe(false);
+    expect(await deployments().findById(entry.deployment.id)).toMatchObject({ status: "queued", finishedAt: null });
+    await controls().completeDeploymentStop(current.command, { commandId: current.command.id, action: "deployment.stop", projectId: f.projectId, deploymentId: f.A.deployment.id, status: "completed", correlationId: current.command.correlationId, reason: "stopped" });
+    expect((await controls().claimDeploymentRollback(entry.command)).claimed).toBe(true);
+  });
+  it("resumes the same queued rollback after a transactional claim fault", async () => {
+    const f = await rollbackFixture(), entry = await f.admit(await f.reserve());
+    const faulty = new DbControlCommandRepository(createDbClient(pool), async (stage) => { if (stage === "authority-claimed") throw new Error("rollback claim barrier fault"); });
+    await expect(faulty.claimDeploymentRollback(entry.command)).rejects.toThrow("rollback claim barrier fault");
+    const before = (await pool.query("SELECT status,result,execution_authority FROM control_commands WHERE id=$1", [entry.command.id])).rows[0];
+    expect(before).toMatchObject({ status: "eligible", execution_authority: null, result: { deploymentId: entry.deployment.id } });
+    expect((await controls().claimDeploymentRollback(entry.command)).claimed).toBe(true);
+    expect((await pool.query("SELECT id FROM deployments WHERE id=$1", [entry.deployment.id])).rowCount).toBe(1);
+  });
+  it("serializes rollback and Stop authority on active A across PostgreSQL clients", async () => {
+    const f = await rollbackFixture(), entry = await f.admit(await f.reserve()), locked = await pool.connect();
+    const application = `p2_rollback_${randomUUID()}`, contender = createDbPool(databaseUrl, { max: 1, application_name: application, statement_timeout: 5_000 });
+    let claiming: ReturnType<DbControlCommandRepository["claimDeploymentRollback"]> | undefined;
+    try {
+      await locked.query("BEGIN"); await locked.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`deploylite:execution:${f.projectId}`]);
+      claiming = new DbControlCommandRepository(createDbClient(contender)).claimDeploymentRollback(entry.command);
+      await waitForProjectLock(application); expect((await pool.query("SELECT execution_authority FROM control_commands WHERE id=$1", [entry.command.id])).rows).toEqual([{ execution_authority: null }]);
+      await locked.query("COMMIT"); const claimed = await claiming; expect(requireAuthority(claimed).sourceLease?.deploymentId).toBe(f.A.deployment.id);
+      const stopCommand = createControlCommand({ actorId: f.actorId, action: "deployment.stop", scope: { kind: "deployment", projectId: f.projectId, deploymentId: f.A.deployment.id }, input: {}, idempotencyKey: randomUUID(), correlationId: randomUUID() });
+      const second = new DbControlCommandRepository(createDbClient(contender)); await second.resolve(stopCommand);
+      const confirmation = createConfirmation({ command: stopCommand, classification: "destructive" }); await second.bind(confirmation);
+      const stop = await second.executeConfirmedDeploymentStop({ command: stopCommand, confirmation, requestId: randomUUID() });
+      expect((await second.claimDeploymentStop(stop.command)).claimed).toBe(false);
+      expect((await pool.query("SELECT status,execution_authority FROM control_commands WHERE id=$1", [stop.command.id])).rows).toEqual([{ status: "eligible", execution_authority: null }]);
+    } finally { await locked.query("ROLLBACK"); locked.release(); await Promise.allSettled([claiming]); await contender.end(); }
+  }, 30_000);
+  it("commits R proof and rollback result with H lineage and independent active A atomically", async () => {
+    const f = await rollbackFixture(), entry = await f.admit(await f.reserve()), { input } = await f.run(entry), history = [f.A.deployment, f.H.deployment];
+    expect((await completion().completeExecution(input)).kind).toBe("committed");
+    expect((await completion().completeExecution(input)).kind).toBe("replayed");
+    expect(await deployments().findById(input.executionId)).toMatchObject({ status: "succeeded", sourceDeploymentId: f.H.deployment.id, activeDeploymentId: f.A.deployment.id, snapshotOriginId: f.H.snapshot.deploymentId, executionReceipt: input.proof });
+    expect(await Promise.all(history.map((d) => deployments().findById(d.id)))).toEqual(history);
+    expect((await pool.query("SELECT status,result FROM control_commands WHERE id=$1", [entry.command.id])).rows).toEqual([{ status: "completed", result: input.commandResult }]);
+  });
+  it("rolls back an A/H/R terminal trigger fault and completes the identical cached receipt once", async () => {
+    const f = await rollbackFixture(), entry = await f.admit(await f.reserve()), { input } = await f.run(entry), cache = new DbAgentReplayStore(createDbClient(pool), "ahr-original");
+    const lease = input.authority!.executionLease, claimed = await cache.claim(entry.command.id, "original-fingerprint", lease);
+    await cache.complete(entry.command.id, { claimToken: claimed.claimToken!, fingerprint: "original-fingerprint", receipt: { input } });
+    const trigger = `p2_ahr_fault_${randomUUID().replaceAll("-", "")}`;
+    await pool.query(`CREATE FUNCTION ${trigger}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'AHR terminal fault'; END $$`);
+    await pool.query(`CREATE TRIGGER ${trigger} BEFORE UPDATE ON control_commands FOR EACH ROW WHEN (OLD.id='${entry.command.id}'::uuid) EXECUTE FUNCTION ${trigger}()`);
+    try { await expect(completion().completeExecution(input)).rejects.toMatchObject({ cause: { message: "AHR terminal fault", code: "P0001" } }); expect(await deployments().findById(input.executionId)).toMatchObject({ status: "running", finishedAt: null }); }
+    finally { await pool.query(`DROP TRIGGER ${trigger} ON control_commands`); await pool.query(`DROP FUNCTION ${trigger}()`); }
+    const cached = await cache.lookup(entry.command.id, "original-fingerprint"); expect(cached).toEqual({ input });
+    expect((await completion().completeExecution(cached!.input as ExecutionCompletionInput)).kind).toBe("committed"); expect((await completion().completeExecution(input)).kind).toBe("replayed");
+  }, 30_000);
+  it("reads original execute and Stop cached receipts after reopening the PostgreSQL client without claims", async () => {
+    const f = await rollbackFixture(), one = new DbAgentReplayStore(createDbClient(pool), "original-owner"), lease = { leaseId: randomUUID(), deploymentId: f.A.deployment.id, fence: 1, expiresAt: Date.now()+120_000 };
+    const ids = [randomUUID(), randomUUID()];
+    for (const id of ids) { const claim = await one.claim(id, `fp-${id}`, lease); await one.complete(id, { claimToken: claim.claimToken!, fingerprint: `fp-${id}`, receipt: { commandId: id, correlationId: "original", proof: f.A.input.proof } }); }
+    const freshPool = createDbPool(databaseUrl, { max: 1 });
+    try {
+      const fresh = new DbAgentReplayStore(createDbClient(freshPool), "fresh-reader"), before = (await pool.query("SELECT * FROM agent_replay WHERE command_id=ANY($1::text[]) ORDER BY command_id", [ids])).rows;
+      for (const id of ids) expect(await fresh.lookup(id, `fp-${id}`)).toMatchObject({ commandId: id, correlationId: "original", proof: f.A.input.proof });
+      expect((await pool.query("SELECT * FROM agent_replay WHERE command_id=ANY($1::text[]) ORDER BY command_id", [ids])).rows).toEqual(before);
+      await expect(fresh.lookup(ids[0]!, "changed")).rejects.toThrow();
+      await pool.query("UPDATE agent_replay SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE command_id=$1", [ids[0]]); expect(await fresh.lookup(ids[0]!, `fp-${ids[0]}`)).toBeNull();
+    } finally { await freshPool.end(); }
+  });
+  it("rolls back cancellation observed during staged rollback publication and preserves durable equal replay", async () => {
+    const f = await rollbackFixture(), entry = await f.admit(await f.reserve()), { input } = await f.run(entry), controller = new AbortController();
+    const key = `p2:cancel:${entry.command.id}`, trigger = `p2_cancel_${randomUUID().replaceAll("-", "")}`, locked = await pool.connect();
+    const application = `p2_cancel_${randomUUID()}`, writer = createDbPool(databaseUrl, { max: 1, application_name: application, statement_timeout: 5_000 });
+    let writing: Promise<unknown> | undefined;
+    try {
+      await locked.query("BEGIN"); await locked.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [key]);
+      await pool.query(`CREATE FUNCTION ${trigger}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(hashtextextended('${key}',0)); RETURN NEW; END $$`);
+      await pool.query(`CREATE TRIGGER ${trigger} AFTER UPDATE ON deployments FOR EACH ROW WHEN (OLD.id='${input.executionId}'::uuid) EXECUTE FUNCTION ${trigger}()`);
+      writing = new DbDeploymentExecutionRepository(createDbClient(writer)).completeExecution(input, controller.signal);
+      const deadline=Date.now()+5_000; let blocked=false;
+      do { blocked=Boolean((await pool.query("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock') AS blocked", [application])).rows[0].blocked); if (!blocked) await yieldToLoop(); } while (!blocked && Date.now()<deadline);
+      expect(blocked).toBe(true); controller.abort(new Error("request aborted during staged R write")); await locked.query("COMMIT");
+      await expect(writing).rejects.toThrow("request aborted"); expect(await deployments().findById(input.executionId)).toMatchObject({ status:"running",finishedAt:null });
+      expect((await pool.query("SELECT status FROM control_commands WHERE id=$1",[entry.command.id])).rows).toEqual([{status:"dispatching"}]);
+    } finally { await locked.query("ROLLBACK"); locked.release(); await Promise.allSettled([writing]); await writer.end(); await pool.query(`DROP TRIGGER IF EXISTS ${trigger} ON deployments`); await pool.query(`DROP FUNCTION IF EXISTS ${trigger}()`); }
+    expect((await completion().completeExecution(input)).kind).toBe("committed"); expect((await completion().completeExecution(input, controller.signal)).kind).toBe("replayed");
+  }, 30_000);
+
   it.skipIf(!process.env.DEPLOYLITE_PG_RESTART_HELPER)("retains proof, command and canonical origin across an owned server restart", async () => {
     const { input, snapshot } = await seed();
     expect((await completion().completeExecution(input)).kind).toBe("committed");
+    const ahr = await rollbackFixture(), entryR = await ahr.admit(await ahr.reserve()), terminalR = await ahr.run(entryR);
+    expect((await completion().completeExecution(terminalR.input)).kind).toBe("committed");
+    const cache = new DbAgentReplayStore(createDbClient(pool), "restart-original"), cacheId = `deploy_${entryR.deployment.id}`;
+    const cacheClaim = await cache.claim(cacheId, "restart-fingerprint", terminalR.input.authority!.executionLease);
+    await cache.complete(cacheId, { fingerprint: "restart-fingerprint", claimToken: cacheClaim.claimToken!, receipt: { input: terminalR.input } });
     const fixture = await authorityFixture();
     const replacement = await admitAuthorityCommand(fixture, "deployment.redeploy");
     if (!replacement.deployment) throw new Error("Expected execution fixture");
@@ -614,6 +766,9 @@ suite("atomic execution PostgreSQL integration", () => {
     await maintenance.connect();
     pool = createDbPool(databaseUrl, { max: 3 });
     expect((await completion().completeExecution(input)).kind).toBe("replayed");
+    expect((await completion().completeExecution(terminalR.input)).kind).toBe("replayed");
+    expect(await new DbAgentReplayStore(createDbClient(pool), "restart-reader").lookup(cacheId, "restart-fingerprint")).toEqual({ input: terminalR.input });
+    expect(await deployments().findById(entryR.deployment.id)).toMatchObject({ activeDeploymentId: ahr.A.deployment.id, sourceDeploymentId: ahr.H.deployment.id, executionReceipt: terminalR.input.proof });
     await expect(deployments().findByHash(input.snapshotHash)).resolves.toEqual(snapshot);
     await expect(deployments().findById(input.executionId)).resolves.toMatchObject({ status: "succeeded", executionReceipt: input.proof });
     expect((await pool.query("SELECT execution_authority FROM control_commands WHERE id=$1", [stop.command.id])).rows).toEqual([{ execution_authority: current }]);
