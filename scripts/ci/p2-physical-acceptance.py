@@ -713,3 +713,12 @@ def verify(env):
                 "actualRepoDigests": {flavor: value["reference"] for flavor, value in journal["derivedImages"].items()}}
     write_private(root / "verified.json", evidence)
     return {"status": "verified", "physicalCases": len(MANIFEST["suites"]["docker"]["physicalCases"]), "mockGuards": len(MANIFEST["suites"]["docker"]["guardCases"])}
+
+
+if __name__ == "__main__":
+    try:
+        require(len(sys.argv) == 2 and sys.argv[1] in ("prepare", "cleanup", "verify"), "explicit_action_required")
+        print(json.dumps(globals()[sys.argv[1]](dict(os.environ))))
+    except (PhysicalError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        print(json.dumps({"status": "not_verified", "reason": str(error)}))
+        sys.exit(1)

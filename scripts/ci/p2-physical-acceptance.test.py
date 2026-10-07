@@ -222,6 +222,24 @@ class ProspectivePhysicalGuards(unittest.TestCase):
         self.assertEqual(H["validate_owned_resource"](self.resource(),self.resource(),self.grant["bounds"]),self.resource())
     def test_characterizes_full_unique_73_title_report_without_physical_credit(self):
         self.assertTrue(self.verify(self.report()))
+    def test_workflow_declares_one_native_owned_job_explicit_scope_and_always_cleanup(self):
+        workflow=(Path(__file__).parents[2]/".github/workflows/baseline.yml").read_text()
+        self.assertIn("  p2-docker-acceptance:\n",workflow)
+        job=workflow.split("  p2-docker-acceptance:\n",1)[1].split("  baseline-gate:\n",1)[0]
+        self.assertIn("runs-on: ubuntu-24.04",job)
+        self.assertIn("DEPLOYLITE_DOCKER_RUNTIME_GRANT: P2_PHYSICAL_DOCKER_APPROVED",job)
+        self.assertIn("p2-physical-acceptance.py prepare",job)
+        self.assertIn("p2-physical-acceptance.py cleanup",job)
+        self.assertIn("p2-physical-acceptance.py verify",job)
+        self.assertIn("if: always()",job)
+        self.assertNotIn("repository variable",job)
+    def test_new_job_failure_or_skip_cannot_be_reported_as_a_passed_baseline_gate(self):
+        workflow=(Path(__file__).parents[2]/".github/workflows/baseline.yml").read_text()
+        gate=workflow.split("  baseline-gate:\n",1)[1]
+        self.assertIn("p2-docker-acceptance",gate.split("    steps:",1)[0])
+        self.assertIn("needs.p2-docker-acceptance.result == 'success'",gate)
+        self.assertIn("--check p2-docker-acceptance:pass",gate)
+        self.assertIn("success:success:success:success",gate)
     def test_neutral_recorded_boundaries_do_not_construct_a_native_process(self):
         with self.assertRaises(H["PhysicalError"]):
             H["run_effect"](["docker","info"],self.grant,None)
