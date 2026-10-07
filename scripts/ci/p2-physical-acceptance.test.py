@@ -222,6 +222,24 @@ class ProspectivePhysicalGuards(unittest.TestCase):
         self.assertEqual(H["validate_owned_resource"](self.resource(),self.resource(),self.grant["bounds"]),self.resource())
     def test_characterizes_full_unique_73_title_report_without_physical_credit(self):
         self.assertTrue(self.verify(self.report()))
+    def test_workflow_declares_one_native_owned_job_explicit_scope_and_always_cleanup(self):
+        workflow=(Path(__file__).parents[2]/".github/workflows/baseline.yml").read_text()
+        self.assertIn("  p2-docker-acceptance:\n",workflow)
+        job=workflow.split("  p2-docker-acceptance:\n",1)[1].split("  baseline-gate:\n",1)[0]
+        self.assertIn("runs-on: ubuntu-24.04",job)
+        self.assertIn("DEPLOYLITE_DOCKER_RUNTIME_GRANT: P2_PHYSICAL_DOCKER_APPROVED",job)
+        self.assertIn("p2-physical-acceptance.py prepare",job)
+        self.assertIn("p2-physical-acceptance.py cleanup",job)
+        self.assertIn("p2-physical-acceptance.py verify",job)
+        self.assertIn("if: always()",job)
+        self.assertNotIn("repository variable",job)
+    def test_new_job_failure_or_skip_cannot_be_reported_as_a_passed_baseline_gate(self):
+        workflow=(Path(__file__).parents[2]/".github/workflows/baseline.yml").read_text()
+        gate=workflow.split("  baseline-gate:\n",1)[1]
+        self.assertIn("p2-docker-acceptance",gate.split("    steps:",1)[0])
+        self.assertIn("needs.p2-docker-acceptance.result == 'success'",gate)
+        self.assertIn("--check p2-docker-acceptance:pass",gate)
+        self.assertIn("success:success:success:success",gate)
     def test_neutral_recorded_boundaries_do_not_construct_a_native_process(self):
         with self.assertRaises(H["PhysicalError"]):
             H["run_effect"](["docker","info"],self.grant,None)
@@ -478,6 +496,154 @@ class FinalAhrAcceptanceGuards(unittest.TestCase):
             with self.subTest(closure=closure):
                 with self.assertRaises(H["PhysicalError"]):H["run_effect"](["docker","rm","--force",ID],self.grant,self.fake,closure)
         self.assertEqual(self.fake.calls,[])
+
+
+class HostedPreparationFailureGuards(unittest.TestCase):
+    setUp = ProspectivePhysicalGuards.setUp
+
+    def coordinator(self, events=None, engine=None):
+        journal = {"resources": [], "events": [] if events is None else events}
+        self.fake.run = lambda argv, **options: {"returncode": 0, "stdout": json.dumps(engine or {"id": self.grant["engineId"], "os": "linux"}), "stderr": ""}
+        coordinator = H["Coordinator"](self.grant, journal, Path("/unused-recorded-only"), self.fake)
+        coordinator.save = lambda: None
+        return coordinator, journal
+
+    def test_native_buildx_state_is_selected_private_and_never_inherits_ambient_config(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        selected = Path("/owned-runner/deploylite-p2-buildx-state")
+        boundary = H["NativeBoundary"]()
+        boundary.buildx_config = selected
+        calls = []; checked = []
+        def recorded_run(argv, **options):
+            calls.append((argv, options))
+            return SimpleNamespace(returncode=0, stdout="recorded-only", stderr="")
+        ambient = {"PATH": "/recorded-tools", "BUILDX_CONFIG": "/foreign", "DOCKER_CONFIG": "/foreign-auth",
+                   "HOME": "/foreign-home", "BUILDX_BAKE_GIT_AUTH_TOKEN": "recorded-secret-never-forward"}
+        with patch.dict("os.environ", ambient, clear=True), patch("subprocess.run", recorded_run), \
+                patch.dict(H["NativeBoundary"].run.__globals__, {"private_directory": lambda path: checked.append(path)}):
+            boundary.run(["docker", "--config", "/owned-empty-config", "--host", "unix:///var/run/docker.sock", "build", "recorded-context"], 3)
+        self.assertEqual(calls[0][1]["env"].get("BUILDX_CONFIG"), str(selected), "build metadata must not populate the empty auth-config directory")
+        self.assertEqual(checked, [selected])
+        self.assertEqual(set(calls[0][1]["env"]), {"PATH", "BUILDX_CONFIG"})
+        calls.clear()
+        def rejected_state(path): raise H["PhysicalError"]("private_owned_directory_required")
+        with patch("subprocess.run", recorded_run), patch.dict(H["NativeBoundary"].run.__globals__, {"private_directory": rejected_state}):
+            with self.assertRaises(H["PhysicalError"]): boundary.run(["docker", "info"], 3)
+        self.assertEqual(calls, [], "replaced or unsafe state directory must fail before process construction")
+
+    def test_preparation_network_supports_loopback_publication_without_host_or_shared_network(self):
+        import ast
+        source = ast.parse(Path(__file__).with_name("p2-physical-acceptance.py").read_text())
+        prepare = next(node for node in source.body if isinstance(node, ast.FunctionDef) and node.name == "prepare")
+        create = next(node for node in ast.walk(prepare) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                      and node.func.attr == "command" and node.args and isinstance(node.args[0], ast.List)
+                      and ast.literal_eval(ast.List(elts=node.args[0].elts[:3], ctx=ast.Load())) == ["docker", "network", "create"])
+        argv = eval(compile(ast.Expression(create.args[0]), "<recorded-network-argv>", "eval"),
+                    {"__builtins__": {}}, {"grant": self.grant, "network": {"name": "p2v-prep-owned"}})
+        # Docker28 skips external-connectivity programming on --internal networks.
+        self.assertNotIn("--internal", argv, "an internal-only endpoint cannot publish the required host loopback registry port")
+        self.assertEqual(argv[argv.index("--driver") + 1], "bridge")
+        self.assertIn("com.docker.network.bridge.host_binding_ipv4=127.0.0.1", argv)
+        self.assertEqual(argv[-1], "p2v-prep-owned")
+        self.assertIn("com.deploylite.owner=" + self.grant["owner"], argv)
+        self.assertIn("com.deploylite.project=" + self.grant["projectId"], argv)
+        self.assertNotIn("host", argv)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_readiness_preserves_specific_failure_and_original_deadline(self):
+        from unittest.mock import patch
+        calls = []
+        failure = H["PhysicalError"]("owned_http_200_required")
+        def recorded_read(url, maximum, deadline):
+            calls.append((url, maximum, deadline))
+            self.fake.now = deadline
+            raise failure
+        replacements = {"loopback_bytes": recorded_read}
+        with patch.dict(H["wait_loopback"].__globals__, replacements), patch("time.monotonic", lambda: self.fake.now):
+            with self.assertRaisesRegex(H["PhysicalError"], "^owned_loopback_readiness_unverified$") as caught:
+                H["wait_loopback"]("http://127.0.0.1:49172/v2/", 15)
+        self.assertIs(caught.exception.__cause__, failure, "readiness must retain the observed failure without extending its deadline")
+        self.assertEqual(calls, [("http://127.0.0.1:49172/v2/", 1048576, 15)])
+
+    def test_cleanup_records_owned_state_only_after_identity_validation(self):
+        coordinator, journal = self.coordinator()
+        resource = {"id": ID, "kind": "registry"}
+        state = {"running": False, "status": "exited", "exitCode": 2, "oomKilled": False}
+        operations = []
+        coordinator.container = lambda resource, closure: {"state": state}
+        coordinator.command = lambda argv, closure: operations.append(argv)
+        closure = {"kind": "cleanup", "deadline": 30, "originalDeadline": 30, "ownedIds": [ID]}
+        coordinator.remove(resource, closure)
+        observations = [event for event in journal["events"] if event.get("phase") == "owned-container-state-before-removal"]
+        self.assertEqual([(event["id"], event["state"]) for event in observations], [(ID, state)])
+        self.assertEqual(operations, [["docker", "rm", "--force", ID]])
+        journal["events"].clear(); operations.clear()
+        def rejected_identity(*args): raise H["PhysicalError"]("owned_identity_mismatch")
+        coordinator.container = rejected_identity
+        with self.assertRaises(H["PhysicalError"]): coordinator.remove(resource, closure)
+        self.assertEqual(journal["events"], [], "unvalidated state must not be recorded as owned evidence")
+        self.assertEqual(operations, [], "identity failure must prevent removal")
+
+    def test_empty_owned_cleanup_observes_engine_without_authorizing_removal(self):
+        from unittest.mock import patch
+        coordinator, journal = self.coordinator()
+        failure = None
+        with patch.dict(H["Coordinator"].cleanup.__globals__, {"current_sources": lambda: self.grant["sourceHashes"]}):
+            try: coordinator.cleanup()
+            except H["PhysicalError"] as error: failure = error
+        self.assertIsNone(failure, "empty recorded scope must permit only the selected readonly engine observation")
+        self.assertEqual(journal["cleanupStatus"], "verified")
+        self.assertEqual(journal["cleanupClosure"]["ownedIds"], [])
+        self.assertEqual(journal["cleanupClosure"]["deadline"], journal["cleanupClosure"]["originalDeadline"])
+
+    def test_empty_cleanup_does_not_admit_effects_variants_missing_scope_or_renewed_deadline(self):
+        closure = {"kind": "cleanup", "deadline": 30, "originalDeadline": 30, "ownedIds": []}
+        for argv in (["docker", "rm", "--force", ID], ["docker", "pull", M["fixture"]["registry"]],
+                     ["docker", "info"], ["docker", "info", "--format", "foreign"]):
+            with self.subTest(argv=argv), self.assertRaises(H["PhysicalError"]):
+                H["run_effect"](argv, self.grant, self.fake, copy.deepcopy(closure))
+        selected = ["docker", "info", "--format", H["ENGINE_FORMAT"]]
+        for invalid in ({key: value for key, value in closure.items() if key != "ownedIds"},
+                        {**closure, "deadline": 31}, {**closure, "originalDeadline": 29}):
+            with self.subTest(closure=invalid), self.assertRaises(H["PhysicalError"]):
+                H["run_effect"](selected, self.grant, self.fake, invalid)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_empty_cleanup_keeps_unknown_for_foreign_engine_or_unsettled_intent(self):
+        from unittest.mock import patch
+        for events, engine in (([], {"id": "foreign-engine", "os": "linux"}),
+                               ([{"phase": "intent", "argv": ["docker", "network", "create", "recorded"]}], None)):
+            with self.subTest(events=events, engine=engine):
+                coordinator, journal = self.coordinator(events, engine)
+                with patch.dict(H["Coordinator"].cleanup.__globals__, {"current_sources": lambda: self.grant["sourceHashes"]}):
+                    with self.assertRaises(H["PhysicalError"]): coordinator.cleanup()
+                self.assertEqual(journal["cleanupStatus"], "UNKNOWN")
+
+    def test_preparation_retains_primary_failure_when_its_cleanup_also_fails(self):
+        from unittest.mock import patch
+        captured = []
+        class RecordedCoordinator:
+            def __init__(self, grant, journal, *args): self.journal = journal; captured.append(journal)
+            def save(self): pass
+            def command(self, *args): raise ValueError("recorded primary preparation failure")
+            def cleanup(self): raise H["PhysicalError"]("recorded cleanup failure")
+        self.fake.wall_ms = 0
+        self.fake.run = lambda argv, **options: {"returncode": 0, "stdout": json.dumps({"id": self.grant["engineId"], "os": "linux", "architecture": "amd64"}), "stderr": ""}
+        runner = Path("/unused-recorded-runner")
+        inputs = {**self.env, "DOCKER_CONFIG": str(runner / "deploylite-p2-empty-docker-config")}
+        replacements = {"validate_native_inputs": lambda env: runner, "preparation_root": lambda *args, **kwargs: runner / "deploylite-p2-docker-evidence",
+                        "private_directory": lambda *args, **kwargs: None, "inspect_config": lambda env: None,
+                        "current_sources": lambda: self.grant["sourceHashes"], "harness_contract": lambda: ([], []),
+                        "NativeBoundary": lambda *args: self.fake, "write_private": lambda *args, **kwargs: None, "Coordinator": RecordedCoordinator}
+        failure = None
+        with patch.dict(H["prepare"].__globals__, replacements):
+            try: H["prepare"](inputs)
+            except Exception as error: failure = error
+        self.assertIsInstance(failure, ValueError, "cleanup must not replace the original preparation exception")
+        self.assertEqual(str(failure), "recorded primary preparation failure")
+        self.assertEqual(captured[0]["primaryFailure"], {"type": "ValueError", "message": str(failure)})
+        self.assertEqual(captured[0]["cleanupFailure"], {"type": "PhysicalError", "message": "recorded cleanup failure"})
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

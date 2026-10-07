@@ -135,7 +135,8 @@ def run_effect(argv, grant, boundary, closure=None, max_seconds=None):
         require(closure.get("kind") == "cleanup", "postexpiry_recovery_unbound")
         require(grant.get("expiryClosures", {}).get("cleanupMaxMs") == 30000, "explicit_cleanup_permission_required")
         deadline = closure.get("deadline", 0)
-        require(now < deadline <= now + 30 and bool(closure.get("ownedIds")), "cleanup_deadline_or_scope_invalid")
+        empty_engine_read = closure.get("ownedIds") == [] and argv == ["docker", "info", "--format", ENGINE_FORMAT]
+        require(now < deadline <= now + 30 and (bool(closure.get("ownedIds")) or empty_engine_read), "cleanup_deadline_or_scope_invalid")
         require(closure.setdefault("originalDeadline", deadline) == deadline, "cleanup_deadline_cannot_renew")
         budget = deadline - now
     else:
@@ -244,6 +245,9 @@ def verify_physical(receipts, grant):
 
 class NativeBoundary:
     """Explicit runner; no process is constructed by imports or pure guards."""
+    def __init__(self, buildx_config=None):
+        self.buildx_config = buildx_config
+
     @property
     def now(self):
         return time.monotonic()
@@ -254,6 +258,9 @@ class NativeBoundary:
 
     def run(self, argv, timeout):
         safe_env = {key: value for key, value in os.environ.items() if key in ("PATH", "LANG", "LC_ALL")}
+        if self.buildx_config is not None:
+            private_directory(self.buildx_config)
+            safe_env["BUILDX_CONFIG"] = str(self.buildx_config)
         result = subprocess.run(argv, cwd=ROOT, env=safe_env, check=False, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
         return {"returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
@@ -297,12 +304,15 @@ def inspect_json(argv, grant, boundary, closure=None, deadline=None):
 ENGINE_FORMAT = '{"id":{{json .ID}},"os":{{json .OSType}},"architecture":{{json .Architecture}}}'
 IMAGE_FORMAT = ('{"id":{{json .Id}},"repoDigests":{{json .RepoDigests}},"os":{{json .Os}},"architecture":{{json .Architecture}},'
                 '"user":{{json .Config.User}},"command":{{json .Config.Cmd}},"health":{{json .Config.Healthcheck}}}')
+INPUT_IMAGE_FORMAT = ('{"id":{{json .Id}},"repoDigests":{{json .RepoDigests}},'
+                      '"os":{{json .Os}},"architecture":{{json .Architecture}}}')
 CONTAINER_FORMAT = ('{"id":{{json .Id}},"imageId":{{json .Image}},"imageRef":{{json .Config.Image}},'
                     '"owner":{{json (index .Config.Labels "com.deploylite.owner")}},'
                     '"projectId":{{json (index .Config.Labels "com.deploylite.project")}},'
                     '"cpuNano":{{json .HostConfig.NanoCpus}},"memoryBytes":{{json .HostConfig.Memory}},"pids":{{json .HostConfig.PidsLimit}},'
                     '"readonly":{{json .HostConfig.ReadonlyRootfs}},"privileged":{{json .HostConfig.Privileged}},'
-                    '"binds":{{json .HostConfig.Binds}},"ports":{{json .HostConfig.PortBindings}},"networks":{{json .NetworkSettings.Networks}}}')
+                    '"binds":{{json .HostConfig.Binds}},"ports":{{json .HostConfig.PortBindings}},"networks":{{json .NetworkSettings.Networks}},'
+                    '"state":{"running":{{json .State.Running}},"status":{{json .State.Status}},"exitCode":{{json .State.ExitCode}},"oomKilled":{{json .State.OOMKilled}}}}')
 NETWORK_FORMAT = ('{"id":{{json .Id}},"name":{{json .Name}},'
                   '"owner":{{json (index .Labels "com.deploylite.owner")}},"projectId":{{json (index .Labels "com.deploylite.project")}},'
                   '"containers":{{json .Containers}}}')
@@ -356,7 +366,12 @@ class Coordinator:
             require(all(info[key] == resource[key] for key in ("id", "name", "owner", "projectId")) and not info["containers"], "owned_empty_network_required")
             self.command(["docker", "network", "rm", resource["id"]], closure)
         else:
-            self.container(resource, closure)
+            observed = self.container(resource, closure)
+            if isinstance(observed.get("state"), dict):
+                self.journal["events"].append({"phase": "owned-container-state-before-removal", "id": resource["id"],
+                                               "state": {key: observed["state"].get(key) for key in ("running", "status", "exitCode", "oomKilled")},
+                                               "time": self.boundary.now})
+                self.save()
             self.command(["docker", "rm", "--force", resource["id"]], closure)
         resource["removed"] = True
         self.save()
@@ -494,17 +509,19 @@ def loopback_bytes(url, maximum, deadline, clock=time.monotonic):
 
 
 def wait_loopback(url, deadline, expected=None):
+    last_failure = None
     while time.monotonic() < deadline:
         try:
             body, header = loopback_bytes(url, 1048576, deadline)
             if expected is not None:
                 require(body.decode().strip() == expected, "fixture_version_mismatch")
             return body, header
-        except (OSError, PhysicalError):
+        except (OSError, PhysicalError) as error:
+            last_failure = error if isinstance(error, PhysicalError) else PhysicalError("owned_loopback_outcome_unknown")
             if time.monotonic() >= deadline:
                 break
             time.sleep(min(0.1, deadline - time.monotonic()))
-    raise PhysicalError("owned_loopback_readiness_unverified")
+    raise PhysicalError("owned_loopback_readiness_unverified") from last_failure
 
 
 def validate_native_inputs(env):
@@ -596,15 +613,17 @@ def prepare(env):
     require(config == runner / "deploylite-p2-empty-docker-config", "exact_private_config_required")
     private_directory(config, create=True)
     inspect_config(env)
+    buildx_config = runner / "deploylite-p2-buildx-state"
+    private_directory(buildx_config, create=True)
     hashes = current_sources()
     sources, operations = harness_contract()
     context_files = sorted(str(path.relative_to(ROOT)) for path in (ROOT / MANIFEST["fixture"]["context"]).rglob("*") if path.is_file())
     require(context_files == sorted(MANIFEST["fixture"]["files"]) and not any((ROOT / path).is_symlink() for path in context_files), "exact_fixture_context_required")
     # Engine identity is an actual selected read after all input gates, never an invented image/container digest.
-    boundary = NativeBoundary()
+    boundary = NativeBoundary(buildx_config)
     preparation_deadline = boundary.now + MANIFEST["resourceProposal"]["prepMaxSeconds"]
     selected = ["docker", "--config", str(config), "--host", env["DOCKER_HOST"], "info", "--format", ENGINE_FORMAT]
-    engine_result = boundary.run(selected, timeout=min(3, preparation_deadline - boundary.now))
+    engine_result = boundary.run(selected, timeout=min(15, preparation_deadline - boundary.now))
     require(engine_result["returncode"] == 0 and boundary.now < preparation_deadline, "native_engine_observation_unknown")
     engine = json.loads(engine_result["stdout"])
     run_id = str(uuid.uuid4())
@@ -621,10 +640,11 @@ def prepare(env):
     try:
         for ref in (MANIFEST["fixture"]["base"], MANIFEST["fixture"]["registry"]):
             coordinator.command(["docker", "pull", "--platform", "linux/amd64", ref])
-        registry = inspect_json(["docker", "image", "inspect", "--format", IMAGE_FORMAT, MANIFEST["fixture"]["registry"]], grant, boundary, deadline=coordinator.preparation_deadline)
+        registry = inspect_json(["docker", "image", "inspect", "--format", INPUT_IMAGE_FORMAT, MANIFEST["fixture"]["registry"]], grant, boundary, deadline=coordinator.preparation_deadline)
         validate_input_image(registry, MANIFEST["fixture"]["registry"], "linux/amd64")
         network = {"kind": "network", "name": "p2v-prep-" + run_id, "owner": grant["owner"], "projectId": grant["projectId"]}
-        network["id"] = coordinator.command(["docker", "network", "create", "--internal", "--label", "com.deploylite.owner=" + grant["owner"], "--label", "com.deploylite.project=" + grant["projectId"], network["name"]])
+        network["id"] = coordinator.command(["docker", "network", "create", "--driver", "bridge", "--opt", "com.docker.network.bridge.host_binding_ipv4=127.0.0.1",
+                                                   "--label", "com.deploylite.owner=" + grant["owner"], "--label", "com.deploylite.project=" + grant["projectId"], network["name"]])
         require(re.fullmatch(HEX, network["id"]), "physical_network_id_required")
         coordinator.record(network)
         coordinator.start_container("registry", MANIFEST["fixture"]["registry"], registry["id"], network, 49172)
@@ -650,6 +670,7 @@ def prepare(env):
             coordinator.save()
         coordinator.cleanup()  # Registry/network removed before any physical case starts.
         require(journal["cleanupStatus"] == "verified", "preparation_cleanup_unverified")
+        inspect_config(env)  # Build metadata must never populate the selected empty auth config.
         private = runner / "deploylite-p2-private-inputs"
         private_directory(private, create=True)
         credentials = private / "credentials.json"
@@ -664,11 +685,18 @@ def prepare(env):
         journal.update(status="PREPARED", finishedAtMs=boundary.wall_ms, harnessManifest={key: value for key, value in harness.items() if key != "credentialsFile"})
         coordinator.save()
         return {"status": "PREPARED", "grantId": grant["grantId"], "runtimeAcceptance": "NOT YET VERIFIED"}
-    except BaseException:
+    except BaseException as error:
         journal["status"] = "UNKNOWN"
+        journal["primaryFailure"] = {"type": type(error).__name__, "message": str(error)}
+        if isinstance(error, PhysicalError) and isinstance(error.__cause__, PhysicalError):
+            journal["primaryFailure"]["cause"] = {"type": "PhysicalError", "message": str(error.__cause__)}
         coordinator.save()
-        # No second grace period: this uses the same durable cleanup closure if already begun.
-        coordinator.cleanup()
+        # No second grace period, and cleanup never replaces the primary failure.
+        try:
+            coordinator.cleanup()
+        except Exception as cleanup_error:
+            journal["cleanupFailure"] = {"type": type(cleanup_error).__name__, "message": str(cleanup_error)}
+            coordinator.save()
         raise
 
 
@@ -713,3 +741,12 @@ def verify(env):
                 "actualRepoDigests": {flavor: value["reference"] for flavor, value in journal["derivedImages"].items()}}
     write_private(root / "verified.json", evidence)
     return {"status": "verified", "physicalCases": len(MANIFEST["suites"]["docker"]["physicalCases"]), "mockGuards": len(MANIFEST["suites"]["docker"]["guardCases"])}
+
+
+if __name__ == "__main__":
+    try:
+        require(len(sys.argv) == 2 and sys.argv[1] in ("prepare", "cleanup", "verify"), "explicit_action_required")
+        print(json.dumps(globals()[sys.argv[1]](dict(os.environ))))
+    except (PhysicalError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        print(json.dumps({"status": "not_verified", "reason": str(error)}))
+        sys.exit(1)

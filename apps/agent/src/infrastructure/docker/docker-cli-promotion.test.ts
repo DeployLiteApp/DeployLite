@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DockerImageCandidateV1, DockerPromotionContext } from "@deploylite/domain";
 import { DockerCliImageTransport } from "./docker-cli-image-transport.js";
 import { buildDockerRunArgv } from "./docker-cli-argv.js";
+import { DockerProcessError } from "./docker-process-runner.js";
 const image = `registry.example.com/team/app@sha256:${"a".repeat(64)}`;
 const candidate: DockerImageCandidateV1 = { projectId: "project", deploymentId: "b", candidateId: "b:candidate:new", effectiveImage: image, runtimePort: 3000 };
 const prior = { deploymentId: "a", projectId: "project", candidateId: "a:candidate:old", effectiveImage: image, runtimePort: 3000, runtimeConfig: { hostPort: 43000, containerPort: 3000 }, terminalStatus: "succeeded" as const, health: "passed" as const, proven: true as const, rollback: { target: null, result: "not-required" as const }, executionReceipt: { schemaVersion: 1 as const, deploymentId: "a", projectId: "project", candidateId: "a:candidate:old", snapshotOriginId: "a", snapshotHash: "b".repeat(64), effectiveImageDigest: image.split("@")[1]!, runtimeHost: "agent", container: "deploylite-active-a", containerId: "1".repeat(64), hostPort: 43000, containerPort: 3000, network: null } };
@@ -24,13 +25,13 @@ function fixture() {
       containers.set(newName, { id: String(++counter).repeat(64), name: newName, owner: label("owner"), project: label("project"), deployment: label("deployment"), candidate: label("candidate"), image: name, port, running: true, healthy: true });
     } else if (argv[1] === "ps") { stdout = [...containers.values()].map((value) => `${value.id}|Up`).join("\n");
     } else if (argv[1] === "container") {
-      if (!selected) return { exitCode: 1, signal: null, stdout: "", stderr: "No such object" };
+      if (!selected) throw new DockerProcessError("failed", { exitCode: 1, signal: null, stdout: "", stderr: `Error: No such container: ${name}` });
       if (argv[argv.indexOf("--format") + 1]?.includes('"state"')) return { exitCode: 0, signal: null, stderr: "", stdout: JSON.stringify({ id: selected.id, name: `/${selected.name}`, owner: selected.owner, project: selected.project, deployment: selected.deployment, candidate: selected.candidate, image: selected.image, state: selected.running ? "running" : "exited" }) };
       const binding = { "3000/tcp": [{ HostIp: "127.0.0.1", HostPort: String(selected.port) }] };
       stdout = JSON.stringify({ id: selected.id, name: `/${selected.name}`, imageId: `sha256:${"c".repeat(64)}`, owner: selected.owner, projectId: selected.project, deploymentId: selected.deployment, candidateId: selected.candidate, effectiveImage: selected.image, running: selected.running, health: selected.healthy ? "healthy" : "unhealthy", hostBindings: binding, portBindings: binding, networkMode: "default", networks: { bridge: { networkId: "d".repeat(64), endpointId: "e".repeat(64) } } });
     } else if (argv[1] === "image") stdout = JSON.stringify(`sha256:${"c".repeat(64)}`);
     else if (argv[1] === "inspect") {
-      if (!selected) return { exitCode: 1, signal: null, stdout: "", stderr: "No such object" };
+      if (!selected) throw new DockerProcessError("failed", { exitCode: 1, signal: null, stdout: "", stderr: `Error: No such container: ${name}` });
       const format = argv[argv.indexOf("--format") + 1]!;
       stdout = format.includes("com.deploylite.project") ? `${selected.owner}|${selected.project}|${selected.deployment}|${selected.candidate}|${selected.image}|${selected.running ? "running" : "exited"}|${selected.healthy ? "healthy" : "unhealthy"}` : format.includes("com.deploylite.owner") ? `${selected.owner}|${selected.deployment}|${selected.candidate}|${selected.image}` : selected.healthy ? "healthy" : "unhealthy";
     } else if (argv[1] === "stop" && selected) selected.running = false;
@@ -142,6 +143,29 @@ describe("bounded owned active-port handoff and recovery", () => {
     if (fault === "unhealthy-A") f.containers.get("deploylite-active-a")!.healthy = false;
     await expect(f.transport.startCandidate(candidate, new AbortController().signal, f.context)).rejects.toThrow();
     expect(f.mutations()).toEqual([]); expect(f.containers.get("deploylite-active-a")?.running).toBe(true);
+  });
+  it.each(["Error: No such container: ", "Error response from daemon: No such container: ", "No such object: "])("recovers exact stopped A after terminal thrown missing candidate-active inspection (%s)", async (prefix) => {
+    const f = fixture(), signal = new AbortController().signal, historical = structuredClone(prior);
+    f.containers.get("deploylite-active-a")!.running = false; f.prepare(); const run = f.options.runner.run;
+    f.options.runner.run = async (argv, abort) => {
+      if (argv[1] === "container" && argv.at(-1) === "deploylite-active-b") throw new DockerProcessError("failed", { exitCode: 1, signal: null, stdout: "", stderr: `${prefix}deploylite-active-b` });
+      return run(argv, abort);
+    };
+    await f.transport.restorePrior(prior, signal, f.context);
+    expect(f.mutations().map((argv) => argv.slice(1))).toEqual([["start", prior.executionReceipt.containerId]]);
+    expect(f.containers.get("deploylite-active-a")).toMatchObject({ id: prior.executionReceipt.containerId, running: true });
+    expect(f.containers.has("deploylite-candidate-b-new")).toBe(true); expect(prior).toEqual(historical);
+  });
+  it.each(["timeout", "output-limit", "canceled", "exit2", "signal", "foreign-target", "permission", "image", "partial-output", "untyped"] as const)("refuses %s as missing candidate-active proof and never restarts A", async (fault) => {
+    const f = fixture(); f.containers.get("deploylite-active-a")!.running = false; const run = f.options.runner.run;
+    f.options.runner.run = async (argv, abort) => {
+      if (argv[1] !== "container" || argv.at(-1) !== "deploylite-active-b") return run(argv, abort);
+      const result = { exitCode: fault === "exit2" ? 2 : 1, signal: fault === "signal" ? "SIGTERM" as const : null, stdout: fault === "partial-output" ? "partial observation" : "", stderr: fault === "foreign-target" ? "Error: No such container: foreign" : fault === "permission" ? "permission denied" : fault === "image" ? "Error: No such image: deploylite-active-b" : "Error: No such container: deploylite-active-b" };
+      if (fault === "untyped") throw Object.assign(new Error("unclassified"), { result });
+      throw new DockerProcessError(["timeout", "output-limit", "canceled"].includes(fault) ? fault as "timeout" | "output-limit" | "canceled" : "failed", result);
+    };
+    await expect(f.transport.restorePrior(prior, new AbortController().signal, f.context)).rejects.toThrow();
+    expect(f.mutations()).toEqual([]); expect(f.containers.get("deploylite-active-a")?.running).toBe(false);
   });
   it("restores A after partial failure with an independent signal and retains immutable historical proof", async () => {
     const f = fixture(), controller = new AbortController(), historical = structuredClone(prior);

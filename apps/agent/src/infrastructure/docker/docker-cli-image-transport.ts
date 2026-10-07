@@ -3,7 +3,7 @@ import type { DockerActiveIdentityObservation, DockerImageCandidateV1, DockerIma
 import { promotionPolicySchema, trustedPriorExecutionReceiptSchema } from "@deploylite/contracts";
 import { z } from "zod";
 import { buildDockerLifecycleInspectArgv, buildDockerActiveIdentityInspectArgv, buildDockerImageIdentityInspectArgv, buildDockerInspectArgv, buildDockerOwnedStopLookupArgv, buildDockerOwnershipInspectArgv, buildDockerRemoveArgv, buildDockerRenameArgv, buildDockerRestoreInspectArgv, buildDockerRunArgv, buildDockerStartArgv, buildDockerStopArgv, buildDockerStopOwnershipInspectArgv } from "./docker-cli-argv.js";
-import type { DockerProcessExit } from "./docker-process-runner.js";
+import { DockerProcessError, type DockerProcessExit } from "./docker-process-runner.js";
 
 export class DockerCliTransportFailure extends Error { constructor(readonly operation: string, readonly exit?: DockerProcessExit) { super(`docker ${operation} failed`); this.name = "DockerCliTransportFailure"; } }
 export class DockerCliTransportCanceled extends Error { constructor(readonly operation: string) { super(`docker ${operation} canceled`); this.name = "DockerCliTransportCanceled"; } }
@@ -145,9 +145,18 @@ export class DockerCliImageTransport implements DockerImageTransport {
   }
   private async lifecycle(name: string, candidate: DockerImageCandidateV1, abort: AbortSignal, missing = false) {
     if (abort.aborted) throw new DockerCliTransportCanceled("ownership");
-    const result = await awaitAbortable(() => this.options.runner.run(buildDockerLifecycleInspectArgv(name), abort), abort);
+    const absent = (result: DockerProcessExit) => result.exitCode === 1 && result.signal === null && result.stdout.trim() === "" &&
+      ["", "Error: ", "Error response from daemon: "].some((prefix) => ["container", "object"].some((kind) =>
+        result.stderr.trim() === `${prefix}No such ${kind}: ${name}`));
+    let result: DockerProcessExit;
+    try { result = await awaitAbortable(() => this.options.runner.run(buildDockerLifecycleInspectArgv(name), abort), abort); }
+    catch (error) {
+      if (abort.aborted) throw new DockerCliTransportCanceled("ownership");
+      if (missing && error instanceof DockerProcessError && error.kind === "failed" && error.result && absent(error.result)) return undefined;
+      throw error;
+    }
     if (abort.aborted) throw new DockerCliTransportCanceled("ownership");
-    if (result.exitCode !== 0) { if (missing && /no such object/i.test(result.stderr)) return undefined; throw new DockerCliTransportFailure("ownership"); }
+    if (result.exitCode !== 0) { if (missing && absent(result)) return undefined; throw new DockerCliTransportFailure("ownership"); }
     const value = z.object({ id: objectIdSchema, name: z.string(), owner: z.string(), project: z.string(), deployment: z.string(), candidate: z.string(), image: z.string(), state: z.enum(["running", "exited", "created"]) }).strict().parse(JSON.parse(result.stdout));
     if (value.name !== `/${name}` || value.owner !== this.options.owner || value.project !== candidate.projectId || value.deployment !== candidate.deploymentId || value.candidate !== candidate.candidateId || value.image !== candidate.effectiveImage) throw new DockerCliTransportFailure("ownership");
     return value;

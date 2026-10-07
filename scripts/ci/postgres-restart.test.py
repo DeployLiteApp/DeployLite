@@ -246,10 +246,21 @@ class RestartTests(unittest.TestCase):
     def seed_evidence(self):
         self.restart()
         self.cleanup()
-        for suite, title in [("db", HELPER["CASE"]), ("api", "API PostgreSQL verification")]:
-            report = {"success": True, "numTotalTests": 1, "numPassedTests": 1, "numPendingTests": 0, "numFailedTests": 0,
-                      "testResults": [{"assertionResults": [{"title": title, "status": "passed"}]}]}
-            (self.directory / (suite + ".json")).write_text(json.dumps(report))
+        self.env["GITHUB_SHA"] = "c" * 40
+        manifest = json.loads(Path(__file__).with_name("p2-acceptance-cases.json").read_text())
+        digest = __import__("hashlib").sha256(b"recording source").hexdigest()
+        binding = {"schemaVersion": 1, "repository": self.env["GITHUB_REPOSITORY"], "runId": self.env["GITHUB_RUN_ID"],
+                   "runAttempt": self.env["GITHUB_RUN_ATTEMPT"], "job": self.env["GITHUB_JOB"], "commit": self.env["GITHUB_SHA"],
+                   "startedAtMs": 900, "finishedAtMs": 2000, "sourceHashes": {p: digest for p in manifest["sourceFiles"]}, "reportHashes": {}}
+        for suite in ("db", "api"):
+            cases = manifest["suites"][suite]["cases"]
+            report = {"success": True, "startTime": 1000, "numTotalTests": len(cases), "numPassedTests": len(cases),
+                      "numPendingTests": 0, "numFailedTests": 0, "testResults": [{"startTime": 1000, "endTime": 1500,
+                      "assertionResults": [{"fullName": c["fullName"], "title": c["title"], "status": "passed"} for c in cases]}]}
+            path = self.directory / (suite + ".json")
+            path.write_text(json.dumps(report))
+            binding["reportHashes"][suite] = __import__("hashlib").sha256(path.read_bytes()).hexdigest()
+        (self.directory / "binding.json").write_text(json.dumps(binding))
 
     def test_cleanup_verifies_zero_owned_fixtures_without_deleting_foreign_data(self):
         receipt = self.cleanup()
@@ -278,7 +289,7 @@ class RestartTests(unittest.TestCase):
 
     def test_evidence_gate_requires_physical_case_json_and_both_receipts(self):
         self.seed_evidence()
-        self.assertTrue(HELPER["verify_evidence"](self.directory, CONTAINER, self.env))
+        self.assertTrue(HELPER["verify_evidence"](self.directory, CONTAINER, self.env, source_reader=lambda path: b"recording source", now_ms=2000))
 
     def test_evidence_gate_rejects_missing_failed_skipped_empty_or_mismatched_evidence(self):
         self.seed_evidence()
@@ -299,14 +310,14 @@ class RestartTests(unittest.TestCase):
                 else:
                     data[field] = value
                     path.write_text(json.dumps(data))
-                self.assertFalse(HELPER["verify_evidence"](self.directory, CONTAINER, self.env))
+                self.assertFalse(HELPER["verify_evidence"](self.directory, CONTAINER, self.env, source_reader=lambda path: b"recording source", now_ms=2000))
                 path.write_text(originals[name])
         for field, value in [("title", "different case"), ("status", "pending")]:
             with self.subTest(assertionField=field):
                 data = json.loads(originals["db.json"])
                 data["testResults"][0]["assertionResults"][0][field] = value
                 (self.directory / "db.json").write_text(json.dumps(data))
-                self.assertFalse(HELPER["verify_evidence"](self.directory, CONTAINER, self.env))
+                self.assertFalse(HELPER["verify_evidence"](self.directory, CONTAINER, self.env, source_reader=lambda path: b"recording source", now_ms=2000))
 
     def test_workflow_supplies_exact_service_and_scopes_restart_env_to_db_step(self):
         workflow = (Path(__file__).parents[2] / ".github/workflows/baseline.yml").read_text()
@@ -369,13 +380,72 @@ class RestartTests(unittest.TestCase):
         path = self.directory / "db.json"
         original = path.read_text()
         path.write_text("{bad-json")
-        self.assertFalse(HELPER["verify_evidence"](self.directory, CONTAINER, self.env))
+        self.assertFalse(HELPER["verify_evidence"](self.directory, CONTAINER, self.env, source_reader=lambda path: b"recording source", now_ms=2000))
         path.unlink()
         foreign = Path(self.temp.name) / "foreign.json"
         foreign.write_text(original)
         path.symlink_to(foreign)
-        self.assertFalse(HELPER["verify_evidence"](self.directory, CONTAINER, self.env))
+        self.assertFalse(HELPER["verify_evidence"](self.directory, CONTAINER, self.env, source_reader=lambda path: b"recording source", now_ms=2000))
 
+
+
+class ProspectiveEvidenceContractTests(unittest.TestCase):
+    """Exact report/binding guards. NOT RUN; every restart process is a fake."""
+    setUp = RestartTests.setUp
+    restart = RestartTests.restart
+    cleanup = RestartTests.cleanup
+    def seed_current(self):
+        manifest=json.loads(Path(__file__).with_name("p2-acceptance-cases.json").read_text())
+        self.restart();self.cleanup();self.env["GITHUB_SHA"]="c"*40
+        digest=__import__("hashlib").sha256(b"recording source").hexdigest()
+        binding={"schemaVersion":1,"repository":self.env["GITHUB_REPOSITORY"],"runId":self.env["GITHUB_RUN_ID"],
+                 "runAttempt":self.env["GITHUB_RUN_ATTEMPT"],"job":self.env["GITHUB_JOB"],"commit":self.env["GITHUB_SHA"],
+                 "startedAtMs":900,"finishedAtMs":2000,"sourceHashes":{p:digest for p in manifest["sourceFiles"]},"reportHashes":{}}
+        for suite in ("db","api"):
+            cases=manifest["suites"][suite]["cases"]
+            assertions=[{"fullName":c["fullName"],"title":c["title"],"status":"passed"} for c in cases]
+            report={"success":True,"startTime":1000,"numTotalTests":len(cases),"numPassedTests":len(cases),"numPendingTests":0,"numFailedTests":0,
+                    "testResults":[{"startTime":1000,"endTime":1500,"assertionResults":assertions}]}
+            path=self.directory/(suite+".json");path.write_text(json.dumps(report))
+            binding["reportHashes"][suite]=__import__("hashlib").sha256(path.read_bytes()).hexdigest()
+        (self.directory/"binding.json").write_text(json.dumps(binding));return manifest
+    def verify(self):
+        return HELPER["verify_evidence"](self.directory,CONTAINER,self.env,source_reader=lambda path:b"recording source",now_ms=2000)
+    def mutate(self,suite,change):
+        path=self.directory/(suite+".json");report=json.loads(path.read_text());change(report);path.write_text(json.dumps(report))
+        binding=json.loads((self.directory/"binding.json").read_text());binding["reportHashes"][suite]=__import__("hashlib").sha256(path.read_bytes()).hexdigest();(self.directory/"binding.json").write_text(json.dumps(binding))
+    def test_rejects_historical_db35_even_with_the_single_restart_and_matching_receipts(self):
+        self.seed_current()
+        def old(report):
+            cases=report["testResults"][0]["assertionResults"];report["testResults"][0]["assertionResults"]=[c for c in cases if c["title"]==HELPER["CASE"]]+[c for c in cases if c["title"]!=HELPER["CASE"]][:34];report.update(numTotalTests=35,numPassedTests=35)
+        self.mutate("db",old);self.assertFalse(self.verify());self.assertEqual(len(self.docker.restarts()),1)
+    def test_rejects_historical_api2_even_if_every_auth_assertion_passed(self):
+        self.seed_current();self.mutate("api",lambda r:(r["testResults"][0].update(assertionResults=r["testResults"][0]["assertionResults"][:2]),r.update(numTotalTests=2,numPassedTests=2)));self.assertFalse(self.verify())
+    def test_rejects_duplicate_full_names_with_unchanged_passing_count(self):
+        self.seed_current();self.mutate("db",lambda r:r["testResults"][0]["assertionResults"].__setitem__(0,copy.deepcopy(r["testResults"][0]["assertionResults"][1])));self.assertFalse(self.verify())
+    def test_rejects_unreviewed_title_replacement_in_an_otherwise_passing_report(self):
+        self.seed_current();self.mutate("api",lambda r:r["testResults"][0]["assertionResults"][0].update(fullName="unreviewed alternate source"));self.assertFalse(self.verify())
+    def test_rejects_missing_job_source_binding_even_when_physical_receipts_match(self):
+        self.seed_current();(self.directory/"binding.json").unlink();self.assertFalse(self.verify())
+    def test_rejects_wrong_repository_run_attempt_job_or_commit_binding(self):
+        self.seed_current();path=self.directory/"binding.json";original=path.read_text()
+        for field in ("repository","runId","runAttempt","job","commit"):
+            with self.subTest(field=field):
+                binding=json.loads(original);binding[field]="foreign";path.write_text(json.dumps(binding));self.assertFalse(self.verify())
+        path.write_text(original)
+    def test_rejects_report_older_than_current_same_job_capture(self):
+        self.seed_current();self.mutate("db",lambda r:r.update(startTime=800));self.assertFalse(self.verify())
+    def test_rejects_changed_source_hash_or_removed_source_scope(self):
+        self.seed_current();path=self.directory/"binding.json";original=path.read_text()
+        for hashes in ({}, {**json.loads(original)["sourceHashes"],"foreign.ts":"e"*64}):
+            with self.subTest(hashes=hashes):
+                binding=json.loads(original);binding["sourceHashes"]=hashes;path.write_text(json.dumps(binding));self.assertFalse(self.verify())
+    def test_rejects_source_reader_drift_after_report_even_when_binding_was_valid(self):
+        self.seed_current();self.assertFalse(HELPER["verify_evidence"](self.directory,CONTAINER,self.env,source_reader=lambda path:b"changed source",now_ms=2000))
+    def test_rejects_report_hash_mismatch_in_a_valid_job_binding(self):
+        self.seed_current();path=self.directory/"binding.json";binding=json.loads(path.read_text());binding["reportHashes"]["db"]="e"*64;path.write_text(json.dumps(binding));self.assertFalse(self.verify())
+    def test_characterizes_full_db49_api6_fixture_with_one_existing_restart_lifecycle(self):
+        self.seed_current();self.assertTrue(self.verify());self.assertEqual(len(self.docker.restarts()),1)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

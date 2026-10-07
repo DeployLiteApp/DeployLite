@@ -377,15 +377,18 @@ class PhysicalFixture {
     this.configId = this.imageConfigs.get(this.manifest.images.a)!;
     const portCheck = testBoundary.portCheck ?? availablePort;
     await portCheck(this.manifest.activePort); await portCheck(this.manifest.temporaryPort);
-    const networkFormat = '{"id":{{json .Id}},"name":{{json .Name}},"owner":{{json (index .Labels "com.deploylite.owner")}},"project":{{json (index .Labels "com.deploylite.project")}},"internal":{{json .Internal}},"containers":{{json .Containers}}}';
+    const networkFormat = '{"id":{{json .Id}},"name":{{json .Name}},"owner":{{json (index .Labels "com.deploylite.owner")}},"project":{{json (index .Labels "com.deploylite.project")}},"internal":{{json .Internal}},"driver":{{json .Driver}},"options":{{json .Options}},"containers":{{json .Containers}}}';
     this.allowedFormats.add(networkFormat);
-    const created = await this.invoke(["docker", "network", "create", "--internal", "--label", `com.deploylite.owner=${this.owner}`,
+    const created = await this.invoke(["docker", "network", "create", "--driver", "bridge", "--opt", "com.docker.network.bridge.host_binding_ipv4=127.0.0.1", "--label", `com.deploylite.owner=${this.owner}`,
       "--label", `com.deploylite.project=${this.projectId}`, this.network]);
     this.networkId = created.stdout.trim(); assert(objectId.test(this.networkId));
     this.ledger.resources.push({ kind: "network", id: this.networkId, name: this.network, owner: this.owner, project: this.projectId });
     await this.persist();
     const network = JSON.parse((await this.invoke(["docker", "network", "inspect", "--format", networkFormat, this.networkId])).stdout);
-    assert.equal(network.internal, true); assert.equal(network.owner, this.owner); assert.equal(network.project, this.projectId);
+    assert.equal(network.id, this.networkId); assert.equal(network.name, this.network);
+    assert.equal(network.internal, false); assert.equal(network.driver, "bridge");
+    assert.equal(network.options?.["com.docker.network.bridge.host_binding_ipv4"], "127.0.0.1");
+    assert.equal(network.owner, this.owner); assert.equal(network.project, this.projectId); assert.deepEqual(network.containers, {});
     const sample = { candidateId: "dep_fixture:candidate:command", projectId: this.projectId, deploymentId: "dep_fixture",
       effectiveImage: this.manifest.image, runtimePort: 8080, networkName: this.network };
     for (const argv of [this.builders.buildDockerInspectArgv("fixture"), this.builders.buildDockerOwnershipInspectArgv("fixture"),
@@ -851,7 +854,7 @@ describe("physical Docker acceptance opt-in guard", () => {
       const words = argv.filter((word) => !["--config", jobEnv.DOCKER_CONFIG, "--host", f.manifest.dockerHost].includes(word));
       const data = words[1] === "info" ? { id: f.manifest.engineId, os: "linux", architecture: "x86_64", cpu: 8, memory: 16 * 1024 ** 3 }
         : words[1] === "image" ? { id: `sha256:${(words.at(-1) === f.manifest.images.h ? "f" : "a").repeat(64)}`, os: "linux", arch: "amd64", repoDigests: [words.at(-1)], healthType: "CMD", healthInterval: 1_000_000_000 }
-        : words[2] === "inspect" ? { id, name: f.network, owner: f.owner, project: f.projectId, internal: true, containers: {} } : null;
+        : words[2] === "inspect" ? { id, name: f.network, owner: f.owner, project: f.projectId, internal: false, driver: "bridge", options: { "com.docker.network.bridge.host_binding_ipv4": "127.0.0.1" }, containers: {} } : null;
       return { exitCode: 0, signal: null, stdout: data === null ? id : JSON.stringify(data), stderr: "" };
     });
     const portCheck = vi.fn(async () => {});
@@ -860,6 +863,7 @@ describe("physical Docker acceptance opt-in guard", () => {
     try {
       await expect(f.setup({ runner: { run }, portCheck, config: { stat: async () => ({ isDirectory: () => true, isSymbolicLink: () => false, uid: process.getuid!(), mode: 0o700 }), list: async () => [] } })).resolves.toBeUndefined();
       expect(portCheck.mock.calls).toEqual([[49170], [49171]]);
+      expect(run.mock.calls.find(([argv]) => argv.includes("create"))![0].slice(5)).toEqual(["network", "create", "--driver", "bridge", "--opt", "com.docker.network.bridge.host_binding_ipv4=127.0.0.1", "--label", `com.deploylite.owner=${f.owner}`, "--label", `com.deploylite.project=${f.projectId}`, f.network]);
       expect(run.mock.calls.every(([argv]) => !argv.includes("update"))).toBe(true);
     } finally { app.mockRestore(); persist.mockRestore(); }
   });
@@ -938,7 +942,7 @@ describe("physical Docker acceptance opt-in guard", () => {
         const image = argv.at(-1), flavor = image === pins().h ? "h" : "a";
         const data = argv.includes("info") ? { id: f.manifest.engineId, os: "linux", architecture: "x86_64", cpu: 8, memory: 16 * 1024 ** 3 }
           : argv.includes("image") ? { id: `sha256:${(flavor === "a" ? "1" : "2").repeat(64)}`, os: "linux", arch: "amd64", repoDigests: [image], healthType: "CMD", healthInterval: 1_000_000_000 }
-          : argv.includes("inspect") ? { id: networkId, name: f.network, owner: f.owner, project: f.projectId, internal: true, containers: {} } : null;
+          : argv.includes("inspect") ? { id: networkId, name: f.network, owner: f.owner, project: f.projectId, internal: false, driver: "bridge", options: { "com.docker.network.bridge.host_binding_ipv4": "127.0.0.1" }, containers: {} } : null;
         return { exitCode: 0, signal: null, stdout: data ? JSON.stringify(data) : networkId, stderr: "" };
       });
       const app = vi.spyOn(f as unknown as { setupApplication(): Promise<void> }, "setupApplication").mockResolvedValue();
@@ -1484,7 +1488,7 @@ describe.skipIf(process.env.DEPLOYLITE_DOCKER_INTEGRATION !== "1").sequential("p
     const competing = await (await f.confirm("redeploy", A, "blocked-redeploy"))();
     expect(competing.statusCode).toBe(202); expect(f.dockerCount()).toBe(count);
     const stop = [...f.memory.completion.commands.values()].find((row) => row.action === "deployment.stop")!;
-    expect(stop.status).toBe("dispatching"); expect(stop.result).toBeNull(); expect(stop.executionAuthority).toBeDefined();
+    expect(stop.status).toBe("dispatching"); expect(stop.result ?? null).toBeNull(); expect(stop.executionAuthority).toBeDefined();
     f.event("unresolved-authority", { command: stop, receiptReconciliation: "PENDING" });
     await f.cachedRetry((id) => f.request("stop", A, "lost-stop", undefined, id), A.id, stop.id);
     expect([...f.memory.completion.commands.values()].find((row) => row.id === stop.id)?.status).toBe("completed");

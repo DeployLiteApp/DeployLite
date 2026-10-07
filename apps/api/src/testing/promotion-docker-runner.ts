@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { DockerProcessError } from "../../../agent/src/infrastructure/docker/docker-process-runner.js";
 import type { DockerCliRunner } from "../../../agent/src/infrastructure/docker/docker-cli-image-transport.js";
 export type RecordedContainer = { id: string; name: string; labels: Record<string, string>; hostPort: number; containerPort: number; running: boolean; healthy: boolean };
 /** Recording CLI boundary: no Docker engine, process, socket or listener. */
@@ -24,7 +25,7 @@ export function createPromotionDockerRunner() {
       return result([...containers.values()].filter((entry) => wanted.every(([key, value]) => entry.labels[key!] === value)).map((entry) => `${argv.includes("--no-trunc") ? entry.id : entry.id.slice(0, 12)}|${entry.running ? "Up" : "Exited"}`).join("\n"));
     }
     if (argv[1] === "rename") { const source = containers.get(argv[2]!); if (!source || containers.has(name)) return result("", 1, "name conflict"); containers.delete(source.name); source.name = name; containers.set(name, source); return result(); }
-    if (!selected) return result("", 1, "No such object");
+    if (!selected) throw new DockerProcessError("failed", result("", 1, `Error: No such container: ${name}`));
     const labels = selected.labels, state = selected.running ? "running" : "exited", health = selected.healthy ? "healthy" : "unhealthy";
     if (argv[1] === "container") {
       if (argv[argv.indexOf("--format") + 1]?.includes('"state"')) return result(JSON.stringify({ id: selected.id, name: `/${selected.name}`, state, owner: labels["com.deploylite.owner"], project: labels["com.deploylite.project"], deployment: labels["com.deploylite.deployment"], candidate: labels["com.deploylite.candidate"], image: labels["com.deploylite.image"] }));

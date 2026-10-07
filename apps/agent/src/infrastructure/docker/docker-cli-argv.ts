@@ -58,7 +58,7 @@ const ACTIVE_IDENTITY_FORMAT = [
   '"running":{{json .State.Running}},',
   '"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}},',
   '"hostBindings":{{json .HostConfig.PortBindings}},"portBindings":{{json .NetworkSettings.Ports}},',
-  '"networkMode":{{json .HostConfig.NetworkMode}},"networks":{',
+  '"networkMode":{{json .HostConfig.NetworkMode}},"networks":{ ',
   '{{$separator := ""}}{{range $name, $attachment := .NetworkSettings.Networks}}',
   '{{$separator}}{{json $name}}:{"networkId":{{json $attachment.NetworkID}},',
   '"endpointId":{{json $attachment.EndpointID}}}{{$separator = ","}}{{end}}}}'
