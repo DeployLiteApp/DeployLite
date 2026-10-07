@@ -635,7 +635,8 @@ def prepare(env):
         registry = inspect_json(["docker", "image", "inspect", "--format", INPUT_IMAGE_FORMAT, MANIFEST["fixture"]["registry"]], grant, boundary, deadline=coordinator.preparation_deadline)
         validate_input_image(registry, MANIFEST["fixture"]["registry"], "linux/amd64")
         network = {"kind": "network", "name": "p2v-prep-" + run_id, "owner": grant["owner"], "projectId": grant["projectId"]}
-        network["id"] = coordinator.command(["docker", "network", "create", "--internal", "--label", "com.deploylite.owner=" + grant["owner"], "--label", "com.deploylite.project=" + grant["projectId"], network["name"]])
+        network["id"] = coordinator.command(["docker", "network", "create", "--driver", "bridge", "--opt", "com.docker.network.bridge.host_binding_ipv4=127.0.0.1",
+                                                   "--label", "com.deploylite.owner=" + grant["owner"], "--label", "com.deploylite.project=" + grant["projectId"], network["name"]])
         require(re.fullmatch(HEX, network["id"]), "physical_network_id_required")
         coordinator.record(network)
         coordinator.start_container("registry", MANIFEST["fixture"]["registry"], registry["id"], network, 49172)

@@ -508,6 +508,25 @@ class HostedPreparationFailureGuards(unittest.TestCase):
         coordinator.save = lambda: None
         return coordinator, journal
 
+    def test_preparation_network_supports_loopback_publication_without_host_or_shared_network(self):
+        import ast
+        source = ast.parse(Path(__file__).with_name("p2-physical-acceptance.py").read_text())
+        prepare = next(node for node in source.body if isinstance(node, ast.FunctionDef) and node.name == "prepare")
+        create = next(node for node in ast.walk(prepare) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                      and node.func.attr == "command" and node.args and isinstance(node.args[0], ast.List)
+                      and ast.literal_eval(ast.List(elts=node.args[0].elts[:3], ctx=ast.Load())) == ["docker", "network", "create"])
+        argv = eval(compile(ast.Expression(create.args[0]), "<recorded-network-argv>", "eval"),
+                    {"__builtins__": {}}, {"grant": self.grant, "network": {"name": "p2v-prep-owned"}})
+        # Docker28 skips external-connectivity programming on --internal networks.
+        self.assertNotIn("--internal", argv, "an internal-only endpoint cannot publish the required host loopback registry port")
+        self.assertEqual(argv[argv.index("--driver") + 1], "bridge")
+        self.assertIn("com.docker.network.bridge.host_binding_ipv4=127.0.0.1", argv)
+        self.assertEqual(argv[-1], "p2v-prep-owned")
+        self.assertIn("com.deploylite.owner=" + self.grant["owner"], argv)
+        self.assertIn("com.deploylite.project=" + self.grant["projectId"], argv)
+        self.assertNotIn("host", argv)
+        self.assertEqual(self.fake.calls, [])
+
     def test_readiness_preserves_specific_failure_and_original_deadline(self):
         from unittest.mock import patch
         calls = []
