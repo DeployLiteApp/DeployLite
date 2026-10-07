@@ -305,7 +305,8 @@ CONTAINER_FORMAT = ('{"id":{{json .Id}},"imageId":{{json .Image}},"imageRef":{{j
                     '"projectId":{{json (index .Config.Labels "com.deploylite.project")}},'
                     '"cpuNano":{{json .HostConfig.NanoCpus}},"memoryBytes":{{json .HostConfig.Memory}},"pids":{{json .HostConfig.PidsLimit}},'
                     '"readonly":{{json .HostConfig.ReadonlyRootfs}},"privileged":{{json .HostConfig.Privileged}},'
-                    '"binds":{{json .HostConfig.Binds}},"ports":{{json .HostConfig.PortBindings}},"networks":{{json .NetworkSettings.Networks}}}')
+                    '"binds":{{json .HostConfig.Binds}},"ports":{{json .HostConfig.PortBindings}},"networks":{{json .NetworkSettings.Networks}},'
+                    '"state":{"running":{{json .State.Running}},"status":{{json .State.Status}},"exitCode":{{json .State.ExitCode}},"oomKilled":{{json .State.OOMKilled}}}}')
 NETWORK_FORMAT = ('{"id":{{json .Id}},"name":{{json .Name}},'
                   '"owner":{{json (index .Labels "com.deploylite.owner")}},"projectId":{{json (index .Labels "com.deploylite.project")}},'
                   '"containers":{{json .Containers}}}')
@@ -359,7 +360,12 @@ class Coordinator:
             require(all(info[key] == resource[key] for key in ("id", "name", "owner", "projectId")) and not info["containers"], "owned_empty_network_required")
             self.command(["docker", "network", "rm", resource["id"]], closure)
         else:
-            self.container(resource, closure)
+            observed = self.container(resource, closure)
+            if isinstance(observed.get("state"), dict):
+                self.journal["events"].append({"phase": "owned-container-state-before-removal", "id": resource["id"],
+                                               "state": {key: observed["state"].get(key) for key in ("running", "status", "exitCode", "oomKilled")},
+                                               "time": self.boundary.now})
+                self.save()
             self.command(["docker", "rm", "--force", resource["id"]], closure)
         resource["removed"] = True
         self.save()
@@ -497,17 +503,19 @@ def loopback_bytes(url, maximum, deadline, clock=time.monotonic):
 
 
 def wait_loopback(url, deadline, expected=None):
+    last_failure = None
     while time.monotonic() < deadline:
         try:
             body, header = loopback_bytes(url, 1048576, deadline)
             if expected is not None:
                 require(body.decode().strip() == expected, "fixture_version_mismatch")
             return body, header
-        except (OSError, PhysicalError):
+        except (OSError, PhysicalError) as error:
+            last_failure = error if isinstance(error, PhysicalError) else PhysicalError("owned_loopback_outcome_unknown")
             if time.monotonic() >= deadline:
                 break
             time.sleep(min(0.1, deadline - time.monotonic()))
-    raise PhysicalError("owned_loopback_readiness_unverified")
+    raise PhysicalError("owned_loopback_readiness_unverified") from last_failure
 
 
 def validate_native_inputs(env):
@@ -670,6 +678,8 @@ def prepare(env):
     except BaseException as error:
         journal["status"] = "UNKNOWN"
         journal["primaryFailure"] = {"type": type(error).__name__, "message": str(error)}
+        if isinstance(error, PhysicalError) and isinstance(error.__cause__, PhysicalError):
+            journal["primaryFailure"]["cause"] = {"type": "PhysicalError", "message": str(error.__cause__)}
         coordinator.save()
         # No second grace period, and cleanup never replaces the primary failure.
         try:

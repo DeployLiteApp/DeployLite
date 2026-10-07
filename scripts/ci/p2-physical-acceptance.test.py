@@ -508,6 +508,40 @@ class HostedPreparationFailureGuards(unittest.TestCase):
         coordinator.save = lambda: None
         return coordinator, journal
 
+    def test_readiness_preserves_specific_failure_and_original_deadline(self):
+        from unittest.mock import patch
+        calls = []
+        failure = H["PhysicalError"]("owned_http_200_required")
+        def recorded_read(url, maximum, deadline):
+            calls.append((url, maximum, deadline))
+            self.fake.now = deadline
+            raise failure
+        replacements = {"loopback_bytes": recorded_read}
+        with patch.dict(H["wait_loopback"].__globals__, replacements), patch("time.monotonic", lambda: self.fake.now):
+            with self.assertRaisesRegex(H["PhysicalError"], "^owned_loopback_readiness_unverified$") as caught:
+                H["wait_loopback"]("http://127.0.0.1:49172/v2/", 15)
+        self.assertIs(caught.exception.__cause__, failure, "readiness must retain the observed failure without extending its deadline")
+        self.assertEqual(calls, [("http://127.0.0.1:49172/v2/", 1048576, 15)])
+
+    def test_cleanup_records_owned_state_only_after_identity_validation(self):
+        coordinator, journal = self.coordinator()
+        resource = {"id": ID, "kind": "registry"}
+        state = {"running": False, "status": "exited", "exitCode": 2, "oomKilled": False}
+        operations = []
+        coordinator.container = lambda resource, closure: {"state": state}
+        coordinator.command = lambda argv, closure: operations.append(argv)
+        closure = {"kind": "cleanup", "deadline": 30, "originalDeadline": 30, "ownedIds": [ID]}
+        coordinator.remove(resource, closure)
+        observations = [event for event in journal["events"] if event.get("phase") == "owned-container-state-before-removal"]
+        self.assertEqual([(event["id"], event["state"]) for event in observations], [(ID, state)])
+        self.assertEqual(operations, [["docker", "rm", "--force", ID]])
+        journal["events"].clear(); operations.clear()
+        def rejected_identity(*args): raise H["PhysicalError"]("owned_identity_mismatch")
+        coordinator.container = rejected_identity
+        with self.assertRaises(H["PhysicalError"]): coordinator.remove(resource, closure)
+        self.assertEqual(journal["events"], [], "unvalidated state must not be recorded as owned evidence")
+        self.assertEqual(operations, [], "identity failure must prevent removal")
+
     def test_empty_owned_cleanup_observes_engine_without_authorizing_removal(self):
         from unittest.mock import patch
         coordinator, journal = self.coordinator()
