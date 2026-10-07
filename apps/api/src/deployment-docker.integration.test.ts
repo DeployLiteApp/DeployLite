@@ -6,7 +6,8 @@ import { performance } from "node:perf_hooks";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import type { Deployment, DeploymentSnapshotV1 } from "@deploylite/contracts";
+import { createDeploymentSnapshot, type Deployment, type DeploymentSnapshotV1 } from "@deploylite/contracts";
+import { signAgentTransport } from "@deploylite/config";
 import type { AgentReplayStore } from "@deploylite/agent";
 import type { DockerCliRunner } from "../../agent/src/infrastructure/docker/docker-cli-image-transport.js";
 import type { DockerProcessExit } from "../../agent/src/infrastructure/docker/docker-process-runner.js";
@@ -37,7 +38,7 @@ const digestImage = /^127\.0\.0\.1:49172\/deploylite-p2\/[a-z0-9-]+@sha256:[0-9a
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 type Manifest = {
   schemaVersion: 1; authorization: "P2_PHYSICAL_DOCKER_APPROVED"; grantId: string; runId: string;
-  expiresAt: string; dockerHost: string; engineId: string; image: string; platform: "linux/amd64" | "linux/arm64";
+  expiresAt: string; dockerHost: string; engineId: string; image: string; images: { a: string; h: string }; platform: "linux/amd64" | "linux/arm64";
   runtimeHost: string; activePort: 49170; temporaryPort: 49171; containerPort: 8080;
   engineScope: "ephemeral-github-actions-job"; ciJob: { repository: string; runId: string; runAttempt: string; job: string };
   dockerConfigDirectory: string; maxContainers: 3; containerCpu: 0.5; containerMemoryBytes: 67108864; healthPath: string;
@@ -46,13 +47,13 @@ type Manifest = {
 };
 type Credentials = { trustKey: string; adminPassword: string };
 type Event = Record<string, unknown> & { kind: string; monoMs: number; wallTime: string };
-type Intent = { deploymentId: string; candidateId: string; candidate: string; active: string };
+type Intent = { deploymentId: string; candidateId: string; candidate: string; active: string; image?: string; configId?: string };
 type Container = { id: string; name: string; imageId: string; owner: string; projectId: string;
   deploymentId: string; candidateId: string; effectiveImage: string; running: boolean; health: string | null;
   hostBindings: Record<string, { HostIp: string; HostPort: string }[]>;
   portBindings: Record<string, { HostIp: string; HostPort: string }[]>; networkMode: string;
   networks: Record<string, { networkId: string; endpointId: string }> };
-type Fault = "none" | "throw-after-stop" | "cancel-after-stop" | "lost-stop-reply" | "lost-replacement-reply";
+type Fault = "none" | "throw-after-stop" | "cancel-after-stop" | "lost-stop-reply" | "lost-replacement-reply" | "lost-initial-reply";
 type Tamper = "none" | "unsigned" | "signed-other-initial";
 type CleanupClosure = { kind: "cleanup"; deadlineMonoMs: number };
 function record(value: unknown): Record<string, unknown> {
@@ -91,6 +92,11 @@ function validateManifest(raw: unknown, env: NodeJS.ProcessEnv, now = Date.now()
   assert(isAbsolute(requireText(value.dockerConfigDirectory, "private empty Docker config directory")));
   assert.equal(value.dockerConfigDirectory, env.DOCKER_CONFIG, "explicit owned Docker config required");
   assert(digestImage.test(requireText(value.image, "image")), "immutable supplied fixture digest required");
+  const images = record(value.images);
+  assert.deepEqual(Object.keys(images).sort(), ["a", "h"], "exact prepared A/H pins required");
+  assert.equal(images.a, value.image, "legacy image alias must identify A");
+  assert(digestImage.test(requireText(images.h, "images.h")), "prepared historical digest required");
+  assert.notEqual(String(images.a).split("@")[1], String(images.h).split("@")[1], "independent A/H manifest digests required");
   assert(value.platform === "linux/amd64" || value.platform === "linux/arm64", "explicit supported platform required");
   for (const [field, expected] of Object.entries({ activePort: 49170, temporaryPort: 49171, containerPort: 8080,
     maxContainers: 3, containerCpu: 0.5, containerMemoryBytes: 67108864 })) assert.equal(value[field], expected, field);
@@ -181,6 +187,10 @@ class PhysicalFixture {
   memory!: ReturnType<typeof createInMemoryExecutionRepositories>;
   cookie = "";
   configId = "";
+  readonly imageConfigs = new Map<string, string>();
+  readonly replayCounts = { dispatch: 0, claim: 0, wait: 0, release: 0, lookup: 0 };
+  cacheUnavailable = false;
+  private lostReply = false;
   networkId = "";
   fault: Fault = "none";
   tamper: Tamper = "none";
@@ -221,7 +231,7 @@ class PhysicalFixture {
     const path = resolve(this.manifest.receiptDirectory, `${this.caseId}.json`);
     const text = JSON.stringify({ ...this.ledger, grantId: this.manifest.grantId, owner: this.owner,
       projectId: this.projectId, runtimeHost: this.manifest.runtimeHost, network: this.network,
-      image: this.manifest.image, platform: this.manifest.platform, policy,
+      image: this.manifest.image, images: this.manifest.images, platform: this.manifest.platform, policy,
       envelopes: this.envelopes, replies: this.replies, events: this.events,
       completionState: deployments ? { deployments: deployments.filter((value) => value.projectId === this.projectId),
         commands: [...this.memory.completion.commands.values()] } : null }, null, 2);
@@ -312,7 +322,7 @@ class PhysicalFixture {
   private async inspected(target: string, closure?: CleanupClosure): Promise<Container> {
     const intent = this.intentFor(target);
     const candidate = { projectId: this.projectId, deploymentId: intent.deploymentId, candidateId: intent.candidateId,
-      effectiveImage: this.manifest.image, runtimePort: this.manifest.containerPort, networkName: this.network };
+      effectiveImage: intent.image ?? this.manifest.image, runtimePort: this.manifest.containerPort, networkName: this.network };
     const argv = this.builders.buildDockerActiveIdentityInspectArgv({ candidate, containerName: target,
       projectId: this.projectId, owner: this.owner, hostPort: this.manifest.activePort,
       containerPort: this.manifest.containerPort, allowedNetworks: [this.network], networkName: this.network });
@@ -321,7 +331,8 @@ class PhysicalFixture {
     assert.equal(value.owner, this.owner); assert.equal(value.projectId, this.projectId);
     assert.equal(value.deploymentId, intent.deploymentId); assert.equal(value.candidateId, intent.candidateId);
     assert([`/${intent.candidate}`, `/${intent.active}`].includes(value.name), "unexpected physical container name");
-    assert.equal(value.effectiveImage, this.manifest.image); assert.equal(value.imageId, this.configId);
+    assert.equal(value.effectiveImage, intent.image ?? this.manifest.image);
+    assert.equal(value.imageId, intent.configId ?? this.configId);
     assert.equal(value.networkMode, this.network); assert.deepEqual(Object.keys(value.networks), [this.network]);
     assert.equal(value.networks[this.network]?.networkId, this.networkId);
     return value;
@@ -350,14 +361,20 @@ class PhysicalFixture {
       nativeCpu: engine.cpu, nativeMemoryBytes: engine.memory, containerCpu: this.manifest.containerCpu,
       containerMemoryBytes: this.manifest.containerMemoryBytes, maxContainers: this.manifest.maxContainers });
     const imageFormat = '{"id":{{json .Id}},"os":{{json .Os}},"arch":{{json .Architecture}},"repoDigests":{{json .RepoDigests}},"healthType":{{if .Config.Healthcheck}}{{if .Config.Healthcheck.Test}}{{json (index .Config.Healthcheck.Test 0)}}{{else}}null{{end}}{{else}}null{{end}},"healthInterval":{{if .Config.Healthcheck}}{{json .Config.Healthcheck.Interval}}{{else}}0{{end}}}';
-    const image = JSON.parse((await this.invoke(["docker", "image", "inspect", "--format", imageFormat, this.manifest.image])).stdout);
-    assert(imageId.test(image.id)); assert.equal(`${image.os}/${image.arch}`, this.manifest.platform);
     const architecture = engine.architecture === "x86_64" ? "amd64" : engine.architecture === "aarch64" ? "arm64" : engine.architecture;
-    assert.equal(image.arch, architecture, "native approved fixture platform required");
-    assert(Array.isArray(image.repoDigests) && image.repoDigests.includes(this.manifest.image), "preloaded exact digest required");
-    assert(["CMD", "CMD-SHELL"].includes(image.healthType) && image.healthInterval > 0 && image.healthInterval <= 2_000_000_000,
-      "fixture must already contain a frequent Docker HEALTHCHECK; no implicit override/build/pull");
-    this.configId = image.id;
+    for (const flavor of ["a", "h"] as const) {
+      const reference = this.manifest.images[flavor];
+      const image = JSON.parse((await this.invoke(["docker", "image", "inspect", "--format", imageFormat, reference])).stdout);
+      assert(imageId.test(image.id)); assert.equal(`${image.os}/${image.arch}`, this.manifest.platform);
+      assert.equal(image.arch, architecture, "native approved fixture platform required");
+      assert(Array.isArray(image.repoDigests) && image.repoDigests.includes(reference), "preloaded exact digest required");
+      assert(["CMD", "CMD-SHELL"].includes(image.healthType) && image.healthInterval > 0 && image.healthInterval <= 2_000_000_000,
+        "fixture must already contain a frequent Docker HEALTHCHECK; no implicit override/build/pull");
+      this.imageConfigs.set(reference, image.id);
+      this.event("fixture-image-observation", { flavor, imageReference: reference, imageId: image.id, platform: this.manifest.platform });
+    }
+    assert.notEqual(this.imageConfigs.get(this.manifest.images.a), this.imageConfigs.get(this.manifest.images.h), "independent prepared image config IDs required");
+    this.configId = this.imageConfigs.get(this.manifest.images.a)!;
     const portCheck = testBoundary.portCheck ?? availablePort;
     await portCheck(this.manifest.activePort); await portCheck(this.manifest.temporaryPort);
     const networkFormat = '{"id":{{json .Id}},"name":{{json .Name}},"owner":{{json (index .Labels "com.deploylite.owner")}},"project":{{json (index .Labels "com.deploylite.project")}},"internal":{{json .Internal}},"containers":{{json .Containers}}}';
@@ -391,7 +408,7 @@ class PhysicalFixture {
       const port = Number(argv[argv.indexOf("--publish") + 1]!.split(":")[1]);
       assert(port === 49170 || port === 49171);
       const expected = this.builders.buildDockerRunArgv({ candidate: { candidateId: intent.candidateId,
-        projectId: this.projectId, deploymentId: intent.deploymentId, effectiveImage: this.manifest.image,
+        projectId: this.projectId, deploymentId: intent.deploymentId, effectiveImage: intent.image ?? this.manifest.image,
         runtimePort: 8080, networkName: this.network }, projectId: this.projectId, containerName: name,
         hostPort: port, containerPort: 8080, owner: this.owner, allowedNetworks: [this.network], networkName: this.network });
       assert.deepEqual(argv, expected, "production run escaped fixture scope");
@@ -406,7 +423,7 @@ class PhysicalFixture {
       const id = result.stdout.trim(); assert(objectId.test(id));
       this.containers.set(id, { intent, name });
       this.ledger.resources.push({ kind: "container", id, name, owner: this.owner, project: this.projectId,
-        deploymentId: intent.deploymentId, candidateId: intent.candidateId, image: this.manifest.image });
+        deploymentId: intent.deploymentId, candidateId: intent.candidateId, image: intent.image ?? this.manifest.image });
       await this.persist(); // Record the physical ID before checking caps, so a rejected observation cannot lose cleanup ownership.
       const format = '{"id":{{json .Id}},"cpu":{{json .HostConfig.NanoCpus}},"memory":{{json .HostConfig.Memory}},"pids":{{json .HostConfig.PidsLimit}}}';
       const observed = JSON.parse((await this.invoke(["docker", "container", "inspect", "--format", format, id], signal)).stdout);
@@ -417,7 +434,7 @@ class PhysicalFixture {
     }
     if (argv.includes("--format")) {
       assert(this.allowedFormats.has(argv[argv.indexOf("--format") + 1]!), "arbitrary inspection dump forbidden");
-      if (argv[1] === "image") assert.equal(argv.at(-1), this.manifest.image);
+      if (argv[1] === "image") assert(Object.values(this.manifest.images).includes(argv.at(-1)!), "unprepared image inspection forbidden");
       else if (argv[1] === "ps") {
         assert(argv.includes(`label=com.deploylite.owner=${this.owner}`) && argv.includes(`label=com.deploylite.project=${this.projectId}`));
       } else this.intentFor(argv.at(-1)!);
@@ -467,10 +484,66 @@ class PhysicalFixture {
     const deploymentId = requireText(body.deploymentId, "execution ID"), commandId = requireText(body.commandId, "command ID");
     assert((/^[0-9a-f]{8}-[0-9a-f]{4}-[45][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(deploymentId) ||
       /^dep_[a-z0-9_-]{1,59}$/.test(deploymentId)) && /^[a-z0-9][a-z0-9_.-]{0,62}$/.test(commandId));
-    const intent = { deploymentId, candidateId: `${deploymentId}:candidate:${commandId}`,
+    const image = body.snapshot ? requireText(record(record(record(body.snapshot).source).image).reference, "signed image") : this.manifest.image;
+    assert(Object.values(this.manifest.images).includes(image), "signed image outside prepared pins");
+    const intent = { image, configId: this.imageConfigs.get(image) ?? this.configId, deploymentId, candidateId: `${deploymentId}:candidate:${commandId}`,
       candidate: `deploylite-candidate-${deploymentId}-${commandId}`, active: `deploylite-active-${deploymentId}` };
     const old = this.intents.get(deploymentId);
     if (old) assert.deepEqual(intent, old); else this.intents.set(deploymentId, intent);
+  }
+  private async forwardAgentRequest(url: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1],
+    receiver: Pick<import("@deploylite/agent").AuthenticatedAgentCommandReceiver, "agentId" | "capabilities" | "verifyRequest" | "receive" | "readReceipt">): Promise<Response> {
+        const signature = String((init?.headers as Record<string, string>)["x-deploylite-signature"]);
+        if (String(url).endsWith("/capabilities")) {
+          assert(receiver.verifyRequest("GET /capabilities", signature));
+          return new Response(JSON.stringify({ schemaVersion: 1, agentId: receiver.agentId, capabilities: receiver.capabilities,
+            protocolVersions: [1, 2] }), { headers: { "x-deploylite-request-signature": signature } });
+        }
+        let body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        if (String(url).endsWith("/deployments/receipt")) {
+          const reply = record(await receiver.readReceipt(body, signature, init?.signal ?? undefined));
+          this.event("receipt-query", { commandId: body.commandId, correlationId: body.correlationId, cached: reply.receipt !== null });
+          return new Response(JSON.stringify(reply));
+        }
+        let requestSignature = signature;
+        assert(receiver.verifyRequest(JSON.stringify(body), signature), "real API signature required");
+        this.register(body);
+        const originalBinding = { commandId: body.commandId, deploymentId: body.deploymentId,
+          correlationId: record(body.context).correlationId, originalProjectId: body.projectId, originalSnapshotHash: body.snapshotHash };
+        if (this.tamper !== "none" && body.schemaVersion === 1 && !body.action) {
+          if (this.tamper === "unsigned") body = { ...body, projectId: randomUUID() };
+          else {
+            const original = body.snapshot as unknown as DeploymentSnapshotV1;
+            const { hash: _hash, canonicalJson: _json, canonicalBytes: _bytes, ...projection } = original;
+            const changed = createDeploymentSnapshot({ ...projection, configRevision: "harness-alternative-config" },
+              { sha256: (bytes) => createHash("sha256").update(bytes).digest("hex") });
+            body = { ...body, snapshot: { ...changed, canonicalBytes: undefined }, snapshotHash: changed.hash };
+            requestSignature = signAgentTransport(JSON.stringify(body), this.credentials.trustKey);
+          }
+          this.event("harness-injected-wire-tamper", { tamper: this.tamper, ...originalBinding });
+        }
+        this.envelopes.push(structuredClone({ ...body, requestAuthenticated: receiver.verifyRequest(JSON.stringify(body), requestSignature) }));
+        const relay = () => this.controller.abort(); init?.signal?.addEventListener("abort", relay, { once: true });
+        if (init?.signal?.aborted) relay();
+        try {
+          let reply: Awaited<ReturnType<typeof receiver.receive>>;
+          try { this.replayCounts.dispatch++; reply = await receiver.receive(body, requestSignature, this.controller.signal); }
+          catch (error) {
+            this.event("receiver-rejection", { commandId: body.commandId, deploymentId: body.deploymentId,
+              correlationId: record(body.context).correlationId, requestAuthenticated: receiver.verifyRequest(JSON.stringify(body), requestSignature),
+              reason: (error as Error).message });
+            throw error;
+          }
+          this.replies.push(structuredClone(reply));
+          if (!this.lostReply && ((this.fault === "lost-stop-reply" && body.action === "deployment.stop") ||
+            (this.fault === "lost-replacement-reply" && body.schemaVersion === 2) ||
+            (this.fault === "lost-initial-reply" && body.schemaVersion === 1 && !body.action))) {
+            this.lostReply = true;
+            this.event("harness-injected-lost-reply", { action: body.action ?? "deploy.execute", commandId: body.commandId });
+            throw new Error("harness dropped actual received terminal reply");
+          }
+          return new Response(JSON.stringify(reply));
+        } finally { init?.signal?.removeEventListener("abort", relay); }
   }
   private async setupApplication(): Promise<void> {
     const [{ buildApiApp, createRuntimeRepositories, createInMemoryExecutionRepositories, InMemoryAuthUserRepository },
@@ -496,94 +569,91 @@ class PhysicalFixture {
     const settled = new Map<string, { fingerprint: string; receipt: Record<string, unknown> }>();
     const pending = new Map<string, string>();
     const replayStore: AgentReplayStore = {
+      lookup: async (id, fingerprint) => {
+        this.replayCounts.lookup++;
+        const old = settled.get(id); if (old) assert.equal(old.fingerprint, fingerprint, "original cache fingerprint required");
+        return this.cacheUnavailable ? null : structuredClone(old?.receipt ?? null);
+      },
       claim: async (id, fingerprint) => {
+        this.replayCounts.claim++;
         const old = settled.get(id);
         if (old) { assert.equal(old.fingerprint, fingerprint); return { claimed: false, receipt: structuredClone(old.receipt) }; }
         assert(!pending.has(id), "unexpected concurrent same command"); pending.set(id, fingerprint);
         return { claimed: true, claimToken: `${this.manifest.runId}:${id}` };
       },
-      wait: async () => { throw new Error("unexpected harness replay wait"); },
+      wait: async () => { this.replayCounts.wait++; throw new Error("unexpected harness replay wait"); },
       complete: async (id, value) => { assert.equal(pending.get(id), value.fingerprint); settled.set(id, structuredClone(value)); pending.delete(id); },
-      release: async (id) => { pending.delete(id); }
+      release: async (id) => { this.replayCounts.release++; pending.delete(id); }
     };
     const receiver = new AuthenticatedAgentCommandReceiver({ agentId: this.manifest.runtimeHost, trustKey: this.credentials.trustKey,
       capabilities: ["deploy.execute", "deployment.stop"], dispatcher, stopDispatcher: dispatcher,
       authorityValidator: this.memory.controls, replayStore });
     const transport = new AuthenticatedAgentDeploymentTransport({ endpoint: "https://agent.fixture.test", agentId: this.manifest.runtimeHost,
-      trustKey: this.credentials.trustKey, fetch: async (url, init) => {
-        const signature = String((init?.headers as Record<string, string>)["x-deploylite-signature"]);
-        if (String(url).endsWith("/capabilities")) {
-          assert(receiver.verifyRequest("GET /capabilities", signature));
-          return new Response(JSON.stringify({ schemaVersion: 1, agentId: receiver.agentId, capabilities: receiver.capabilities,
-            protocolVersions: [1, 2] }), { headers: { "x-deploylite-request-signature": signature } });
-        }
-        let body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-        let requestSignature = signature;
-        assert(receiver.verifyRequest(JSON.stringify(body), signature), "real API signature required");
-        this.register(body);
-        const originalBinding = { commandId: body.commandId, deploymentId: body.deploymentId,
-          correlationId: record(body.context).correlationId, originalProjectId: body.projectId, originalSnapshotHash: body.snapshotHash };
-        if (this.tamper !== "none" && body.schemaVersion === 1 && !body.action) {
-          if (this.tamper === "unsigned") body = { ...body, projectId: randomUUID() };
-          else {
-            const original = body.snapshot as unknown as DeploymentSnapshotV1;
-            const { hash: _hash, canonicalJson: _json, canonicalBytes: _bytes, ...projection } = original;
-            const changed = createDeploymentSnapshot({ ...projection, configRevision: "harness-alternative-config" },
-              { sha256: (bytes) => createHash("sha256").update(bytes).digest("hex") });
-            body = { ...body, snapshot: { ...changed, canonicalBytes: undefined }, snapshotHash: changed.hash };
-            requestSignature = signAgentTransport(JSON.stringify(body), this.credentials.trustKey);
-          }
-          this.event("harness-injected-wire-tamper", { tamper: this.tamper, ...originalBinding });
-        }
-        this.envelopes.push(structuredClone({ ...body, requestAuthenticated: receiver.verifyRequest(JSON.stringify(body), requestSignature) }));
-        const relay = () => this.controller.abort(); init?.signal?.addEventListener("abort", relay, { once: true });
-        if (init?.signal?.aborted) relay();
-        try {
-          let reply: Awaited<ReturnType<typeof receiver.receive>>;
-          try { reply = await receiver.receive(body, requestSignature, this.controller.signal); }
-          catch (error) {
-            this.event("receiver-rejection", { commandId: body.commandId, deploymentId: body.deploymentId,
-              correlationId: record(body.context).correlationId, requestAuthenticated: receiver.verifyRequest(JSON.stringify(body), requestSignature),
-              reason: (error as Error).message });
-            throw error;
-          }
-          this.replies.push(structuredClone(reply));
-          if ((this.fault === "lost-stop-reply" && body.action === "deployment.stop") ||
-            (this.fault === "lost-replacement-reply" && body.schemaVersion === 2)) {
-            this.event("harness-injected-lost-reply", { action: body.action ?? "deploy.execute", commandId: body.commandId });
-            throw new Error("harness dropped actual received terminal reply");
-          }
-          return new Response(JSON.stringify(reply));
-        } finally { init?.signal?.removeEventListener("abort", relay); }
-      } });
+      trustKey: this.credentials.trustKey, fetch: (url, init) => this.forwardAgentRequest(url, init, receiver) });
     const snapshots = new Map<string, DeploymentSnapshotV1>();
     this.app = await buildApiApp({ env, auth: runtime.auth, imagePolicy: { policyVersion: "p2-fixture-v1",
       trustedHosts: [this.manifest.image.split("/")[0]!], allowTags: false, allowDigests: true },
       state: { ...runtime.state, deployments: this.memory.deployments, executionCompletion: this.memory.completion,
-        controlDeletes: this.memory.controls, controlRedeploy: this.memory.controls, deploymentDispatcher: transport,
+        controlDeletes: this.memory.controls, controlRedeploy: this.memory.controls, controlRollback: this.memory.controls, deploymentDispatcher: transport,
         deploymentStopDispatcher: transport, snapshots: { saveSnapshot: async (value) => { snapshots.set(value.hash, structuredClone(value)); },
           findByHash: async (hash) => structuredClone(snapshots.get(hash) ?? null) },
-        controlGrants: { listForActor: async (actorId) => ["deployment.redeploy", "deployment.stop"].map((action) => ({
-          id: `${this.manifest.runId}:${action}`, actorId, action: action as "deployment.redeploy" | "deployment.stop",
+        controlGrants: { listForActor: async (actorId) => ["deployment.redeploy", "deployment.stop", "deployment.rollback"].map((action) => ({
+          id: `${this.manifest.runId}:${action}`, actorId, action: action as "deployment.redeploy" | "deployment.stop" | "deployment.rollback",
           scope: { kind: "platform" as const } })) } } });
     const login = await this.app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { email, password: this.credentials.adminPassword } });
     assert.equal(login.statusCode, 200); this.cookie = login.headers["set-cookie"] as string;
     // No app.listen(), agent server, PostgreSQL, real secrets or deployed HTTP boundary is involved.
   }
-  async initial(): Promise<Deployment> {
-    const response = await this.app.inject({ method: "POST", url: `/api/v1/projects/${this.projectId}/deployments`,
-      headers: { cookie: this.cookie, "x-deployment-idempotency-key": this.manifest.runId },
-      payload: { imageReference: this.manifest.image, agentId: this.manifest.runtimeHost, commitSha: "abcdef1",
-        configRevision: "p2-fixture-config-1", runtimeRevision: "p2-fixture-runtime-1" } });
+  async initial(flavor: "a" | "h" = "a", key = this.manifest.runId): Promise<Deployment> {
+    const response = await this.initialRequest(flavor, key);
     this.event("api-response", { action: "INITIAL", statusCode: response.statusCode, body: response.json() });
     assert.equal(response.statusCode, 200, response.body);
     const deployment = response.json().data.deployment as Deployment;
     assert.equal(deployment.status, "succeeded"); assert(deployment.executionReceipt);
     await this.observe(deployment); this.startProbe(); await this.healthyProbe(); return deployment;
   }
-  request(action: "redeploy" | "stop", deployment: Deployment, key: string, confirmation?: string) {
+  initialRequest(flavor: "a" | "h", key: string, requestId: string = randomUUID()) {
+    return this.app.inject({ method: "POST", url: `/api/v1/projects/${this.projectId}/deployments`,
+      headers: { cookie: this.cookie, "x-deployment-idempotency-key": key, "x-request-id": requestId },
+      payload: { imageReference: this.manifest.images[flavor], agentId: this.manifest.runtimeHost, commitSha: "abcdef1",
+        configRevision: "default", runtimeRevision: "default" } });
+  }
+  rollback(A: Deployment, H: Deployment, key: string, confirmation?: string, requestId: string = randomUUID()) {
+    return this.app.inject({ method: "POST", url: `/api/v1/deployments/${A.id}/rollback`,
+      headers: { cookie: this.cookie, "x-control-idempotency-key": key, "x-request-id": requestId,
+        ...(confirmation ? { "x-control-confirmation-id": confirmation } : {}) },
+      payload: { historicalDeploymentId: H.id, snapshotHash: H.snapshotHash } });
+  }
+  async prepareAhr() {
+    const H = await this.initial("h", "historical-H"); await this.assertVersion(H, "h");
+    const stopped = await (await this.confirm("stop", H, "stop-H"))(); assert.equal(stopped.statusCode, 200, stopped.body);
+    assert.equal((await this.observe(H, false)).running, false);
+    const A = await this.initial("a", "current-A"); await this.assertVersion(A, "a");
+    for (const value of [A, H]) {
+      const envelope = this.envelopes.find((body) => body.deploymentId === value.id)!;
+      assert.deepEqual(record(envelope.snapshot).secretRefs, []);
+      assert.equal(record(envelope.snapshot).configRevision, "default"); assert.equal(record(envelope.snapshot).runtimeRevision, "default");
+    }
+    const pending = await this.rollback(A, H, "A-H-R"); assert.equal(pending.statusCode, 202, pending.body);
+    const data = pending.json().data; assert(uuid.test(data.deploymentId)); assert(data.confirmationId);
+    assert.equal(await this.memory.deployments.findById(data.deploymentId), null);
+    return { A, H, R: data.deploymentId as string, confirmation: data.confirmationId as string };
+  }
+  async cachedRetry(call: (requestId: string) => Promise<{ statusCode: number; body: string; json(): any }>, deploymentId: string, commandId: string | null) {
+    const before = this.cacheCounts(), requestId: string = randomUUID(); this.cacheUnavailable = false;
+    const response = await call(requestId); assert.equal(response.statusCode, 200, response.body);
+    this.event("api-response", { action: commandId === null ? "INITIAL" : "cached-control", statusCode: response.statusCode, body: response.json() });
+    const after = this.cacheCounts(); assert.deepEqual(after, before, "cache reconciliation must have no second effect/claim/wait/release");
+    const query = this.events.filter((event) => event.kind === "receipt-query").at(-1)!; assert(query.cached);
+    const logs = await this.memory.deployments.listLogs(deploymentId);
+    assert(logs.some((log) => log.requestId === requestId && log.correlationId === query.correlationId), "original cache correlation/fresh retry request required");
+    this.ledger.receiptReconciliation = "VERIFIED";
+    this.event("cached-receipt-reconciliation", { commandId: commandId ?? query.commandId, correlationId: query.correlationId, requestId, before, after });
+    return response;
+  }
+  request(action: "redeploy" | "stop", deployment: Deployment, key: string, confirmation?: string, requestId: string = randomUUID()) {
     return this.app.inject({ method: "POST", url: `/api/v1/deployments/${deployment.id}/${action}`,
-      headers: { cookie: this.cookie, "x-control-idempotency-key": key,
+      headers: { cookie: this.cookie, "x-control-idempotency-key": key, "x-request-id": requestId,
         ...(confirmation ? { "x-control-confirmation-id": confirmation } : {}) },
       ...(action === "redeploy" ? { payload: { snapshotHash: deployment.snapshotHash } } : {}) });
   }
@@ -602,12 +672,36 @@ class PhysicalFixture {
       }
     })();
   }
-  private async probe(): Promise<boolean> {
+  private async probe(path = this.manifest.healthPath, expectedBody?: string): Promise<boolean> {
     const begin = performance.now(); let healthy = false;
-    try { const response = await fetch(`http://127.0.0.1:49170${this.manifest.healthPath}`, { signal: AbortSignal.timeout(200), redirect: "error" });
-      healthy = response.status === 200; await response.body?.cancel(); } catch { /* bounded sample records outage */ }
-    this.event("loopback-probe", { beginMonoMs: begin, healthy }); return healthy;
+    const signal = AbortSignal.timeout(200);
+    try {
+      const { awaitAbortable } = await import("@deploylite/domain");
+      const response = await awaitAbortable(() => fetch(`http://127.0.0.1:49170${path}`, { signal, redirect: "error" }), signal);
+      if (expectedBody === undefined) { healthy = response.status === 200; await awaitAbortable(() => response.body?.cancel() ?? Promise.resolve(), signal); }
+      else {
+        const reader = response.body?.getReader(); assert(reader, "version response body required");
+        const chunks: Uint8Array[] = []; let size = 0;
+        try {
+          while (true) {
+            const item = await awaitAbortable(() => reader.read(), signal);
+            if (item.done) break;
+            size += item.value.length; assert(size <= Buffer.byteLength(expectedBody), "version response exceeds exact body"); chunks.push(item.value);
+          }
+          healthy = response.status === 200 && Buffer.concat(chunks).toString("utf8") === expectedBody;
+        } finally { void reader.cancel().catch(() => {}); }
+      }
+      signal.throwIfAborted();
+    } catch { /* bounded sample records outage/mismatched version */ }
+    this.event("loopback-probe", { beginMonoMs: begin, healthy, path }); return healthy;
   }
+  async assertVersion(deployment: Deployment, flavor: "a" | "h"): Promise<void> {
+    const physical = await this.observe(deployment), body = `deploylite-p2-fixture=${flavor.toUpperCase()}\n`;
+    assert(await this.probe("/version", body), "physical version body mismatch");
+    assert.equal((await this.observe(deployment)).id, physical.id);
+    this.event("version-observation", { deploymentId: deployment.id, containerId: physical.id, body });
+  }
+  cacheCounts() { const { lookup: _lookup, ...counts } = this.replayCounts; return { docker: this.dockerCount(), ...counts }; }
   async healthyProbe(): Promise<void> {
     const deadline = performance.now() + 5_000;
     while (performance.now() < deadline) { if (await this.probe()) return; await delay(50); }
@@ -703,6 +797,7 @@ describe("physical Docker acceptance opt-in guard", () => {
   const valid = () => ({ schemaVersion: 1, authorization: "P2_PHYSICAL_DOCKER_APPROVED", grantId: "fixture-grant-123456789",
     runId: "11111111-1111-4111-8111-111111111111", expiresAt: new Date(Date.now() + 60_000).toISOString(),
     dockerHost: "unix:///tmp/p2-fixture.sock", engineId: "fixture-engine-123456789", image: `127.0.0.1:49172/deploylite-p2/11111111-1111-4111-8111-111111111111@sha256:${"a".repeat(64)}`,
+    images: { a: `127.0.0.1:49172/deploylite-p2/11111111-1111-4111-8111-111111111111@sha256:${"a".repeat(64)}`, h: `127.0.0.1:49172/deploylite-p2/h-11111111-1111-4111-8111-111111111111@sha256:${"f".repeat(64)}` },
     platform: "linux/amd64", runtimeHost: "22222222-2222-4222-8222-222222222222", activePort: 49170, temporaryPort: 49171,
     containerPort: 8080, maxContainers: 3, containerCpu: 0.5, containerMemoryBytes: 67108864,
     engineScope: "ephemeral-github-actions-job", ciJob: job, dockerConfigDirectory: "/tmp/fixture-empty-docker-config", healthPath: "/healthz",
@@ -755,7 +850,7 @@ describe("physical Docker acceptance opt-in guard", () => {
     const run = vi.fn(async (argv: readonly string[]): Promise<DockerProcessExit> => {
       const words = argv.filter((word) => !["--config", jobEnv.DOCKER_CONFIG, "--host", f.manifest.dockerHost].includes(word));
       const data = words[1] === "info" ? { id: f.manifest.engineId, os: "linux", architecture: "x86_64", cpu: 8, memory: 16 * 1024 ** 3 }
-        : words[1] === "image" ? { id: `sha256:${"a".repeat(64)}`, os: "linux", arch: "amd64", repoDigests: [f.manifest.image], healthType: "CMD", healthInterval: 1_000_000_000 }
+        : words[1] === "image" ? { id: `sha256:${(words.at(-1) === f.manifest.images.h ? "f" : "a").repeat(64)}`, os: "linux", arch: "amd64", repoDigests: [words.at(-1)], healthType: "CMD", healthInterval: 1_000_000_000 }
         : words[2] === "inspect" ? { id, name: f.network, owner: f.owner, project: f.projectId, internal: true, containers: {} } : null;
       return { exitCode: 0, signal: null, stdout: data === null ? id : JSON.stringify(data), stderr: "" };
     });
@@ -833,6 +928,103 @@ describe("physical Docker acceptance opt-in guard", () => {
       await expect(execute()).rejects.toThrow();
       expect(f.containers.has("e".repeat(64))).toBe(true);
     });
+  describe("final AHR acceptance source guards", () => {
+    const pins = () => ({ a: owned().image, h: `127.0.0.1:49172/deploylite-p2/h-${owned().runId}@sha256:${"f".repeat(64)}` });
+    const manifest = () => validateManifest({ ...owned(), images: pins() }, jobEnv);
+    const fixture = () => new PhysicalFixture(manifest(), { trustKey: "recorded-trust-key-12345678901234567890", adminPassword: "recorded-only" }, "FINAL_GUARD");
+    it("accepts two independently observed prepared image pins", async () => {
+      const f = fixture(), networkId = "d".repeat(64);
+      const run = vi.fn(async (argv: readonly string[]): Promise<DockerProcessExit> => {
+        const image = argv.at(-1), flavor = image === pins().h ? "h" : "a";
+        const data = argv.includes("info") ? { id: f.manifest.engineId, os: "linux", architecture: "x86_64", cpu: 8, memory: 16 * 1024 ** 3 }
+          : argv.includes("image") ? { id: `sha256:${(flavor === "a" ? "1" : "2").repeat(64)}`, os: "linux", arch: "amd64", repoDigests: [image], healthType: "CMD", healthInterval: 1_000_000_000 }
+          : argv.includes("inspect") ? { id: networkId, name: f.network, owner: f.owner, project: f.projectId, internal: true, containers: {} } : null;
+        return { exitCode: 0, signal: null, stdout: data ? JSON.stringify(data) : networkId, stderr: "" };
+      });
+      const app = vi.spyOn(f as unknown as { setupApplication(): Promise<void> }, "setupApplication").mockResolvedValue();
+      const persist = vi.spyOn(f, "persist").mockResolvedValue();
+      try {
+        await f.setup({ runner: { run }, portCheck: async () => {}, config: { stat: async () => ({ isDirectory: () => true, isSymbolicLink: () => false, uid: process.getuid!(), mode: 0o700 }), list: async () => [] } });
+        expect(run.mock.calls.filter(([argv]) => argv.includes("image")).map(([argv]) => argv.at(-1))).toEqual([pins().a, pins().h]);
+        expect(f.events.filter((e) => e.kind === "fixture-image-observation").map((e) => e.imageId)).toEqual([`sha256:${"1".repeat(64)}`, `sha256:${"2".repeat(64)}`]);
+      } finally { app.mockRestore(); persist.mockRestore(); }
+    });
+    it("rejects a missing or unprepared historical image pin before Docker", () => {
+      for (const images of [undefined, { a: pins().a, h: pins().a }, { a: pins().a, h: `foreign.example/app@sha256:${"f".repeat(64)}` }, { a: pins().a, h: pins().h.replace("f".repeat(64), "a".repeat(64)) }]) {
+        expect(() => validateManifest({ ...owned(), images }, jobEnv)).toThrow();
+      }
+    });
+    it("binds candidate H and recovery A to their independent observed image IDs", async () => {
+      const { f, run } = await recordingRun();
+      const intent = [...f.intents.values()][0]!; intent.image = pins().h; intent.configId = `sha256:${"2".repeat(64)}`;
+      const builders = await import("../../agent/src/infrastructure/docker/docker-cli-argv.js");
+      const argv = builders.buildDockerRunArgv({ candidate: { candidateId: intent.candidateId, projectId: f.projectId, deploymentId: intent.deploymentId, effectiveImage: pins().h, runtimePort: 8080, networkName: f.network }, projectId: f.projectId, containerName: intent.candidate, owner: f.owner, hostPort: 49171, containerPort: 8080, networkName: f.network, allowedNetworks: [f.network] });
+      const actual = (f as unknown as { runProduction(argv: readonly string[], signal: AbortSignal): Promise<DockerProcessExit> }).runProduction(argv, new AbortController().signal);
+      await expect(actual).resolves.toMatchObject({ exitCode: 0 });
+      expect(run.mock.calls.find(([words]) => words.includes("run"))![0].at(-1)).toBe(pins().h);
+    });
+    async function relayFixture() {
+      const f = fixture(); const { signAgentTransport } = await import("@deploylite/config");
+      const lookup = vi.fn(async () => null);
+      const receiver = { lookup, agentId: f.manifest.runtimeHost, capabilities: ["deploy.execute", "deployment.stop"],
+        verifyRequest: (payload: string, signature?: string) => signature === signAgentTransport(payload, f.credentials.trustKey),
+        readReceipt: vi.fn(async (body: unknown, signature?: string) => {
+          assert.equal(signature, signAgentTransport(`POST /deployments/receipt\n${JSON.stringify(body)}`, f.credentials.trustKey));
+          const query = record(body); return { schemaVersion: 1, agentId: query.agentId, commandId: query.commandId, correlationId: query.correlationId, action: query.action, receipt: await lookup() };
+        }), receive: vi.fn(async () => ({ schemaVersion: 1, action: "deployment.stop", status: "stopped" })) };
+      const forward = (body: unknown, route: string, domain = "") => (f as unknown as { forwardAgentRequest(url: string, init: RequestInit, receiver: unknown): Promise<Response> }).forwardAgentRequest(`https://fixture.test${route}`, { method: "POST", body: JSON.stringify(body), headers: { "x-deploylite-signature": signAgentTransport(domain + JSON.stringify(body), f.credentials.trustKey) } }, receiver);
+      const query = { schemaVersion: 1, agentId: f.manifest.runtimeHost, commandId: "command-original", projectId: f.projectId, deploymentId: "33333333-3333-4333-8333-333333333333", action: "deployment.stop", candidateId: "candidate-original", effectiveImage: pins().a, containerId: "e".repeat(64), correlationId: "original-correlation", authority: null, timeoutMs: 30_000 };
+      const { agentReceiptQuerySchema } = await import("@deploylite/contracts"); expect(agentReceiptQuerySchema.safeParse(query).success).toBe(true);
+      return { f, receiver, forward, query };
+    }
+    it("routes an authenticated cached receipt query before intent registration", async () => {
+      const { f, receiver, forward, query } = await relayFixture();
+      const register = vi.spyOn(f as unknown as { register(body: unknown): void }, "register");
+      const response = forward(query, "/deployments/receipt", "POST /deployments/receipt\n");
+      await expect(response).resolves.toBeInstanceOf(Response);
+      expect(await (await response).json()).toMatchObject({ commandId: query.commandId, receipt: null });
+      expect(receiver.readReceipt).toHaveBeenCalledTimes(1); expect(register).not.toHaveBeenCalled(); expect(receiver.receive).not.toHaveBeenCalled(); expect(f.events.filter((e) => e.kind === "docker-command")).toEqual([]);
+    });
+    it("rejects a receipt query with the execution signature domain before lookup", async () => {
+      const { f, receiver, forward, query } = await relayFixture();
+      const register = vi.spyOn(f as unknown as { register(body: unknown): void }, "register").mockImplementation(() => { throw new Error("recorded registration would be an effect"); });
+      await expect(forward(query, "/deployments/receipt")).rejects.toThrow();
+      expect(register).not.toHaveBeenCalled(); expect(receiver.receive).not.toHaveBeenCalled(); expect(receiver.lookup).not.toHaveBeenCalled();
+    });
+    it("drops a terminal reply once and keeps unavailable cached evidence unresolved", async () => {
+      const { f, receiver, forward, query } = await relayFixture(); f.fault = "lost-stop-reply";
+      const command = { schemaVersion: 1, action: "deployment.stop", agentId: query.agentId, commandId: query.commandId, projectId: query.projectId, deploymentId: query.deploymentId, candidateId: query.candidateId, effectiveImage: query.effectiveImage, containerId: query.containerId, requiredCapabilities: ["deployment.stop"], lease: { leaseId: "lease-original", deploymentId: query.deploymentId, fence: 1, expiresAt: Date.now() + 30_000 }, context: { requestId: "request-original", correlationId: query.correlationId }, timeoutMs: 30_000, cancellationRequested: false };
+      const { deploymentStopAgentCommandSchema } = await import("@deploylite/contracts"); expect(deploymentStopAgentCommandSchema.safeParse(command).success).toBe(true);
+      await expect(forward(command, "/deployments/stop")).rejects.toThrow("harness dropped");
+      // Duplicate transport delivery models cached receiver replay, not a retry initiated by the API.
+      await expect(forward(command, "/deployments/stop")).resolves.toBeInstanceOf(Response);
+      expect(f.events.filter((e) => e.kind === "harness-injected-lost-reply")).toHaveLength(1);
+      expect(await (await forward(query, "/deployments/receipt", "POST /deployments/receipt\n")).json()).toMatchObject({ receipt: null });
+      expect(receiver.receive).toHaveBeenCalledTimes(2); expect(f.events.filter((e) => e.kind === "docker-command")).toEqual([]);
+    });
+    it("creates supported H with default revisions and production empty secret references", async () => {
+      const f = fixture(), deployment = { id: "33333333-3333-4333-8333-333333333333", status: "succeeded", executionReceipt: { containerId: "e".repeat(64) } };
+      const inject = vi.fn(async () => ({ statusCode: 200, body: "recorded", json: () => ({ data: { deployment } }) })); Object.assign(f, { app: { inject } });
+      const observe = vi.spyOn(f, "observe").mockResolvedValue({} as Container), healthy = vi.spyOn(f, "healthyProbe").mockResolvedValue();
+      const probe = vi.spyOn(f as unknown as { startProbe(): void }, "startProbe").mockImplementation(() => {});
+      try {
+        await f.initial("h", "same-h-key");
+        const request = (inject.mock.calls as unknown as [{ payload: unknown; headers: Record<string, string> }][])[0]![0];
+        const { deployRequestSchema } = await import("@deploylite/contracts"); expect(deployRequestSchema.safeParse(request.payload).success).toBe(true);
+        expect(request.payload).toMatchObject({ imageReference: pins().h, configRevision: "default", runtimeRevision: "default" });
+        expect(request.headers["x-deployment-idempotency-key"]).toBe("same-h-key"); expect(request.payload).not.toHaveProperty("secretRefs");
+      } finally { observe.mockRestore(); healthy.mockRestore(); probe.mockRestore(); }
+    });
+    it("requires exact A and H version bodies at their observed physical endpoints", async () => {
+      const f = fixture(); const fetch = vi.fn().mockResolvedValueOnce(new Response("deploylite-p2-fixture=A\n")).mockResolvedValueOnce(new Response("deploylite-p2-fixture=H\n")); vi.stubGlobal("fetch", fetch);
+      const probe = f as unknown as { probe(path: string, body: string): Promise<boolean> };
+      try {
+        expect(await probe.probe("/version", "deploylite-p2-fixture=A\n")).toBe(true);
+        expect(await probe.probe("/version", "deploylite-p2-fixture=A\n")).toBe(false);
+        expect(fetch.mock.calls.every(([url]) => url === "http://127.0.0.1:49170/version")).toBe(true);
+      } finally { vi.unstubAllGlobals(); }
+    });
+  });
   describe("corrective Docker source guards", () => {
     const correctedEnv = { ...jobEnv, RUNNER_ENVIRONMENT: "github-hosted" };
     const corrected = () => ({ ...owned(), expiryClosures: { recoveryMaxMs: 60_000, cleanupMaxMs: 30_000 } });
@@ -925,20 +1117,20 @@ describe("physical Docker acceptance opt-in guard", () => {
       f.event("receiver-rejection", { commandId, deploymentId: id, correlationId, requestAuthenticated: authenticated,
         reason: fault === "unrelated-rejection" ? "unrelated transport failure" : authenticated ? "INITIAL immutable execution binding changed" : "agent authentication failed" });
       f.event("api-response", { action: "INITIAL", statusCode: 502, body: { error: {
-        code: fault === "api-unrelated" ? "UNRELATED_ERROR" : "DEPLOY_DISPATCH_FAILED",
+        code: fault === "api-unrelated" ? "UNRELATED_ERROR" : "DEPLOY_OUTCOME_UNKNOWN",
         correlationId: fault === "api-uncorrelated" ? "different-correlation" : correlationId } } });
       vi.spyOn(f, "initial").mockRejectedValue(new Error("recording INITIAL rejection"));
-      Object.assign(f, { memory: { deployments: { list: async () => [{ id, projectId: f.projectId, status: "failed" }] } } });
+      Object.assign(f, { memory: { deployments: { list: async () => [{ id, projectId: f.projectId, status: "running" }] } } });
       return f;
     }
     it.each([
       ["unsigned", "missing-tamper"], ["signed-other-initial", "unchanged-envelope"], ["unsigned", "unrelated-rejection"],
       ["signed-other-initial", "api-unrelated"], ["signed-other-initial", "api-uncorrelated"]] as const)(
       "rejects false-positive tamper witness %s / %s despite identical no-effect state", async (tamper, fault) => {
-        await expect(assertWireTamperRejected(tamperFixture(tamper, fault), tamper, "failed")).rejects.toThrow();
+        await expect(assertWireTamperRejected(tamperFixture(tamper, fault), tamper, "running")).rejects.toThrow();
       });
     it.each(["unsigned", "signed-other-initial"] as const)("characterizes correlated mock tamper witness %s without Docker", async (tamper) => {
-      await expect(assertWireTamperRejected(tamperFixture(tamper), tamper, "failed")).resolves.toBeUndefined();
+      await expect(assertWireTamperRejected(tamperFixture(tamper), tamper, "running")).resolves.toBeUndefined();
     });
   });
   describe("final closure Docker source guards", () => {
@@ -1180,7 +1372,7 @@ describe("physical Docker acceptance opt-in guard", () => {
   });
 });
 
-async function assertWireTamperRejected(f: PhysicalFixture, tamper: Exclude<Tamper, "none">, expectedStatus: Deployment["status"] = "failed"): Promise<void> {
+async function assertWireTamperRejected(f: PhysicalFixture, tamper: Exclude<Tamper, "none">, expectedStatus: Deployment["status"] = "running"): Promise<void> {
   f.tamper = tamper; const count = f.dockerCount();
   await expect(f.initial()).rejects.toThrow();
   expect(f.dockerCount()).toBe(count); expect(f.containers.size).toBe(0);
@@ -1196,7 +1388,7 @@ async function assertWireTamperRejected(f: PhysicalFixture, tamper: Exclude<Tamp
   expect(rejections).toHaveLength(1);
   expect(rejections[0]).toMatchObject({ requestAuthenticated: tamper !== "unsigned", reason: tamper === "unsigned" ? "agent authentication failed" : "INITIAL immutable execution binding changed" });
   const responses = f.events.filter((event) => event.kind === "api-response" && event.action === "INITIAL"); expect(responses).toHaveLength(1);
-  expect(responses[0]).toMatchObject({ statusCode: 502, body: { error: { code: "DEPLOY_DISPATCH_FAILED", correlationId: injected.correlationId } } });
+  expect(responses[0]).toMatchObject({ statusCode: 502, body: { error: { code: "DEPLOY_OUTCOME_UNKNOWN", correlationId: injected.correlationId } } });
   const execution = (await f.memory.deployments.list()).find((value) => value.id === injected.deploymentId && value.projectId === f.projectId)!;
   expect(execution.status).toBe(expectedStatus); expect(execution.executionReceipt).toBeUndefined();
 }

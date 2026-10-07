@@ -18,7 +18,13 @@ describe("DockerImageExecutor adversarial boundaries", () => {
     ["invalid port", { runtimePort: 0 }]
   ])("rejects tampered or unsafe %s without transport", async (_name, changes) => { const transport = new FakeDockerImageTransport(); const { protocol, executor } = setup(transport); const base = snapshot(changes as Partial<DeploymentSnapshotV1>); const candidate = _name === "canonical JSON" ? { ...base, canonicalJson: "{}" } : _name === "canonical bytes" ? { ...base, canonicalBytes: new TextEncoder().encode("{}") } : base; await expect(executor.execute(input(protocol, { snapshot: candidate }))).rejects.toThrow(); expect(transport.calls).toEqual([]); });
 
-  it("rejects an untrusted host and malformed digest before protocol effects", async () => { const transport = new FakeDockerImageTransport(); const { protocol, executor } = setup(transport); const bad = snapshot({ source: { ...snapshot().source, image: { ...snapshot().source.image, registryHost: "evil.example.com", reference: `evil.example.com/team/app@${digest}` } } } as Partial<DeploymentSnapshotV1>); await expect(executor.execute(input(protocol, { snapshot: bad }))).rejects.toThrow("trusted"); expect(transport.calls).toEqual([]); });
+  it("rejects an untrusted host and malformed digest before protocol effects", async () => {
+    const transport = new FakeDockerImageTransport(); const { protocol, executor } = setup(transport);
+    const source = snapshot().source;
+    if (source.sourceMode !== "image") throw new Error("expected image fixture");
+    const bad = snapshot({ source: { ...source, image: { ...source.image, registryHost: "evil.example.com", reference: `evil.example.com/team/app@${digest}` } } } as Partial<DeploymentSnapshotV1>);
+    await expect(executor.execute(input(protocol, { snapshot: bad }))).rejects.toThrow("trusted"); expect(transport.calls).toEqual([]);
+  });
 
   it("rejects expired and fenced leases before transport", async () => { let now = 1000; const transport = new FakeDockerImageTransport(); const expiredSetup = setup(transport, { now: () => now }); const expired = expiredSetup.protocol.claimLease("dep-1"); now = 1010; await expect(expiredSetup.executor.execute({ snapshot: snapshot(), commandId: "expired", lease: expired })).rejects.toThrow(LeaseExpiredError); const fencedSetup = setup(transport); const old = fencedSetup.protocol.claimLease("dep-1"); const current = fencedSetup.protocol.claimLease("dep-1"); await expect(fencedSetup.executor.execute({ snapshot: snapshot(), commandId: "stale", lease: old })).rejects.toThrow(FenceError); expect(current.fence).toBeGreaterThan(old.fence); expect(transport.calls).toEqual([]); });
 
