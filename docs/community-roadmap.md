@@ -40,11 +40,21 @@ Each phase has an outcome and a short acceptance boundary. A phase is not comple
 
 ## Current phase evidence
 
-The current status separates verified slices from full phase completion and release approval:
+Percentages describe evidenced acceptance, not code volume, tests or overall product completion. P2 uses its fixed 14-entry tracker. P1's 100% means its whole documented boundary is met; no formal criterion count exists. N/D means no approved numeric denominator exists, so partial progress is not converted into an invented percentage.
 
-- **P0 partial**: The prerequisite installer has isolated validation on Ubuntu 24.04 x86_64. Validation on a second supported VPS image remains pending.
-- **P1 acceptance boundary evidenced and completed**: The trusted HTTPS slice covers public proxy ingress, HTTP redirect, Let’s Encrypt issuance, persistent ACME state, and the supported-runtime domain smoke. Merged [PR #269](https://github.com/DeployLiteApp/DeployLite/pull/269) also proves natural periodic renewal without restarting, recreating, or killing Traefik. The periodic check is opt-in and is not baseline CI; aggregate release readiness remains pending.
-- **P2 first digest-pinned execution slice**: On `main` at [`1a306c6f3d214432c86fb1ea29ebb145c0064644`](https://github.com/DeployLiteApp/DeployLite/commit/1a306c6f3d214432c86fb1ea29ebb145c0064644), [#270](https://github.com/DeployLiteApp/DeployLite/issues/270) and its children [#271](https://github.com/DeployLiteApp/DeployLite/issues/271), [#273](https://github.com/DeployLiteApp/DeployLite/issues/273), [#274](https://github.com/DeployLiteApp/DeployLite/issues/274), and [#276](https://github.com/DeployLiteApp/DeployLite/issues/276) complete immutable snapshots, capability and authenticated transport, the real agent Docker path, real status and log evidence, and durable replay and audit. Full P2 remains incomplete because safe stop, redeploy, and user-facing rollback remain planned and unverified.
+| Phase | Percentage / denominator | Status | Completed evidence | Remaining work |
+| --- | --- | --- | --- | --- |
+| P0 | N/D; formal denominator undefined | Partial | Ubuntu 24.04 x86_64 prerequisite installer: six ordered stages, safe preflight and identical rerun | Second supported VPS image; confirm publication of later installer corrections before crediting them |
+| P1 | 100% of the documented boundary; criterion count undefined | Boundary complete | Trusted HTTPS/redirect, Let's Encrypt issuance, persistent ACME state, domain smoke and [PR #269](https://github.com/DeployLiteApp/DeployLite/pull/269) natural periodic renewal | Separate release approval; periodic check remains opt-in outside baseline CI |
+| P2 | 100%; 14/14 accepted tracker entries | Boundary complete; documentary custody below | Genuine execution/proof, atomic parity, safe redeploy/Stop, A/H/R rollback and accessible controls; [final evidence](../odd/tasks/p2-safe-redeploy-rollback-closure.md) and [hosted run](https://github.com/DeployLiteApp/DeployLite/actions/runs/37684250303) | Criterion 7.1 becomes authoritative after protected documentary merge and FULL canonical readback; production/release approval stays separate |
+| P3 | N/D; formal denominator undefined | Planned; whole boundary unaccepted | Baseline prerequisites receive no P3 completion credit | Compose canonicalization/policy/dry run and resource ownership/inspection/backup/confirmed cleanup |
+| P4 | N/D; formal denominator undefined | Planned; whole boundary unaccepted | P1 HTTPS evidence is retained; it does not complete P4 | Scoped routing/conflicts, preview/apply/rollback and HTTP/WebSocket/domain evidence |
+| P5 | N/D; formal denominator undefined | Planned; whole boundary unaccepted | Encrypted-value foundations receive no P5 completion credit | Stateful workloads, storage, credentials, backup/retention, confirmed restore and health |
+| P6 | N/D; formal denominator undefined | Planned; whole boundary unaccepted | Hosted baseline CI is retained; it does not complete P6 | Automation, verified webhooks, notifications, scheduling, metrics/logs/health and alerts |
+| P7 | N/D; formal denominator undefined | Planned; whole boundary unaccepted | Read-only MCP is retained; it does not complete P7 | Versioned API, scoped tokens, signed replay-safe webhooks and controlled MCP writes |
+| P8 | N/D; formal denominator undefined | Planned; whole boundary unaccepted | Hosted gates are retained; they do not complete P8 | Audited AI context/previews, production execution/rollback, provenance/signing and release approval |
+
+The original digest-execution foundation remains attributed to 1a306c6f3d214432c86fb1ea29ebb145c0064644 and #270/#271/#273/#274/#276. Final P2 requires same-source 57 DB / 12 API / 13 real Docker acceptance, one owned restart and cleanup success. No overall percentage is asserted.
 
 | Phase | Planned outcome | Acceptance boundary |
 | --- | --- | --- |
@@ -60,7 +70,7 @@ The current status separates verified slices from full phase completion and rele
 
 ## Separate current capability from planned work
 
-The roadmap includes real Git and Dockerfile execution, Docker Compose, Swarm, networks, volumes, backups, managed databases, service-level secrets, routing, certificates, TCP, UDP, catalog applications, registries, CI/CD, webhooks, observability, health checks, functional rollback, and remote build servers. These remain planned unless the verified baseline names them as shipped.
+The roadmap includes real Git and Dockerfile execution, Docker Compose, Swarm, networks, volumes, backups, managed databases, service-level secrets, routing, certificates, TCP, UDP, catalog applications, registries, CI/CD, webhooks, observability, health checks, functional rollback, and remote build servers. The accepted P2 digest-image stop/redeploy/rollback lane is evidenced above. Broader delivery and infrastructure capabilities remain planned unless the verified baseline names them as shipped.
 
 The hosted baseline is a required CI control with retained evidence. The local evidence bridge is advisory only. Neither makes DeployLite production-ready, changes release eligibility, replaces hosted provenance, or activates the default runtime capability.
 
