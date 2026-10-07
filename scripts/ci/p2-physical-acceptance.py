@@ -604,7 +604,7 @@ def prepare(env):
     boundary = NativeBoundary()
     preparation_deadline = boundary.now + MANIFEST["resourceProposal"]["prepMaxSeconds"]
     selected = ["docker", "--config", str(config), "--host", env["DOCKER_HOST"], "info", "--format", ENGINE_FORMAT]
-    engine_result = boundary.run(selected, timeout=min(3, preparation_deadline - boundary.now))
+    engine_result = boundary.run(selected, timeout=min(15, preparation_deadline - boundary.now))
     require(engine_result["returncode"] == 0 and boundary.now < preparation_deadline, "native_engine_observation_unknown")
     engine = json.loads(engine_result["stdout"])
     run_id = str(uuid.uuid4())
