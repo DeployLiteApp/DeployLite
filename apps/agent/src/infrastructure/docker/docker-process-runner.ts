@@ -1,6 +1,65 @@
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { redactSecrets } from "@deploylite/config";
 
+import { buildDockerActiveIdentityInspectArgv, buildDockerImageIdentityInspectArgv, buildDockerLifecycleInspectArgv,
+  buildDockerOwnedStopLookupArgv, buildDockerOwnershipInspectArgv, buildDockerRestoreInspectArgv,
+  buildDockerStopOwnershipInspectArgv } from "./docker-cli-argv.js";
+
+const DOCKER_ID = /^(?:sha256:)?[0-9a-f]{64}$/;
+const DOCKER_IMAGE = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[1-9][0-9]{0,4})?\/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[0-9a-f]{64}$/;
+const protocolSample = { owner: "probe", projectId: "probe", deploymentId: "probe", candidateId: "probe:candidate:command", effectiveImage: `registry.example/probe@sha256:${"0".repeat(64)}` };
+const protocolFormats = new Set([
+  ...[buildDockerImageIdentityInspectArgv(protocolSample.effectiveImage), buildDockerLifecycleInspectArgv("probe"),
+    buildDockerOwnershipInspectArgv("probe"), buildDockerRestoreInspectArgv("probe"),
+    buildDockerStopOwnershipInspectArgv("0".repeat(64)), buildDockerOwnedStopLookupArgv(protocolSample),
+    buildDockerActiveIdentityInspectArgv({ candidate: { ...protocolSample, runtimePort: 8080, networkName: "probe" },
+      projectId: "probe", owner: "probe", containerName: "probe", hostPort: 49170, containerPort: 8080, allowedNetworks: ["probe"], networkName: "probe" })
+  ].map((argv) => argv[argv.indexOf("--format") + 1]!),
+  "{{.ID}}", "{{.ID}}|{{.Status}}",
+  '{"id":{{json .ID}},"os":{{json .OSType}},"architecture":{{json .Architecture}},"cpu":{{json .NCPU}},"memory":{{json .MemTotal}}}',
+  '{"id":{{json .Id}},"os":{{json .Os}},"arch":{{json .Architecture}},"repoDigests":{{json .RepoDigests}},"healthType":{{if .Config.Healthcheck}}{{if .Config.Healthcheck.Test}}{{json (index .Config.Healthcheck.Test 0)}}{{else}}null{{end}}{{else}}null{{end}},"healthInterval":{{if .Config.Healthcheck}}{{json .Config.Healthcheck.Interval}}{{else}}0{{end}}}',
+  '{"id":{{json .Id}},"name":{{json .Name}},"owner":{{json (index .Labels "com.deploylite.owner")}},"project":{{json (index .Labels "com.deploylite.project")}},"internal":{{json .Internal}},"driver":{{json .Driver}},"options":{{json .Options}},"containers":{{json .Containers}}}',
+  '{"id":{{json .Id}},"cpu":{{json .HostConfig.NanoCpus}},"memory":{{json .HostConfig.Memory}},"pids":{{json .HostConfig.PidsLimit}}}'
+]);
+function redactDockerProtocolOutput(value: string, argv: readonly string[]): string {
+  if (argv[0] !== "docker") return redactDockerDiagnostic(value);
+  const words = argv.slice(1);
+  while ((words[0] === "--config" || words[0] === "--host") && words[1]) words.splice(0, 2);
+  const op = words[0], format = words[words.indexOf("--format") + 1];
+  if (op === "run" || (op === "network" && words[1] === "create")) return /^[0-9a-f]{64}\n?$/.test(value) ? value : redactDockerDiagnostic(value);
+  if (!(["inspect", "info", "ps"].includes(op ?? "") || (["container", "image", "network"].includes(op ?? "") && words[1] === "inspect")) || !words.includes("--format") || !protocolFormats.has(format ?? "")) return redactDockerDiagnostic(value);
+  const safeJson = (nested: unknown, path: string[] = []): unknown => {
+    const key = path.at(-1) ?? "";
+    if (/(token|secret|password|passwd|api[_-]?key|authorization|cookie|credential)/i.test(key)) return "[REDACTED]";
+    if (typeof nested === "string") {
+      if (DOCKER_ID.test(nested) && ((path.length === 1 && ["id", "imageId"].includes(key) && format!.includes(`"${key}":`)) || (path.length === 3 && path[0] === "networks" && ["networkId", "endpointId"].includes(key) && format!.includes(`"${key}":`)))) return nested;
+      if (DOCKER_IMAGE.test(nested) && ((path.length === 1 && ["image", "effectiveImage"].includes(key) && format!.includes(`"${key}":`)) || (path.length === 2 && path[0] === "repoDigests" && format!.includes(".RepoDigests")))) return nested;
+      return redactDockerDiagnostic(nested);
+    }
+    if (Array.isArray(nested)) return nested.map((item, index) => safeJson(item, [...path, String(index)]));
+    if (nested && typeof nested === "object") return Object.fromEntries(Object.entries(nested).map(([name, item]) => [name, safeJson(item, [...path, name])]));
+    return nested;
+  };
+  if (op === "ps" && ["{{.ID}}", "{{.ID}}|{{.Status}}"].includes(format!)) return value.split("\n").map((line) => line.split("|").map((part, position) => position === 0 && /^[0-9a-f]{64}$/.test(part) ? part : redactDockerDiagnostic(part)).join("|")).join("\n");
+  if (op === "inspect" && format!.includes("|")) {
+    const fields = format!.split("|"), imagePosition = fields.indexOf('{{index .Config.Labels "com.deploylite.image"}}');
+    return value.split("\n").map((line) => {
+      const parts = line.split("|");
+      if (parts.length !== fields.length) return redactDockerDiagnostic(line);
+      return parts.map((part, position) => position === imagePosition && DOCKER_IMAGE.test(part) ? part : redactDockerDiagnostic(part)).join("|");
+    }).join("\n");
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (format === "{{json .Id}}" && typeof parsed === "string" && /^sha256:[0-9a-f]{64}$/.test(parsed)) return value;
+    const projected = safeJson(parsed);
+    return JSON.stringify(projected) + (value.endsWith("\n") ? "\n" : "");
+  } catch {
+    return redactDockerDiagnostic(value);
+  }
+}
+
+
 export type DockerProcessExit = Readonly<{ exitCode: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }>;
 export class DockerProcessError extends Error { constructor(readonly kind: "failed" | "timeout" | "canceled" | "output-limit", readonly result?: DockerProcessExit) { super(`docker process ${kind}`); this.name = "DockerProcessError"; } }
 export function redactDockerDiagnostic(value: string): string { return redactSecrets(value).replace(/\b(password|secret|token|authorization)\s*[:=]\s*\S+/gi, "$1=[REDACTED]").replace(/:\/\/[^\s/:]+:[^\s@]+@/g, "://[REDACTED]@"); }
@@ -20,7 +79,7 @@ export class DockerProcessRunner {
       const finish = (error?: DockerProcessError) => { if (settled) return; settled = true; if (timer) clearTimeout(timer); signal.removeEventListener("abort", onAbort); if (error) reject(error); };
       const kill = () => { try { child.kill("SIGKILL"); } catch { /* process may already be gone */ } if (child.pid && process.platform !== "win32") { try { process.kill(-child.pid, "SIGKILL"); } catch { /* group may already be gone */ } } };
       const onAbort = () => { kill(); finish(new DockerProcessError("canceled")); };
-      const safeResult = (exitCode: number | null, exitSignal: NodeJS.Signals | null): DockerProcessExit => ({ exitCode, signal: exitSignal, stdout: redactDockerDiagnostic(stdout), stderr: redactDockerDiagnostic(stderr) });
+      const safeResult = (exitCode: number | null, exitSignal: NodeJS.Signals | null): DockerProcessExit => ({ exitCode, signal: exitSignal, stdout: exitCode === 0 && exitSignal === null ? redactDockerProtocolOutput(stdout, argv) : redactDockerDiagnostic(stdout), stderr: redactDockerDiagnostic(stderr) });
       const append = (chunk: Buffer | string, target: "stdout" | "stderr") => { const value = chunk.toString(); if (stdout.length + stderr.length + value.length > this.#maxOutputBytes) { kill(); finish(new DockerProcessError("output-limit", safeResult(null, null))); return; } if (target === "stdout") stdout += value; else stderr += value; };
       child.stdout?.on("data", (chunk) => append(chunk, "stdout")); child.stderr?.on("data", (chunk) => append(chunk, "stderr"));
       const onExit = (exitCode: number | null, exitSignal: NodeJS.Signals | null) => { const result = safeResult(exitCode, exitSignal); if (settled) return; if (exitCode === 0) { settled = true; if (timer) clearTimeout(timer); signal.removeEventListener("abort", onAbort); resolve(result); } else finish(new DockerProcessError("failed", result)); };
