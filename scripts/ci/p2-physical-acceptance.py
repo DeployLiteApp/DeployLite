@@ -178,6 +178,41 @@ def verify_report(report, titles):
         return False
 
 
+def verify_ahr(receipt, grant):
+    events = receipt["events"]
+    images = receipt["images"]
+    require(set(images) == {"a", "h"} and all(re.fullmatch(REFERENCE, v) for v in images.values()) and images["a"].split("@")[1] != images["h"].split("@")[1], "independent_prepared_pins_required")
+    require(images == grant["images"], "prepared_journal_pins_required")
+    image_events = {e["flavor"]: e for e in events if e["kind"] == "fixture-image-observation"}
+    require(set(image_events) == {"a", "h"}, "both_prepared_images_observed")
+    for flavor in ("a", "h"):
+        require(image_events[flavor]["imageReference"] == images[flavor] and re.fullmatch(DIGEST, image_events[flavor]["imageId"]), "prepared_image_identity_mismatch")
+        require(image_events[flavor]["imageId"] == grant["imageConfigs"][flavor], "prepared_journal_config_required")
+    require(image_events["a"]["imageId"] != image_events["h"]["imageId"], "copied_image_config")
+    state = receipt["completionState"]
+    command = next(c for c in state["commands"] if c["action"] == "deployment.rollback")
+    result = command["result"]
+    require(command["status"] == result["status"] == "completed" and result["commandId"] == command["id"] and result["projectId"] == receipt["projectId"], "atomic_rollback_result_required")
+    rows = {d["id"]: d for d in state["deployments"]}
+    A, H, R = [rows[result[k]] for k in ("activeDeploymentId", "sourceDeploymentId", "deploymentId")]
+    require(len({A["id"], H["id"], R["id"]}) == 3 and R["activeDeploymentId"] == A["id"] and R["sourceDeploymentId"] == H["id"] and R["snapshotOriginId"] == H["snapshotOriginId"] and R["snapshotHash"] == H["snapshotHash"] == result["snapshotHash"], "rollback_roles_mismatch")
+    require(command["executionAuthority"]["sourceLease"]["deploymentId"] == A["id"], "active_recovery_authority_required")
+    for row, flavor in ((A, "a"), (H, "h")) + (((R, "h"),) if R["status"] == "succeeded" else ()):
+        proof = row["executionReceipt"]
+        require(row["status"] == "succeeded" and all(proof[k] == row[field] for k, field in (("deploymentId", "id"), ("projectId", "projectId"), ("runtimeHost", "agentId"), ("snapshotOriginId", "snapshotOriginId"), ("snapshotHash", "snapshotHash"))), "immutable_execution_proof_binding")
+        require(proof["effectiveImageDigest"] == images[flavor].split("@")[1] and proof["hostPort"] == 49170 and proof["containerPort"] == 8080 and re.fullmatch(HEX, proof["containerId"]), "rollback_runtime_digest_mismatch")
+        require(any(ev["kind"] == "physical-observation" and ev.get("deploymentId") == row["id"] and ev["observation"]["id"] == proof["containerId"] and ev["observation"]["effectiveImage"] == images[flavor] and ev["observation"]["imageId"] == image_events[flavor]["imageId"] for ev in events), "independent_physical_execution_required")
+    recovery = "RECOVERS_A" in receipt["receiptFile"]
+    target, flavor = (A, "a") if recovery else (R, "h")
+    require(any(ev["kind"] == "version-observation" and ev["deploymentId"] == A["id"] and ev["containerId"] == A["executionReceipt"]["containerId"] and ev["body"] == "deploylite-p2-fixture=A\n" for ev in events), "original_A_version_required")
+    require(any(ev["kind"] == "version-observation" and ev["deploymentId"] == target["id"] and ev["containerId"] == target["executionReceipt"]["containerId"] and ev["body"] == "deploylite-p2-fixture=" + flavor.upper() + "\n" for ev in events), "exact_result_version_required")
+    if recovery:
+        require(R["status"] in ("failed", "canceled") and not R.get("executionReceipt"), "recovery_must_not_publish_R_proof")
+        require(any(ev["kind"] == "recovery-bracket" and ev["prior"] == A["id"] and ev["priorPhysicalId"] == A["executionReceipt"]["containerId"] and 0 <= ev["upperBoundMs"] <= 60000 for ev in events), "retained_A_recovery_required")
+    if "CACHE_RECONCILES" in receipt["receiptFile"]:
+        require(any(ev["kind"] == "cached-receipt-reconciliation" and ev["commandId"] == command["id"] and ev["correlationId"] == command["correlationId"] and ev["requestId"] != ev["correlationId"] and set(ev["before"]) == {"docker", "dispatch", "claim", "wait", "release"} and ev["before"] == ev["after"] for ev in events), "effect_free_original_cache_required")
+
+
 def verify_physical(receipts, grant):
     try:
         expected = {case["receiptFile"] for case in MANIFEST["suites"]["docker"]["physicalCases"]}
@@ -195,12 +230,13 @@ def verify_physical(receipts, grant):
                 injected = next(e for e in events if e["kind"] == "harness-injected-wire-tamper")
                 reason = "agent authentication failed" if injected["tamper"] == "unsigned" else "INITIAL immutable execution binding changed"
                 require(any(e["kind"] == "receiver-rejection" and all(e[k] == injected[k] for k in ("commandId", "deploymentId", "correlationId")) and e["reason"] == reason and e["requestAuthenticated"] is (injected["tamper"] != "unsigned") for e in events), "correlated_wire_rejection_required")
-                require(any(e["kind"] == "api-response" and e.get("statusCode") == 502 and e["body"]["error"].get("code") == "DEPLOY_DISPATCH_FAILED" and e["body"]["error"].get("correlationId") == injected["correlationId"] for e in events), "correlated_api_rejection_required")
+                require(any(e["kind"] == "api-response" and e.get("statusCode") == 502 and e["body"]["error"].get("code") == "DEPLOY_OUTCOME_UNKNOWN" and e["body"]["error"].get("correlationId") == injected["correlationId"] for e in events), "correlated_api_rejection_required")
             else:
                 proof = next(e["body"]["data"]["deployment"]["executionReceipt"] for e in events if e["kind"] == "api-response" and e.get("action") == "INITIAL" and e.get("statusCode") == 200)
                 require(proof["projectId"] == receipt["projectId"] and proof["hostPort"] == 49170 and proof["containerPort"] == 8080 and re.fullmatch(HEX, proof["containerId"]) and re.fullmatch(DIGEST, proof["effectiveImageDigest"]), "trusted_proof_required")
                 require(any(e["kind"] == "physical-observation" and e["observation"]["id"] == proof["containerId"] and e["observation"]["owner"] == receipt["owner"] and e["observation"]["projectId"] == receipt["projectId"] for e in events), "observed_proof_identity_required")
                 require(any(e["kind"] == "owned-container-budget" and e["containerId"] == proof["containerId"] and e["cpu"] == 500000000 and e["memory"] == 67108864 and e["pids"] == 64 for e in events), "observed_caps_required")
+            if receipt["receiptFile"].startswith("A_H_R_"): verify_ahr(receipt, grant)
         return True
     except (PhysicalError, KeyError, TypeError, StopIteration):
         return False
@@ -541,6 +577,18 @@ def observe_image(reference, grant, boundary, deadline=None):
     return data
 
 
+def harness_manifest(grant, journal, config, credentials, receipt_directory, sources, operations):
+    return {"schemaVersion": 1, "authorization": grant["authorization"], "grantId": grant["grantId"], "runId": grant["runId"],
+                   "expiresAt": datetime.datetime.fromtimestamp(grant["expiresAtMs"] / 1000, datetime.timezone.utc).isoformat(),
+                   "dockerHost": grant["dockerHost"], "engineId": grant["engineId"], "image": journal["derivedImages"]["a"]["reference"],
+                   "images": {flavor: journal["derivedImages"][flavor]["reference"] for flavor in ("a", "h")}, "platform": "linux/amd64",
+                   "runtimeHost": str(uuid.uuid4()), "engineScope": grant["engineScope"], "ciJob": grant["ciJob"], "dockerConfigDirectory": str(config),
+                   "activePort": 49170, "temporaryPort": 49171, "containerPort": 8080, "maxContainers": 3, "containerCpu": 0.5,
+                   "containerMemoryBytes": 67108864, "healthPath": "/healthz", "credentialsFile": str(credentials), "receiptDirectory": str(receipt_directory),
+                   "harnessSha256": MANIFEST["preparedFrom"]["dockerFrozenSha256"], "operations": operations,
+                   "sourceHashes": {path: grant["sourceHashes"][path] for path in sources}, "expiryClosures": {"cleanupMaxMs": 30000, "recoveryMaxMs": 60000}}
+
+
 def prepare(env):
     runner = validate_native_inputs(env)
     root = preparation_root(env, create=True)
@@ -606,14 +654,7 @@ def prepare(env):
         private_directory(private, create=True)
         credentials = private / "credentials.json"
         write_private(credentials, {"trustKey": secrets.token_hex(32), "adminPassword": secrets.token_hex(32)})
-        harness = {"schemaVersion": 1, "authorization": grant["authorization"], "grantId": grant["grantId"], "runId": run_id,
-                   "expiresAt": datetime.datetime.fromtimestamp(grant["expiresAtMs"] / 1000, datetime.timezone.utc).isoformat(),
-                   "dockerHost": grant["dockerHost"], "engineId": grant["engineId"], "image": journal["derivedImages"]["a"]["reference"], "platform": "linux/amd64",
-                   "runtimeHost": str(uuid.uuid4()), "engineScope": grant["engineScope"], "ciJob": grant["ciJob"], "dockerConfigDirectory": str(config),
-                   "activePort": 49170, "temporaryPort": 49171, "containerPort": 8080, "maxContainers": 3, "containerCpu": 0.5,
-                   "containerMemoryBytes": 67108864, "healthPath": "/healthz", "credentialsFile": str(credentials), "receiptDirectory": str(root / "cases"),
-                   "harnessSha256": MANIFEST["preparedFrom"]["dockerFrozenSha256"], "operations": operations,
-                   "sourceHashes": {path: hashes[path] for path in sources}, "expiryClosures": {"cleanupMaxMs": 30000, "recoveryMaxMs": 60000}}
+        harness = harness_manifest(grant, journal, config, credentials, root / "cases", sources, operations)
         write_private(private / "manifest.json", harness)
         # Paths/IDs only: secret material stays outside the uploaded evidence directory.
         output = {"DEPLOYLITE_DOCKER_MANIFEST": str(private / "manifest.json"), "DEPLOYLITE_DOCKER_GRANT_ID": grant["grantId"],
@@ -655,7 +696,7 @@ def verify(env):
     report_path = root / "docker.json"
     report = load_private(report_path, require_private=False)  # Vitest reports are value-free in an owned private parent.
     titles = MANIFEST["suites"]["docker"]["guardTitles"] + MANIFEST["suites"]["docker"]["physicalTitles"]
-    require(verify_report(report, titles), "exact_73_executed_titles_required")
+    require(verify_report(report, titles), "exact_executed_titles_required")
     require(journal["finishedAtMs"] <= report["startTime"] <= time.time() * 1000 <= grant["expiresAtMs"] + 600000 and
             all(journal["finishedAtMs"] <= value["startTime"] <= value["endTime"] <= grant["expiresAtMs"] + 30000 for value in report["testResults"]), "fresh_execution_report_required")
     receipts = []
@@ -663,10 +704,12 @@ def verify(env):
         receipt = load_private(root / "cases" / case["receiptFile"])
         receipt["receiptFile"] = case["receiptFile"]
         receipts.append(receipt)
-    require(verify_physical(receipts, grant), "physical_owned_case_evidence_required")
+    verification_grant = {**grant, "images": {flavor: journal["derivedImages"][flavor]["reference"] for flavor in ("a", "h")},
+        "imageConfigs": {flavor: journal["derivedImages"][flavor]["observed"]["id"] for flavor in ("a", "h")}}
+    require(verify_physical(receipts, verification_grant), "physical_owned_case_evidence_required")
     evidence = {"status": "verified", "ciJob": grant["ciJob"], "commit": grant["commit"], "engineId": grant["engineId"],
                 "sourceHashes": journal["sourceHashes"], "reportSha256": hashlib.sha256(report_path.read_bytes()).hexdigest(),
                 "receiptHashes": {case["receiptFile"]: hashlib.sha256((root / "cases" / case["receiptFile"]).read_bytes()).hexdigest() for case in MANIFEST["suites"]["docker"]["physicalCases"]},
                 "actualRepoDigests": {flavor: value["reference"] for flavor, value in journal["derivedImages"].items()}}
     write_private(root / "verified.json", evidence)
-    return {"status": "verified", "physicalCases": 8, "mockGuards": 65}
+    return {"status": "verified", "physicalCases": len(MANIFEST["suites"]["docker"]["physicalCases"]), "mockGuards": len(MANIFEST["suites"]["docker"]["guardCases"])}

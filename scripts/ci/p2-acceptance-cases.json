@@ -3,7 +3,7 @@
   "purpose": "Expected evidence only; this manifest neither authorizes runtime nor claims PASS",
   "suites": {
     "db": {
-      "count": 49,
+      "count": 57,
       "allowSkipped": false,
       "cases": [
         {
@@ -299,15 +299,64 @@
           "title": "retains proof, command and canonical origin across an owned server restart",
           "file": "packages/db/src/execution-postgres.integration-cases.ts",
           "physicalRestart": true
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration converges concurrent A/H/R reservation and original confirmation across PostgreSQL clients",
+          "title": "converges concurrent A/H/R reservation and original confirmation across PostgreSQL clients",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration resumes a queued unclaimed rollback after competing project authority completes",
+          "title": "resumes a queued unclaimed rollback after competing project authority completes",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration resumes the same queued rollback after a transactional claim fault",
+          "title": "resumes the same queued rollback after a transactional claim fault",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration serializes rollback and Stop authority on active A across PostgreSQL clients",
+          "title": "serializes rollback and Stop authority on active A across PostgreSQL clients",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration commits R proof and rollback result with H lineage and independent active A atomically",
+          "title": "commits R proof and rollback result with H lineage and independent active A atomically",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration rolls back an A/H/R terminal trigger fault and completes the identical cached receipt once",
+          "title": "rolls back an A/H/R terminal trigger fault and completes the identical cached receipt once",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration reads original execute and Stop cached receipts after reopening the PostgreSQL client without claims",
+          "title": "reads original execute and Stop cached receipts after reopening the PostgreSQL client without claims",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "atomic execution PostgreSQL integration rolls back cancellation observed during staged rollback publication and preserves durable equal replay",
+          "title": "rolls back cancellation observed during staged rollback publication and preserves durable equal replay",
+          "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
         }
       ],
       "sourceFiles": [
         "packages/db/src/execution-postgres.integration-cases.ts",
-        "packages/db/src/postgres.integration.test.ts"
+        "packages/db/src/postgres.integration.test.ts",
+        "packages/db/migrations/0018_deployment_rollback_command.sql"
       ]
     },
     "api": {
-      "count": 6,
+      "count": 12,
       "allowSkipped": false,
       "cases": [
         {
@@ -345,16 +394,53 @@
           "title": "retains default PostgreSQL running state and no terminal proof after an actual terminal trigger fault (redeploy)",
           "file": "apps/api/src/postgres.integration.test.ts",
           "physicalRestart": false
+        },
+        {
+          "fullName": "DeployLite API PostgreSQL integration executes default PostgreSQL A/H/R with stable original confirmation and immutable history",
+          "title": "executes default PostgreSQL A/H/R with stable original confirmation and immutable history",
+          "file": "apps/api/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "DeployLite API PostgreSQL integration reconciles original cached INITIAL receipt through signed receiver and default PostgreSQL repositories",
+          "title": "reconciles original cached INITIAL receipt through signed receiver and default PostgreSQL repositories",
+          "file": "apps/api/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "DeployLite API PostgreSQL integration reconciles original cached redeploy receipt through signed receiver and default PostgreSQL repositories",
+          "title": "reconciles original cached redeploy receipt through signed receiver and default PostgreSQL repositories",
+          "file": "apps/api/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "DeployLite API PostgreSQL integration reconciles original cached rollback receipt through signed receiver and default PostgreSQL repositories",
+          "title": "reconciles original cached rollback receipt through signed receiver and default PostgreSQL repositories",
+          "file": "apps/api/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "DeployLite API PostgreSQL integration reconciles original cached Stop receipt through signed receiver and default PostgreSQL repositories",
+          "title": "reconciles original cached Stop receipt through signed receiver and default PostgreSQL repositories",
+          "file": "apps/api/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "DeployLite API PostgreSQL integration retries the same queued unclaimed PostgreSQL rollback after claim contention without new reservation",
+          "title": "retries the same queued unclaimed PostgreSQL rollback after claim contention without new reservation",
+          "file": "apps/api/src/postgres.integration.test.ts",
+          "physicalRestart": false
         }
       ],
       "sourceFiles": [
-        "apps/api/src/postgres.integration.test.ts"
+        "apps/api/src/postgres.integration.test.ts",
+        "packages/db/migrations/0018_deployment_rollback_command.sql"
       ]
     },
     "docker": {
-      "count": 73,
-      "guardCount": 65,
-      "physicalCount": 8,
+      "count": 87,
+      "guardCount": 74,
+      "physicalCount": 13,
       "allowSkipped": false,
       "guardTitles": [
         "physical Docker acceptance opt-in guard keeps Docker inaccessible for flag undefined",
@@ -382,9 +468,18 @@
         "physical Docker acceptance opt-in guard records the current UUID execution identity without rewriting its logical candidate",
         "physical Docker acceptance opt-in guard accepts a larger native owned hosted engine and records only per-container budgets",
         "physical Docker acceptance opt-in guard adds pull-never/owned caps and verifies their actual inspection before returning success",
+        "physical Docker acceptance opt-in guard records exact temporary removal proof while retaining resource history",
         "physical Docker acceptance opt-in guard refuses observed missing/widened owned-container limits {\"cpu\":0,\"memory\":67108864,\"pids\":64} while retaining the exact cleanup ID",
         "physical Docker acceptance opt-in guard refuses observed missing/widened owned-container limits {\"cpu\":500000000,\"memory\":0,\"pids\":64} while retaining the exact cleanup ID",
         "physical Docker acceptance opt-in guard refuses observed missing/widened owned-container limits {\"cpu\":500000000,\"memory\":67108864,\"pids\":0} while retaining the exact cleanup ID",
+        "physical Docker acceptance opt-in guard final AHR acceptance source guards accepts two independently observed prepared image pins",
+        "physical Docker acceptance opt-in guard final AHR acceptance source guards rejects a missing or unprepared historical image pin before Docker",
+        "physical Docker acceptance opt-in guard final AHR acceptance source guards binds candidate H and recovery A to their independent observed image IDs",
+        "physical Docker acceptance opt-in guard final AHR acceptance source guards routes an authenticated cached receipt query before intent registration",
+        "physical Docker acceptance opt-in guard final AHR acceptance source guards rejects a receipt query with the execution signature domain before lookup",
+        "physical Docker acceptance opt-in guard final AHR acceptance source guards drops a terminal reply once and keeps unavailable cached evidence unresolved",
+        "physical Docker acceptance opt-in guard final AHR acceptance source guards creates supported H with default revisions and production empty secret references",
+        "physical Docker acceptance opt-in guard final AHR acceptance source guards requires exact A and H version bodies at their observed physical endpoints",
         "physical Docker acceptance opt-in guard corrective Docker source guards rejects non-hosted runner environment undefined before runner",
         "physical Docker acceptance opt-in guard corrective Docker source guards rejects non-hosted runner environment  before runner",
         "physical Docker acceptance opt-in guard corrective Docker source guards rejects non-hosted runner environment self-hosted before runner",
@@ -431,12 +526,17 @@
         "physical Docker \u2192 signed receiver \u2192 API completion STOP_LOST_REPLY_RETAINS_EXCLUSION",
         "physical Docker \u2192 signed receiver \u2192 API completion REPLACEMENT_LOST_REPLY_RETRY_NO_EFFECTS",
         "physical Docker \u2192 signed receiver \u2192 API completion WIRE_unsigned_REJECTS_BEFORE_EFFECTS",
-        "physical Docker \u2192 signed receiver \u2192 API completion WIRE_signed-other-initial_REJECTS_BEFORE_EFFECTS"
+        "physical Docker \u2192 signed receiver \u2192 API completion WIRE_signed-other-initial_REJECTS_BEFORE_EFFECTS",
+        "physical Docker \u2192 signed receiver \u2192 API completion INITIAL_LOST_REPLY_CACHE_RECONCILES_NO_EFFECTS",
+        "physical Docker \u2192 signed receiver \u2192 API completion A_H_R_PROOF_REPLAY_STOP",
+        "physical Docker \u2192 signed receiver \u2192 API completion A_H_R_POST_STOP_throw-after-stop_RECOVERS_A",
+        "physical Docker \u2192 signed receiver \u2192 API completion A_H_R_POST_STOP_cancel-after-stop_RECOVERS_A",
+        "physical Docker \u2192 signed receiver \u2192 API completion A_H_R_LOST_REPLY_CACHE_RECONCILES_NO_EFFECTS"
       ],
       "sourceFiles": [
         "apps/api/src/deployment-docker.integration.test.ts"
       ],
-      "physicalSignatures": "PROVISIONAL; final reconciliation/AHR adaptation required before activation",
+      "physicalSignatures": "SOURCE ONLY / physical NOT RUN: real two-pin engine IDs and exact A/H version bodies; R/H lineage, A recovery authority; original signed cache-only receipt correlation, no repeated effects, original grant/cleanup deadlines and exact owned IDs.",
       "physicalCases": [
         {
           "fullName": "physical Docker \u2192 signed receiver \u2192 API completion INITIAL_B_C_PROOF_REPLAY_STOP",
@@ -477,6 +577,31 @@
           "fullName": "physical Docker \u2192 signed receiver \u2192 API completion WIRE_signed-other-initial_REJECTS_BEFORE_EFFECTS",
           "title": "WIRE_signed-other-initial_REJECTS_BEFORE_EFFECTS",
           "receiptFile": "WIRE_signed-other-initial_REJECTS_BEFORE_EFFECTS.json"
+        },
+        {
+          "fullName": "physical Docker \u2192 signed receiver \u2192 API completion INITIAL_LOST_REPLY_CACHE_RECONCILES_NO_EFFECTS",
+          "title": "INITIAL_LOST_REPLY_CACHE_RECONCILES_NO_EFFECTS",
+          "receiptFile": "INITIAL_LOST_REPLY_CACHE_RECONCILES_NO_EFFECTS.json"
+        },
+        {
+          "fullName": "physical Docker \u2192 signed receiver \u2192 API completion A_H_R_PROOF_REPLAY_STOP",
+          "title": "A_H_R_PROOF_REPLAY_STOP",
+          "receiptFile": "A_H_R_PROOF_REPLAY_STOP.json"
+        },
+        {
+          "fullName": "physical Docker \u2192 signed receiver \u2192 API completion A_H_R_POST_STOP_throw-after-stop_RECOVERS_A",
+          "title": "A_H_R_POST_STOP_throw-after-stop_RECOVERS_A",
+          "receiptFile": "A_H_R_POST_STOP_THROW_RECOVERS_A.json"
+        },
+        {
+          "fullName": "physical Docker \u2192 signed receiver \u2192 API completion A_H_R_POST_STOP_cancel-after-stop_RECOVERS_A",
+          "title": "A_H_R_POST_STOP_cancel-after-stop_RECOVERS_A",
+          "receiptFile": "A_H_R_POST_STOP_CANCEL_RECOVERS_A.json"
+        },
+        {
+          "fullName": "physical Docker \u2192 signed receiver \u2192 API completion A_H_R_LOST_REPLY_CACHE_RECONCILES_NO_EFFECTS",
+          "title": "A_H_R_LOST_REPLY_CACHE_RECONCILES_NO_EFFECTS",
+          "receiptFile": "A_H_R_LOST_REPLY_CACHE_RECONCILES_NO_EFFECTS.json"
         }
       ],
       "guardCases": [
@@ -581,6 +706,10 @@
           "title": "adds pull-never/owned caps and verifies their actual inspection before returning success"
         },
         {
+          "fullName": "physical Docker acceptance opt-in guard records exact temporary removal proof while retaining resource history",
+          "title": "records exact temporary removal proof while retaining resource history"
+        },
+        {
           "fullName": "physical Docker acceptance opt-in guard refuses observed missing/widened owned-container limits {\"cpu\":0,\"memory\":67108864,\"pids\":64} while retaining the exact cleanup ID",
           "title": "refuses observed missing/widened owned-container limits {\"cpu\":0,\"memory\":67108864,\"pids\":64} while retaining the exact cleanup ID"
         },
@@ -591,6 +720,38 @@
         {
           "fullName": "physical Docker acceptance opt-in guard refuses observed missing/widened owned-container limits {\"cpu\":500000000,\"memory\":67108864,\"pids\":0} while retaining the exact cleanup ID",
           "title": "refuses observed missing/widened owned-container limits {\"cpu\":500000000,\"memory\":67108864,\"pids\":0} while retaining the exact cleanup ID"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard final AHR acceptance source guards accepts two independently observed prepared image pins",
+          "title": "accepts two independently observed prepared image pins"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard final AHR acceptance source guards rejects a missing or unprepared historical image pin before Docker",
+          "title": "rejects a missing or unprepared historical image pin before Docker"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard final AHR acceptance source guards binds candidate H and recovery A to their independent observed image IDs",
+          "title": "binds candidate H and recovery A to their independent observed image IDs"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard final AHR acceptance source guards routes an authenticated cached receipt query before intent registration",
+          "title": "routes an authenticated cached receipt query before intent registration"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard final AHR acceptance source guards rejects a receipt query with the execution signature domain before lookup",
+          "title": "rejects a receipt query with the execution signature domain before lookup"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard final AHR acceptance source guards drops a terminal reply once and keeps unavailable cached evidence unresolved",
+          "title": "drops a terminal reply once and keeps unavailable cached evidence unresolved"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard final AHR acceptance source guards creates supported H with default revisions and production empty secret references",
+          "title": "creates supported H with default revisions and production empty secret references"
+        },
+        {
+          "fullName": "physical Docker acceptance opt-in guard final AHR acceptance source guards requires exact A and H version bodies at their observed physical endpoints",
+          "title": "requires exact A and H version bodies at their observed physical endpoints"
         },
         {
           "fullName": "physical Docker acceptance opt-in guard corrective Docker source guards rejects non-hosted runner environment undefined before runner",
@@ -745,9 +906,10 @@
   },
   "singleRestartTitle": "atomic execution PostgreSQL integration retains proof, command and canonical origin across an owned server restart",
   "dockerAuthoredOptOut": {
-    "guardPassExpected": 65,
-    "physicalNotRun": 8,
-    "acceptance": false
+    "guardCount": 74,
+    "physicalCount": 13,
+    "totalCount": 87,
+    "semantics": "74 mocked source guards executed; thirteen physical Docker cases are NOT RUN when physical flag0. PostgreSQL57/API12 opt-in cases remain NOT RUN."
   },
   "fixture": {
     "context": "scripts/testing/p2-fixture",
@@ -798,8 +960,8 @@
   },
   "preparedFrom": {
     "pgManifestSha256": "e5456cb0d6c3dc6ea4d12e142d1595584612085887528d1300da12700c381432",
-    "dockerFrozenSha256": "22a0aee290a957436015c218e0e7d49077afcd452ffadba60fd6db0cdd5e8e97",
-    "status": "SOURCE PREPARATION ONLY; final A/H/R and PG adaptation pending; all physical NOT RUN"
+    "dockerFrozenSha256": "70e4ccbffaf15af3c5104d68990b090733e1d2d5fcd2ff3d2a11fd1f33ebe293",
+    "status": "FINAL SOURCE CANDIDATE; physical Docker/PostgreSQL/CI NOT RUN; exact reports and disposable runtime are required"
   },
   "sourceFiles": [
     ".github/workflows/baseline.yml",
@@ -859,7 +1021,8 @@
     "scripts/testing/p2-fixture/a/version",
     "scripts/testing/p2-fixture/base-image.json",
     "scripts/testing/p2-fixture/h/version",
-    "scripts/testing/p2-fixture/healthz"
+    "scripts/testing/p2-fixture/healthz",
+    "packages/db/migrations/0018_deployment_rollback_command.sql"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,

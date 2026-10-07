@@ -180,10 +180,16 @@ class ProspectivePhysicalGuards(unittest.TestCase):
                         {"kind":"harness-injected-wire-tamper","tamper":tamper,"commandId":"command-1","deploymentId":"deployment-1","correlationId":"correlation-1"},
                         {"kind":"receiver-rejection","commandId":"command-1","deploymentId":"deployment-1","correlationId":"correlation-1", "requestAuthenticated":tamper!="unsigned",
                          "reason":"agent authentication failed" if tamper=="unsigned" else "INITIAL immutable execution binding changed"},
-                        {"kind":"api-response","action":"INITIAL","statusCode":502,"body":{"error":{"code":"DEPLOY_DISPATCH_FAILED","correlationId":"correlation-1"}}}]
+                        {"kind":"api-response","action":"INITIAL","statusCode":502,"body":{"error":{"code":"DEPLOY_OUTCOME_UNKNOWN","correlationId":"correlation-1"}}}]
                 resources=resources[-1:]
             values.append({"status":"PASS","physicalDocker":True,"postgres":False,"grantId":self.grant["grantId"],"owner":self.grant["owner"],
                            "projectId":self.grant["projectId"],"receiptFile":M["suites"]["docker"]["physicalCases"][index]["receiptFile"],"events":events,"resources":resources})
+        for index, receipt in enumerate(values):
+            if receipt["receiptFile"].startswith("A_H_R_"):
+                fixture=FinalAhrAcceptanceGuards();fixture.grant=self.grant
+                generated=fixture.outcome(recovered="RECOVERS_A" in receipt["receiptFile"],cached="CACHE_RECONCILES" in receipt["receiptFile"],base=values[0])
+                generated["receiptFile"]=receipt["receiptFile"];values[index]=generated
+                self.grant.update(images=generated["images"],imageConfigs={k:v["observed"]["id"] for k,v in fixture.journal()["derivedImages"].items()})
         return values
     def test_missing_stale_job_engine_duplicate_or_unproven_physical_evidence_is_rejected(self):
         for fault in ("missing","duplicate","wrong-job","wrong-engine","no-effects","no-proof","cleanup-blocked","widened-cap"):
@@ -200,7 +206,7 @@ class ProspectivePhysicalGuards(unittest.TestCase):
                 self.assertFalse(H["verify_physical"](receipts,self.grant))
     def test_characterizes_distinct_raw_tamper_and_success_receipt_unit_fixtures(self):
         self.assertTrue(H["verify_physical"](self.receipts(),self.grant))
-        for receipt in self.receipts()[-2:]:
+        for receipt in [value for value in self.receipts() if value["receiptFile"].startswith("WIRE_")]:
             self.assertEqual([r["kind"] for r in receipt["resources"]],["network"])
             self.assertEqual(next(e for e in receipt["events"] if e["kind"]=="api-response")["statusCode"],502)
     def test_characterizes_valid_declared_job_without_implicit_runtime_effects(self):
@@ -248,7 +254,7 @@ class CorrectivePhysicalGuards(unittest.TestCase):
 
     def realistic_receipts(self):
         receipts = self.receipts()
-        for receipt in receipts[-2:]:
+        for receipt in [value for value in receipts if value["receiptFile"].startswith("WIRE_")]:
             event = next(e for e in receipt["events"] if e["kind"] == "api-response")
             event["body"]["error"]["message"] = "The agent rejected the deployment command"
         return receipts
@@ -260,10 +266,11 @@ class CorrectivePhysicalGuards(unittest.TestCase):
         for fault in ("status", "code", "correlationId", "receiver-correlation"):
             with self.subTest(fault=fault):
                 receipts = self.realistic_receipts()
-                response = next(e for e in receipts[-1]["events"] if e["kind"] == "api-response")
+                wire = next(value for value in receipts if value["receiptFile"].startswith("WIRE_signed-other-initial"))
+                response = next(e for e in wire["events"] if e["kind"] == "api-response")
                 if fault == "status": response["statusCode"] = 200
                 elif fault == "receiver-correlation":
-                    next(e for e in receipts[-1]["events"] if e["kind"] == "receiver-rejection")["correlationId"] = "foreign"
+                    next(e for e in wire["events"] if e["kind"] == "receiver-rejection")["correlationId"] = "foreign"
                 else: response["body"]["error"][fault] = "foreign"
                 self.assertFalse(H["verify_physical"](receipts, self.grant))
 
@@ -386,6 +393,91 @@ class CorrectivePhysicalGuards(unittest.TestCase):
 
     def test_dripping_http_body_settles_within_the_single_supplied_deadline(self):
         self.clocked_http(headers_drip=False)
+
+class FinalAhrAcceptanceGuards(unittest.TestCase):
+    """Final source guards only: no native subprocess, Docker, sockets or PostgreSQL."""
+    setUp = ProspectivePhysicalGuards.setUp
+    receipts = ProspectivePhysicalGuards.receipts
+
+    def journal(self):
+        return {"derivedImages": {flavor: {"reference": "127.0.0.1:49172/deploylite-p2/" + flavor + "@sha256:" + digest * 64,
+            "observed": {"id": "sha256:" + config * 64, "repoDigests": ["127.0.0.1:49172/deploylite-p2/" + flavor + "@sha256:" + digest * 64], "platform": "linux/amd64", "flavor": flavor}}
+            for flavor, digest, config in [("a", "e", "b"), ("h", "f", "c")]}}
+
+    def harness(self, journal=None):
+        return H["harness_manifest"](self.grant, journal or self.journal(), Path("/tmp/recorded-empty-config"), Path("/tmp/recorded-credentials.json"), Path("/tmp/recorded-receipts"), [], [])
+
+    def test_requires_both_grant_pins_to_equal_independently_prepared_journal_image_identities(self):
+        harness = self.harness()
+        self.assertEqual(harness.get("images"), {k: v["reference"] for k, v in self.journal()["derivedImages"].items()})
+        self.assertEqual(harness["image"], harness["images"]["a"])
+
+    def outcome(self, recovered=False, cached=False, base=None):
+        receipt = copy.deepcopy(base if base is not None else self.receipts()[0]); receipt["receiptFile"] = "A_H_R_PROOF_REPLAY_STOP.json"
+        A, H_id, R = [str(i) * 8 + "-" + str(i) * 4 + "-4" + str(i) * 3 + "-8" + str(i) * 3 + "-" + str(i) * 12 for i in (3, 4, 5)]
+        images = {k: v["reference"] for k,v in self.journal()["derivedImages"].items()}
+        values = []
+        for execution, image, physical, digest, origin, config in [(A, images["a"], "a"*64, "e", A, "b"), (H_id, images["h"], "b"*64, "f", H_id, "c"), (R, images["h"], "c"*64, "f", H_id, "c")]:
+            proof = {"schemaVersion": 1, "candidateId": execution+":candidate:command", "deploymentId": execution, "projectId": receipt["projectId"], "runtimeHost": "22222222-2222-4222-8222-222222222222", "snapshotOriginId": origin, "snapshotHash": ("d" if origin==A else "c")*64, "effectiveImageDigest": "sha256:"+digest*64, "container": "deploylite-active-"+execution, "containerId": physical, "network": "p2v-fixture", "hostPort":49170,"containerPort":8080}
+            value={"id":execution,"projectId":receipt["projectId"],"agentId":proof["runtimeHost"],"status":"succeeded","snapshotOriginId":origin,"snapshotHash":proof["snapshotHash"],"executionReceipt":proof}
+            if execution==R:value.update(sourceDeploymentId=H_id,activeDeploymentId=A)
+            values.append(value)
+            receipt["events"].append({"kind":"physical-observation","deploymentId":execution,"observation":{"id":physical,"owner":receipt["owner"],"projectId":receipt["projectId"],"imageId":"sha256:"+config*64,"effectiveImage":image}})
+            receipt["events"].append({"kind":"owned-container-budget","containerId":physical,"id":physical,"cpu":500000000,"memory":67108864,"pids":64})
+            receipt["resources"].append({"kind":"container","id":physical,"owner":receipt["owner"],"project":receipt["projectId"]})
+            receipt["events"].append({"kind":"cleanup-receipt","resource":"container","id":physical,"verifiedLabels":True,"removed":True})
+        command={"id":"original-command","action":"deployment.rollback","status":"completed","correlationId":"original-correlation","executionAuthority":{"sourceLease":{"deploymentId":A}},"result":{"action":"deployment.rollback","commandId":"original-command","projectId":receipt["projectId"],"activeDeploymentId":A,"sourceDeploymentId":H_id,"deploymentId":R,"snapshotHash":values[1]["snapshotHash"],"imageReference":images["h"],"executionStatus":"succeeded","status":"completed"}}
+        receipt.update(images=images, completionState={"deployments":values,"commands":[command]})
+        receipt["events"][4]["body"]["data"]["deployment"]=copy.deepcopy(values[0])
+        for flavor, image in images.items():receipt["events"].append({"kind":"fixture-image-observation","flavor":flavor,"imageReference":image,"imageId":self.journal()["derivedImages"][flavor]["observed"]["id"]})
+        receipt["events"].append({"kind":"version-observation","deploymentId":A,"containerId":values[0]["executionReceipt"]["containerId"],"body":"deploylite-p2-fixture=A\n"})
+        receipt["events"].append({"kind":"version-observation","deploymentId":R,"containerId":values[2]["executionReceipt"]["containerId"],"body":"deploylite-p2-fixture=H\n"})
+        if recovered:
+            receipt["receiptFile"]="A_H_R_POST_STOP_THROW_RECOVERS_A.json"
+            values[2]["status"]="failed";values[2].pop("executionReceipt");command["result"]["executionStatus"]="failed"
+            receipt["events"].append({"kind":"recovery-bracket","prior":A,"priorPhysicalId":values[0]["executionReceipt"]["containerId"],"upperBoundMs":100})
+        if cached:
+            receipt["receiptFile"]="A_H_R_LOST_REPLY_CACHE_RECONCILES_NO_EFFECTS.json"
+            receipt["events"].append({"kind":"cached-receipt-reconciliation","commandId":"original-command","correlationId":"original-correlation","requestId":"fresh-request","before":{"docker":3,"dispatch":1,"claim":1,"wait":0,"release":0},"after":{"docker":3,"dispatch":1,"claim":1,"wait":0,"release":0}})
+        return receipt
+
+    def verified(self, receipt):
+        from unittest.mock import patch
+        with patch.dict(H["MANIFEST"]["suites"]["docker"], {"physicalCases":[{"receiptFile":receipt["receiptFile"]}]}):
+            return H["verify_physical"]([receipt],{**self.grant, "images": {flavor: value["reference"] for flavor,value in self.journal()["derivedImages"].items()}, "imageConfigs": {flavor: value["observed"]["id"] for flavor,value in self.journal()["derivedImages"].items()}})
+
+    def test_rejects_copied_A_evidence_for_H_even_when_labels_match(self):
+        receipt=self.outcome();self.assertTrue(self.verified(receipt), "valid complete fixture before copied observation")
+        observation=next(e for e in receipt["events"] if e["kind"]=="fixture-image-observation" and e["flavor"]=="h")
+        observation["imageId"]=self.journal()["derivedImages"]["a"]["observed"]["id"]
+        self.assertFalse(self.verified(receipt))
+
+    def test_rejects_rollback_proof_or_command_evidence_that_swaps_active_A_and_historical_H(self):
+        receipt=self.outcome();self.assertTrue(self.verified(receipt), "valid complete fixture before role tampering");command=receipt["completionState"]["commands"][0]
+        command["result"]["sourceDeploymentId"]=command["result"]["activeDeploymentId"]
+        self.assertFalse(self.verified(receipt))
+
+    def test_requires_observed_exact_version_bodies_and_retained_physical_A_after_recovery(self):
+        for field in ("physical_A", "version_H"):
+            with self.subTest(field=field):
+                receipt=self.outcome(recovered=field=="physical_A")
+                self.assertTrue(self.verified(receipt), "valid complete fixture before independent tampering")
+                if field=="physical_A":receipt["events"][-1]["priorPhysicalId"]="e"*64
+                else:receipt["events"][-1]["body"]="deploylite-p2-fixture=A\n"
+                self.assertFalse(self.verified(receipt))
+
+    def test_rejects_cache_reconciliation_with_additional_dispatch_claim_wait_release_or_Docker_effect(self):
+        for field in ("docker","dispatch","claim","wait","release"):
+            with self.subTest(field=field):
+                receipt=self.outcome(cached=True);self.assertTrue(self.verified(receipt), "valid complete cache fixture before count tampering");receipt["events"][-1]["after"][field]+=1
+                self.assertFalse(self.verified(receipt))
+
+    def test_retains_original_deadline_and_denies_expired_or_unidentified_cleanup_without_PASS(self):
+        self.fake.now=61
+        for closure in ({"kind":"recovery","deadline":121},{"kind":"cleanup","deadline":92,"ownedIds":[ID]}, {"kind":"cleanup","deadline":62,"ownedIds":[]}):
+            with self.subTest(closure=closure):
+                with self.assertRaises(H["PhysicalError"]):H["run_effect"](["docker","rm","--force",ID],self.grant,self.fake,closure)
+        self.assertEqual(self.fake.calls,[])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
