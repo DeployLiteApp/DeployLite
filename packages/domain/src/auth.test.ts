@@ -95,10 +95,13 @@ describe("metadata repository contracts", () => {
         return project;
       },
       async findById(id) {
-        return id === "project-1" ? { id, name: "Project", repoUrl: "https://github.com/example/project", defaultBranch: "main" } : null;
+        return id === "project-1" ? { id, name: "Project", repoUrl: "https://github.com/example/project", defaultBranch: "main", buildCommand: null, runCommand: null, port: null, description: null, imageTag: null } : null;
       },
       async list() {
-        return [{ id: "project-1", name: "Project", repoUrl: "https://github.com/example/project", defaultBranch: "main" }];
+        return [{ id: "project-1", name: "Project", repoUrl: "https://github.com/example/project", defaultBranch: "main", buildCommand: null, runCommand: null, port: null, description: null, imageTag: null }];
+      },
+      async remove() {
+        throw new Error("not used");
       }
     };
     const agents: AgentRepository = {
