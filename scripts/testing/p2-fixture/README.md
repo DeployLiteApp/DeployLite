@@ -36,8 +36,11 @@ claims; source checks are separate from those physical observations.
 
 ## Prospective isolated preparation
 
-No Docker operation is authorized by this source. The user must separately
-authorize resources and operations; root verifies and executes that scope. The
+No Docker operation is authorized by this source. Actual execution needs
+authorized resources and operations; root verifies and executes that scope.
+The authorized normal P2 PR delivery includes the reviewed disposable hosted
+job. Local Docker/PostgreSQL services and production operations remain outside
+that authorization. The
 grant must identify the disposable native Linux engine/socket/ID, owner/run IDs,
 expiry, platform and resource budget before build/pull/run/push or removal.
 The current proposal caps the owned registry at 0.5 CPU/256 MiB and each
@@ -82,9 +85,14 @@ seconds for healthy startup, then remove its exact recorded container ID.
 Publish an acceptance manifest only after both inspections and bodies pass;
 otherwise leave derived pins pending. A preloaded fixture from the same source
 may skip preparation only when its exact RepoDigest, platform, intrinsic health
-configuration and source provenance are already verified. The existing physical
-harness currently accepts one image; A/H/R scenarios need root's later harness
-sequencing and are not claimed by these sources.
+configuration and source provenance are already verified. The final harness
+requires independently prepared A/H pins and image configuration IDs. It creates
+historical H through INITIAL and confirmed Stop, then active A; rollback creates
+new R from H while retaining A for bounded recovery. Exact A/H response bodies,
+original cached outcomes and zero extra effects are checked by13 opt-in physical
+cases. These cases remain NOT RUN;74 mocked guards and47 pure helper methods
+prove only their source boundaries. PostgreSQL57/API12 cases retain the single
+owned server restart and use recording Docker, which does not prove an engine.
 
 The user authorizes resources/operations. Root owns review, commit and acceptance
 manifests, and verifies/executes only that authorized scope.
