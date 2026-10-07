@@ -1475,7 +1475,7 @@ describe.skipIf(process.env.DEPLOYLITE_DOCKER_INTEGRATION !== "1").sequential("p
     expect([...f.memory.completion.commands.values()].find((row) => row.action === "deployment.stop")?.status).toBe("eligible");
   }), 180_000);
   it("STOP_LOST_REPLY_RETAINS_EXCLUSION", async () => physicalCase("STOP_LOST_REPLY_RETAINS_EXCLUSION", async (f) => {
-    const A = await f.initial(), historical = structuredClone(A); f.fault = "lost-stop-reply";
+    const A = await f.initial(), historical = structuredClone(A); f.fault = "lost-stop-reply"; f.cacheUnavailable = true;
     const confirmStop = await f.confirm("stop", A, "lost-stop"); const response = await confirmStop();
     expect(response.statusCode).toBe(502); expect(response.json().error.code).toBe("DEPLOY_STOP_OUTCOME_UNKNOWN");
     expect((await f.observe(A, false)).running).toBe(false); expect(await f.memory.deployments.findById(A.id)).toEqual(historical);
@@ -1486,9 +1486,12 @@ describe.skipIf(process.env.DEPLOYLITE_DOCKER_INTEGRATION !== "1").sequential("p
     const stop = [...f.memory.completion.commands.values()].find((row) => row.action === "deployment.stop")!;
     expect(stop.status).toBe("dispatching"); expect(stop.result).toBeNull(); expect(stop.executionAuthority).toBeDefined();
     f.event("unresolved-authority", { command: stop, receiptReconciliation: "PENDING" });
+    await f.cachedRetry((id) => f.request("stop", A, "lost-stop", undefined, id), A.id, stop.id);
+    expect([...f.memory.completion.commands.values()].find((row) => row.id === stop.id)?.status).toBe("completed");
+    expect(await f.memory.deployments.findById(A.id)).toEqual(historical);
   }), 180_000);
   it("REPLACEMENT_LOST_REPLY_RETRY_NO_EFFECTS", async () => physicalCase("REPLACEMENT_LOST_REPLY_RETRY_NO_EFFECTS", async (f) => {
-    const A = await f.initial(); f.fault = "lost-replacement-reply";
+    const A = await f.initial(); f.fault = "lost-replacement-reply"; f.cacheUnavailable = true;
     const response = await (await f.confirm("redeploy", A, "lost-B"))(); expect(response.statusCode).toBe(502);
     const B = (await f.memory.deployments.list()).find((value) => value.sourceDeploymentId === A.id)!;
     expect(B.status).toBe("running"); expect(B.executionReceipt).toBeUndefined();
@@ -1500,9 +1503,59 @@ describe.skipIf(process.env.DEPLOYLITE_DOCKER_INTEGRATION !== "1").sequential("p
     expect(f.dockerCount()).toBe(count);
     expect([...f.memory.completion.commands.values()][0]?.status).toBe("dispatching");
     f.event("unresolved-authority", { receiptReconciliation: "PENDING", actualActiveExecution: B.id });
-    // Received agent proof is used only for observation here, never saved as API proof or reconciled by the harness.
+    const command = [...f.memory.completion.commands.values()][0]!;
+    const reconciled = await f.cachedRetry((id) => f.request("redeploy", A, "lost-B", undefined, id), B.id, command.id);
+    expect(reconciled.json().data.deployment.executionReceipt).toEqual(receivedProof);
+    await f.observe(reconciled.json().data.deployment);
   }), 180_000);
   it.each(["unsigned", "signed-other-initial"] as const)("WIRE_%s_REJECTS_BEFORE_EFFECTS", async (tamper) => physicalCase(`WIRE_${tamper}_REJECTS_BEFORE_EFFECTS`, async (f) => {
     await assertWireTamperRejected(f, tamper);
   }), 180_000);
+  it("INITIAL_LOST_REPLY_CACHE_RECONCILES_NO_EFFECTS", async () => physicalCase("INITIAL_LOST_REPLY_CACHE_RECONCILES_NO_EFFECTS", async (f) => {
+    f.fault = "lost-initial-reply"; f.cacheUnavailable = true;
+    const first = await f.initialRequest("a", "lost-initial"); expect(first.statusCode, first.body).toBe(502);
+    expect(first.json().error.code).toBe("DEPLOY_OUTCOME_UNKNOWN");
+    const A = (await f.memory.deployments.list()).find((value) => value.projectId === f.projectId)!;
+    expect(A).toMatchObject({ status: "running", finishedAt: null }); expect(A.executionReceipt).toBeUndefined();
+    const count = f.cacheCounts(); expect((await f.initialRequest("a", "lost-initial")).statusCode).toBe(200); expect(f.cacheCounts()).toEqual(count);
+    const response = await f.cachedRetry((id) => f.initialRequest("a", "lost-initial", id), A.id, null);
+    await f.assertVersion(response.json().data.deployment, "a"); expect(f.memory.completion.commands.size).toBe(0);
+  }), 180_000);
+  it("A_H_R_PROOF_REPLAY_STOP", async () => physicalCase("A_H_R_PROOF_REPLAY_STOP", async (f) => {
+    const { A, H, R, confirmation } = await f.prepareAhr(), history = structuredClone([A, H]);
+    const offset = f.events.length, response = await f.rollback(A, H, "A-H-R", confirmation);
+    expect(response.statusCode, response.body).toBe(200); const restored = response.json().data.deployment as Deployment;
+    expect(restored).toMatchObject({ id: R, status: "succeeded", activeDeploymentId: A.id, sourceDeploymentId: H.id, snapshotOriginId: H.snapshotOriginId, snapshotHash: H.snapshotHash });
+    expect(restored.executionReceipt!.containerId).not.toBe(A.executionReceipt!.containerId); expect(restored.executionReceipt!.containerId).not.toBe(H.executionReceipt!.containerId);
+    await f.assertVersion(restored, "h");
+    const stop = f.events.slice(offset).find((event) => event.kind === "physical-owned-stop" && event.containerId === A.executionReceipt!.containerId)!;
+    const upper = performance.now() - Number(stop.lastHealthyProbeBegin); expect(upper).toBeLessThanOrEqual(policy.maxOutageMs);
+    f.event("outage-bracket", { source: A.id, execution: R, lowerMonoMs: stop.lastHealthyProbeBegin, upperBoundMs: upper });
+    expect(await Promise.all(history.map((value) => f.memory.deployments.findById(value.id)))).toEqual(history);
+    const command = [...f.memory.completion.commands.values()].find((row) => row.action === "deployment.rollback")!;
+    expect(command).toMatchObject({ status: "completed", executionAuthority: { sourceLease: { deploymentId: A.id } }, result: { activeDeploymentId: A.id, sourceDeploymentId: H.id, deploymentId: R, status: "completed" } });
+    const count = f.cacheCounts(); expect((await f.rollback(A, H, "A-H-R")).statusCode).toBe(200); expect(f.cacheCounts()).toEqual(count);
+    expect((await (await f.confirm("stop", restored, "stop-R"))()).statusCode).toBe(200);
+    expect((await f.observe(restored, false)).running).toBe(false); expect(await f.memory.deployments.findById(R)).toEqual(restored);
+  }), 240_000);
+  it.each(["throw-after-stop", "cancel-after-stop"] as const)("A_H_R_POST_STOP_%s_RECOVERS_A", async (fault) => physicalCase(fault === "throw-after-stop" ? "A_H_R_POST_STOP_THROW_RECOVERS_A" : "A_H_R_POST_STOP_CANCEL_RECOVERS_A", async (f) => {
+    const { A, H, R, confirmation } = await f.prepareAhr(), history = structuredClone([A, H]); f.fault = fault; f.faultArmed = true;
+    const response = await f.rollback(A, H, "A-H-R", confirmation); expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().data.deployment).toMatchObject({ id: R, status: fault === "cancel-after-stop" ? "canceled" : "failed", activeDeploymentId: A.id, sourceDeploymentId: H.id });
+    expect(response.json().data.deployment.executionReceipt).toBeUndefined(); await f.assertRecovery(A); await f.assertVersion(A, "a");
+    expect(f.replies.at(-1)).toMatchObject({ receipt: { proven: false, rollback: { target: f.manifest.images.a, result: "restored" } } });
+    expect(await Promise.all(history.map((value) => f.memory.deployments.findById(value.id)))).toEqual(history);
+  }), 240_000);
+  it("A_H_R_LOST_REPLY_CACHE_RECONCILES_NO_EFFECTS", async () => physicalCase("A_H_R_LOST_REPLY_CACHE_RECONCILES_NO_EFFECTS", async (f) => {
+    const { A, H, R, confirmation } = await f.prepareAhr(); f.fault = "lost-replacement-reply"; f.cacheUnavailable = true;
+    const response = await f.rollback(A, H, "A-H-R", confirmation); expect(response.statusCode, response.body).toBe(502);
+    expect(await f.memory.deployments.findById(R)).toMatchObject({ status: "running", finishedAt: null });
+    const command = [...f.memory.completion.commands.values()].find((row) => row.action === "deployment.rollback")!;
+    expect(command).toMatchObject({ status: "dispatching", result: { activeDeploymentId: A.id, sourceDeploymentId: H.id } });
+    const count = f.cacheCounts(); expect((await f.rollback(A, H, "A-H-R")).statusCode).toBe(202); expect(f.cacheCounts()).toEqual(count);
+    const completed = await f.cachedRetry((id) => f.rollback(A, H, "A-H-R", undefined, id), R, command.id);
+    await f.assertVersion(completed.json().data.deployment, "h");
+    expect(completed.json().data.deployment.executionReceipt).toEqual(record(record(f.replies.at(-1)).receipt).executionReceipt);
+  }), 240_000);
+
 });
