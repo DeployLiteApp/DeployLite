@@ -1,32 +1,40 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import type { ComposePreviewV1 } from "@deploylite/contracts";
+import type { ComposePreviewV1, ComposeRevisionV1 } from "@deploylite/contracts";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Textarea } from "@/components/ui/textarea";
-import { previewProjectCompose } from "./compose-preview-client";
+import { previewProjectCompose, saveProjectCompose } from "./compose-preview-client";
+
+import { ComposeRevisionsPanel } from "./compose-revisions-panel";
 
 export function ComposePreviewCard({ projectId, apiBaseUrl }: { projectId: string; apiBaseUrl: string | null }) {
   const [document, setDocument] = useState("");
   const [preview, setPreview] = useState<ComposePreviewV1 | null>(null);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [binding, setBinding] = useState<{ composeId: string; expectedRevisionId: string } | null>(null);
+  const [savedDigest, setSavedDigest] = useState<string | null>(null);
+  const [savedStatus, setSavedStatus] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
+  const keys = useRef(new Map<string, string>());
   const revision = useRef(0);
   const request = useRef<AbortController | null>(null);
 
   useEffect(() => {
     revision.current += 1; request.current?.abort(); request.current = null;
-    setDocument(""); setPreview(null); setError(""); setPending(false);
+    setDocument(""); setPreview(null); setError(""); setPending(false); setSaving(false); setBinding(null); setSavedDigest(null); setSavedStatus(""); keys.current.clear();
     return () => { revision.current += 1; request.current?.abort(); request.current = null; };
   }, [projectId, apiBaseUrl]);
 
   function edit(value: string) {
-    revision.current += 1; setDocument(value); setPreview(null); setError("");
+    revision.current += 1; setDocument(value); setPreview(null); setError(""); setSavedStatus("");
   }
   function clear() {
-    edit(""); request.current?.abort(); request.current = null; setPending(false);
+    edit(""); request.current?.abort(); request.current = null; setPending(false); setSaving(false);
   }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -39,6 +47,30 @@ export function ComposePreviewCard({ projectId, apiBaseUrl }: { projectId: strin
     request.current = null; setPending(false);
     if (revision.current !== token) return;
     if (result.kind === "ready") setPreview(result.preview); else setError(result.message);
+  }
+
+  function newConfiguration() { clear(); setBinding(null); setSavedDigest(null); keys.current.clear(); }
+  function load(saved: ComposeRevisionV1, latestRevisionId: string) {
+    clear(); edit(saved.preview.canonicalDocument);
+    setBinding({ composeId: saved.composeId, expectedRevisionId: latestRevisionId }); setSavedDigest(null);
+  }
+  async function save() {
+    if (!preview || request.current || preview.configDigest === savedDigest) return;
+    const token = revision.current;
+    const intent = JSON.stringify([binding, preview.configDigest]);
+    let idempotencyKey = keys.current.get(intent);
+    if (!idempotencyKey) { idempotencyKey = crypto.randomUUID(); keys.current.set(intent, idempotencyKey); }
+    const controller = new AbortController(); request.current = controller;
+    setSaving(true); setError(""); setSavedStatus("");
+    const result = await saveProjectCompose({ projectId, apiBaseUrl, document, expectedPreviewDigest: preview.configDigest,
+      composeId: binding?.composeId ?? null, expectedRevisionId: binding?.expectedRevisionId ?? null, idempotencyKey, signal: controller.signal });
+    if (request.current !== controller) return;
+    request.current = null; setSaving(false);
+    if (result.kind === "ready") setRefreshKey((value) => value + 1);
+    if (revision.current !== token) return;
+    if (result.kind === "error") { setError(result.message); return; }
+    setBinding({ composeId: result.data.revision.composeId, expectedRevisionId: result.data.revision.id });
+    setSavedDigest(result.data.revision.preview.configDigest); setSavedStatus(`Revision ${result.data.revision.number} saved.`);
   }
 
   return (
@@ -55,14 +87,17 @@ export function ComposePreviewCard({ projectId, apiBaseUrl }: { projectId: strin
           </Field>
           <p id="compose-preview-help" className="text-sm text-muted-foreground">Use secret references such as {"${APP_TOKEN}"}; never paste secret values. The draft stays in this page and is cleared when you leave. Use one document of at most 64 KiB; tags, anchors, aliases and merge keys are unsupported.</p>
           <div className="flex flex-wrap gap-3">
-            <Button type="submit" disabled={pending || !document.trim() || !apiBaseUrl}>{pending ? "Previewing..." : "Preview Compose"}</Button>
+            <Button type="submit" disabled={pending || saving || !document.trim() || !apiBaseUrl}>{pending ? "Previewing..." : "Preview Compose"}</Button>
+            <Button type="button" disabled={!preview || pending || saving || !apiBaseUrl || preview.configDigest === savedDigest} onClick={() => void save()}>{saving ? "Saving..." : "Save revision"}</Button>
             <Button type="button" variant="outline" onClick={clear}>Clear draft</Button>
+            <Button type="button" variant="outline" onClick={newConfiguration}>New configuration</Button>
           </div>
           <p id="compose-preview-status" role={error ? "alert" : "status"} aria-live="polite" className={error ? "text-sm text-destructive" : "text-sm text-muted-foreground"}>
-            {error || (pending ? "Checking the document..." : !apiBaseUrl ? "Compose preview is unavailable until the project API is configured." : "Preview only. No resources were created and no deployment was started.")}
+            {error || savedStatus || (saving ? "Saving configuration..." : pending ? "Checking the document..." : !apiBaseUrl ? "Compose preview is unavailable until the project API is configured." : "Preview only. No resources were created and no deployment was started.")}
           </p>
         </form>
         {preview ? <ComposePreviewPlan preview={preview} /> : null}
+        <ComposeRevisionsPanel projectId={projectId} apiBaseUrl={apiBaseUrl} refreshKey={refreshKey} onLoad={load} />
       </CardContent>
     </Card>
   );

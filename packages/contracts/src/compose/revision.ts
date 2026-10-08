@@ -55,3 +55,26 @@ export const composeRevisionHistoryPageSchema = z.object({
 }).strict();
 export type ComposeRevisionMetadataV1 = z.infer<typeof composeRevisionMetadataSchema>;
 export type ComposeRevisionHistoryPageV1 = z.infer<typeof composeRevisionHistoryPageSchema>;
+
+export const composeRevisionSaveRequestSchema = z.object({
+  document: z.string().min(1).max(65_536), expectedPreviewDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  composeId: id.nullable(), expectedRevisionId: id.nullable()
+}).strict().refine((input) => (input.composeId === null) === (input.expectedRevisionId === null));
+export const composeRevisionSaveCommandResultSchema = z.object({
+  commandId: id, action: z.literal("project.update"), operation: z.literal("compose.revision.save"), projectId: id,
+  composeId: id, revisionId: id, revisionNumber: z.number().int().min(1).max(2_147_483_647),
+  configDigest: z.string().regex(/^[a-f0-9]{64}$/), correlationId: z.string().min(1).max(200), status: z.literal("completed")
+}).strict();
+export const composeRevisionSavedSchema = z.object({ revision: composeRevisionSchema, commandId: id, idempotent: z.boolean() }).strict();
+export const composeResourceMetadataSchema = z.object({
+  id, projectId: id, latestRevisionId: id, latestNumber: z.number().int().min(1).max(2_147_483_647),
+  updatedAt: z.string().datetime({ offset: true }), serviceNames: z.array(composePreviewSchema.shape.services.element.shape.name).min(1).max(32)
+}).strict();
+export const composeResourcePageSchema = z.object({
+  resources: z.array(composeResourceMetadataSchema).max(100), total: z.number().int().min(0).max(2_147_483_647),
+  limit: z.number().int().min(1).max(100), offset: z.number().int().min(0).max(1_000_000)
+}).strict();
+export type ComposeRevisionSaveCommandResult = z.infer<typeof composeRevisionSaveCommandResultSchema>;
+export type ComposeRevisionSaved = z.infer<typeof composeRevisionSavedSchema>;
+export type ComposeResourceMetadata = z.infer<typeof composeResourceMetadataSchema>;
+export type ComposeResourcePage = z.infer<typeof composeResourcePageSchema>;

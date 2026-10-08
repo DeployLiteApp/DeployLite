@@ -1,3 +1,6 @@
+import { DbComposeRevisionSaveStore } from "@deploylite/db";
+import { registerComposeRevisionSaveRoutes } from "./compose-revision-save-route.js";
+import type { ComposeRevisionSaveStore } from "@deploylite/domain";
 import { registerComposeRevisionReadRoutes, type ComposeRevisionReadCapability } from "./compose-revision-read-route.js";
 import { registerComposePreviewRoute } from "./compose-preview-route.js";
 import { claimDeploymentAuthority, validateStopCompletion, validateDeploymentAuthority, validateInitialExecution } from "@deploylite/domain";
@@ -58,6 +61,7 @@ import {
   PolicyEvaluator,
   createConfirmation,
   createControlCommand,
+  resolveControlCommandInMemory,
   digestControlInput,
   scopeKey,
   toSafeAuthUser,
@@ -268,7 +272,9 @@ class InMemoryAuditRepository implements AuditRepository {
   readonly events: AuditEvent[] = [];
   readonly inputs: AuditEventInput[] = [];
 
-  async append(input: AuditEventInput): Promise<AuditEvent> {
+  async append(input: AuditEventInput): Promise<AuditEvent> { return this.appendSynchronous(input); }
+
+  appendSynchronous(input: AuditEventInput): AuditEvent {
     const safe = createAuditLogRecord({
       actorId: input.actorUserId === null ? "anonymous" : input.actorUserId ?? "system",
       action: input.action,
@@ -480,6 +486,7 @@ type PlatformRepositoryOptions = {
   deployments: DeploymentRepository;
   projects: ProjectRepository;
   composeRevisionReads?: ComposeRevisionReadCapability;
+  composeRevisionSaves?: ComposeRevisionSaveStore;
   envMetadata?: EnvVariableMetadataRepository;
   envSecretValues?: EnvSecretValueRepository;
   envSecretCipher?: EnvSecretCipher;
@@ -603,7 +610,7 @@ function createApiState(env: EnvSecretKeySource, overrides: Partial<PlatformRepo
   const controlDeletes = overrides.controlDeletes ?? memory?.controls ?? new InMemoryControlDeleteRepository(projects, audit ?? new InMemoryAuditRepository(), deployments);
   const agentStatus = new AgentStatusService(agents);
   const deployRunner = new DeployRunner(deployments, envMetadata, agentStatus, envSecretCipher);
-  return { agents, deployments, executionCompletion, projects, composeRevisionReads: overrides.composeRevisionReads, envMetadata, envSecretValues, envSecretCipher, agentStatus, deployRunner, runtimeActivationDispatcher, deploymentDispatcher, deploymentStopDispatcher, snapshots, controlDeletes, controlRedeploy: overrides.controlRedeploy ?? memory?.controls ?? (controlDeletes as unknown as ControlRedeployRepository), controlRollback: overrides.controlRollback ?? memory?.controls ?? (typeof (controlDeletes as any).executeConfirmedDeploymentRollback === "function" ? controlDeletes as unknown as ControlRollbackRepository : undefined), controlGrants: overrides.controlGrants ?? new InMemoryControlGrantRepository() };
+  return { agents, deployments, executionCompletion, projects, composeRevisionReads: overrides.composeRevisionReads ?? overrides.composeRevisionSaves, composeRevisionSaves: overrides.composeRevisionSaves, envMetadata, envSecretValues, envSecretCipher, agentStatus, deployRunner, runtimeActivationDispatcher, deploymentDispatcher, deploymentStopDispatcher, snapshots, controlDeletes, controlRedeploy: overrides.controlRedeploy ?? memory?.controls ?? (controlDeletes as unknown as ControlRedeployRepository), controlRollback: overrides.controlRollback ?? memory?.controls ?? (typeof (controlDeletes as any).executeConfirmedDeploymentRollback === "function" ? controlDeletes as unknown as ControlRollbackRepository : undefined), controlGrants: overrides.controlGrants ?? new InMemoryControlGrantRepository() };
 }
 
 class InMemoryControlGrantRepository implements ControlGrantRepository {
@@ -622,14 +629,7 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
       if (prior) { validateRollbackReservation(prior, command); return { command: structuredClone(prior), created: false }; }
       validateRollbackReservation(command, command);
     }
-    const key = `${command.actorId}:${command.action}:${scopeKey(command.scope)}:${command.idempotencyKey}`;
-    const existing = this.executionState.commands.get(key);
-    if (existing) {
-      if (existing.inputDigest !== command.inputDigest) throw new IdempotencyConflictError();
-      return { command: structuredClone(existing), created: false };
-    }
-    this.executionState.commands.set(key, structuredClone(command));
-    return { command: structuredClone(command), created: true };
+    return resolveControlCommandInMemory(this.executionState.commands, command);
   }
 
   async findByIdempotency(actorId: string, idempotencyKey: string, action: "deployment.redeploy" | "deployment.stop" | "deployment.rollback" = "deployment.redeploy"): Promise<ControlCommand | null> {
@@ -990,6 +990,7 @@ function createDbAuthAdapters(env: DeployLiteEnv, options: BuildApiAppOptions): 
   const db = options.db?.client ?? createDbClient(pool);
   const closePool = options.db?.closePool ?? closeDbPool;
   const deployments = options.state?.deployments ?? new DbDeploymentRepository(db);
+  const compose = options.state?.composeRevisionSaves ?? new DbComposeRevisionSaveStore(db);
 
   return {
     auth: {
@@ -1007,7 +1008,8 @@ function createDbAuthAdapters(env: DeployLiteEnv, options: BuildApiAppOptions): 
       deployments,
       executionCompletion: options.state?.executionCompletion ?? (deployments instanceof DbDeploymentRepository ? new DbDeploymentExecutionRepository(db) : undefined),
       projects: options.state?.projects ?? new DbProjectRepository(db),
-      composeRevisionReads: options.state?.composeRevisionReads,
+      composeRevisionReads: options.state?.composeRevisionReads ?? compose,
+      composeRevisionSaves: compose,
       envMetadata: options.state?.envMetadata ?? new DbEnvVariableMetadataRepository(db),
       envSecretValues: options.state?.envSecretValues ?? new DbEnvSecretValueRepository(db),
       snapshots: options.state?.snapshots ?? (deployments instanceof DbDeploymentRepository ? deployments : new DbDeploymentRepository(db)),
@@ -1237,6 +1239,7 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
   const requireAdminRole = createRolePreHandler(adapters, ["admin"]);
   registerComposePreviewRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerComposeRevisionReadRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, revisions: state.composeRevisionReads, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
+  registerComposeRevisionSaveRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, revisions: state.composeRevisionSaves, imagePolicy, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   // Audit history is an operator/admin concern. Read-only sessions are denied
   // by design so a passive role cannot enumerate every project + key change.
   const requireAuditReadRole = createRolePreHandler(adapters, ["admin", "operator"]);
@@ -1983,7 +1986,7 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
     if (!canonical || !activeProof.success || !historicalProof.success || !bound(active, activeProof.data) || !bound(historical, historicalProof.data) || historical.snapshotHash !== snapshot.hash || historical.snapshotOriginId !== snapshot.deploymentId || historicalProof.data.effectiveImageDigest !== digest || snapshot.projectId !== projectId || !snapshot.agentId || !snapshot.commitSha || createDeploymentPlan(snapshot).status !== "executable" || snapshot.configRevision !== "default" || snapshot.runtimeRevision !== "default" || snapshot.secretRefs.length !== 0 || snapshot.runtimePort !== project.port || activeProof.data.containerPort !== snapshot.runtimePort || historicalProof.data.containerPort !== snapshot.runtimePort || activeProof.data.hostPort !== historicalProof.data.hostPort || activeProof.data.network !== historicalProof.data.network) return reply.code(409).send(errorEnvelope(request, "ROLLBACK_SNAPSHOT_INELIGIBLE", "Historical state is outside the current supported runtime subset or binding."));
     let created = false;
     if (!command) {
-      try { const resolved = await controls.resolve(tentative); command = resolved.command; created = resolved.created; R = command.result!.deploymentId!; }
+      try { const resolved = await controls.resolve(tentative); command = resolved.command; created = resolved.created; if (command.result?.action !== "deployment.rollback") throw new Error("Rollback reservation result is unavailable."); R = command.result.deploymentId!; }
       catch (error) { if (error instanceof IdempotencyConflictError) return reply.code(409).send(errorEnvelope(request, error.code, error.message)); throw error; }
     }
     const confirmationId = getHeaderValue(request, "x-control-confirmation-id");
