@@ -206,7 +206,7 @@ The volume branch of C4 is still explicitly unsupported because changing a conta
 
 ## C8 disposable-VM rehearsal outline (not executed)
 
-Target tuple from Jerson's prior explicit test-VM authorization: project `apc-proyect`, instance `deploylite-vps-min-test`, ID `5740150028067718326`, zone `us-central1-a`, external IP `34.134.207.78`. It has not been revalidated in Google Cloud Console during this continuation. Moteles currently owns the Safari/Console window, so no browser session, SSH, VM, IP, tag, DNS, or service action was performed. No SSH attempt was made because a server fingerprint has not been independently verified.
+The exact disposable VM tuple remains in the private test-authorization context and must be revalidated in Google Cloud Console immediately before any run. It is intentionally not copied into this tracked document. No cloud session or VM action was performed during this continuation; no SSH attempt was made because a server fingerprint has not been independently verified.
 
 For the eventual joint review, use this bounded sequence:
 
