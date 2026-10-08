@@ -5,6 +5,7 @@ import { registerComposeRevisionReadRoutes, type ComposeRevisionReadCapability }
 import { registerComposeResourceCleanupRoutes, type ComposeResourceCleanupAccess, type ComposeResourceCleanupExecutionAccess } from "./compose-resource-cleanup-route.js";
 import { registerComposePreviewRoute } from "./compose-preview-route.js";
 import { registerComposeResourceInspectionRoutes, type ComposeResourceInspectionAccess } from "./compose-resource-inspection-route.js";
+import { COMPOSE_RESOURCE_PROJECT_AGENTS_ENV, createProjectScopedComposeResourceRuntime, parseComposeResourceProjectBindings, type ComposeResourceProjectBinding } from "./compose-resource-runtime.js";
 import { registerComposeNetworkAttachmentExecutionRoute, type ComposeNetworkAttachmentExecutionAccess } from "./compose-network-attachment-execution-route.js";
 import { registerComposeVolumeBackupPlanRoute, type ComposeVolumeBackupPlanAccess } from "./compose-volume-backup-plan-route.js";
 import { registerComposeVolumeBackupExecutionRoute, type ComposeVolumeBackupExecutionAccess } from "./compose-volume-backup-execution-route.js";
@@ -191,6 +192,7 @@ type BuildApiAppOptions = {
   imagePolicy?: ImageReferencePolicyV1;
   composeResourceInspection?: ReadonlyMap<string, ComposeResourceInspectionAccess>;
   composeNetworkAttachmentExecutions?: ReadonlyMap<string, ComposeNetworkAttachmentExecutionAccess>;
+  composeResourceProjectAgents?: readonly ComposeResourceProjectBinding[];
   composeVolumeBackupPlans?: ReadonlyMap<string, ComposeVolumeBackupPlanAccess>;
   composeVolumeBackupExecutions?: ReadonlyMap<string, ComposeVolumeBackupExecutionAccess>;
   composeResourceCleanupPlans?: ReadonlyMap<string, ComposeResourceCleanupAccess>;
@@ -2234,7 +2236,12 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
 }
 
 export async function buildApiApp(options: BuildApiAppOptions = {}): Promise<FastifyInstance> {
-  const env = parseDeployLiteEnv(options.env ?? process.env);
+  const sourceEnv = options.env ?? process.env;
+  const composeResourceProjectAgents = options.composeResourceProjectAgents ?? parseComposeResourceProjectBindings(sourceEnv[COMPOSE_RESOURCE_PROJECT_AGENTS_ENV]);
+  if (composeResourceProjectAgents.length > 0 && (options.composeResourceInspection || options.composeNetworkAttachmentExecutions)) {
+    throw new Error("Compose resource project configuration cannot be combined with injected resource maps.");
+  }
+  const env = parseDeployLiteEnv(sourceEnv);
   const app = Fastify({ logger: false });
   const corsOrigin = options.corsOrigin === false ? null : options.corsOrigin ?? env.DEPLOYLITE_CORS_ORIGIN ?? (env.NODE_ENV === "production" ? null : "http://localhost:3000");
   const authConfig: AuthConfig = {
@@ -2250,11 +2257,23 @@ export async function buildApiApp(options: BuildApiAppOptions = {}): Promise<Fas
   if (repositories.shouldSeedMockData) {
     await seedMockData(repositories.state);
   }
+  let configuredResourceRuntime: Awaited<ReturnType<typeof createProjectScopedComposeResourceRuntime>> | undefined;
+  try {
+    configuredResourceRuntime = composeResourceProjectAgents.length > 0
+      ? await createProjectScopedComposeResourceRuntime({ bindings: composeResourceProjectAgents, projects: repositories.state.projects,
+        controls: repositories.state.controlDeletes, agent: { endpoint: env.DEPLOYLITE_AGENT_URL, agentId: env.DEPLOYLITE_AGENT_ID, trustKey: env.DEPLOYLITE_AGENT_TRUST_KEY } })
+      : undefined;
+  } catch (error) {
+    await app.close();
+    throw error;
+  }
+  const composeResourceInspection = options.composeResourceInspection ?? configuredResourceRuntime?.inspectionAccess;
+  const composeNetworkAttachmentExecutions = options.composeNetworkAttachmentExecutions ?? configuredResourceRuntime?.attachmentExecutions;
   registerCoreHooks(app, corsOrigin);
-  const cleanupPlans = options.composeResourceCleanupPlans ?? (repositories.composeResourceCleanupStore && options.composeResourceInspection
-    ? new Map([...options.composeResourceInspection.keys()].map(projectId => [projectId, { store: repositories.composeResourceCleanupStore!, confirmationTtlMs: 60_000 }] as const))
+  const cleanupPlans = options.composeResourceCleanupPlans ?? (!configuredResourceRuntime && repositories.composeResourceCleanupStore && composeResourceInspection
+    ? new Map([...composeResourceInspection.keys()].map(projectId => [projectId, { store: repositories.composeResourceCleanupStore!, confirmationTtlMs: 60_000 }] as const))
     : undefined);
-  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE, options.imagePolicy ?? { policyVersion: "deployment-v1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }, options.composeResourceInspection, options.composeVolumeBackupPlans, cleanupPlans, options.composeVolumeBackupExecutions, options.composeNetworkAttachmentExecutions, options.composeResourceCleanupExecutions);
+  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE, options.imagePolicy ?? { policyVersion: "deployment-v1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }, composeResourceInspection, options.composeVolumeBackupPlans, cleanupPlans, options.composeVolumeBackupExecutions, composeNetworkAttachmentExecutions, options.composeResourceCleanupExecutions);
   app.addHook("onClose", () => {
     repositories.state.deployRunner.cancelTimers();
   });
