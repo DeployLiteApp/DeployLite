@@ -7,8 +7,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Textarea } from "@/components/ui/textarea";
 import { previewProjectCompose, saveProjectCompose } from "./compose-preview-client";
-
 import { ComposeRevisionsPanel } from "./compose-revisions-panel";
+import { ComposeResourcePanel } from "./compose-resource-panel";
 
 export function ComposePreviewCard({ projectId, apiBaseUrl }: { projectId: string; apiBaseUrl: string | null }) {
   const [document, setDocument] = useState("");
@@ -96,7 +96,7 @@ export function ComposePreviewCard({ projectId, apiBaseUrl }: { projectId: strin
             {error || savedStatus || (saving ? "Saving configuration..." : pending ? "Checking the document..." : !apiBaseUrl ? "Compose preview is unavailable until the project API is configured." : "Preview only. No resources were created and no deployment was started.")}
           </p>
         </form>
-        {preview ? <ComposePreviewPlan preview={preview} /> : null}
+        {preview ? <><ComposePreviewPlan preview={preview} /><ComposeResourcePanel key={preview.configDigest} projectId={projectId} apiBaseUrl={apiBaseUrl} document={document} preview={preview} /></> : null}
         <ComposeRevisionsPanel projectId={projectId} apiBaseUrl={apiBaseUrl} refreshKey={refreshKey} onLoad={load} />
       </CardContent>
     </Card>
