@@ -1,3 +1,4 @@
+import { registerComposeRevisionReadRoutes, type ComposeRevisionReadCapability } from "./compose-revision-read-route.js";
 import { registerComposePreviewRoute } from "./compose-preview-route.js";
 import { claimDeploymentAuthority, validateStopCompletion, validateDeploymentAuthority, validateInitialExecution } from "@deploylite/domain";
 import { createHash, randomUUID } from "node:crypto";
@@ -478,6 +479,7 @@ type PlatformRepositoryOptions = {
   agents: AgentRepository;
   deployments: DeploymentRepository;
   projects: ProjectRepository;
+  composeRevisionReads?: ComposeRevisionReadCapability;
   envMetadata?: EnvVariableMetadataRepository;
   envSecretValues?: EnvSecretValueRepository;
   envSecretCipher?: EnvSecretCipher;
@@ -601,7 +603,7 @@ function createApiState(env: EnvSecretKeySource, overrides: Partial<PlatformRepo
   const controlDeletes = overrides.controlDeletes ?? memory?.controls ?? new InMemoryControlDeleteRepository(projects, audit ?? new InMemoryAuditRepository(), deployments);
   const agentStatus = new AgentStatusService(agents);
   const deployRunner = new DeployRunner(deployments, envMetadata, agentStatus, envSecretCipher);
-  return { agents, deployments, executionCompletion, projects, envMetadata, envSecretValues, envSecretCipher, agentStatus, deployRunner, runtimeActivationDispatcher, deploymentDispatcher, deploymentStopDispatcher, snapshots, controlDeletes, controlRedeploy: overrides.controlRedeploy ?? memory?.controls ?? (controlDeletes as unknown as ControlRedeployRepository), controlRollback: overrides.controlRollback ?? memory?.controls ?? (typeof (controlDeletes as any).executeConfirmedDeploymentRollback === "function" ? controlDeletes as unknown as ControlRollbackRepository : undefined), controlGrants: overrides.controlGrants ?? new InMemoryControlGrantRepository() };
+  return { agents, deployments, executionCompletion, projects, composeRevisionReads: overrides.composeRevisionReads, envMetadata, envSecretValues, envSecretCipher, agentStatus, deployRunner, runtimeActivationDispatcher, deploymentDispatcher, deploymentStopDispatcher, snapshots, controlDeletes, controlRedeploy: overrides.controlRedeploy ?? memory?.controls ?? (controlDeletes as unknown as ControlRedeployRepository), controlRollback: overrides.controlRollback ?? memory?.controls ?? (typeof (controlDeletes as any).executeConfirmedDeploymentRollback === "function" ? controlDeletes as unknown as ControlRollbackRepository : undefined), controlGrants: overrides.controlGrants ?? new InMemoryControlGrantRepository() };
 }
 
 class InMemoryControlGrantRepository implements ControlGrantRepository {
@@ -1005,6 +1007,7 @@ function createDbAuthAdapters(env: DeployLiteEnv, options: BuildApiAppOptions): 
       deployments,
       executionCompletion: options.state?.executionCompletion ?? (deployments instanceof DbDeploymentRepository ? new DbDeploymentExecutionRepository(db) : undefined),
       projects: options.state?.projects ?? new DbProjectRepository(db),
+      composeRevisionReads: options.state?.composeRevisionReads,
       envMetadata: options.state?.envMetadata ?? new DbEnvVariableMetadataRepository(db),
       envSecretValues: options.state?.envSecretValues ?? new DbEnvSecretValueRepository(db),
       snapshots: options.state?.snapshots ?? (deployments instanceof DbDeploymentRepository ? deployments : new DbDeploymentRepository(db)),
@@ -1233,6 +1236,7 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
   const requireMutationRole = createRolePreHandler(adapters, ["admin", "operator"]);
   const requireAdminRole = createRolePreHandler(adapters, ["admin"]);
   registerComposePreviewRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
+  registerComposeRevisionReadRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, revisions: state.composeRevisionReads, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   // Audit history is an operator/admin concern. Read-only sessions are denied
   // by design so a passive role cannot enumerate every project + key change.
   const requireAuditReadRole = createRolePreHandler(adapters, ["admin", "operator"]);
