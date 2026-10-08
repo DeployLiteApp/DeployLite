@@ -40,3 +40,13 @@ export const composeAttachmentPreviewSchema = z.object({
   configDigest: digest, stateDigest: digest, containerId: digest, alreadySatisfied: z.boolean()
 }).strict();
 export type ComposeAttachmentPreviewV1 = z.infer<typeof composeAttachmentPreviewSchema>;
+export const composeResourceInspectionInputSchema = composeAttachmentPreviewInputSchema.pick({ document: true, projectId: true, kind: true, key: true, expectedConfigDigest: true });
+export type ComposeResourceInspectionInput = z.infer<typeof composeResourceInspectionInputSchema>;
+export const composeResourceInspectionRequestSchema = composeResourceInspectionInputSchema.omit({ projectId: true });
+export const composeAttachmentPreviewRequestSchema = composeAttachmentPreviewInputSchema.omit({ projectId: true });
+export const composeResourceInspectionViewSchema = z.object({
+  schemaVersion: z.literal(1), status: z.literal("observed"), executionAllowed: z.literal(false),
+  projectId: identity, kind: composeResourceKindSchema, key, configDigest: digest, stateDigest: digest,
+  observedAt: z.number().int().nonnegative(), containers: z.array(composeResourceContainerObservationSchema.pick({ service: true, running: true, attached: true })).max(32)
+}).strict();
+export type ComposeResourceInspectionViewV1 = z.infer<typeof composeResourceInspectionViewSchema>;
