@@ -16,6 +16,16 @@ const SAFE_PROJECTION_KEYS = new Set([
 
 export type SafeProjectionSurface = "api" | "log" | "sse" | "mcp" | "ai";
 
+const composeAuditCountLimits = new Map<string, number>([["serviceCount", 32], ["networkCount", 33], ["volumeCount", 32]]);
+
+function isSafeProjectionEntry(key: string, value: unknown): boolean {
+  if (key === "inputDigest") return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+  const maximum = composeAuditCountLimits.get(key);
+  if (maximum !== undefined) return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= maximum;
+  return SAFE_PROJECTION_KEYS.has(key);
+}
+
+
 function isKnownSafeValue(key: string, value: string): boolean {
   if (typeof value !== "string" || value.length === 0) return false;
   if (SAFE_UUID_VALUE_PATTERN.test(value)) return true;
@@ -57,7 +67,7 @@ export function redactLogMessage(message: string): string {
 export function createSafeProjection(_surface: SafeProjectionSurface, value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return Object.fromEntries(Object.entries(value)
-    .filter(([key]) => SAFE_PROJECTION_KEYS.has(key))
+    .filter(([key, nested]) => isSafeProjectionEntry(key, nested))
     .map(([key, nested]) => [key, SECRET_KEY_PATTERN.test(key) ? REDACTED : typeof nested === "string" && isKnownSafeValue(key, nested) ? nested : Array.isArray(nested)
       ? nested.map((item) => createSafeProjection(_surface, item))
       : nested && typeof nested === "object" ? createSafeProjection(_surface, nested) : redactSecrets(nested)]));

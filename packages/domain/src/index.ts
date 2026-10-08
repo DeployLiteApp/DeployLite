@@ -423,3 +423,5 @@ export class InMemoryEnvSecretValueRepository implements EnvSecretValueRepositor
     return this.#records.delete(id);
   }
 }
+
+export * from "./compose-preview.js";

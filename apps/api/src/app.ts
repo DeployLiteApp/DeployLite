@@ -1,3 +1,4 @@
+import { registerComposePreviewRoute } from "./compose-preview-route.js";
 import { claimDeploymentAuthority, validateStopCompletion, validateDeploymentAuthority, validateInitialExecution } from "@deploylite/domain";
 import { createHash, randomUUID } from "node:crypto";
 import { createAuditLogRecord, createCorrelationContext, createRequestId, parseDeployLiteEnv, redactSecrets, type DeployLiteEnv, createEnvSecretCipher, EnvSecretKeyInvalidError, EnvSecretKeyMissingError, ENCRYPTION_KEY_VERSION, loadEnvSecretKey, type EnvSecretCipher } from "@deploylite/config";
@@ -1231,6 +1232,7 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
   const requireAuth = createAuthPreHandler(adapters, authConfig);
   const requireMutationRole = createRolePreHandler(adapters, ["admin", "operator"]);
   const requireAdminRole = createRolePreHandler(adapters, ["admin"]);
+  registerComposePreviewRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   // Audit history is an operator/admin concern. Read-only sessions are denied
   // by design so a passive role cannot enumerate every project + key change.
   const requireAuditReadRole = createRolePreHandler(adapters, ["admin", "operator"]);
