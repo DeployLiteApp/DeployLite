@@ -721,7 +721,10 @@ suite("atomic execution PostgreSQL integration", () => {
       for (const id of ids) expect(await fresh.lookup(id, `fp-${id}`)).toMatchObject({ commandId: id, correlationId: "original", proof: f.A.input.proof });
       expect((await pool.query("SELECT * FROM agent_replay WHERE command_id=ANY($1::text[]) ORDER BY command_id", [ids])).rows).toEqual(before);
       await expect(fresh.lookup(ids[0]!, "changed")).rejects.toThrow();
-      await pool.query("UPDATE agent_replay SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE command_id=$1", [ids[0]]); expect(await fresh.lookup(ids[0]!, `fp-${ids[0]}`)).toBeNull();
+      await pool.query("UPDATE agent_replay SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE command_id=$1", [ids[0]]);
+      const expired = await pool.query("SELECT * FROM agent_replay WHERE command_id=$1", [ids[0]]);
+      expect(await fresh.lookup(ids[0]!, `fp-${ids[0]}`)).toMatchObject({ commandId: ids[0], correlationId: "original", proof: f.A.input.proof });
+      expect((await pool.query("SELECT * FROM agent_replay WHERE command_id=$1", [ids[0]])).rows).toEqual(expired.rows);
     } finally { await freshPool.end(); }
   });
   it("rolls back cancellation observed during staged rollback publication and preserves durable equal replay", async () => {

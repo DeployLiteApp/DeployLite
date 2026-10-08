@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ComposePreviewV1 } from "@deploylite/contracts";
 import { ComposePreviewCard } from "./compose-preview-card";
@@ -81,8 +81,10 @@ describe("project Compose preview interaction", () => {
     fireEvent.click(screen.getByRole("button", { name: "Preview Compose" }));
     expect(await screen.findByRole("heading", { name: "Proposed resources" })).toBeTruthy();
     expect(screen.getByText(preview.configDigest)).toBeTruthy();
-    expect(screen.getByText("dl-scoped-net-front")).toBeTruthy();
-    expect(screen.getByText("dl-scoped-vol-data")).toBeTruthy();
+    const proposedNetworks = within(screen.getByRole("list", { name: "Proposed networks" }));
+    const proposedVolumes = within(screen.getByRole("list", { name: "Proposed volumes" }));
+    expect(proposedNetworks.getByText("dl-scoped-net-front")).toBeTruthy();
+    expect(proposedVolumes.getByText("dl-scoped-vol-data")).toBeTruthy();
     expect(screen.getByText(/data → \/var\/lib\/app/)).toBeTruthy();
     expect(screen.getByText(/TOKEN → APP_TOKEN/)).toBeTruthy();
     expect(screen.getByText("Preview only. No resources were created and no deployment was started.")).toBeTruthy();
