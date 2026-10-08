@@ -31,9 +31,9 @@ async function counts(projectId: string) {
   const result = await pool.query<{ resources: number; revisions: number; commands: number; audits: number; command_audits: number }>(`SELECT
     (SELECT count(*)::int FROM compose_resources WHERE project_id=$1) AS resources,
     (SELECT count(*)::int FROM compose_revisions WHERE project_id=$1) AS revisions,
-    (SELECT count(*)::int FROM control_commands WHERE action='project.update' AND scope_key=$1) AS commands,
-    (SELECT count(*)::int FROM audit_events WHERE target_id=$1 AND action='compose.revision.saved') AS audits,
-    (SELECT count(*)::int FROM control_command_audits a JOIN control_commands c ON c.id=a.command_id WHERE c.action='project.update' AND c.scope_key=$1) AS command_audits`, [projectId]);
+    (SELECT count(*)::int FROM control_commands WHERE action='project.update' AND scope_key=$1::text) AS commands,
+    (SELECT count(*)::int FROM audit_events WHERE target_id=$1::text AND action='compose.revision.saved') AS audits,
+    (SELECT count(*)::int FROM control_command_audits a JOIN control_commands c ON c.id=a.command_id WHERE c.action='project.update' AND c.scope_key=$1::text) AS command_audits`, [projectId]);
   return result.rows[0]!;
 }
 suite("P3 Compose atomic durable acceptance on the explicit disposable database", () => {
