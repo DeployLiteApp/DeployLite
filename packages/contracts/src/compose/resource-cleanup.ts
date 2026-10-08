@@ -17,8 +17,26 @@ export const composeResourceCleanupConfirmationViewSchema = composeResourceClean
 }).strict();
 export type ComposeResourceCleanupConfirmationViewV1 = z.infer<typeof composeResourceCleanupConfirmationViewSchema>;
 
+export const composeResourceCleanupExecutionReceiptSchema = z.object({
+  schemaVersion: z.literal(1), action: z.literal("compose.resource.cleanup"), agentId: identity, commandId: identity,
+  cleanupCommandId: identity, confirmationId: identity, projectId: identity, inputDigest: digest, cleanupInputDigest: digest,
+  correlationId: identity, kind: composeResourceInspectionInputSchema.shape.kind, key: composeResourceInspectionInputSchema.shape.key,
+  runtimeName: z.string().min(1).max(160), configDigest: digest, stateDigest: digest, status: z.literal("completed"),
+  physicalIdentity: z.string().min(1).max(64), terminalStatus: z.literal("removed"),
+  idempotent: z.boolean(), redacted: z.literal(true)
+}).strict().superRefine((receipt, context) => {
+  const valid = receipt.kind === "network" ? /^[a-f0-9]{64}$/.test(receipt.physicalIdentity)
+    : /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)$/.test(receipt.physicalIdentity)
+      && Number.isFinite(Date.parse(receipt.physicalIdentity));
+  if (!valid) context.addIssue({ code: z.ZodIssueCode.custom, path: ["physicalIdentity"], message: "Invalid physical identity" });
+});
+export type ComposeResourceCleanupExecutionReceiptV1 = z.infer<typeof composeResourceCleanupExecutionReceiptSchema>;
+
 export const composeResourceCleanupReceiptSchema = z.object({
   commandId: identity, confirmationId: identity, expiresAt: z.string().datetime(),
-  status: z.enum(["pending_confirmation", "eligible"]), idempotent: z.boolean(), preview: composeResourceCleanupPreviewSchema
-}).strict();
+  status: z.enum(["pending_confirmation", "eligible", "dispatching", "completed"]), idempotent: z.boolean(), preview: composeResourceCleanupPreviewSchema,
+  execution: composeResourceCleanupExecutionReceiptSchema.optional()
+}).strict().superRefine((receipt, context) => {
+  if ((receipt.status === "completed") !== Boolean(receipt.execution)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["execution"], message: "Completed cleanup receipt must include its terminal execution" });
+});
 export type ComposeResourceCleanupReceiptV1 = z.infer<typeof composeResourceCleanupReceiptSchema>;

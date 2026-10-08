@@ -2,7 +2,7 @@ import { DbComposeRevisionSaveStore } from "@deploylite/db";
 import { registerComposeRevisionSaveRoutes } from "./compose-revision-save-route.js";
 import type { ComposeRevisionSaveStore } from "@deploylite/domain";
 import { registerComposeRevisionReadRoutes, type ComposeRevisionReadCapability } from "./compose-revision-read-route.js";
-import { registerComposeResourceCleanupRoutes, type ComposeResourceCleanupAccess } from "./compose-resource-cleanup-route.js";
+import { registerComposeResourceCleanupRoutes, type ComposeResourceCleanupAccess, type ComposeResourceCleanupExecutionAccess } from "./compose-resource-cleanup-route.js";
 import { registerComposePreviewRoute } from "./compose-preview-route.js";
 import { registerComposeResourceInspectionRoutes, type ComposeResourceInspectionAccess } from "./compose-resource-inspection-route.js";
 import { registerComposeVolumeBackupPlanRoute, type ComposeVolumeBackupPlanAccess } from "./compose-volume-backup-plan-route.js";
@@ -192,6 +192,7 @@ type BuildApiAppOptions = {
   composeVolumeBackupPlans?: ReadonlyMap<string, ComposeVolumeBackupPlanAccess>;
   composeVolumeBackupExecutions?: ReadonlyMap<string, ComposeVolumeBackupExecutionAccess>;
   composeResourceCleanupPlans?: ReadonlyMap<string, ComposeResourceCleanupAccess>;
+  composeResourceCleanupExecutions?: ReadonlyMap<string, ComposeResourceCleanupExecutionAccess>;
   db?: {
     pool?: DbPool;
     client?: DeployLiteDb;
@@ -1247,7 +1248,7 @@ function registerCoreHooks(app: FastifyInstance, corsOrigin: string | null): voi
   });
 }
 
-function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapters: AuthAdapters, authConfig: AuthConfig, confirmedDeleteEnabled: boolean, imagePolicy: ImageReferencePolicyV1, resourceAccess?: ReadonlyMap<string, ComposeResourceInspectionAccess>, backupPlans?: ReadonlyMap<string, ComposeVolumeBackupPlanAccess>, cleanupPlans?: ReadonlyMap<string, ComposeResourceCleanupAccess>, backupExecutions?: ReadonlyMap<string, ComposeVolumeBackupExecutionAccess>): void {
+function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapters: AuthAdapters, authConfig: AuthConfig, confirmedDeleteEnabled: boolean, imagePolicy: ImageReferencePolicyV1, resourceAccess?: ReadonlyMap<string, ComposeResourceInspectionAccess>, backupPlans?: ReadonlyMap<string, ComposeVolumeBackupPlanAccess>, cleanupPlans?: ReadonlyMap<string, ComposeResourceCleanupAccess>, backupExecutions?: ReadonlyMap<string, ComposeVolumeBackupExecutionAccess>, cleanupExecutions?: ReadonlyMap<string, ComposeResourceCleanupExecutionAccess>): void {
   const requireAuth = createAuthPreHandler(adapters, authConfig);
   const requireMutationRole = createRolePreHandler(adapters, ["admin", "operator"]);
   const requireAdminRole = createRolePreHandler(adapters, ["admin"]);
@@ -1255,7 +1256,8 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
   registerComposeRevisionReadRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, revisions: state.composeRevisionReads, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerComposeRevisionSaveRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, revisions: state.composeRevisionSaves, imagePolicy, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerComposeResourceInspectionRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
-  registerComposeResourceCleanupRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, cleanup: cleanupPlans, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
+  registerComposeResourceCleanupRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, cleanup: cleanupPlans,
+    execution: cleanupExecutions, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerComposeVolumeBackupPlanRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, planning: backupPlans, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerComposeVolumeBackupExecutionRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, planning: backupPlans, execution: backupExecutions, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   // Audit history is an operator/admin concern. Read-only sessions are denied
@@ -2249,7 +2251,7 @@ export async function buildApiApp(options: BuildApiAppOptions = {}): Promise<Fas
   const cleanupPlans = options.composeResourceCleanupPlans ?? (repositories.composeResourceCleanupStore && options.composeResourceInspection
     ? new Map([...options.composeResourceInspection.keys()].map(projectId => [projectId, { store: repositories.composeResourceCleanupStore!, confirmationTtlMs: 60_000 }] as const))
     : undefined);
-  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE, options.imagePolicy ?? { policyVersion: "deployment-v1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }, options.composeResourceInspection, options.composeVolumeBackupPlans, cleanupPlans, options.composeVolumeBackupExecutions);
+  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE, options.imagePolicy ?? { policyVersion: "deployment-v1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }, options.composeResourceInspection, options.composeVolumeBackupPlans, cleanupPlans, options.composeVolumeBackupExecutions, options.composeResourceCleanupExecutions);
   app.addHook("onClose", () => {
     repositories.state.deployRunner.cancelTimers();
   });
