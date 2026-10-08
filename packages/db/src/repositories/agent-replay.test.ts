@@ -50,6 +50,25 @@ describe("replay release claim-token CAS", () => {
     await store.release("command"); expect(pool.row?.claimToken).toBe("current");
     await store.release("command", "other"); expect(pool.row?.claimToken).toBe("current");
   });
+  it("stores a terminal receipt after lease expiry if the original claim token still owns the row", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(1000); const pool = new RecordingPool();
+    const store = new DbAgentReplayStore(createDbClient(pool as unknown as Pool), "agent");
+    const claim = await store.claim("command", "fingerprint", { leaseId: "lease", fence: 1, expiresAt: 2000 });
+    vi.setSystemTime(2001);
+    await store.complete("command", { fingerprint: "fingerprint", claimToken: claim.claimToken!, receipt: { status: "attached" } });
+    expect(pool.row?.status).toBe("completed");
+    expect(await store.lookup("command", "fingerprint")).toEqual({ status: "attached" });
+  });
+  it("rejects a late terminal receipt from an expired claim after a successor reclaims it", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(1000); const pool = new RecordingPool();
+    const old = new DbAgentReplayStore(createDbClient(pool as unknown as Pool), "agent"), successor = new DbAgentReplayStore(createDbClient(pool as unknown as Pool), "agent");
+    const first = await old.claim("command", "fingerprint", { leaseId: "old-lease", fence: 1, expiresAt: 2000 });
+    vi.setSystemTime(2001);
+    const next = await successor.claim("command", "fingerprint", { leaseId: "new-lease", fence: 2, expiresAt: 5000 });
+    await expect(old.complete("command", { fingerprint: "fingerprint", claimToken: first.claimToken!, receipt: { status: "stale" } })).rejects.toThrow("stale");
+    expect(pool.row?.claimToken).toBe(next.claimToken);
+    expect(pool.row?.status).toBe("in_progress");
+  });
 });
 
 
@@ -64,12 +83,18 @@ describe("read-only completed receipt lookup", () => {
     expect(await store.lookup("command", "original")).toEqual({ physicalId: "original-observed-container" });
     expect(pool.row).toEqual(before); expect(pool.queries.every((query) => query.text.startsWith("select"))).toBe(true);
   });
-  it.each(["in_progress", "expired", "expiry-boundary"])("leaves %s original evidence unresolved without changing its claim", async (fault) => {
+  it("leaves in-progress evidence unresolved without changing its claim", async () => {
     const { pool, store } = cached();
-    if (fault === "in_progress") pool.row!.status = "in_progress";
-    else pool.row!.leaseExpiresAt = new Date(fault === "expired" ? Date.now() - 1 : Date.now());
+    pool.row!.status = "in_progress";
     const before = structuredClone(pool.row);
     expect(await store.lookup("command", "original")).toBeNull(); expect(pool.row).toEqual(before);
+    expect(pool.queries.every((query) => query.text.startsWith("select"))).toBe(true);
+  });
+  it("keeps a terminal receipt queryable after the execution lease expires", async () => {
+    const { pool, store } = cached();
+    pool.row!.leaseExpiresAt = new Date(Date.now() - 1);
+    expect(await store.lookup("command", "original")).toEqual({ physicalId: "original-observed-container" });
+    expect(pool.row?.status).toBe("completed");
     expect(pool.queries.every((query) => query.text.startsWith("select"))).toBe(true);
   });
   it("rejects a different original fingerprint without mutating evidence", async () => {

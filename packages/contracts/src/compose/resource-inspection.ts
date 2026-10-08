@@ -34,6 +34,10 @@ export const composeAttachmentPreviewInputSchema = z.object({
   expectedStateDigest: digest.optional()
 }).strict();
 export type ComposeAttachmentPreviewInput = z.infer<typeof composeAttachmentPreviewInputSchema>;
+export const composeNetworkAttachmentCommandInputSchema = composeAttachmentPreviewInputSchema.extend({
+  kind: z.literal("network"), expectedStateDigest: digest, expectedContainerId: digest
+}).strict();
+export type ComposeNetworkAttachmentCommandInput = z.infer<typeof composeNetworkAttachmentCommandInputSchema>;
 export const composeAttachmentPreviewSchema = z.object({
   schemaVersion: z.literal(1), status: z.literal("preview"), executionAllowed: z.literal(false),
   projectId: identity, kind: composeResourceKindSchema, key, service: key, action: z.enum(["attach", "detach"]),

@@ -1,7 +1,7 @@
-import { FenceError, deploymentExecutionAuthoritySchema, type DeploymentExecutionAuthorityV1 } from "@deploylite/contracts";
+import { FenceError, deploymentExecutionAuthoritySchema, projectControlAuthoritySchema, type DeploymentExecutionAuthorityV1, type ProjectControlAuthorityV1 } from "@deploylite/contracts";
 import { and, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
-import type { ConfirmedDeploymentRedeployInput, ConfirmedDeploymentRedeployOutcome, ConfirmedDeploymentStopInput, ConfirmedDeploymentStopOutcome, ConfirmedProjectDeleteInput, ConfirmedProjectDeleteOutcome, ControlCommand, ControlCommandRepository, ControlConfirmation, ControlConfirmationRepository, ControlDeleteRepository, ControlGrant, ControlGrantRepository, ConfirmationOutcome, ControlRollbackRepository, ControlRedeployRepository, ControlStopRepository } from "@deploylite/domain";
-import { claimDeploymentAuthority, validateStopCompletion, validateDeploymentAuthority, validateInitialExecution, validateRollbackReservation, isRollbackAdmissionBound, isRollbackClaimBound, createConfirmation, evaluateConfirmation, ConfirmationRejectedError, IdempotencyConflictError, scopeKey } from "@deploylite/domain";
+import type { ConfirmedDeploymentRedeployInput, ConfirmedDeploymentRedeployOutcome, ConfirmedDeploymentStopInput, ConfirmedDeploymentStopOutcome, ConfirmedProjectDeleteInput, ConfirmedProjectDeleteOutcome, ControlCommand, ControlCommandRepository, ControlConfirmation, ControlConfirmationRepository, ControlDeleteRepository, ControlGrant, ControlGrantRepository, ConfirmationOutcome, ControlRollbackRepository, ControlRedeployRepository, ControlStopRepository, ProjectUpdateControlRepository } from "@deploylite/domain";
+import { claimDeploymentAuthority, claimProjectUpdateAuthority, validateProjectUpdateAuthority as validateProjectUpdateAuthorityInMemory, validateStopCompletion, validateDeploymentAuthority, validateInitialExecution, validateRollbackReservation, isRollbackAdmissionBound, isRollbackClaimBound, createConfirmation, evaluateConfirmation, ConfirmationRejectedError, IdempotencyConflictError, scopeKey } from "@deploylite/domain";
 
 import type { DeployLiteDb } from "../client.js";
 import { auditEvents, controlCommandAudits, controlCommandConfirmations, controlCommands, controlGrants, deployments, projects, type ControlCommandRow, type ControlGrantRow } from "../schema.js";
@@ -18,7 +18,7 @@ export class DbControlGrantRepository implements ControlGrantRepository {
 
 export type ControlDeleteFaultStage = "confirmation-consumed" | "project-deleted" | "command-completed" | "audit-recorded" | "redeploy-deployment-inserted" | "authority-claimed";
 
-export class DbControlCommandRepository implements ControlDeleteRepository, ControlStopRepository, ControlRedeployRepository, ControlConfirmationRepository {
+export class DbControlCommandRepository implements ControlDeleteRepository, ControlStopRepository, ControlRedeployRepository, ProjectUpdateControlRepository, ControlConfirmationRepository {
   constructor(private readonly db: DeployLiteDb, private readonly injectFault?: (stage: ControlDeleteFaultStage) => void | Promise<void>) {}
 
   async resolve(command: ControlCommand): Promise<{ command: ControlCommand; created: boolean }> {
@@ -152,7 +152,10 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
       const [row] = await tx.select().from(controlCommands).where(eq(controlCommands.id, command.id)).limit(1).for("update");
       if (!row) throw new Error("Control command was not found");
       const current = toCommand(row);
-      const related = await tx.select().from(controlCommands).where(and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${projectId}`));
+      const related = await tx.select().from(controlCommands).where(or(
+        and(eq(controlCommands.scopeKind, "project"), eq(controlCommands.scopeKey, projectId)),
+        and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${projectId}`)
+      ));
       const executionId = current.action === "deployment.stop" ? hinted.scope.deploymentId : (current.result?.action === "deployment.redeploy" || current.result?.action === "deployment.rollback") ? current.result.deploymentId : null;
       if (current.action === "deployment.rollback") {
         validateRollbackReservation(current, command);
@@ -170,14 +173,53 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
     });
   }
 
+  async claimProjectUpdate(command: ControlCommand) {
+    return this.db.transaction(async (tx) => {
+      const [hint] = await tx.select().from(controlCommands).where(eq(controlCommands.id, command.id)).limit(1);
+      if (!hint) throw new Error("Control command was not found");
+      const hinted = toCommand(hint);
+      if (hinted.action !== "project.update" || hinted.scope.kind !== "project") throw new Error("Project update authority requires project scope");
+      const projectId = hinted.scope.projectId;
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`deploylite:execution:${projectId}`}, 0))`);
+      const [row] = await tx.select().from(controlCommands).where(eq(controlCommands.id, command.id)).limit(1).for("update");
+      if (!row) throw new Error("Control command was not found");
+      const current = toCommand(row);
+      const relatedRows = await tx.select().from(controlCommands).where(or(
+        and(eq(controlCommands.scopeKind, "project"), eq(controlCommands.scopeKey, projectId)),
+        and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${projectId}`)
+      ));
+      const authority = claimProjectUpdateAuthority(relatedRows.map(toCommand), current);
+      if (!authority) return { command: current, claimed: false };
+      const [saved] = await tx.update(controlCommands).set({ status: "dispatching", executionAuthority: authority, updatedAt: new Date() }).where(and(eq(controlCommands.id, current.id), eq(controlCommands.status, "eligible"))).returning();
+      if (!saved) throw new Error("Project update authority claim lost its command CAS");
+      await this.fault("authority-claimed");
+      return { command: toCommand(saved), claimed: true, authority };
+    });
+  }
+
+  async validateProjectUpdateAuthority(authority: ProjectControlAuthorityV1, now = Date.now()): Promise<void> {
+    const request = projectControlAuthoritySchema.parse(authority);
+    const rows = await this.db.select().from(controlCommands).where(or(
+      and(eq(controlCommands.scopeKind, "project"), eq(controlCommands.scopeKey, request.projectId)),
+      and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${request.projectId}`)
+    ));
+    validateProjectUpdateAuthorityInMemory(rows.map(toCommand), request, now);
+  }
+
   async validateInitialExecution(projectId: string, executionId: string, binding: import("@deploylite/domain").InitialExecutionBinding): Promise<void> {
     const [row] = await this.db.select().from(deployments).where(eq(deployments.id, executionId)).limit(1);
-    const related = await this.db.select().from(controlCommands).where(and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${projectId}`));
+    const related = await this.db.select().from(controlCommands).where(or(
+      and(eq(controlCommands.scopeKind, "project"), eq(controlCommands.scopeKey, projectId)),
+      and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${projectId}`)
+    ));
     validateInitialExecution(related.map(toCommand), row ? toDeployment(row) : null, projectId, executionId, binding);
   }
   async validateDeploymentAuthority(authority: DeploymentExecutionAuthorityV1, now = Date.now()): Promise<void> {
     const request = deploymentExecutionAuthoritySchema.parse(authority);
-    const rows = await this.db.select().from(controlCommands).where(and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${request.projectId}`));
+    const rows = await this.db.select().from(controlCommands).where(or(
+      and(eq(controlCommands.scopeKind, "project"), eq(controlCommands.scopeKey, request.projectId)),
+      and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${request.projectId}`)
+    ));
     validateDeploymentAuthority(rows.map(toCommand), request, now);
   }
 
@@ -193,7 +235,10 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
       if (!row) throw new Error("Control command was not found");
       const current = toCommand(row);
       if (current.status === "completed") { validateStopCompletion([], current, command, result); return current; }
-      const related = await tx.select().from(controlCommands).where(and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${projectId}`));
+      const related = await tx.select().from(controlCommands).where(or(
+        and(eq(controlCommands.scopeKind, "project"), eq(controlCommands.scopeKey, projectId)),
+        and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${projectId}`)
+      ));
       validateStopCompletion(related.map(toCommand), current, command, result);
       const authority = command.executionAuthority!;
       const minExpiry = Math.min(authority.projectLease.expiresAt, authority.executionLease.expiresAt, authority.sourceLease?.expiresAt ?? Infinity);
@@ -274,7 +319,9 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
 
 export function toCommand(row: ControlCommandRow): ControlCommand {
   const scope = row.scopeKind === "platform" ? { kind: "platform" as const } : row.scopeKind === "deployment" ? (() => { const [projectId, deploymentId] = JSON.parse(row.scopeKey) as [string, string]; return { kind: "deployment" as const, projectId, deploymentId }; })() : { kind: "project" as const, projectId: row.scopeKey };
-  return { id: row.id, actorId: row.actorUserId, action: row.action as ControlCommand["action"], scope, inputDigest: row.inputDigest, idempotencyKey: row.idempotencyKey, correlationId: row.correlationId, status: row.status as ControlCommand["status"], expiresAt: row.expiresAt, ...(row.result ? { result: row.result as never } : {}), ...(row.executionAuthority ? { executionAuthority: deploymentExecutionAuthoritySchema.parse(row.executionAuthority) } : {}) };
+  const projectUpdate = row.action === "project.update" && row.executionAuthority !== null ? { projectExecutionAuthority: projectControlAuthoritySchema.parse(row.executionAuthority) } : {};
+  const deploymentAuthority = row.action !== "project.update" && row.executionAuthority !== null ? { executionAuthority: deploymentExecutionAuthoritySchema.parse(row.executionAuthority) } : {};
+  return { id: row.id, actorId: row.actorUserId, action: row.action as ControlCommand["action"], scope, inputDigest: row.inputDigest, idempotencyKey: row.idempotencyKey, correlationId: row.correlationId, status: row.status as ControlCommand["status"], expiresAt: row.expiresAt, ...(row.result ? { result: row.result as never } : {}), ...projectUpdate, ...deploymentAuthority };
 }
 
 function stopResult(command: ControlCommand, status: "eligible" | "rejected") {

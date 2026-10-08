@@ -1,4 +1,4 @@
-import { composeResourceCleanupConfirmationViewSchema, composeResourceCleanupPreviewSchema, composeResourceCleanupReceiptSchema,
+import { composeResourceCleanupConfirmationViewSchema, composeResourceCleanupPreviewSchema, composeResourceCleanupReceiptSchema, deploymentExecutionAuthoritySchema, projectControlAuthoritySchema,
   type ComposeResourceCleanupReceiptV1 } from "@deploylite/contracts";
 import { redactSecrets } from "@deploylite/config";
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
@@ -20,7 +20,8 @@ function commandFrom(row: typeof controlCommands.$inferSelect): ControlCommand {
   return { id: row.id, actorId: row.actorUserId, action: row.action as ControlCommand["action"], scope: { kind: "project", projectId: row.scopeKey },
     inputDigest: row.inputDigest, idempotencyKey: row.idempotencyKey, correlationId: row.correlationId, status: row.status as ControlCommand["status"],
     expiresAt: row.expiresAt, ...(row.result ? { result: row.result as ControlCommand["result"] } : {}),
-    ...(row.executionAuthority ? { executionAuthority: row.executionAuthority } : {}) };
+    ...(row.executionAuthority && row.action === "project.update" ? { projectExecutionAuthority: projectControlAuthoritySchema.parse(row.executionAuthority) } : {}),
+    ...(row.executionAuthority && row.action !== "project.update" ? { executionAuthority: deploymentExecutionAuthoritySchema.parse(row.executionAuthority) } : {}) };
 }
 function confirmationFrom(row: typeof controlCommandConfirmations.$inferSelect): ControlConfirmation {
   if (row.scopeKind !== "project") fail("COMPOSE_CLEANUP_CONFIRMATION_REJECTED");

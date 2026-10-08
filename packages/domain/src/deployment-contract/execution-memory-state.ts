@@ -51,4 +51,7 @@ export class InMemoryExecutionState implements ExecutionCompletionStore {
 
 function equal(left: unknown, right: unknown): boolean { return JSON.stringify(left) === JSON.stringify(right); }
 
-function projectCommands(commands: Map<string, ControlCommand>, projectId: string): ControlCommand[] { return [...commands.values()].filter((command) => command.scope.kind === "deployment" && command.scope.projectId === projectId); }
+function projectCommands(commands: Map<string, ControlCommand>, projectId: string): ControlCommand[] {
+  return [...commands.values()].filter((command) => (command.scope.kind === "deployment" && command.scope.projectId === projectId)
+    || (command.scope.kind === "project" && command.scope.projectId === projectId));
+}

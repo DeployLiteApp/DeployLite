@@ -1,6 +1,6 @@
 import { signAgentTransport, validateAgentTransportKey } from "@deploylite/config";
-import { agentCachedReceiptSchema, agentReceiptQuerySchema, type AgentReceiptQuery, agentCapabilityHandshakeSchema, agentExecutionReceiptSchema, deploymentStopAgentReceiptSchema, dockerImageExecutionReceiptSchema, promotionPolicySchema, type AgentExecutionCommand, type AgentReplacementV1, type DeploymentExecutionAuthorityV1, type DeploymentSnapshotV1, type LeaseV1, TransportCanceledError, TransportError, TransportTimeoutError } from "@deploylite/contracts";
-import { awaitAbortable, type DockerImageExecutionReceiptV1 } from "@deploylite/domain";
+import { agentCachedReceiptSchema, agentReceiptQuerySchema, type AgentReceiptQuery, agentCapabilityHandshakeSchema, agentExecutionReceiptSchema, composeNetworkAttachmentAgentCommandSchema, composeNetworkAttachmentCachedReceiptSchema, composeNetworkAttachmentReceiptQuerySchema, composeNetworkAttachmentReceiptSchema, COMPOSE_NETWORK_ATTACHMENT_CAPABILITY, COMPOSE_NETWORK_ATTACHMENT_PATH, deploymentStopAgentReceiptSchema, dockerImageExecutionReceiptSchema, promotionPolicySchema, type AgentExecutionCommand, type AgentReplacementV1, type ComposeNetworkAttachmentReceiptV1, type DeploymentExecutionAuthorityV1, type DeploymentSnapshotV1, type LeaseV1, type ProjectControlAuthorityV1, TransportCanceledError, TransportError, TransportTimeoutError } from "@deploylite/contracts";
+import { awaitAbortable, type DockerImageExecutionReceiptV1, type PreparedComposeAttachmentCommand } from "@deploylite/domain";
 
 export type AgentTransportOptions = Readonly<{ endpoint: string; trustKey: string; agentId: string; allowInsecureInternal?: boolean; fetch?: typeof globalThis.fetch; timeoutMs?: number; now?: () => number }>;
 export type AgentDispatchContext = Readonly<{ requestId: string; correlationId: string; agentId: string; signal?: AbortSignal; executionDeploymentId?: string; activeDeploymentId?: string; sourceDeploymentId?: string; authority?: DeploymentExecutionAuthorityV1; replacement?: AgentReplacementV1 }>;
@@ -41,6 +41,69 @@ export class AuthenticatedAgentDeploymentTransport {
     if (v2) { if (result.schemaVersion !== 2 || (result.activeDeploymentId ?? null) !== (context?.activeDeploymentId ?? null) || result.sourceDeploymentId !== sourceDeploymentId || result.snapshotHash !== snapshot.hash || result.correlationId !== (context?.correlationId ?? commandId)) throw new TransportError("agent receipt identity mismatch"); return { ...receipt, ...(context?.activeDeploymentId ? { activeDeploymentId: context.activeDeploymentId } : {}), projectId: snapshot.projectId, sourceDeploymentId, snapshotHash: snapshot.hash, correlationId: result.correlationId }; }
     if (result.schemaVersion !== 1) throw new TransportError("agent receipt identity mismatch"); return receipt;
     });
+  }
+
+  async dispatchComposeNetworkAttachment(prepared: PreparedComposeAttachmentCommand, authority: ProjectControlAuthorityV1, context: Pick<AgentDispatchContext, "requestId" | "correlationId" | "signal">): Promise<ComposeNetworkAttachmentReceiptV1> {
+    if (!this.available()) throw beforeDispatch(new TransportError("agent transport is not configured"));
+    if (prepared.agentId !== this.#options.agentId || authority.projectId !== prepared.request.projectId
+      || authority.commandId !== prepared.command.id || authority.inputDigest !== prepared.command.inputDigest
+      || prepared.request.correlationId !== context.correlationId) throw beforeDispatch(new TransportError("project update authority scope rejected"));
+    const timeoutMs = this.#options.timeoutMs ?? 30_000;
+    const body = composeNetworkAttachmentAgentCommandSchema.parse({ schemaVersion: 1, action: "compose.network.attachment", agentId: this.#options.agentId,
+      commandId: prepared.command.id, projectId: prepared.request.projectId, operation: prepared.request.operation,
+      idempotencyKey: prepared.request.idempotencyKey, inputDigest: prepared.command.inputDigest, canonicalDocument: prepared.canonicalDocument,
+      configDigest: prepared.request.configDigest, stateDigest: prepared.request.stateDigest, key: prepared.request.key,
+      runtimeName: prepared.request.runtimeName, service: prepared.request.service, attachmentAction: prepared.request.attachmentAction,
+      containerId: prepared.request.containerId, alreadySatisfied: prepared.request.alreadySatisfied,
+      requiredCapabilities: [COMPOSE_NETWORK_ATTACHMENT_CAPABILITY], authority, lease: authority.projectLease,
+      context: { requestId: context.requestId, correlationId: context.correlationId }, timeoutMs, cancellationRequested: false });
+    return this.operate(timeoutMs, context.signal, async (signal, sent) => {
+      const handshakeSignature = signAgentTransport("GET /capabilities", this.#options.trustKey);
+      const handshakeResponse = await awaitAbortable(() => this.#fetch(`${this.#options.endpoint.replace(/\/$/, "")}/capabilities`, { headers: { "x-deploylite-signature": handshakeSignature }, signal }), signal);
+      const binding = handshakeResponse.headers.get("x-deploylite-request-signature");
+      if (!handshakeResponse.ok || binding !== handshakeSignature) throw new TransportError("capability_unavailable");
+      const handshake = agentCapabilityHandshakeSchema.parse(await awaitAbortable(() => handshakeResponse.json(), signal));
+      if (handshake.agentId !== this.#options.agentId || !handshake.capabilities.includes(COMPOSE_NETWORK_ATTACHMENT_CAPABILITY)) throw new TransportError("capability_unavailable");
+      const payload = JSON.stringify(body); sent();
+      const response = await awaitAbortable(() => this.#fetch(`${this.#options.endpoint.replace(/\/$/, "")}${COMPOSE_NETWORK_ATTACHMENT_PATH}`, { method: "POST", headers: { "content-type": "application/json", "x-deploylite-signature": signAgentTransport(payload, this.#options.trustKey) }, body: payload, signal }), signal);
+      if (!response.ok) throw new TransportError(`agent transport returned HTTP ${response.status}`);
+      const receipt = composeNetworkAttachmentReceiptSchema.parse(await awaitAbortable(() => response.json(), signal));
+      if (receipt.agentId !== body.agentId || receipt.commandId !== body.commandId || receipt.projectId !== body.projectId
+        || receipt.inputDigest !== body.inputDigest || receipt.correlationId !== body.context.correlationId || receipt.key !== body.key
+        || receipt.runtimeName !== body.runtimeName || receipt.service !== body.service || receipt.attachmentAction !== body.attachmentAction
+        || receipt.containerId !== body.containerId) throw new TransportError("agent network receipt identity mismatch");
+      return receipt;
+    });
+  }
+
+  async readComposeNetworkAttachmentReceipt(prepared: PreparedComposeAttachmentCommand, authority: ProjectControlAuthorityV1, context: Pick<AgentDispatchContext, "requestId" | "correlationId" | "signal">): Promise<ComposeNetworkAttachmentReceiptV1 | null> {
+    if (!this.available()) throw new TransportError("agent transport is not configured");
+    if (prepared.agentId !== this.#options.agentId || authority.projectId !== prepared.request.projectId
+      || authority.commandId !== prepared.command.id || authority.inputDigest !== prepared.command.inputDigest
+      || prepared.request.correlationId !== context.correlationId) throw new TransportError("project update authority scope rejected");
+    const command = composeNetworkAttachmentAgentCommandSchema.parse({ schemaVersion: 1, action: "compose.network.attachment", agentId: this.#options.agentId,
+      commandId: prepared.command.id, projectId: prepared.request.projectId, operation: prepared.request.operation,
+      idempotencyKey: prepared.request.idempotencyKey, inputDigest: prepared.command.inputDigest, canonicalDocument: prepared.canonicalDocument,
+      configDigest: prepared.request.configDigest, stateDigest: prepared.request.stateDigest, key: prepared.request.key,
+      runtimeName: prepared.request.runtimeName, service: prepared.request.service, attachmentAction: prepared.request.attachmentAction,
+      containerId: prepared.request.containerId, alreadySatisfied: prepared.request.alreadySatisfied,
+      requiredCapabilities: [COMPOSE_NETWORK_ATTACHMENT_CAPABILITY], authority, lease: authority.projectLease,
+      context: { requestId: context.requestId, correlationId: context.correlationId }, timeoutMs: this.#options.timeoutMs ?? 30_000, cancellationRequested: false });
+    const query = composeNetworkAttachmentReceiptQuerySchema.parse(Object.fromEntries(Object.entries(command).filter(([field]) => field !== "cancellationRequested")));
+    const payload = JSON.stringify(query);
+    const result = await this.operate(query.timeoutMs, context.signal, async (signal, sent) => {
+      sent();
+      const response = await awaitAbortable(() => this.#fetch(`${this.#options.endpoint.replace(/\/$/, "")}/compose/networks/receipt`, { method: "POST", headers: { "content-type": "application/json", "x-deploylite-signature": signAgentTransport(`POST /compose/networks/receipt\n${payload}`, this.#options.trustKey) }, body: payload, signal }), signal);
+      if (!response.ok) throw new TransportError(`agent cache returned HTTP ${response.status}`);
+      return composeNetworkAttachmentCachedReceiptSchema.parse(await awaitAbortable(() => response.json(), signal));
+    });
+    if (result.agentId !== this.#options.agentId || result.commandId !== query.commandId || result.correlationId !== query.context.correlationId) throw new TransportError("agent cached network receipt identity mismatch");
+    const receipt = result.receipt;
+    if (receipt && (receipt.agentId !== query.agentId || receipt.commandId !== query.commandId || receipt.projectId !== query.projectId
+      || receipt.inputDigest !== query.inputDigest || receipt.correlationId !== query.context.correlationId || receipt.key !== query.key
+      || receipt.runtimeName !== query.runtimeName || receipt.service !== query.service || receipt.attachmentAction !== query.attachmentAction
+      || receipt.containerId !== query.containerId)) throw new TransportError("agent cached network receipt scope rejected");
+    return receipt;
   }
 
   async readExecutionReceipt(snapshot: DeploymentSnapshotV1, commandId: string, context?: AgentDispatchContext): Promise<DockerImageExecutionReceiptV1 | DeploymentDispatchReceipt | null> {
