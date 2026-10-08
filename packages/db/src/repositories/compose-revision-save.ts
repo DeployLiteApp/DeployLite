@@ -1,13 +1,16 @@
 import { and, asc, count, desc, eq, sql } from "drizzle-orm";
-import { composeRevisionSchema, composeResourcePageSchema, type ComposeRevisionV1, type ComposeRevisionSaved, type ComposeResourcePage } from "@deploylite/contracts";
+import { composeRevisionSchema, composeResourcePageSchema, composeResourceOwnershipQuerySchema, composeResourceOwnershipSchema,
+  type ComposeRevisionV1, type ComposeRevisionSaved, type ComposeResourcePage, type ComposeResourceOwnershipQueryV1, type ComposeResourceOwnershipV1 } from "@deploylite/contracts";
 import { validatePreparedComposeRevisionSave, buildComposeRevisionSave, replayComposeRevisionSave, composeRevisionSaveAudit, composeResourceMetadata,
-  validateComposePageOptions, ComposeRevisionError, type ComposeRevisionSaveStore, type PreparedComposeRevisionSave, type ComposeRevisionPageOptions, type ComposeRevisionPage } from "@deploylite/domain";
+  composeRuntimeResourceName, validateComposePageOptions, ComposeRevisionError, type ComposeRevisionSaveStore, type PreparedComposeRevisionSave,
+  type ComposeRevisionPageOptions, type ComposeRevisionPage } from "@deploylite/domain";
 import type { DeployLiteDb } from "../client.js";
 import { auditEvents, controlCommandAudits, controlCommands, composeResources, composeRevisions, type ComposeRevisionRow } from "../schema.js";
 import { redactAuditMetadata } from "./auth.js";
 import { resolveControlCommandOn } from "./control-plane.js";
 
 type Reader = Pick<DeployLiteDb, "select">;
+const MAX_RESOURCE_OWNER_SCAN = 1_000;
 function revision(row: ComposeRevisionRow | undefined): ComposeRevisionV1 | null {
   if (!row) return null;
   const parsed = composeRevisionSchema.safeParse({ schemaVersion: 1, id: row.id, projectId: row.projectId, composeId: row.composeId, number: row.number,
@@ -51,6 +54,26 @@ export class DbComposeRevisionSaveStore implements ComposeRevisionSaveStore {
   findRevision(projectId: string, id: string): Promise<ComposeRevisionV1 | null> { return readRevision(this.db, projectId, id); }
   async findLatestRevision(projectId: string, composeId: string): Promise<ComposeRevisionV1 | null> {
     const [row] = await this.db.select().from(composeRevisions).where(and(eq(composeRevisions.projectId, projectId), eq(composeRevisions.composeId, composeId))).orderBy(desc(composeRevisions.number)).limit(1); return revision(row);
+  }
+  async findResourceOwner(raw: ComposeResourceOwnershipQueryV1): Promise<ComposeResourceOwnershipV1 | null> {
+    const parsed = composeResourceOwnershipQuerySchema.safeParse(structuredClone(raw));
+    if (!parsed.success) throw new ComposeRevisionError("COMPOSE_REVISION_INVALID");
+    const query = parsed.data;
+    const rows = await this.db.selectDistinctOn([composeRevisions.composeId]).from(composeRevisions).where(eq(composeRevisions.projectId, query.projectId))
+      .orderBy(asc(composeRevisions.composeId), desc(composeRevisions.number)).limit(MAX_RESOURCE_OWNER_SCAN + 1);
+    if (rows.length > MAX_RESOURCE_OWNER_SCAN) throw new ComposeRevisionError("COMPOSE_REVISION_CONFLICT");
+    const matches = rows.map((row) => revision(row)!).flatMap((current) => (query.kind === "network" ? current.preview.networks : current.preview.volumes)
+      .filter((resource) => resource.key === query.key).map((resource) => ({ current, resource })));
+    if (matches.length > 1) throw new ComposeRevisionError("COMPOSE_REVISION_CONFLICT");
+    const match = matches[0];
+    if (!match || match.current.preview.configDigest !== query.expectedConfigDigest) return null;
+    if (match.resource.runtimeName !== composeRuntimeResourceName(query.projectId, query.kind, query.key)) throw new ComposeRevisionError("COMPOSE_REVISION_INVALID");
+    const [owner] = await this.db.select().from(composeResources)
+      .where(and(eq(composeResources.projectId, query.projectId), eq(composeResources.id, match.current.composeId))).limit(1);
+    if (!owner) return null;
+    return composeResourceOwnershipSchema.parse({ schemaVersion: 1, projectId: match.current.projectId, composeId: match.current.composeId, ownerUserId: owner.createdBy,
+      revisionId: match.current.id, revisionNumber: match.current.number, kind: query.kind, key: match.resource.key,
+      runtimeName: match.resource.runtimeName, configDigest: match.current.preview.configDigest });
   }
   async listRevisions(projectId: string, composeId: string, options: ComposeRevisionPageOptions): Promise<ComposeRevisionPage> {
     validateComposePageOptions(options); const condition = and(eq(composeRevisions.projectId, projectId), eq(composeRevisions.composeId, composeId));

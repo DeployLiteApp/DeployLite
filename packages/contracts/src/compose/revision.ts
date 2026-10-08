@@ -37,6 +37,24 @@ export const composeRevisionSchema = z.object({
   && [...revision.preview.networks, ...revision.preview.volumes].every((resource) => resource.projectId === revision.projectId));
 export type ComposeRevisionV1 = z.infer<typeof composeRevisionSchema>;
 
+const composeResourceKind = z.enum(["network", "volume"]);
+const composeResourceKey = composePreviewSchema.shape.networks.element.shape.key;
+const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
+/** Exact logical owner derived from the current saved Compose revision; it is not physical-runtime proof. */
+export const composeResourceOwnershipQuerySchema = z.object({
+  projectId: id, kind: composeResourceKind, key: composeResourceKey, expectedConfigDigest: sha256
+}).strict();
+export type ComposeResourceOwnershipQueryV1 = z.infer<typeof composeResourceOwnershipQuerySchema>;
+export const composeResourceOwnershipSchema = z.object({
+  schemaVersion: z.literal(1), projectId: id, composeId: id, ownerUserId: id, revisionId: id,
+  revisionNumber: z.number().int().min(1).max(2_147_483_647), kind: composeResourceKind, key: composeResourceKey,
+  runtimeName: z.string().max(160).regex(/^dl-[a-f0-9]{32}-(?:net|vol)-[a-z][a-z0-9_-]*$/), configDigest: sha256
+}).strict().superRefine((owner, context) => {
+  const resourceKind = owner.kind === "network" ? "net" : "vol";
+  if (!owner.runtimeName.endsWith(`-${resourceKind}-${owner.key}`)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["runtimeName"], message: "Resource identity mismatch" });
+});
+export type ComposeResourceOwnershipV1 = z.infer<typeof composeResourceOwnershipSchema>;
+
 export const composeRevisionHistoryQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   offset: z.coerce.number().int().min(0).max(1_000_000).default(0)

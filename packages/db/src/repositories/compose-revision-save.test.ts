@@ -11,7 +11,8 @@ import { DbComposeRevisionSaveStore } from "./compose-revision-save.js";
 const projectId = "574c9a70-2b49-4f89-b9d3-90f41060a9c0", actorId = "e9f4a088-3e3c-4c59-bf86-6d782cf80b9f";
 const document = JSON.stringify({ services: { web: { image: `registry.example.com/app@sha256:${"a".repeat(64)}` } } });
 const policy = { policyVersion: "db-compose-fixture", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true };
-const input = () => prepareComposeRevisionSave({ document, projectId, actorId, composeId: null, expectedRevisionId: null, expectedPreviewDigest: createComposePreview(document, projectId, policy).configDigest, idempotencyKey: "db-save-key", correlationId: "db-correlation", requestId: "db-request", now: new Date() }, policy);
+const input = (source = document, idempotencyKey = "db-save-key") => prepareComposeRevisionSave({ document: source, projectId, actorId, composeId: null, expectedRevisionId: null,
+  expectedPreviewDigest: createComposePreview(source, projectId, policy).configDigest, idempotencyKey, correlationId: "db-correlation", requestId: "db-request", now: new Date() }, policy);
 type Row = Record<string, unknown>;
 function fixture(injectFault?: (stage: string) => void) {
   let tables: Record<string, Map<string, Row>> = Object.fromEntries(["control_commands", "compose_resources", "compose_revisions", "audit_events", "control_command_audits"].map((name) => [name, new Map()]));
@@ -38,7 +39,16 @@ function fixture(injectFault?: (stage: string) => void) {
       rows = [...table.values()];
       if (name === "control_commands") rows = rows.filter((row) => row.actorUserId === values[0] && row.action === values[1] && row.scopeKey === values[2] && row.idempotencyKey === values[3]);
       if (name === "compose_resources") rows = rows.filter((row) => text.includes('"project_id" =') ? row.projectId === values[0] : row.id === values[0]);
-      if (name === "compose_revisions") rows = rows.filter((row) => row.projectId === values[0] && (text.includes('"compose_id" =') ? row.composeId === values[1] : row.id === values[1])).sort((a, b) => Number(b.number) - Number(a.number));
+      if (name === "compose_revisions") {
+        rows = rows.filter((row) => row.projectId === values[0]);
+        if (text.includes('"compose_id" =')) rows = rows.filter((row) => row.composeId === values[1]);
+        else if (text.includes('"id" =')) rows = rows.filter((row) => row.id === values[1]);
+        if (text.includes("distinct on")) {
+          const latest = new Map<string, Row>();
+          for (const row of rows.sort((a, b) => Number(b.number) - Number(a.number))) if (!latest.has(String(row.composeId))) latest.set(String(row.composeId), row);
+          rows = [...latest.values()];
+        }
+      }
       if (text.includes("limit")) rows = rows.slice(0, Number(values.at(-1)));
     }
     if (!text.includes("returning") && !text.startsWith("select")) return { rows: [] };
@@ -68,4 +78,26 @@ describe("Compose durable adapter through real Drizzle SQL without a local engin
     expect(f.queries.at(-1)).toBe("rollback"); for (const name of ["compose_resources", "compose_revisions", "control_commands", "audit_events", "control_command_audits"]) expect(f.table(name).size).toBe(0);
   });
   it("refuses invalid command binding before transaction or pool interaction", async () => { const f = fixture(), prepared = input(); prepared.command.inputDigest = "b".repeat(64); await expect(f.store.save(prepared)).rejects.toThrow(); expect(f.queries).toHaveLength(0); });
+  it("resolves saved network/volume ownership through the existing project and revision tables", async () => {
+    const f = fixture(), prepared = input(), saved = await f.store.save(prepared);
+    const lookup = Reflect.get(f.store, "findResourceOwner") as ((query: unknown) => Promise<unknown>) | undefined;
+    expect(typeof lookup).toBe("function"); const find = lookup!.bind(f.store);
+    const owner = await find({ projectId, kind: "network", key: "default", expectedConfigDigest: saved.revision.preview.configDigest });
+    expect(owner).toMatchObject({ projectId, composeId: saved.revision.composeId, ownerUserId: actorId, revisionId: saved.revision.id, revisionNumber: 1,
+      kind: "network", key: "default", runtimeName: saved.revision.preview.networks[0]!.runtimeName, configDigest: saved.revision.preview.configDigest });
+    const ownerQueries = f.queries.filter((query) => query.includes('"compose_resources"') || query.includes('"compose_revisions"'));
+    expect(ownerQueries.some((query) => query.includes('from "compose_resources"') && query.includes('"project_id"'))).toBe(true);
+    expect(ownerQueries.some((query) => query.includes('from "compose_revisions"') && query.includes('"compose_id"'))).toBe(true);
+    expect(f.table("compose_resources").size).toBe(1); expect(f.table("compose_revisions").size).toBe(1);
+    await expect(find({ projectId: "foreign-project", kind: "network", key: "default", expectedConfigDigest: saved.revision.preview.configDigest })).resolves.toBeNull();
+    await expect(find({ projectId, kind: "network", key: "default", expectedConfigDigest: "b".repeat(64) })).resolves.toBeNull();
+  });
+  it("rejects conflicting durable owners for the same project-scoped resource identity", async () => {
+    const f = fixture(), first = await f.store.save(input());
+    await f.store.save(input(document.replace("a".repeat(64), "b".repeat(64)), "db-save-key-2"));
+    const lookup = Reflect.get(f.store, "findResourceOwner") as ((query: unknown) => Promise<unknown>) | undefined;
+    expect(typeof lookup).toBe("function");
+    await expect(lookup!.bind(f.store)({ projectId, kind: "network", key: "default", expectedConfigDigest: first.revision.preview.configDigest }))
+      .rejects.toMatchObject({ code: "COMPOSE_REVISION_CONFLICT" });
+  });
 });

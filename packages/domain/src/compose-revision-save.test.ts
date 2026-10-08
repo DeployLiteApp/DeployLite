@@ -87,4 +87,37 @@ describe("Compose save through the shared command ledger", () => {
     input.preview.services[0]!.image = "mutated-input"; saved.revision.preview.services[0]!.image = "mutated-output";
     expect((await f.store.findRevision("project-1", id))?.preview.services[0]?.image).toBe(image);
   });
+  it("resolves current network and volume ownership from the saved project revision", async () => {
+    const ownedDocument = JSON.stringify({ services: { web: { image, volumes: [{ type: "volume", source: "data", target: "/data" }] } }, volumes: { data: {} } });
+    const f = fixture(), prepared = prepare({ document: ownedDocument }), saved = await f.store.save(prepared);
+    const lookup = Reflect.get(f.store, "findResourceOwner") as ((query: unknown) => Promise<unknown>) | undefined;
+    expect(typeof lookup).toBe("function"); const find = lookup!.bind(f.store);
+    const network = await find({ projectId: "project-1", kind: "network", key: "default", expectedConfigDigest: saved.revision.preview.configDigest });
+    const volume = await find({ projectId: "project-1", kind: "volume", key: "data", expectedConfigDigest: saved.revision.preview.configDigest });
+    expect(network).toMatchObject({ projectId: "project-1", composeId: saved.revision.composeId, ownerUserId: "actor-1", revisionId: saved.revision.id, revisionNumber: 1,
+      kind: "network", key: "default", runtimeName: saved.revision.preview.networks[0]!.runtimeName, configDigest: saved.revision.preview.configDigest });
+    expect(volume).toMatchObject({ projectId: "project-1", composeId: saved.revision.composeId, ownerUserId: "actor-1", revisionId: saved.revision.id, revisionNumber: 1,
+      kind: "volume", key: "data", runtimeName: saved.revision.preview.volumes[0]!.runtimeName, configDigest: saved.revision.preview.configDigest });
+    await expect(find({ projectId: "foreign-project", kind: "network", key: "default", expectedConfigDigest: saved.revision.preview.configDigest })).resolves.toBeNull();
+    await expect(find({ projectId: "project-1", kind: "network", key: "default", expectedConfigDigest: "b".repeat(64) })).resolves.toBeNull();
+  });
+  it("uses only the latest revision for persisted ownership and refuses an undeclared resource", async () => {
+    const ownedDocument = JSON.stringify({ services: { web: { image, volumes: [{ type: "volume", source: "data", target: "/data" }] } }, volumes: { data: {} } });
+    const f = fixture(), first = await f.store.save(prepare({ document: ownedDocument }));
+    const updated = await f.store.save(prepare({ composeId: first.revision.composeId, expectedRevisionId: first.revision.id, idempotencyKey: "save-key-2" }));
+    const lookup = Reflect.get(f.store, "findResourceOwner") as ((query: unknown) => Promise<unknown>) | undefined;
+    expect(typeof lookup).toBe("function"); const find = lookup!.bind(f.store);
+    await expect(find({ projectId: "project-1", kind: "volume", key: "data", expectedConfigDigest: first.revision.preview.configDigest })).resolves.toBeNull();
+    await expect(find({ projectId: "project-1", kind: "volume", key: "missing", expectedConfigDigest: updated.revision.preview.configDigest })).resolves.toBeNull();
+    await expect(find({ projectId: "project-1", kind: "network", key: "default", expectedConfigDigest: updated.revision.preview.configDigest }))
+      .resolves.toMatchObject({ revisionId: updated.revision.id, revisionNumber: 2, kind: "network", key: "default" });
+  });
+  it("rejects two current Compose owners claiming the same project-scoped resource identity", async () => {
+    const f = fixture(), first = await f.store.save(prepare());
+    await f.store.save(prepare({ document: document.replace("a".repeat(64), "b".repeat(64)), idempotencyKey: "save-key-2" }));
+    const lookup = Reflect.get(f.store, "findResourceOwner") as ((query: unknown) => Promise<unknown>) | undefined;
+    expect(typeof lookup).toBe("function");
+    await expect(lookup!.bind(f.store)({ projectId: "project-1", kind: "network", key: "default", expectedConfigDigest: first.revision.preview.configDigest }))
+      .rejects.toMatchObject({ code: "COMPOSE_REVISION_CONFLICT" });
+  });
 });
