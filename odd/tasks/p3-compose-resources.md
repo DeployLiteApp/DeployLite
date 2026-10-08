@@ -8,22 +8,22 @@ Current community roadmap: make Compose, networks and volumes first-class resour
 
 ## Finite acceptance outcomes
 
-These eight outcomes are derived from the existing roadmap; they are a working acceptance denominator, not a count of code files, tests, commits or PRs. C1 is accepted: 1/8 (12.5%). C2–C8 remain pending. Baseline reuse does not mean zero implemented code and earns no new P3 acceptance credit.
+These eight outcomes are derived from the existing roadmap; they are a working acceptance denominator, not a count of code files, tests, commits or PRs. C1 and C2 are accepted on protected main: 2/8 (25%). C3–C8 remain pending acceptance. Baseline reuse does not mean zero implemented code and earns no new P3 acceptance credit.
 
 | ID | Result and completion evidence | State |
 | --- | --- | --- |
 | C1 | Compose input parsing, canonical equivalent intent and scoped digest, explicit closed policy, effect-free dry run and no literal/resolved secret exposure; supported-format/invalid/unsupported/canonicalization evidence | Completed; YAML1.2/JSON API/UI proof, PR382 protected merge and exact five-gate CI PASS |
-| C2 | Project-owned Compose resource and immutable revision lifecycle exposed through API/UI, safe reads and auditable normal authorization, idempotency and capability boundaries | Pending |
-| C3 | Network/volume identities and ownership with conflict/foreign-resource rejection; durable repository parity and observed owner evidence | Pending |
-| C4 | Service-to-resource attachment/detachment with matching ownership, running-use and stale-state guards; bounded retry/failure cases | Pending |
-| C5 | Capability-negotiated inspection from actual observations with safe API/UI projections, missing/disabled capability rejection and no simulated physical credit | Pending |
-| C6 | Backup of applicable owned persistent volumes, bounded destination/operation, integrity/completeness evidence and safe failure reporting; database restore/retention remains P5 | Pending |
-| C7 | Exact-scope confirmed cleanup through shared command/audit/idempotency path, expiration/replay/stale/attached/foreign rejection and visible observed terminal result; no indiscriminate purge | Pending |
+| C2 | Project-owned Compose resource and immutable revision lifecycle exposed through API/UI, safe reads and auditable normal authorization, idempotency and capability boundaries | Accepted: PR383 merged as ce96da37; five required checks and 13/13 P3 PostgreSQL cases passed |
+| C3 | Network/volume identities and ownership with conflict/foreign-resource rejection; durable repository parity and observed owner evidence | Candidate source complete; observed physical owner evidence and integrated acceptance pending |
+| C4 | Service-to-resource attachment/detachment with matching ownership, running-use and stale-state guards; bounded retry/failure cases | Partial: network attachment source exists; volume attachment remains unsupported; integrated evidence pending |
+| C5 | Capability-negotiated inspection from actual observations with safe API/UI projections, missing/disabled capability rejection and no simulated physical credit | Candidate source complete; actual integrated observation evidence pending |
+| C6 | Backup of applicable owned persistent volumes, bounded destination/operation, integrity/completeness evidence and safe failure reporting; database restore/retention remains P5 | Candidate source complete; actual integrated backup evidence pending |
+| C7 | Exact-scope confirmed cleanup through shared command/audit/idempotency path, expiration/replay/stale/attached/foreign rejection and visible observed terminal result; no indiscriminate purge | Candidate source complete; PostgreSQL transaction/restart and integrated observed receipt evidence pending |
 | C8 | Same-source integrated Compose/network/volume/backup/cleanup acceptance on a specifically authorized disposable supported environment; zero unexplained failures/skips, own cleanup and full documentary custody | Pending |
 
 ## Reuse and verified gaps
 
-Reusable main foundations: project grants/RBAC, audit/correlation, destructive confirmations and idempotency, digest-image validation, agent effect/inspection boundaries, repository ports/PostgreSQL foundations and redacted secret metadata. No application Compose parser/revision model or managed network/volume resource routes/tables were found on current main; previous installer/preview Compose infrastructure and historical memories are prerequisites, not shipped P3 product resource management. Fresh GitHub main/identity and open PRs checked: DeployLiteApp identity unchanged; no open PR or matching active P3 issue found. No duplicate issue was created.
+At the initial main baseline, reusable foundations included project grants/RBAC, audit/correlation, destructive confirmations and idempotency, digest-image validation, agent effect/inspection boundaries, repository ports/PostgreSQL foundations and redacted secret metadata. No application Compose parser/revision model or managed network/volume resource routes/tables were found on current main; previous installer/preview Compose infrastructure and historical memories are prerequisites, not shipped P3 product resource management. Fresh GitHub main/identity and open PRs checked: DeployLiteApp identity unchanged; no open PR or matching active P3 issue found. No duplicate issue was created.
 
 ## Provisional work budget
 
@@ -158,7 +158,7 @@ Second exact source `0a6c16dc24a66c695c6421ceb4f3b5c9f415e4e2`, run37733085386, 
 
 That run's lint also exposed six old rollback test accesses to the expanded command result union. The fixture now uses the existing closed rollback-result schema before reading deploymentId, preserving the original46 assertions. Those46 cases pass again with fully simulated boundaries. API src/type-tests and DB src/type-tests noEmit now both exit0 with complete source coverage, including tests and integration case source; their earlier narrower checks did not cover those old fixture accesses. Of304 distinct local application cases,258 remain byte-unchanged and46 were freshly reverified;38 mocked helper guards also pass. New P3 behavior remains59 prospectively observed assertions. Latest corrected head must still pass all five required hosted gates and13/13 actual durable P3 cases before readiness. P3 remains1/8, six lots unchanged, and no protection, dependency, runtime/helper topology or credentials were changed.
 
-## C2 complete source and exact-head hosted verification
+## C2 complete source and exact-head hosted verification (pre-merge checkpoint)
 
 Full C2 source is delivered on [PR383](https://github.com/DeployLiteApp/DeployLite/pull/383), exact head `c424fc0e933de4d1ea01a6a2c6a7ed2bf5473985`. [Run37733965569](https://github.com/DeployLiteApp/DeployLite/actions/runs/37733965569) passed all five required jobs and their exact-head PR checks: quality, postgres-integration, compose-and-supply-chain, p2-docker-acceptance and baseline-gate. Hosted quality performed real pnpm9 frozen install, builds, lint, full typecheck/tests and the unchanged forbid-only contract. Earlier failed runs and their two bounded fixture/type corrections are preserved above; no failing gate was bypassed.
 
@@ -168,7 +168,7 @@ C2 now has coherent save/read/history UI, shared authorization/audit/idempotency
 
 This final hosted-evidence paragraph is an owned local documentary append awaiting the next scoped commit; application/source delivery and required checks are bound to c424fc0, not to an invented later SHA. The same official local Engram25587 mirror is FULL and read back byte-equal with autosync0. Root WIP/index/12 stashes/428 protected paths, unrelated worktrees and Moteles resources remain preserved.
 
-## Deferred merge and independent next-lot coordination
+## Deferred merge and independent next-lot coordination (historical; superseded by current reconciliation below)
 
 The coordinator explicitly reduced the current scope after automatic review refused its requested PR383 merge: continuing P3 and the push/commit rule were not treated as explicit merge authority. One direct user confirmation is pending in the coordinator chat. Do not attempt merge, bypass, alternative merge path or authentication changes while it remains pending. PR383 is actually OPEN/ready-for-review on c424fc0; preserve that state. C2 source/required CI/actual PostgreSQL proof is complete and remains unaccepted on protected main.
 
@@ -180,7 +180,7 @@ The existing `02b277d` shared command/confirmation/audit store now owns cleanup 
 
 Focused local evidence: cleanup API39/39 and domain79/79 PASS, source-contract noEmit exit0, `git diff --check` clean. The recovery case loses the dispatch reply, makes the first receipt read unavailable, retries past confirmation expiry, recovers the stored terminal receipt and observes one dispatch/start/completion audit. PostgreSQL transaction/restart verification was intentionally not run; those durable adapter claims remain pending that separate integration evidence. C7 code source is complete in this local candidate, but C7 acceptance remains pending; simulated tests do not count as physical acceptance.
 
-Candidate base is reconciled to accepted `origin/main` C1 at `8e75a5a866cfd30269698813cbee9d28c6440ce6`. C2 (`c424fc0e933de4d1ea01a6a2c6a7ed2bf5473985`) remains source/CI/PostgreSQL-evidence complete but unmerged, so it does not count as accepted. Keep P3 at1/8=12.5%; do not infer acceptance from source volume or simulated tests. No push, merge, local PostgreSQL, or physical resource operation was performed.
+At the C7 source-increment checkpoint, before PR383 was merged and the candidate was reconciled, the branch was based on accepted main C1 at 8e75a5a866cfd30269698813cbee9d28c6440ce6 and C2 was still unmerged. This status is historical and is superseded by the C2 protected-main reconciliation below. No remote push, local PostgreSQL or physical resource operation was performed at that checkpoint.
 
 ## C3 durable ownership repository source parity
 
@@ -188,4 +188,10 @@ The existing ComposeRevisionSaveStore now exposes the same findResourceOwner con
 
 Prospective RED was observed before implementation: two domain assertions and one DB-adapter assertion failed because findResourceOwner was absent. Earlier DB runner configuration/setup failures are not counted as behavioral RED. Final local contract GREEN: ownership domain3/3, preview regression30/30 and DB adapter2/2; domain, DB and API source-contract noEmit all exit0. The DB adapter tests exercise real Drizzle-generated SQL against the existing lightweight in-memory SQL fixture, without PostgreSQL. No local database, Docker or runtime observation was used.
 
-C3 code source is complete in this candidate; C3 acceptance remains pending observed physical owner evidence and the integrated P3 boundary. This does not change the accepted counter: protected origin/main contains C1 only, so P3 remains1/8=12.5%; C2 and C3-C8 are not accepted there. The roadmap row now reflects that base. Keep PostgreSQL evidence pending for C7's new execution claim/terminal recovery transactions as well.
+C3 code source is complete in this candidate; C3 acceptance remains pending observed physical owner evidence and the integrated P3 boundary.
+
+## C2 protected-main reconciliation and current candidate base
+
+Normal read of GitHub verified PR383 as merged at ce96da37dda2a6e8aa1277093b9fc78589ed23b8 with five required checks passing; its same-job artifact records 13/13 actual P3 PostgreSQL cases. origin/main was fetched to that exact commit. The candidate branch feat/p3-resources-candidate shares 609111fb as the source ancestry, and a non-mutating merge-tree check reported no conflicts before local reconciliation. Local merge 3bba6fb incorporates ce96da37 without repeating PR383, rewriting the candidate commits or changing the remote. The worktree remains local-only.
+
+Protected-main acceptance is now C1+C2: 2/8=25%. Candidate source is complete for C3, C5, C6 and C7; C3 physical owner observation, C5/C6 runtime evidence, C7 PostgreSQL transaction/restart evidence and the integrated C8 acceptance remain pending. C4 is partial: network attachment source exists, while volume attachment remains unsupported pending a safe controlled-recreation design and implementation. No actual runtime operation, local PostgreSQL, push or deployment was performed during reconciliation.
