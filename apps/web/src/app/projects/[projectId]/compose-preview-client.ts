@@ -10,7 +10,7 @@ const reference = /^[A-Z_][A-Z0-9_]{0,127}$/;
 export async function previewProjectCompose({ projectId, apiBaseUrl, document, fetchImpl = fetch, signal }: Options): Promise<ComposePreviewResult> {
   if (!apiBaseUrl) return { kind: "error", message: "Compose preview is unavailable until the project API is configured." };
   if (!composePreviewRequestSchema.safeParse({ document }).success || new TextEncoder().encode(document).length > COMPOSE_PREVIEW_MAX_BYTES) {
-    return { kind: "error", message: "Enter a Compose JSON document of at most 64 KiB." };
+    return { kind: "error", message: "Enter a Compose YAML or JSON document of at most 64 KiB." };
   }
   try {
     const response = await fetchImpl(new URL(`/api/v1/projects/${encodeURIComponent(projectId)}/compose/preview`, apiBaseUrl), {
@@ -21,7 +21,7 @@ export async function previewProjectCompose({ projectId, apiBaseUrl, document, f
       const message = response.status === 401 ? "Sign in again to preview Compose."
         : response.status === 403 ? "Compose preview requires project deploy permission."
         : response.status === 404 ? "This project is unavailable."
-        : "Compose preview was rejected. Check supported JSON fields, digest-pinned images and secret references.";
+        : "Compose preview was rejected. Check supported fields, digest-pinned images and secret references.";
       return { kind: "error", message };
     }
     let payload: unknown;

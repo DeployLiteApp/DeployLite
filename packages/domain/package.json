@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@deploylite/config": "workspace:*",
-    "@deploylite/contracts": "workspace:*"
+    "@deploylite/contracts": "workspace:*",
+    "yaml": "2.9.1"
   }
 }

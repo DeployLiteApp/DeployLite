@@ -45,15 +45,15 @@ export function ComposePreviewCard({ projectId, apiBaseUrl }: { projectId: strin
     <Card id="compose-preview">
       <CardHeader>
         <CardTitle><h2>Compose preview</h2></CardTitle>
-        <CardDescription>Review services, networks and named volumes before using them. This preview supports Compose JSON with digest-pinned images and secret references.</CardDescription>
+        <CardDescription>Review services, networks and named volumes before using them. This preview supports a closed subset of Compose YAML 1.2 and JSON with digest-pinned images and secret references.</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         <form onSubmit={submit} className="flex flex-col gap-3" aria-describedby="compose-preview-help compose-preview-status">
           <Field>
-            <FieldLabel htmlFor="compose-document">Compose document (JSON)</FieldLabel>
+            <FieldLabel htmlFor="compose-document">Compose document (YAML or JSON)</FieldLabel>
             <Textarea id="compose-document" value={document} onChange={(event) => edit(event.target.value)} rows={8} autoComplete="off" spellCheck={false} className="font-mono" aria-describedby="compose-preview-help" />
           </Field>
-          <p id="compose-preview-help" className="text-sm text-muted-foreground">Use secret references such as {"${APP_TOKEN}"}; never paste secret values. The draft stays in this page and is cleared when you leave. YAML is not supported yet.</p>
+          <p id="compose-preview-help" className="text-sm text-muted-foreground">Use secret references such as {"${APP_TOKEN}"}; never paste secret values. The draft stays in this page and is cleared when you leave. Use one document of at most 64 KiB; tags, anchors, aliases and merge keys are unsupported.</p>
           <div className="flex flex-wrap gap-3">
             <Button type="submit" disabled={pending || !document.trim() || !apiBaseUrl}>{pending ? "Previewing..." : "Preview Compose"}</Button>
             <Button type="button" variant="outline" onClick={clear}>Clear draft</Button>

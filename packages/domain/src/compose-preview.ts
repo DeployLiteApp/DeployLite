@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import { COMPOSE_PREVIEW_MAX_BYTES, composeDocumentSchema, composePreviewSchema, normalizeImageReferencePolicy, validateImageReference,
   type ComposeDocumentV1, type ComposePreviewV1, type ImageReferencePolicyV1 } from "@deploylite/contracts";
 
-type ErrorCode = "COMPOSE_INVALID_JSON" | "COMPOSE_POLICY_REJECTED" | "COMPOSE_IMAGE_REJECTED" | "COMPOSE_UNDECLARED_RESOURCE" | "COMPOSE_DUPLICATE_ATTACHMENT";
+import { decodeComposeInput } from "./compose-input.js";
+
+type ErrorCode = "COMPOSE_INVALID_DOCUMENT" | "COMPOSE_POLICY_REJECTED" | "COMPOSE_IMAGE_REJECTED" | "COMPOSE_UNDECLARED_RESOURCE" | "COMPOSE_DUPLICATE_ATTACHMENT";
 export class ComposePreviewError extends Error {
   constructor(readonly code: ErrorCode) { super("Compose input is outside the supported preview policy."); this.name = "ComposePreviewError"; }
 }
@@ -14,10 +16,10 @@ function hash(value: string): string { return createHash("sha256").update(value)
 
 /** Pure planning only: no runtime port, secret source, file or process adapter. */
 export function createComposePreview(document: string, projectId: string, imagePolicy: ImageReferencePolicyV1): ComposePreviewV1 {
-  if (typeof document !== "string" || Buffer.byteLength(document, "utf8") > COMPOSE_PREVIEW_MAX_BYTES) fail("COMPOSE_INVALID_JSON");
+  if (typeof document !== "string" || Buffer.byteLength(document, "utf8") > COMPOSE_PREVIEW_MAX_BYTES) fail("COMPOSE_INVALID_DOCUMENT");
   if (!/^[A-Za-z0-9_-]{1,200}$/.test(projectId)) fail("COMPOSE_POLICY_REJECTED");
   let decoded: unknown;
-  try { decoded = JSON.parse(document); } catch { fail("COMPOSE_INVALID_JSON"); }
+  try { decoded = decodeComposeInput(document); } catch { fail("COMPOSE_INVALID_DOCUMENT"); }
   const parsed = composeDocumentSchema.safeParse(decoded);
   if (!parsed.success) fail("COMPOSE_POLICY_REJECTED");
   const model: ComposeDocumentV1 = parsed.data;
