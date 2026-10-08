@@ -4,15 +4,15 @@ Canonical repository locator: `odd/tasks/p3-compose-resources.md`; official FULL
 
 ## Authorized outcome
 
-Current community roadmap: make Compose, networks and volumes first-class resources. Compose must be parsed, canonicalized, policy-validated, dry-runable and secret-safe; ownership, attachment, inspection, backup where applicable and confirmed cleanup must be tested. Jerson authorized starting P3 on 2026-10-08, local repository work in isolation and draft PR/CI. No new production/VPS/DNS/credentials/runtime access is inferred. No local services, Docker/DB, heavy builds or dependency changes. Existing other-project resources and Safari remain untouched.
+Current community roadmap: make Compose, networks and volumes first-class resources. Compose must be parsed, canonicalized, policy-validated, dry-runable and secret-safe; ownership, attachment, inspection, backup where applicable and confirmed cleanup must be tested. Jerson authorized starting P3 on 2026-10-08, local repository work in isolation and the normal PR/CI/protected-merge flow. No new production/VPS/DNS/credentials/runtime access is inferred. No local services, Docker/DB, heavy builds or dependency changes beyond the exact yaml@2.9.1 exception recorded below. Existing other-project resources and Safari remain untouched.
 
 ## Finite acceptance outcomes
 
-These eight outcomes are derived from the existing roadmap; they are a working acceptance denominator, not a count of code files, tests, commits or PRs. None is accepted yet: 0/8. Baseline reuse does not mean zero implemented code and earns no new P3 acceptance credit.
+These eight outcomes are derived from the existing roadmap; they are a working acceptance denominator, not a count of code files, tests, commits or PRs. C1 is accepted: 1/8 (12.5%). C2–C8 remain pending. Baseline reuse does not mean zero implemented code and earns no new P3 acceptance credit.
 
 | ID | Result and completion evidence | State |
 | --- | --- | --- |
-| C1 | Compose input parsing, canonical equivalent intent and scoped digest, explicit closed policy, effect-free dry run and no literal/resolved secret exposure; supported-format/invalid/unsupported/canonicalization evidence | Pending; bounded JSON preview source in progress; YAML remains pending |
+| C1 | Compose input parsing, canonical equivalent intent and scoped digest, explicit closed policy, effect-free dry run and no literal/resolved secret exposure; supported-format/invalid/unsupported/canonicalization evidence | Completed; YAML1.2/JSON API/UI proof, PR382 protected merge and exact five-gate CI PASS |
 | C2 | Project-owned Compose resource and immutable revision lifecycle exposed through API/UI, safe reads and auditable normal authorization, idempotency and capability boundaries | Pending |
 | C3 | Network/volume identities and ownership with conflict/foreign-resource rejection; durable repository parity and observed owner evidence | Pending |
 | C4 | Service-to-resource attachment/detachment with matching ownership, running-use and stale-state guards; bounded retry/failure cases | Pending |
@@ -40,7 +40,7 @@ Hours below are active implementation/verification work, not calendar ETA or an 
 | Review/CI corrections | 3–6 |
 | Total provisional | 29–50 |
 
-Calendar depends on hosted CI queue/review, parser dependency decision and concrete disposable runtime authorization. The last P2 documentary five-gate run took about376 seconds; source retries added time. The Mac currently has about12GiB free; no competing local service/build was launched. Full local `pnpm check` is not run under the shared-Mac heavy-build boundary; the expected command remains unchanged and hosted required gates must pass before readiness.
+Calendar depends on hosted CI queue/review and concrete disposable runtime authorization; the exact one-library parser decision is resolved. The last P2 documentary five-gate run took about376 seconds; source retries added time. The Mac currently has about12GiB free; no competing local service/build was launched. Full local `pnpm check` is not run under the shared-Mac heavy-build boundary; the expected command remains unchanged and hosted required gates must pass before readiness.
 
 ## First vertical increment and checkpoint
 
@@ -87,3 +87,15 @@ Current delivery status: local C1 source/verification complete; exact protected 
 ## YAML lock contract correction
 
 First hosted run37718250935 accepted `pnpm install --frozen-lockfile` with pnpm9.15.4 on the submitted YAML source, then quality failed because the existing runtime contract retained the old lockfile SHA256 pin. The same failure was observed locally before changing the pin. The reviewed dependency/lock records and integrity proof are unchanged; only EXPECTED_LOCK_SHA256 is updated to the approved current lock hash. All Node/pnpm/container pins and the strict comparison remain intact. The lightweight runtime-contract script now passes; no installer, Docker/service or build was run locally. Earlier144 focused cases/noEmit remain valid because their source and test bytes are unchanged. All five unchanged hosted gates must pass on this corrected exact head before readiness/merge; P3 acceptance remains0/8.
+
+## C1 accepted delivery and current six-block position
+
+[PR382](https://github.com/DeployLiteApp/DeployLite/pull/382) was normally merged through protected main after all five unchanged gates passed on exact source `b1bbd254d5f7860d96b244c251a92d56a33f2c73` in [run37718540105](https://github.com/DeployLiteApp/DeployLite/actions/runs/37718540105). Main merge is `8e75a5a866cfd30269698813cbee9d28c6440ce6`; the source and precise lock-contract correction are committed as `e8e8d70b0014d4cbba0ab96e114f2728cae774b3` and `b1bbd254d5f7860d96b244c251a92d56a33f2c73`. Hosted quality includes the real frozen pnpm9 install and unchanged full build/lint/typecheck/tests. Initial failed CI and its reviewed correction remain in history; no bypass/retry credit is used. C1 now satisfies its bounded supported-format/invalid/unsupported/canonicalization, policy, effect-free dry-run and secret-safe API/UI outcome. C8 actual integrated P3 runtime acceptance is separate and unaccepted.
+
+Six principal implementation blocks remain fixed: (1) parsing/policy/canonicalization/preview completed; (2) owned resources/revisions/API/UI in progress; (3) attachments/inspection pending; (4) applicable volume backup pending; (5) confirmed cleanup/failure recovery pending; (6) integrated isolated acceptance pending. Review/CI is an additional work allowance, not a seventh product lot. The eight-outcome acceptance counter is1/8=12.5%; one of six blocks is complete, five remain. No code-volume percentage or overall-product percentage is inferred.
+
+## C2 immutable revision source foundation
+
+Continued immediately after YAML delivery in a new owned worktree from exact merged main. This local source unit adds a closed `ComposeRevisionV1` contract, server-derived revision factory with expected-preview digest/policy/project binding, an inward repository port and its in-memory reference adapter. A revision holds validated canonical intent/reference metadata; raw submitted source is excluded and executionAllowed remainsfalse. Generic errors prevent source reflection. Stored revision identity is immutable; an exact latest-revision compare-and-set and monotone numbering reject stale/foreign/competing writes before state mutation. Input/results/reads/pages are independently copied, and history reads are project/Compose scoped with bounded pagination. Identical revision-identity replay is storage behavior; integration with the existing normal shared command/audit/idempotency path remains pending, with no parallel control framework introduced.
+
+Prospective28 cases observed assertion RED for absent factory/contract/repository exports, with zero setup/syntax errors. Initial noEmit found one fixture-only type import of zod from the domain package; replacing it with a structural test type required no dependency change. The corrected fixture noEmit passed before implementation and all28 assertions remained RED. Final source GREEN/refactor replaces temporary prospective interfaces/reflection with real typed exports:28 new cases plus71 prior Compose domain and18 API regressions=117/117 PASS, zero FAIL/SKIP; current-source/new-test noEmit exit0. This reference source foundation is local and separately reviewed; API/UI save/history wiring, normal authorization/audit/shared idempotency reservation, capability negotiation, durable adapter/schema parity and exact protected source delivery remain pending. No migration/DB/runtime was executed, and this unit earns no additional C2 acceptance credit.

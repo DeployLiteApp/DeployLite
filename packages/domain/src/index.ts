@@ -425,3 +425,4 @@ export class InMemoryEnvSecretValueRepository implements EnvSecretValueRepositor
 }
 
 export * from "./compose-preview.js";
+export * from "./compose-revision.js";
