@@ -82,3 +82,4 @@ export function buildDockerLifecycleInspectArgv(containerName: string): readonly
   const fields = ["\"id\":{{json .Id}}", "\"name\":{{json .Name}}", "\"state\":{{json .State.Status}}", ...["owner", "project", "deployment", "candidate", "image"].map((label) => `"${label}":{{json (index .Config.Labels "com.deploylite.${label}")}}`)];
   return Object.freeze(["docker", "container", "inspect", "--format", `{${fields.join(",")}}`, containerName]);
 }
+export { COMPOSE_NETWORK_INSPECT_FORMAT, COMPOSE_VOLUME_INSPECT_FORMAT, COMPOSE_CONTAINER_INSPECT_FORMAT } from "./docker-compose-resource-argv.js";

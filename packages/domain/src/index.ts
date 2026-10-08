@@ -428,3 +428,5 @@ export * from "./compose-preview.js";
 export * from "./compose-revision.js";
 
 export * from "./compose-revision-save.js";
+
+export * from "./compose-resource-inspection.js";

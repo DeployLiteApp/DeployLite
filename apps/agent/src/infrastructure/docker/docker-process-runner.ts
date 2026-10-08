@@ -5,10 +5,13 @@ import { buildDockerActiveIdentityInspectArgv, buildDockerImageIdentityInspectAr
   buildDockerOwnedStopLookupArgv, buildDockerOwnershipInspectArgv, buildDockerRestoreInspectArgv,
   buildDockerStopOwnershipInspectArgv } from "./docker-cli-argv.js";
 
+import { COMPOSE_INSPECTION_FORMATS } from "./docker-compose-resource-argv.js";
+
 const DOCKER_ID = /^(?:sha256:)?[0-9a-f]{64}$/;
 const DOCKER_IMAGE = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[1-9][0-9]{0,4})?\/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[0-9a-f]{64}$/;
 const protocolSample = { owner: "probe", projectId: "probe", deploymentId: "probe", candidateId: "probe:candidate:command", effectiveImage: `registry.example/probe@sha256:${"0".repeat(64)}` };
 const protocolFormats = new Set([
+  ...COMPOSE_INSPECTION_FORMATS,
   ...[buildDockerImageIdentityInspectArgv(protocolSample.effectiveImage), buildDockerLifecycleInspectArgv("probe"),
     buildDockerOwnershipInspectArgv("probe"), buildDockerRestoreInspectArgv("probe"),
     buildDockerStopOwnershipInspectArgv("0".repeat(64)), buildDockerOwnedStopLookupArgv(protocolSample),
@@ -27,11 +30,14 @@ function redactDockerProtocolOutput(value: string, argv: readonly string[]): str
   while ((words[0] === "--config" || words[0] === "--host") && words[1]) words.splice(0, 2);
   const op = words[0], format = words[words.indexOf("--format") + 1];
   if (op === "run" || (op === "network" && words[1] === "create")) return /^[0-9a-f]{64}\n?$/.test(value) ? value : redactDockerDiagnostic(value);
-  if (!(["inspect", "info", "ps"].includes(op ?? "") || (["container", "image", "network"].includes(op ?? "") && words[1] === "inspect")) || !words.includes("--format") || !protocolFormats.has(format ?? "")) return redactDockerDiagnostic(value);
+  const composeFormat = COMPOSE_INSPECTION_FORMATS.has(format ?? "");
+  if (!(["inspect", "info", "ps"].includes(op ?? "") || (op === "container" && words[1] === "ls") || (["container", "image", "network"].includes(op ?? "") && words[1] === "inspect") || (composeFormat && op === "volume" && words[1] === "inspect")) || !words.includes("--format") || !protocolFormats.has(format ?? "")) return redactDockerDiagnostic(value);
   const safeJson = (nested: unknown, path: string[] = []): unknown => {
     const key = path.at(-1) ?? "";
     if (/(token|secret|password|passwd|api[_-]?key|authorization|cookie|credential)/i.test(key)) return "[REDACTED]";
     if (typeof nested === "string") {
+      if (composeFormat && key === "name" && /^dl-[a-f0-9]{32}-(?:net|vol)-[a-z][a-z0-9_-]{0,62}$/.test(nested)
+        && (path.length === 1 || (path.length === 3 && ["networks", "mounts"].includes(path[0]!)))) return nested;
       if (DOCKER_ID.test(nested) && ((path.length === 1 && ["id", "imageId"].includes(key) && format!.includes(`"${key}":`)) || (path.length === 3 && path[0] === "networks" && ["networkId", "endpointId"].includes(key) && format!.includes(`"${key}":`)))) return nested;
       if (DOCKER_IMAGE.test(nested) && ((path.length === 1 && ["image", "effectiveImage"].includes(key) && format!.includes(`"${key}":`)) || (path.length === 2 && path[0] === "repoDigests" && format!.includes(".RepoDigests")))) return nested;
       return redactDockerDiagnostic(nested);
@@ -40,7 +46,7 @@ function redactDockerProtocolOutput(value: string, argv: readonly string[]): str
     if (nested && typeof nested === "object") return Object.fromEntries(Object.entries(nested).map(([name, item]) => [name, safeJson(item, [...path, name])]));
     return nested;
   };
-  if (op === "ps" && ["{{.ID}}", "{{.ID}}|{{.Status}}"].includes(format!)) return value.split("\n").map((line) => line.split("|").map((part, position) => position === 0 && /^[0-9a-f]{64}$/.test(part) ? part : redactDockerDiagnostic(part)).join("|")).join("\n");
+  if ((op === "ps" || (op === "container" && words[1] === "ls")) && ["{{.ID}}", "{{.ID}}|{{.Status}}"].includes(format!)) return value.split("\n").map((line) => line.split("|").map((part, position) => position === 0 && /^[0-9a-f]{64}$/.test(part) ? part : redactDockerDiagnostic(part)).join("|")).join("\n");
   if (op === "inspect" && format!.includes("|")) {
     const fields = format!.split("|"), imagePosition = fields.indexOf('{{index .Config.Labels "com.deploylite.image"}}');
     return value.split("\n").map((line) => {

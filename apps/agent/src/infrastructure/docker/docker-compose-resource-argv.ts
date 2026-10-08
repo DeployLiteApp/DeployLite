@@ -1,0 +1,7 @@
+const label = (name: string) => `{{json (index .Labels "com.deploylite.${name}")}}`;
+const resource = `"name":{{json .Name}},"driver":{{json .Driver}},"scope":{{json .Scope}},"optionsCount":{{len .Options}},"owner":${label("owner")},"projectId":${label("project")},"resourceKind":${label("resource.kind")},"resourceKey":${label("resource.key")}`;
+export const COMPOSE_NETWORK_INSPECT_FORMAT = `{"id":{{json .Id}},"internal":{{json .Internal}},${resource}}`;
+export const COMPOSE_VOLUME_INSPECT_FORMAT = `{"createdAt":{{json .CreatedAt}},${resource}}`;
+const containerLabel = (name: string) => `{{json (index .Config.Labels "com.deploylite.${name}")}}`;
+export const COMPOSE_CONTAINER_INSPECT_FORMAT = `{"id":{{json .Id}},"owner":${containerLabel("owner")},"projectId":${containerLabel("project")},"service":${containerLabel("compose.service")},"effectiveImage":{{json .Config.Image}},"running":{{json .State.Running}},"networks":[{{$first := true}}{{range $name,$network := .NetworkSettings.Networks}}{{if not $first}},{{end}}{{$first = false}}{"name":{{json $name}},"networkId":{{json $network.NetworkID}}}{{end}}],"mounts":[{{range $i,$mount := .Mounts}}{{if $i}},{{end}}{"type":{{json $mount.Type}},"name":{{json $mount.Name}},"target":{{json $mount.Destination}},"readOnly":{{json (not $mount.RW)}}}{{end}}]}`;
+export const COMPOSE_INSPECTION_FORMATS: ReadonlySet<string> = new Set([COMPOSE_NETWORK_INSPECT_FORMAT, COMPOSE_VOLUME_INSPECT_FORMAT, COMPOSE_CONTAINER_INSPECT_FORMAT]);
