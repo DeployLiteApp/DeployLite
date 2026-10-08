@@ -72,8 +72,10 @@ export type ControlCommandRepository = {
   complete(command: ControlCommand): Promise<ControlCommand>;
 };
 export type ProjectUpdateControlRepository = ControlCommandRepository & {
+  findProjectUpdateByIdempotency(actorId: string, projectId: string, idempotencyKey: string): Promise<ControlCommand | null>;
   claimProjectUpdate(command: ControlCommand): Promise<{ command: ControlCommand; claimed: boolean; authority?: ProjectControlAuthorityV1 }>;
   validateProjectUpdateAuthority(authority: ProjectControlAuthorityV1, now?: number): Promise<void>;
+  completeProjectUpdate(command: ControlCommand, authority: ProjectControlAuthorityV1, audit: Readonly<{ actorUserId?: string | null; action: string; targetType: string; targetId: string; requestId: string; correlationId: string; metadata?: Record<string, unknown> }>): Promise<ControlCommand>;
 };
 export type ControlConfirmationRepository = {
   bind(confirmation: ControlConfirmation): Promise<void>;

@@ -1,7 +1,10 @@
 import { afterEach,describe,expect,it,vi } from "vitest";
 import { hashSessionToken } from "@deploylite/db";
-import { InMemoryCapabilityRegistry,type ComposeResourceObservationV1,type ComposeVolumeBackupPlanningProfile,type ComposeVolumeBackupPlanReceiptV1,type Project } from "@deploylite/contracts";
-import { createComposePreview,digestComposeResourceObservation,InMemoryComposeVolumeBackupPlanStore,InMemoryEnvSecretValueRepository,type AuditEventInput,type CanonicalRoleName,type PreparedComposeVolumeBackupPlan,type ComposeVolumeBackupPlanStore as Port,type ProjectRepository } from "@deploylite/domain";
+import { COMPOSE_VOLUME_BACKUP_CAPABILITY,COMPOSE_VOLUME_BACKUP_PATH,COMPOSE_VOLUME_BACKUP_RECEIPT_PATH,InMemoryCapabilityRegistry,type ComposeResourceObservationV1,type ComposeVolumeBackupPlanningProfile,type ComposeVolumeBackupPlanReceiptV1,type ComposeVolumeBackupReceiptV1,type Project } from "@deploylite/contracts";
+import { claimProjectUpdateAuthority,createComposePreview,digestComposeResourceObservation,InMemoryComposeVolumeBackupPlanStore,InMemoryEnvSecretValueRepository,resolveControlCommandInMemory,validateProjectUpdateAuthority,type AuditEventInput,type CanonicalRoleName,type ControlCommand,type PreparedComposeVolumeBackupPlan,type ComposeVolumeBackupPlanStore as Port,type ProjectRepository,type ProjectUpdateControlRepository } from "@deploylite/domain";
+import { AuthenticatedAgentCommandReceiver,type AgentReplayStore } from "@deploylite/agent";
+import type { ComposeVolumeBackupExecutionAccess } from "./compose-volume-backup-execution-route.js";
+import { AuthenticatedAgentDeploymentTransport } from "./agent-transport.js";
 import type { ComposeResourceInspectionAccess } from "./compose-resource-inspection-route.js";
 import type { ComposeVolumeBackupPlanAccess as Planning } from "./compose-volume-backup-plan-route.js";
 import { buildApiApp,createInMemoryExecutionRepositories,InMemoryAuditRepository,InMemoryAuthUserRepository,InMemorySessionRepository,type BuildApiAppOptions } from "./app.js";
@@ -13,7 +16,7 @@ const policy={policyVersion:"backup-api-test",trustedHosts:["registry.example.co
 const image="registry.example.com/app@sha256:"+"a".repeat(64);
 const document=JSON.stringify({services:{app:{image,volumes:[{type:"volume",source:"data",target:"/data"}],environment:{TOKEN:"${APP_TOKEN}"}}},volumes:{data:{}}});
 const preview=createComposePreview(document,"project-1",policy);
-async function fixture({role="operator",scope="project-1",action="project.deploy",inspection=true,planning=true,capability=true}:{role?:CanonicalRoleName;scope?:string;action?:string;inspection?:boolean;planning?:boolean;capability?:boolean}={}){
+async function fixture({role="operator",scope="project-1",action="project.deploy",inspection=true,planning=true,capability=true,includeUpdate=false,enableExecution=true,loseFirstReply=false}:{role?:CanonicalRoleName;scope?:string;action?:string;inspection?:boolean;planning?:boolean;capability?:boolean;includeUpdate?:boolean;enableExecution?:boolean;loseFirstReply?:boolean}={}){
   const records=new Map<string,Project>();const projects:ProjectRepository={save:async p=>{records.set(p.id,p);return p;},findById:async id=>records.get(id)??null,list:async()=>[...records.values()],remove:async id=>records.delete(id)};
   await projects.save({id:"project-1",name:"Backup plan",repoUrl:"https://github.com/DeployLiteApp/DeployLite",defaultBranch:"main",buildCommand:null,runCommand:null,port:null,description:null,imageTag:null});
   const observation:ComposeResourceObservationV1={schemaVersion:1,owner:"deploylite",agentId:"agent-1",projectId:"project-1",kind:"volume",key:"data",runtimeName:preview.volumes[0]!.runtimeName,physicalIdentity:"2026-10-08T00:00:00Z",configDigest:preview.configDigest,stateDigest:"0".repeat(64),observedAt:1000,containers:[{containerId:"c".repeat(64),service:"app",running:false,attached:true,mounts:[{target:"/data",readOnly:false}]}]};
@@ -26,13 +29,42 @@ async function fixture({role="operator",scope="project-1",action="project.deploy
   const port={available:vi.fn(()=>true),save:vi.fn<Port["save"]>((input,_signal)=>inner.save(input))};const plans:Planning={profiles,store:port};
   const user={id:"backup-user",email:"backup@example.test",emailNormalized:"backup@example.test",passwordHash:"unused-fixture-hash",role,status:"active" as const,createdAt:new Date(),updatedAt:new Date()};
   await sessions.create({userId:user.id,tokenHash:hashSessionToken("backup-test-session"),expiresAt:new Date("2027-01-01T00:00:00Z")});
-  const grants={listForActor:vi.fn(async(actorId:string)=>[{id:"backup-grant",actorId,action:action as "project.deploy",scope:{kind:"project" as const,projectId:scope}}])};
-  const options:Options={env:{NODE_ENV:"test",DEPLOYLITE_SECRET_KEY:"backup_fixture_secret_key_1234567890"},corsOrigin:false,imagePolicy:policy,authConfig:{cookieName:"backup_session",cookieSecure:false},auth:{users:new InMemoryAuthUserRepository([user]),sessions,audit},state:{projects,envSecretValues:secrets,controlGrants:grants,controlDeletes:memory.controls,controlRedeploy:memory.controls,controlRollback:memory.controls,executionCompletion:memory.completion},...(inspection?{composeResourceInspection:new Map([["project-1",access]])}:{}),...(planning?{composeVolumeBackupPlans:new Map([["project-1",plans]])}:{})};
+  const grants={listForActor:vi.fn(async(actorId:string)=>[action,...(includeUpdate?["project.update"]:[])].map((value,index)=>({id:`backup-grant-${index}`,actorId,action:value as "project.deploy",scope:{kind:"project" as const,projectId:scope}})))};
+  const liveCommands=()=>memory.completion.commands;
+  const controls:ProjectUpdateControlRepository={
+    resolve:async command=>resolveControlCommandInMemory(liveCommands(),command),
+    complete:async command=>{const current=[...liveCommands().values()].find(candidate=>candidate.id===command.id);if(!current)throw new Error("command missing");if(current.status==="eligible"){const key=[...liveCommands()].find(([,candidate])=>candidate.id===current.id)?.[0];if(!key)throw new Error("command missing");liveCommands().set(key,{...current,status:"completed"});}return structuredClone([...liveCommands().values()].find(candidate=>candidate.id===command.id)!);},
+    findProjectUpdateByIdempotency:async(actorId,projectId,idempotencyKey)=>[...liveCommands().values()].find(command=>command.actorId===actorId&&command.action==="project.update"&&command.scope.kind==="project"&&command.scope.projectId===projectId&&command.idempotencyKey===idempotencyKey)??null,
+    claimProjectUpdate:async command=>{const current=[...liveCommands().values()].find(candidate=>candidate.id===command.id);if(!current)throw new Error("command missing");const authority=claimProjectUpdateAuthority([...liveCommands().values()],current,now);return{command:structuredClone(current),claimed:Boolean(authority),...(authority?{authority:structuredClone(authority)}:{})};},
+    validateProjectUpdateAuthority:async authority=>validateProjectUpdateAuthority([...liveCommands().values()],authority,now),
+    completeProjectUpdate:async(command,authority,event)=>{const current=[...liveCommands().values()].find(candidate=>candidate.id===command.id);if(!current)throw new Error("command missing");if(current.status==="completed")return structuredClone(current);validateProjectUpdateAuthority([...liveCommands().values()],authority,now);await audit.append(event);const key=[...liveCommands()].find(([,candidate])=>candidate.id===current.id)?.[0];if(!key)throw new Error("command missing");const completed={...current,status:"completed" as const};liveCommands().set(key,completed);return structuredClone(completed);}
+  };
+  const execution=includeUpdate&&enableExecution?(()=>{
+    const replayRows=new Map<string,{fingerprint:string;token:string;receipt?:Record<string,unknown>}>();let agentExecutions=0;
+    const replayStore:AgentReplayStore={lookup:async(id,fingerprint)=>{const row=replayRows.get(id);if(!row)return null;if(row.fingerprint!==fingerprint)throw new Error("replay conflict");return row.receipt??null;},
+      claim:async(id,fingerprint)=>{const row=replayRows.get(id);if(row){if(row.fingerprint!==fingerprint)throw new Error("replay conflict");return{claimed:false,receipt:row.receipt};}replayRows.set(id,{fingerprint,token:"claim-token"});return{claimed:true,claimToken:"claim-token"};},
+      wait:async id=>replayRows.get(id)?.receipt??Promise.reject(new Error("no receipt")),
+      complete:async(id,value)=>{const row=replayRows.get(id);if(!row||row.token!==value.claimToken||row.fingerprint!==value.fingerprint)throw new Error("claim changed");row.receipt=structuredClone(value.receipt);},release:async id=>{replayRows.delete(id);}};
+    const trustKey="backup_plan_api_agent_key_123";let dropReply=loseFirstReply;
+    const receiver=new AuthenticatedAgentCommandReceiver({agentId:"agent-1",trustKey,capabilities:[COMPOSE_VOLUME_BACKUP_CAPABILITY],dispatcher:{dispatch:async()=>{throw new Error("unused");}},
+      volumeBackup:{execute:async command=>{agentExecutions++;return{schemaVersion:1,action:"compose.volume.backup",agentId:"agent-1",commandId:command.commandId,projectId:command.projectId,inputDigest:command.inputDigest,
+        correlationId:command.context.correlationId,volumeKey:command.plan.volumeKey,destinationId:command.plan.destinationId,archiveId:"backup_0123456789abcdef0123456789abcdef",status:"created",consistency:"stopped",archiveBytes:2048,entries:1,archiveSha256:"b".repeat(64),manifestSha256:"c".repeat(64),idempotent:false,redacted:true};}},
+      replayStore,authorityValidator:{validateDeploymentAuthority:async()=>{},validateProjectUpdateAuthority:controls.validateProjectUpdateAuthority},now:()=>now});
+    const fetch:typeof globalThis.fetch=async(url,init)=>{const path=new URL(String(url)).pathname,headers=(init?.headers??{}) as Record<string,string>,signature=headers["x-deploylite-signature"];
+      try{if(path==="/capabilities"){if(!receiver.verifyRequest("GET /capabilities",signature))return new Response("unauthorized",{status:401});return new Response(JSON.stringify({schemaVersion:1,agentId:"agent-1",capabilities:[COMPOSE_VOLUME_BACKUP_CAPABILITY],protocolVersions:[1,2]}),{headers:{"x-deploylite-request-signature":signature!}});}
+        const body=JSON.parse(String(init?.body));if(path===COMPOSE_VOLUME_BACKUP_RECEIPT_PATH)return new Response(JSON.stringify(await receiver.readComposeVolumeBackupReceipt(body,signature)));
+        if(path===COMPOSE_VOLUME_BACKUP_PATH){const result=await receiver.receive(body,signature);if(dropReply){dropReply=false;throw new Error("simulated lost agent response");}return new Response(JSON.stringify(result));}return new Response("not found",{status:404});}
+      catch(error){return new Response(JSON.stringify({error:error instanceof Error?error.message:"rejected"}),{status:403});}};
+    const transport=new AuthenticatedAgentDeploymentTransport({endpoint:"https://agent.test",trustKey,agentId:"agent-1",fetch,timeoutMs:5_000,now:()=>now});
+    return{access:{controls,transport} as ComposeVolumeBackupExecutionAccess,agentExecutions:()=>agentExecutions,replayRows};
+  })():undefined;
+  const options:Options={env:{NODE_ENV:"test",DEPLOYLITE_SECRET_KEY:"backup_fixture_secret_key_1234567890"},corsOrigin:false,imagePolicy:policy,authConfig:{cookieName:"backup_session",cookieSecure:false},auth:{users:new InMemoryAuthUserRepository([user]),sessions,audit},state:{projects,envSecretValues:secrets,controlGrants:grants,controlDeletes:memory.controls,controlRedeploy:memory.controls,controlRollback:memory.controls,executionCompletion:memory.completion},...(inspection?{composeResourceInspection:new Map([["project-1",access]])}:{}),...(planning?{composeVolumeBackupPlans:new Map([["project-1",plans]])}:{}),...(execution?{composeVolumeBackupExecutions:new Map([["project-1",execution.access]])}:{})};
   const app=await buildApiApp(options);apps.push(app);audit.inputs.length=0;audit.events.length=0;grants.listForActor.mockClear();
   const lookup=vi.spyOn(projects,"findById"),saveProject=vi.spyOn(projects,"save"),removeProject=vi.spyOn(projects,"remove"),decrypt=vi.spyOn(secrets,"listEncryptedByProject");
   const body={document,key:"data",expectedConfigDigest:preview.configDigest,expectedStateDigest:observation.stateDigest,destinationId:"destination-1"};
   const post=(payload:unknown=body,{project="project-1",key="backup-key-1",session=true}:{project?:string;key?:string|null;session?:boolean}={})=>app.inject({method:"POST",url:`/api/v1/projects/${project}/compose/volumes/backup/preview`,headers:{...(session?{cookie:"backup_session=backup-test-session"}:{}),...(key===null?{}:{"idempotency-key":key})},payload:payload as Record<string,unknown>});
-  return{app,post,body,access,port,inner,profile,profiles,plans,options,observation,seal,inspect,audit,plannedAudit,memory,lookup,saveProject,removeProject,decrypt,setAuditFailure:()=>{auditFails=true;},advance:(value:number)=>{now=value;observation.observedAt=value-10;}};
+  const postExecute=(payload:unknown,{project="project-1",key="backup-exec-key-1",session=true}:{project?:string;key?:string|null;session?:boolean}={})=>app.inject({method:"POST",url:`/api/v1/projects/${project}/compose/volumes/backup/execute`,headers:{...(session?{cookie:"backup_session=backup-test-session"}:{}),...(key===null?{}:{"idempotency-key":key})},payload:payload as Record<string,unknown>});
+  return{app,post,postExecute,body,access,port,inner,profile,profiles,plans,options,observation,seal,inspect,audit,plannedAudit,memory,lookup,saveProject,removeProject,decrypt,execution,now:()=>now,setAuditFailure:()=>{auditFails=true;},advance:(value:number)=>{now=value;observation.observedAt=value-10;}};
 }
 describe("scoped effect-free volume backup planning API",()=>{
   it("returns the closed metadata receipt and records one correlated shared-ledger audit",async()=>{
@@ -101,5 +133,36 @@ describe("scoped effect-free volume backup planning API",()=>{
   it("rejects a request already disconnected before installing the abort listener",async()=>{
     const f=await fixture();f.app.addHook("preHandler",async request=>{Object.defineProperty(request.raw,"aborted",{value:true,configurable:true});request.raw.emit("aborted");});
     const r=await f.post();expect(r.statusCode).toBe(503);expect(r.json().error.code).toBe("COMPOSE_BACKUP_FAILED");expect(f.inspect).not.toHaveBeenCalled();expect(f.port.save).not.toHaveBeenCalled();expect(f.memory.completion.commands.size).toBe(0);
+  });
+  it("runs plan through project.update admission and simulated agent execution, then replays the receipt without reinspecting",async()=>{
+    const f=await fixture({includeUpdate:true});const preview=await f.post();expect(preview.statusCode).toBe(200);
+    const payload={...f.body,plan:preview.json().data.backupPlan.plan};
+    const first=await f.postExecute(payload);expect(first.statusCode,first.body).toBe(200);
+    expect(first.json().data.backup).toMatchObject({status:"created",idempotent:false,consistency:"stopped",volumeKey:"data",destinationId:"destination-1",archiveSha256:"b".repeat(64)});
+    expect(f.execution?.agentExecutions()).toBe(1);
+    const command=[...f.memory.completion.commands.values()].find(value=>value.action==="project.update");expect(command).toMatchObject({status:"completed",scope:{kind:"project",projectId:"project-1"},projectExecutionAuthority:{action:"project.update"}});
+    const inspected=f.inspect.mock.calls.length;f.access.inspector.inspect=async()=>{throw new Error("cached receipt must not reinspect");};
+    const retry=await f.postExecute(payload);expect(retry.statusCode).toBe(200);expect(retry.json().data.backup).toMatchObject({status:"already-created",idempotent:true,archiveSha256:"b".repeat(64)});
+    expect(f.execution?.agentExecutions()).toBe(1);expect(f.inspect).toHaveBeenCalledTimes(inspected);
+    expect(f.audit.inputs).toEqual(expect.arrayContaining([expect.objectContaining({action:"compose.volume.backup.executed",targetId:"project-1",metadata:expect.objectContaining({projectId:"project-1",status:"created",inputDigest:expect.any(String)})})]));
+    expect(JSON.stringify(f.audit.inputs)).not.toContain("/var/");expect(JSON.stringify(f.audit.inputs)).not.toContain("/data");
+  });
+  it("reconciles a lost agent reply from its durable receipt without repeating execution",async()=>{
+    const f=await fixture({includeUpdate:true,loseFirstReply:true});const preview=await f.post();expect(preview.statusCode).toBe(200);
+    const result=await f.postExecute({...f.body,plan:preview.json().data.backupPlan.plan});expect(result.statusCode).toBe(200);
+    expect(result.json().data.backup).toMatchObject({status:"already-created",idempotent:true,archiveSha256:"b".repeat(64)});
+    expect(f.execution?.agentExecutions()).toBe(1);expect([...f.memory.completion.commands.values()].find(value=>value.action==="project.update")).toMatchObject({status:"completed"});
+  });
+  it("rejects a forged preview digest before creating or claiming project.update",async()=>{
+    const f=await fixture({includeUpdate:true});const preview=await f.post();expect(preview.statusCode).toBe(200);
+    const payload={...f.body,expectedStateDigest:"f".repeat(64),plan:{...preview.json().data.backupPlan.plan,stateDigest:"f".repeat(64)}};
+    const result=await f.postExecute(payload);expect(result.statusCode).toBe(409);expect(result.json().error.code).toBe("COMPOSE_BACKUP_STALE");
+    expect([...f.memory.completion.commands.values()].some(value=>value.action==="project.update")).toBe(false);expect(f.execution?.agentExecutions()).toBe(0);
+  });
+  it("keeps execution unavailable without the explicit per-project execution allowlist",async()=>{
+    const f=await fixture({includeUpdate:true,enableExecution:false});const preview=await f.post();expect(preview.statusCode).toBe(200);
+    const result=await f.postExecute({...f.body,plan:preview.json().data.backupPlan.plan});
+    expect(result.statusCode).toBe(503);expect(result.json().error.code).toBe("COMPOSE_BACKUP_UNAVAILABLE");
+    expect(f.inspect).toHaveBeenCalledOnce();expect([...f.memory.completion.commands.values()].some(value=>value.action==="project.update")).toBe(false);
   });
 });

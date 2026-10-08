@@ -1,6 +1,7 @@
-import { FenceError, deploymentExecutionAuthoritySchema, projectControlAuthoritySchema, type DeploymentExecutionAuthorityV1, type ProjectControlAuthorityV1 } from "@deploylite/contracts";
+import { FenceError, deploymentExecutionAuthoritySchema, projectControlAuthoritySchema, protocolPayloadFingerprint, type DeploymentExecutionAuthorityV1, type ProjectControlAuthorityV1 } from "@deploylite/contracts";
 import { and, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
-import type { ConfirmedDeploymentRedeployInput, ConfirmedDeploymentRedeployOutcome, ConfirmedDeploymentStopInput, ConfirmedDeploymentStopOutcome, ConfirmedProjectDeleteInput, ConfirmedProjectDeleteOutcome, ControlCommand, ControlCommandRepository, ControlConfirmation, ControlConfirmationRepository, ControlDeleteRepository, ControlGrant, ControlGrantRepository, ConfirmationOutcome, ControlRollbackRepository, ControlRedeployRepository, ControlStopRepository, ProjectUpdateControlRepository } from "@deploylite/domain";
+import type { AuditEventInput, ConfirmedDeploymentRedeployInput, ConfirmedDeploymentRedeployOutcome, ConfirmedDeploymentStopInput, ConfirmedDeploymentStopOutcome, ConfirmedProjectDeleteInput, ConfirmedProjectDeleteOutcome, ControlCommand, ControlCommandRepository, ControlConfirmation, ControlConfirmationRepository, ControlDeleteRepository, ControlGrant, ControlGrantRepository, ConfirmationOutcome, ControlRollbackRepository, ControlRedeployRepository, ControlStopRepository, ProjectUpdateControlRepository } from "@deploylite/domain";
+import { redactSecrets } from "@deploylite/config";
 import { claimDeploymentAuthority, claimProjectUpdateAuthority, validateProjectUpdateAuthority as validateProjectUpdateAuthorityInMemory, validateStopCompletion, validateDeploymentAuthority, validateInitialExecution, validateRollbackReservation, isRollbackAdmissionBound, isRollbackClaimBound, createConfirmation, evaluateConfirmation, ConfirmationRejectedError, IdempotencyConflictError, scopeKey } from "@deploylite/domain";
 
 import type { DeployLiteDb } from "../client.js";
@@ -197,6 +198,13 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
     });
   }
 
+  async findProjectUpdateByIdempotency(actorId: string, projectId: string, idempotencyKey: string): Promise<ControlCommand | null> {
+    const [row] = await this.db.select().from(controlCommands).where(and(eq(controlCommands.actorUserId, actorId),
+      eq(controlCommands.action, "project.update"), eq(controlCommands.scopeKind, "project"), eq(controlCommands.scopeKey, projectId),
+      eq(controlCommands.idempotencyKey, idempotencyKey))).limit(1);
+    return row ? toCommand(row) : null;
+  }
+
   async validateProjectUpdateAuthority(authority: ProjectControlAuthorityV1, now = Date.now()): Promise<void> {
     const request = projectControlAuthoritySchema.parse(authority);
     const rows = await this.db.select().from(controlCommands).where(or(
@@ -204,6 +212,40 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
       and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${request.projectId}`)
     ));
     validateProjectUpdateAuthorityInMemory(rows.map(toCommand), request, now);
+  }
+
+  async completeProjectUpdate(command: ControlCommand, authority: ProjectControlAuthorityV1, audit: AuditEventInput): Promise<ControlCommand> {
+    const request = projectControlAuthoritySchema.parse(authority);
+    if (command.action !== "project.update" || command.scope.kind !== "project" || command.id !== request.commandId
+      || command.scope.projectId !== request.projectId || command.inputDigest !== request.inputDigest
+      || audit.actorUserId !== command.actorId || audit.targetType !== "project" || audit.targetId !== request.projectId
+      || audit.correlationId !== command.correlationId) throw new FenceError("Project update completion scope rejected");
+    return this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`deploylite:execution:${request.projectId}`}, 0))`);
+      const [row] = await tx.select().from(controlCommands).where(eq(controlCommands.id, command.id)).limit(1).for("update");
+      if (!row) throw new Error("Control command was not found");
+      const current = toCommand(row);
+      if (current.status === "completed") {
+        if (current.action !== "project.update" || !current.projectExecutionAuthority
+          || protocolPayloadFingerprint(current.projectExecutionAuthority) !== protocolPayloadFingerprint(request)) throw new FenceError("Project update completion replay rejected");
+        return current;
+      }
+      if (current.status !== "dispatching" || current.action !== "project.update" || current.scope.kind !== "project"
+        || current.scope.projectId !== request.projectId || current.inputDigest !== request.inputDigest || !current.projectExecutionAuthority
+        || protocolPayloadFingerprint(current.projectExecutionAuthority) !== protocolPayloadFingerprint(request)) throw new FenceError("Project update completion no longer owns authority");
+      const relatedRows = await tx.select().from(controlCommands).where(or(
+        and(eq(controlCommands.scopeKind, "project"), eq(controlCommands.scopeKey, request.projectId)),
+        and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${request.projectId}`)
+      ));
+      validateProjectUpdateAuthorityInMemory(relatedRows.map(toCommand), request);
+      const metadata = redactSecrets({ ...(audit.metadata ?? {}), commandId: current.id, inputDigest: current.inputDigest });
+      await tx.insert(auditEvents).values({ actorUserId: current.actorId, action: audit.action, targetType: audit.targetType, targetId: audit.targetId,
+        requestId: audit.requestId, correlationId: audit.correlationId, metadata });
+      const [completed] = await tx.update(controlCommands).set({ status: "completed", updatedAt: new Date() })
+        .where(and(eq(controlCommands.id, current.id), eq(controlCommands.status, "dispatching"))).returning();
+      if (!completed) throw new FenceError("Project update completion lost its command claim");
+      return toCommand(completed);
+    });
   }
 
   async validateInitialExecution(projectId: string, executionId: string, binding: import("@deploylite/domain").InitialExecutionBinding): Promise<void> {

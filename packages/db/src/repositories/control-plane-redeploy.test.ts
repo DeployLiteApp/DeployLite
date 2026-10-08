@@ -9,7 +9,7 @@ import { DbControlCommandRepository } from "./control-plane.js";
 function fixture(sourceId: string) {
   const command = createControlCommand({ actorId: "actor", action: "deployment.redeploy", scope: { kind: "deployment", projectId: "project", deploymentId: sourceId }, input: { sourceDeploymentId: sourceId }, idempotencyKey: `key-${sourceId}`, correlationId: "correlation" });
   const confirmation = createConfirmation({ command, classification: "destructive" });
-  const row: Record<string, unknown> = { id: command.id, actorUserId: command.actorId, action: command.action, scopeKind: "deployment", scopeKey: JSON.stringify(["project", sourceId]), inputDigest: command.inputDigest, idempotencyKey: command.idempotencyKey, correlationId: command.correlationId, status: command.status, result: null, expiresAt: command.expiresAt, createdAt: new Date(), updatedAt: new Date() };
+  const row: Record<string, unknown> = { id: command.id, actorUserId: command.actorId, action: command.action, scopeKind: "deployment", scopeKey: JSON.stringify(["project", sourceId]), inputDigest: command.inputDigest, idempotencyKey: command.idempotencyKey, correlationId: command.correlationId, status: command.status, result: null, executionAuthority: null, expiresAt: command.expiresAt, createdAt: new Date(), updatedAt: new Date() };
   const writes: Array<Record<string, unknown>> = []; const queries: string[] = [];
   // Real Drizzle SQL and mapped parameters; no PostgreSQL engine or pool connection.
   const client = { query: async (query: string | { text: string }, values: unknown[] = []) => {

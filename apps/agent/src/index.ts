@@ -9,13 +9,15 @@ import {
   type EnvSecretCipher
 } from "@deploylite/config";
 import { randomUUID } from "node:crypto";
-import { agentHeartbeatSchema, InMemoryCapabilityRegistry, resourceSnapshotSchema, type AgentHeartbeat } from "@deploylite/contracts";
+import { agentHeartbeatSchema, COMPOSE_VOLUME_BACKUP_CAPABILITY, InMemoryCapabilityRegistry, resourceSnapshotSchema, type AgentHeartbeat } from "@deploylite/contracts";
 import { z } from "zod";
 import { DigestDeploymentDispatcher } from "./deployment-dispatcher.js";
 import { AuthenticatedAgentCommandReceiver } from "./agent-transport.js";
 import { startAgentServer } from "./server.js";
 import { createDockerComposeResourceInspector } from "./infrastructure/docker/docker-compose-resource-inspector.js";
 import { createDockerComposeNetworkAttachmentExecutor } from "./infrastructure/docker/docker-compose-network-attachment.js";
+import { createDockerComposeVolumeBackupExecutor, createLocalDirectoryComposeVolumeBackupSource } from "./infrastructure/docker/docker-compose-volume-backup.js";
+import { parseComposeVolumeBackupRuntimeConfig, COMPOSE_VOLUME_BACKUP_CONFIG_ENV } from "./infrastructure/docker/compose-volume-backup-config.js";
 
 export const safeCommandEnvelopeSchema = z.object({
   commandId: z.string().min(1),
@@ -126,15 +128,20 @@ export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
   const runner = new (await import("./infrastructure/docker/docker-process-runner.js")).DockerProcessRunner();
   const dispatcher = new DigestDeploymentDispatcher({ protocol, runner, temporaryHostPort, promotionPolicy, trustedHosts: ["docker.io", "ghcr.io", "registry.example.com"], allowedNetworks: ["deploylite-agent"] });
   if (!dispatcher.available()) { await closeDbPool(pool); throw new Error("agent dispatcher is unavailable"); }
-  const composeCapabilities = ["compose.resource.inspect.v1", "compose.network.attachment.v1"] as const;
+  const volumeBackupConfig = parseComposeVolumeBackupRuntimeConfig(env[COMPOSE_VOLUME_BACKUP_CONFIG_ENV]);
+  const composeCapabilities = ["compose.resource.inspect.v1", "compose.network.attachment.v1", ...(volumeBackupConfig ? [COMPOSE_VOLUME_BACKUP_CAPABILITY] : [])];
   const composeRegistry = new InMemoryCapabilityRegistry(composeCapabilities);
   const imagePolicy = { policyVersion: "agent-compose-v1", trustedHosts: ["docker.io", "ghcr.io", "registry.example.com"], allowTags: false, allowDigests: true };
   const composeInspector = createDockerComposeResourceInspector({ runner, owner: "deploylite", agentId: parsed.DEPLOYLITE_AGENT_ID,
     imagePolicy, capabilities: composeRegistry, clock: { now: Date.now }, limits: { maxContainers: 128, maxOutputBytes: 1_048_576, deadlineMs: 30_000 } });
   const networkAttachment = createDockerComposeNetworkAttachmentExecutor({ runner, inspector: composeInspector, owner: "deploylite", agentId: parsed.DEPLOYLITE_AGENT_ID,
     imagePolicy, capabilities: composeRegistry });
+  const volumeBackup = volumeBackupConfig ? createDockerComposeVolumeBackupExecutor({ owner: "deploylite", agentId: parsed.DEPLOYLITE_AGENT_ID,
+    imagePolicy, capabilities: composeRegistry, inspector: composeInspector,
+    source: createLocalDirectoryComposeVolumeBackupSource(volumeBackupConfig.sourceRoots), destinations: volumeBackupConfig.destinations }) : undefined;
   const receiver = new AuthenticatedAgentCommandReceiver({ agentId: parsed.DEPLOYLITE_AGENT_ID, trustKey: parsed.DEPLOYLITE_AGENT_TRUST_KEY,
-    capabilities: ["deploy.execute", "deployment.stop", ...composeCapabilities], dispatcher, stopDispatcher: dispatcher, networkAttachment, authorityValidator, replayStore: replayStore as never });
+    capabilities: ["deploy.execute", "deployment.stop", ...composeCapabilities], dispatcher, stopDispatcher: dispatcher, networkAttachment,
+    ...(volumeBackup ? { volumeBackup } : {}), authorityValidator, replayStore: replayStore as never });
   const server = await startAgentServer({ host: parsed.DEPLOYLITE_AGENT_HOST, port: parsed.DEPLOYLITE_AGENT_PORT, receiver, replayStore: replayStore as never, production: parsed.NODE_ENV === "production" });
   const close = async () => { await server.close(); await closeDbPool(pool); };
   process.once("SIGINT", close); process.once("SIGTERM", close);
