@@ -430,3 +430,5 @@ export * from "./compose-revision.js";
 export * from "./compose-revision-save.js";
 
 export * from "./compose-resource-inspection.js";
+
+export * from "./compose-volume-backup-plan.js";

@@ -383,3 +383,5 @@ export type AuditEventListPage = z.infer<typeof auditEventListPageSchema>;
 export * from "./compose/preview.js";
 export * from "./compose/revision.js";
 export * from "./compose/resource-inspection.js";
+
+export * from "./compose/volume-backup-plan.js";

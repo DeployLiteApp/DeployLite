@@ -55,6 +55,18 @@ export class IdempotencyConflictError extends Error {
   constructor() { super("Idempotency key was already used with different command input"); this.name = "IdempotencyConflictError"; }
 }
 
+/** Shared actor/action/scope/idempotency resolution; callers supply the existing ledger. */
+export function resolveControlCommandInMemory(commands: Map<string, ControlCommand>, command: ControlCommand): { command: ControlCommand; created: boolean } {
+  const key = `${command.actorId}:${command.action}:${scopeKey(command.scope)}:${command.idempotencyKey}`;
+  const current = commands.get(key);
+  if (current) {
+    if (current.inputDigest !== command.inputDigest) throw new IdempotencyConflictError();
+    return { command: structuredClone(current), created: false };
+  }
+  commands.set(key, structuredClone(command));
+  return { command: structuredClone(command), created: true };
+}
+
 export type ControlCommandRepository = {
   resolve(command: ControlCommand): Promise<{ command: ControlCommand; created: boolean }>;
   complete(command: ControlCommand): Promise<ControlCommand>;
