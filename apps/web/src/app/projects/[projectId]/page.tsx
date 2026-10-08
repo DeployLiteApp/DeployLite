@@ -12,6 +12,7 @@ import { ProjectDeleteDialog } from "@/components/project-delete-dialog";
 import { ProjectAuditHistoryPanel } from "./project-audit-history-panel";
 import { ProjectEnvValuesTable } from "@/components/project-env-values-table";
 import { RuntimeConfigurationCard } from "./runtime-configuration-card";
+import { ComposePreviewCard } from "./compose-preview-card";
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -269,6 +270,8 @@ export default async function ProjectDetailPage({ params }: { params: Promise<Pa
             />
           </CardContent>
         </Card>
+
+        {auth.user.role === "admin" || auth.user.role === "operator" ? <ComposePreviewCard key={project.id} projectId={project.id} apiBaseUrl={apiBaseUrl} /> : null}
 
         {auth.user.role === "admin" ? <RuntimeConfigurationCard projectId={project.id} apiBaseUrl={apiBaseUrl} cookieHeader={cookieHeader} /> : null}
 
