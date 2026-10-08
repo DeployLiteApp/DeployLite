@@ -8,6 +8,7 @@ export const composeVolumeBackupPlanningProfileSchema=composeVolumeBackupLimitsS
 export type ComposeVolumeBackupPlanningProfile=z.infer<typeof composeVolumeBackupPlanningProfileSchema>;
 export const composeVolumeBackupPlanRequestSchema=composeResourceInspectionInputSchema.omit({kind:true}).extend({expectedStateDigest:digest,destinationId:identity}).strict();
 export type ComposeVolumeBackupPlanRequest=z.infer<typeof composeVolumeBackupPlanRequestSchema>;
+export const composeVolumeBackupPlanApiRequestSchema=composeVolumeBackupPlanRequestSchema.omit({projectId:true});
 export const composeVolumeBackupPlanSchema=z.object({schemaVersion:z.literal(1),operation:z.literal("compose.volume.backup.plan"),status:z.literal("preview"),executionAllowed:z.literal(false),archiveCreated:z.literal(false),
   projectId:identity,volumeKey:composeResourceInspectionInputSchema.shape.key,configDigest:digest,stateDigest:digest,profileId:identity,destinationId:identity,
   consistency:z.literal("offline-required"),verification:z.literal("integrity-and-completeness-required"),limits:composeVolumeBackupLimitsSchema,planDigest:digest}).strict();

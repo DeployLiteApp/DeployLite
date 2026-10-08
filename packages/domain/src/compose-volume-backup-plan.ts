@@ -7,6 +7,8 @@ import { createControlCommand,digestControlInput,IdempotencyConflictError,Policy
 
 export type ComposeVolumeBackupPlanningDependencies={inspection:ComposeAttachmentPreviewDependencies;capabilities:CapabilityRegistry;profiles:ReadonlyMap<string,ComposeVolumeBackupPlanningProfile>;
   actorId:string;role:CanonicalRole;correlationId:string;requestId:string;idempotencyKey:string;grants:ControlGrantRepository;deadlineMs:number};
+/** Implementations atomically commit the existing shared command and safe plan audit; no backup effects. */
+export type ComposeVolumeBackupPlanStore=Readonly<{available():boolean;save(input:PreparedComposeVolumeBackupPlan,signal?:AbortSignal):Promise<ComposeVolumeBackupPlanReceiptV1>}>;
 export type PreparedComposeVolumeBackupPlan={command:ControlCommand;plan:ComposeVolumeBackupPlanV1;owner:string;agentId:string;requestId:string;preparedAtMs:number};
 export type ComposeBackupPlanningErrorCode="COMPOSE_BACKUP_INVALID"|"COMPOSE_BACKUP_FORBIDDEN"|"COMPOSE_BACKUP_UNAVAILABLE"|"COMPOSE_BACKUP_FOREIGN"|"COMPOSE_BACKUP_STALE"|"COMPOSE_BACKUP_IN_USE"|"COMPOSE_BACKUP_FAILED"|"COMPOSE_BACKUP_EXPIRED";
 export class ComposeBackupPlanningError extends Error{

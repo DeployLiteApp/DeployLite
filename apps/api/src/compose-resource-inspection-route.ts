@@ -7,12 +7,12 @@ import { awaitAbortable, ComposePreviewError, ComposeResourceInspectionError, cr
   type AuditRepository, type ComposeAttachmentPreviewDependencies, type ControlGrantRepository, type ProjectRepository } from "@deploylite/domain";
 
 export type ComposeResourceInspectionAccess = Omit<ComposeAttachmentPreviewDependencies, "imagePolicy"> & Readonly<{ capabilities: CapabilityRegistry; deadlineMs: number }>;
-type Options = Readonly<{
+export type ComposeResourceRouteOptions = Readonly<{
   prefix: string; projects: ProjectRepository; grants: ControlGrantRepository; audit: AuditRepository; imagePolicy: ImageReferencePolicyV1;
   access?: ReadonlyMap<string, ComposeResourceInspectionAccess>; requireAuth: preHandlerAsyncHookHandler; requireRole: preHandlerAsyncHookHandler;
   ok(request: FastifyRequest, data: unknown): unknown; error(request: FastifyRequest, code: string, message: string): unknown;
 }>;
-export function registerComposeResourceInspectionRoutes(app: FastifyInstance, options: Options): void {
+export function registerComposeResourceInspectionRoutes(app: FastifyInstance, options: ComposeResourceRouteOptions): void {
   for (const mode of ["inspect", "attachment"] as const) {
     const path = mode === "inspect" ? "resources/inspect" : "attachments/preview";
     const action = mode === "inspect" ? "compose.resource.inspect" : "compose.attachment.preview";
