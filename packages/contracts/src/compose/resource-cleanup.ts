@@ -16,3 +16,9 @@ export const composeResourceCleanupConfirmationViewSchema = composeResourceClean
   commandId: identity, confirmationId: identity, confirmationValidated: z.literal(true)
 }).strict();
 export type ComposeResourceCleanupConfirmationViewV1 = z.infer<typeof composeResourceCleanupConfirmationViewSchema>;
+
+export const composeResourceCleanupReceiptSchema = z.object({
+  commandId: identity, confirmationId: identity, expiresAt: z.string().datetime(),
+  status: z.enum(["pending_confirmation", "eligible"]), idempotent: z.boolean(), preview: composeResourceCleanupPreviewSchema
+}).strict();
+export type ComposeResourceCleanupReceiptV1 = z.infer<typeof composeResourceCleanupReceiptSchema>;

@@ -2,6 +2,7 @@ import { DbComposeRevisionSaveStore } from "@deploylite/db";
 import { registerComposeRevisionSaveRoutes } from "./compose-revision-save-route.js";
 import type { ComposeRevisionSaveStore } from "@deploylite/domain";
 import { registerComposeRevisionReadRoutes, type ComposeRevisionReadCapability } from "./compose-revision-read-route.js";
+import { registerComposeResourceCleanupRoutes, type ComposeResourceCleanupAccess } from "./compose-resource-cleanup-route.js";
 import { registerComposePreviewRoute } from "./compose-preview-route.js";
 import { registerComposeResourceInspectionRoutes, type ComposeResourceInspectionAccess } from "./compose-resource-inspection-route.js";
 import { registerComposeVolumeBackupPlanRoute, type ComposeVolumeBackupPlanAccess } from "./compose-volume-backup-plan-route.js";
@@ -186,6 +187,7 @@ type BuildApiAppOptions = {
   imagePolicy?: ImageReferencePolicyV1;
   composeResourceInspection?: ReadonlyMap<string, ComposeResourceInspectionAccess>;
   composeVolumeBackupPlans?: ReadonlyMap<string, ComposeVolumeBackupPlanAccess>;
+  composeResourceCleanupPlans?: ReadonlyMap<string, ComposeResourceCleanupAccess>;
   db?: {
     pool?: DbPool;
     client?: DeployLiteDb;
@@ -278,7 +280,10 @@ class InMemoryAuditRepository implements AuditRepository {
 
   async append(input: AuditEventInput): Promise<AuditEvent> { return this.appendSynchronous(input); }
 
-  appendSynchronous(input: AuditEventInput): AuditEvent {
+  appendSynchronous(input: AuditEventInput): AuditEvent { return this.appendAtomically(input, () => undefined); }
+
+  /** Synchronous shared-metadata publication and audit; preparation failures publish neither. */
+  appendAtomically(input: AuditEventInput, publish: () => void): AuditEvent {
     const safe = createAuditLogRecord({
       actorId: input.actorUserId === null ? "anonymous" : input.actorUserId ?? "system",
       action: input.action,
@@ -298,6 +303,7 @@ class InMemoryAuditRepository implements AuditRepository {
       correlationId: safe.correlationId,
       timestamp: safe.timestamp
     };
+    publish();
     this.inputs.push({ ...input, metadata: safe.metadata });
     this.events.push(event);
     return event;
@@ -625,7 +631,6 @@ class InMemoryControlGrantRepository implements ControlGrantRepository {
 }
 
 class InMemoryControlDeleteRepository implements ControlDeleteRepository, ControlStopRepository, ControlRedeployRepository {
-  readonly #confirmations = new Map<string, ControlConfirmation>();
 
   async resolve(command: ControlCommand): Promise<{ command: ControlCommand; created: boolean }> {
     if (command.action === "deployment.rollback") {
@@ -646,17 +651,17 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
     if (!current) return null;
     validateRollbackReservation(current, command);
     if (current.status !== "pending_confirmation" || current.expiresAt <= now) return null;
-    let confirmation = [...this.#confirmations.values()].find((value) => value.commandId === current.id);
-    if (!confirmation) { confirmation = createConfirmation({ command: current, classification: "destructive" }); this.#confirmations.set(confirmation.id, confirmation); }
+    let confirmation = [...this.executionState.confirmations.values()].find((value) => value.commandId === current.id);
+    if (!confirmation) { confirmation = createConfirmation({ command: current, classification: "destructive" }); this.executionState.confirmations.set(confirmation.id, confirmation); }
     try { evaluateConfirmation(current, confirmation, now); }
     catch (error) { if (error instanceof ConfirmationRejectedError) return null; throw error; }
     return structuredClone(confirmation);
   }
 
-  async bind(confirmation: ControlConfirmation): Promise<void> { this.#confirmations.set(confirmation.id, structuredClone(confirmation)); }
+  async bind(confirmation: ControlConfirmation): Promise<void> { this.executionState.confirmations.set(confirmation.id, structuredClone(confirmation)); }
 
   async consume(command: ControlCommand, confirmation: ControlConfirmation, now = new Date()) {
-    const stored = this.#confirmations.get(confirmation.id);
+    const stored = this.executionState.confirmations.get(confirmation.id);
     const current = [...this.executionState.commands.values()].find((candidate) => candidate.id === command.id);
     if (!stored || !current) return { command, accepted: false, reason: "confirmation_rejected" };
     try {
@@ -683,7 +688,7 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
     if (!current) throw new Error("Control command was not found");
     if (current.status === "completed") return { command: structuredClone(current), accepted: true, reason: null, result: (current.result as import("@deploylite/contracts").DeploymentStopCommandResult | undefined) ?? null, alreadyCompleted: true };
     if (current.status === "eligible" || current.status === "dispatching") return { command: structuredClone(current), accepted: true, reason: null, result: (current.result as import("@deploylite/contracts").DeploymentStopCommandResult | undefined) ?? null, alreadyCompleted: false };
-    const stored = this.#confirmations.get(confirmation.id);
+    const stored = this.executionState.confirmations.get(confirmation.id);
     if (!stored || stored.commandId !== current.id || stored.actorId !== current.actorId || stored.action !== current.action || scopeKey(stored.scope) !== scopeKey(current.scope) || stored.inputDigest !== current.inputDigest || stored.classification !== "destructive" || stored.consumedAt || stored.expiresAt <= now) {
       current.status = "rejected";
       return { command: structuredClone(current), accepted: false, reason: "confirmation_rejected", result: stopCommandResult(current, "rejected"), alreadyCompleted: false };
@@ -725,7 +730,7 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
     if (current.status === "completed") return { command: structuredClone(current), accepted: true, reason: null, result: current.result as import("@deploylite/contracts").DeploymentRedeployCommandResult | null, deployment: null, alreadyCompleted: true };
     if (current.status === "eligible" || current.status === "dispatching") return { command: structuredClone(current), accepted: true, reason: null, result: current.result as import("@deploylite/contracts").DeploymentRedeployCommandResult, deployment, alreadyCompleted: false };
     if (current.status !== "pending_confirmation") return { command: structuredClone(current), accepted: false, reason: "command_not_pending", result: redeployCommandResult(current, "rejected", null, snapshotHash, "command_not_pending"), deployment: null, alreadyCompleted: false };
-    const stored = this.#confirmations.get(confirmation.id);
+    const stored = this.executionState.confirmations.get(confirmation.id);
     if (!stored || stored.commandId !== current.id || stored.actorId !== current.actorId || stored.action !== current.action || scopeKey(stored.scope) !== scopeKey(current.scope) || stored.inputDigest !== current.inputDigest || stored.classification !== "destructive" || stored.consumedAt || stored.expiresAt <= now || stored.expiresAt > current.expiresAt) { current.status = "rejected"; current.result = redeployCommandResult(current, "rejected", null, snapshotHash); return { command: structuredClone(current), accepted: false, reason: "confirmation_rejected", result: current.result as import("@deploylite/contracts").DeploymentRedeployCommandResult, deployment: null, alreadyCompleted: false }; }
     const before = structuredClone(current); const confirmationBefore = structuredClone(stored);
     try {
@@ -752,7 +757,7 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
     if (current.status === "completed") return { command: structuredClone(current), accepted: true, reason: null, result: reserved, deployment: null, alreadyCompleted: true };
     if (current.status === "eligible" || current.status === "dispatching") return { command: structuredClone(current), accepted: true, reason: null, result: reserved, deployment: structuredClone(this.executionState.deployments.get(reserved.deploymentId) ?? null), alreadyCompleted: false };
     if (!isRollbackAdmissionBound(current, deployment, this.executionState.deployments.get(reserved.sourceDeploymentId), now)) return { command: structuredClone(current), accepted: false, reason: "execution_binding_rejected", result: null, deployment: null, alreadyCompleted: false };
-    const stored = this.#confirmations.get(confirmation.id);
+    const stored = this.executionState.confirmations.get(confirmation.id);
     if (!stored || stored.commandId !== current.id || stored.actorId !== current.actorId || stored.action !== current.action || scopeKey(stored.scope) !== scopeKey(current.scope) || stored.inputDigest !== current.inputDigest || stored.classification !== "destructive" || stored.consumedAt || stored.expiresAt <= now || stored.expiresAt > current.expiresAt) return { command: structuredClone(current), accepted: false, reason: "confirmation_rejected", result: null, deployment: null, alreadyCompleted: false };
     const queued = deploymentSchema.parse(deployment), result = { ...reserved, status: "eligible" as const };
     // Shared maps and confirmation are published synchronously; no await exposes partial admission.
@@ -777,7 +782,7 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
     const project = await this.projects.findById(projectId);
     if (!project) throw new Error("Project was not found for confirmed deletion");
     const commandBefore = [...this.executionState.commands.values()].find((candidate) => candidate.id === command.id);
-    const confirmationBefore = this.#confirmations.get(confirmation.id);
+    const confirmationBefore = this.executionState.confirmations.get(confirmation.id);
     const outcome = await this.consume(command, confirmation);
     if (!outcome.accepted || outcome.command.status === "completed") return { ...outcome, removed: outcome.command.status === "completed", auditRecorded: outcome.command.status === "completed", alreadyCompleted: outcome.command.status === "completed" };
     try {
@@ -786,7 +791,7 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
       await this.audit.append({ actorUserId: command.actorId, action: "project.delete", targetType: "project", targetId: projectId, requestId, correlationId: command.correlationId, metadata: { commandId: command.id, confirmationId: confirmation.id } });
       return { command: completed, accepted: true, reason: null, removed: true, auditRecorded: true, alreadyCompleted: false };
     } catch (error) {
-      if (confirmationBefore) this.#confirmations.set(confirmation.id, confirmationBefore);
+      if (confirmationBefore) this.executionState.confirmations.set(confirmation.id, confirmationBefore);
       if (commandBefore) Object.assign(commandBefore, structuredClone(command));
       await this.projects.save(project);
       throw error;
@@ -1237,7 +1242,7 @@ function registerCoreHooks(app: FastifyInstance, corsOrigin: string | null): voi
   });
 }
 
-function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapters: AuthAdapters, authConfig: AuthConfig, confirmedDeleteEnabled: boolean, imagePolicy: ImageReferencePolicyV1, resourceAccess?: ReadonlyMap<string, ComposeResourceInspectionAccess>, backupPlans?: ReadonlyMap<string, ComposeVolumeBackupPlanAccess>): void {
+function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapters: AuthAdapters, authConfig: AuthConfig, confirmedDeleteEnabled: boolean, imagePolicy: ImageReferencePolicyV1, resourceAccess?: ReadonlyMap<string, ComposeResourceInspectionAccess>, backupPlans?: ReadonlyMap<string, ComposeVolumeBackupPlanAccess>, cleanupPlans?: ReadonlyMap<string, ComposeResourceCleanupAccess>): void {
   const requireAuth = createAuthPreHandler(adapters, authConfig);
   const requireMutationRole = createRolePreHandler(adapters, ["admin", "operator"]);
   const requireAdminRole = createRolePreHandler(adapters, ["admin"]);
@@ -1245,6 +1250,7 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
   registerComposeRevisionReadRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, revisions: state.composeRevisionReads, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerComposeRevisionSaveRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, revisions: state.composeRevisionSaves, imagePolicy, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerComposeResourceInspectionRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
+  registerComposeResourceCleanupRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, cleanup: cleanupPlans, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerComposeVolumeBackupPlanRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, planning: backupPlans, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   // Audit history is an operator/admin concern. Read-only sessions are denied
   // by design so a passive role cannot enumerate every project + key change.
@@ -2234,7 +2240,7 @@ export async function buildApiApp(options: BuildApiAppOptions = {}): Promise<Fas
     await seedMockData(repositories.state);
   }
   registerCoreHooks(app, corsOrigin);
-  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE, options.imagePolicy ?? { policyVersion: "deployment-v1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }, options.composeResourceInspection, options.composeVolumeBackupPlans);
+  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE, options.imagePolicy ?? { policyVersion: "deployment-v1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }, options.composeResourceInspection, options.composeVolumeBackupPlans, options.composeResourceCleanupPlans);
   app.addHook("onClose", () => {
     repositories.state.deployRunner.cancelTimers();
   });

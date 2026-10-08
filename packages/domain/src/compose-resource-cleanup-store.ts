@@ -1,0 +1,131 @@
+import { composeResourceCleanupPreviewSchema, composeResourceCleanupConfirmationViewSchema, composeResourceCleanupReceiptSchema,
+  type ComposeResourceCleanupReceiptV1, type ComposeResourceCleanupConfirmationViewV1 } from "@deploylite/contracts";
+import { ComposeResourceCleanupError, type PreparedComposeResourceCleanup } from "./compose-resource-cleanup.js";
+import { createConfirmation, digestControlInput, evaluateConfirmation, IdempotencyConflictError, resolveControlCommandInMemory,
+  type ControlCommand, type ControlConfirmation } from "./control-plane.js";
+import type { InMemoryExecutionState } from "./deployment-contract/execution-memory-state.js";
+import type { AuditEventInput } from "./index.js";
+
+export type ComposeResourceCleanupSubject = Readonly<{ actorId: string; projectId: string; idempotencyKey: string; confirmationId: string }>;
+export type ComposeResourceCleanupRecord = Readonly<{ prepared: PreparedComposeResourceCleanup; confirmation: ControlConfirmation; receipt: ComposeResourceCleanupReceiptV1 }>;
+/** Atomically persists existing control metadata and safe audit, with no execution effects. */
+export type ComposeResourceCleanupStore = Readonly<{
+  available(): boolean;
+  save(input: PreparedComposeResourceCleanup, requestId: string, signal?: AbortSignal): Promise<ComposeResourceCleanupReceiptV1>;
+  find(subject: ComposeResourceCleanupSubject, signal?: AbortSignal): Promise<ComposeResourceCleanupRecord>;
+  admit(input: PreparedComposeResourceCleanup, view: ComposeResourceCleanupConfirmationViewV1, requestId: string, signal?: AbortSignal): Promise<ComposeResourceCleanupReceiptV1>;
+}>;
+type Options = Readonly<{
+  ledger: InMemoryExecutionState; clock(): number;
+  /** Synchronous transaction: publish and audit both commit, or neither becomes visible. */
+  commitAudit(input: AuditEventInput, publish: () => void): void;
+}>;
+const identity = /^[A-Za-z0-9_-]{1,200}$/;
+function fail(code: ConstructorParameters<typeof ComposeResourceCleanupError>[0]): never { throw new ComposeResourceCleanupError(code); }
+function validatePrepared(input: PreparedComposeResourceCleanup, now: number): void {
+  const parsed = composeResourceCleanupPreviewSchema.safeParse(input.preview), c = input.command;
+  if (!parsed.success || ![input.owner, input.agentId, c.id, c.actorId, c.idempotencyKey, c.correlationId].every(v => typeof v === "string" && identity.test(v))
+    || !Number.isSafeInteger(input.preparedAtMs) || input.preparedAtMs < 0 || !Number.isSafeInteger(now) || now < input.preparedAtMs
+    || c.action !== "project.delete" || c.scope.kind !== "project" || c.scope.projectId !== parsed.data.projectId || c.status !== "pending_confirmation"
+    || c.result || c.executionAuthority || !(c.expiresAt instanceof Date) || !Number.isSafeInteger(c.expiresAt.valueOf())
+    || c.expiresAt.valueOf() <= input.preparedAtMs || c.expiresAt.valueOf() > input.preparedAtMs + parsed.data.confirmationTtlMs
+    || c.inputDigest !== digestControlInput({ ...parsed.data, owner: input.owner, agentId: input.agentId })) fail("COMPOSE_CLEANUP_INVALID");
+  if (c.expiresAt.valueOf() <= now) fail("COMPOSE_CLEANUP_EXPIRED");
+}
+function protect<T>(work: () => T): T {
+  try { return work(); }
+  catch (error) { if (error instanceof ComposeResourceCleanupError || error instanceof IdempotencyConflictError) throw error; fail("COMPOSE_CLEANUP_FAILED"); }
+}
+
+/** Explicit in-memory reference; production requires a transactional durable adapter. */
+export class InMemoryComposeResourceCleanupStore implements ComposeResourceCleanupStore {
+  private records = new Map<string, { prepared: PreparedComposeResourceCleanup; confirmationId: string }>();
+  constructor(private readonly options: Options) {}
+  available(): boolean { return true; }
+
+  private read(id: string, now: number): ComposeResourceCleanupRecord {
+    const saved = this.records.get(id); if (!saved) fail("COMPOSE_CLEANUP_INVALID");
+    const prepared = structuredClone(saved.prepared); validatePrepared(prepared, now);
+    const command = [...this.options.ledger.commands.values()].find(v => v.id === id), confirmation = this.options.ledger.confirmations.get(saved.confirmationId);
+    if (!command || !confirmation || digestControlInput({ ...command, status: "pending_confirmation" }) !== digestControlInput(prepared.command)
+      || !["pending_confirmation", "eligible"].includes(command.status) || !(confirmation.expiresAt instanceof Date) || !Number.isSafeInteger(confirmation.expiresAt.valueOf())
+      || confirmation.commandId !== id || confirmation.id !== saved.confirmationId) fail("COMPOSE_CLEANUP_CONFIRMATION_REJECTED");
+    try {
+      if (command.status === "pending_confirmation") evaluateConfirmation(command, confirmation, new Date(now));
+      else {
+        if (!(confirmation.consumedAt instanceof Date) || !Number.isSafeInteger(confirmation.consumedAt.valueOf()) || confirmation.consumedAt.valueOf() < prepared.preparedAtMs || confirmation.consumedAt.valueOf() > now) fail("COMPOSE_CLEANUP_CONFIRMATION_REJECTED");
+        evaluateConfirmation(command, { ...confirmation, consumedAt: null }, new Date(now));
+      }
+    } catch { fail("COMPOSE_CLEANUP_CONFIRMATION_REJECTED"); }
+    const receipt = composeResourceCleanupReceiptSchema.parse({ commandId: id, confirmationId: saved.confirmationId, expiresAt: prepared.command.expiresAt.toISOString(),
+      status: command.status, idempotent: false, preview: prepared.preview });
+    return structuredClone({ prepared, confirmation, receipt });
+  }
+
+  private commit(input: AuditEventInput, commands: Map<string, ControlCommand>, confirmations: Map<string, ControlConfirmation>,
+    records: typeof this.records, signal?: AbortSignal): void {
+    const ledger = this.options.ledger, prior = { commands: ledger.commands, confirmations: ledger.confirmations, records: this.records };
+    let published = false;
+    try {
+      signal?.throwIfAborted();
+      this.options.commitAudit(input, () => {
+        signal?.throwIfAborted();
+        if (published || ledger.commands !== prior.commands || ledger.confirmations !== prior.confirmations || this.records !== prior.records) fail("COMPOSE_CLEANUP_FAILED");
+        ledger.commands = commands; ledger.confirmations = confirmations; this.records = records; published = true;
+      });
+      if (!published) fail("COMPOSE_CLEANUP_FAILED");
+    } catch (error) {
+      if (published) { ledger.commands = prior.commands; ledger.confirmations = prior.confirmations; this.records = prior.records; }
+      throw error;
+    }
+  }
+
+  async save(raw: PreparedComposeResourceCleanup, requestId: string, signal?: AbortSignal): Promise<ComposeResourceCleanupReceiptV1> {
+    return protect(() => {
+      const input = structuredClone(raw), now = this.options.clock(); signal?.throwIfAborted(); validatePrepared(input, now);
+      if (!identity.test(requestId)) fail("COMPOSE_CLEANUP_INVALID");
+      const commands = structuredClone(this.options.ledger.commands), resolved = resolveControlCommandInMemory(commands, input.command);
+      if (!resolved.created) return { ...this.read(resolved.command.id, now).receipt, idempotent: true };
+      const confirmation = createConfirmation({ command: resolved.command, classification: "destructive" });
+      const confirmations = structuredClone(this.options.ledger.confirmations), records = new Map(this.records);
+      confirmations.set(confirmation.id, confirmation); records.set(resolved.command.id, { prepared: input, confirmationId: confirmation.id });
+      const receipt = composeResourceCleanupReceiptSchema.parse({ commandId: resolved.command.id, confirmationId: confirmation.id, expiresAt: resolved.command.expiresAt.toISOString(),
+        status: "pending_confirmation", idempotent: false, preview: input.preview });
+      this.commit(this.audit(input, requestId, "prepared"), commands, confirmations, records, signal);
+      return structuredClone(receipt);
+    });
+  }
+
+  async find(raw: ComposeResourceCleanupSubject, signal?: AbortSignal): Promise<ComposeResourceCleanupRecord> {
+    return protect(() => {
+      const subject = structuredClone(raw), now = this.options.clock(); signal?.throwIfAborted();
+      if (![subject.actorId, subject.projectId, subject.idempotencyKey, subject.confirmationId].every(v => typeof v === "string" && identity.test(v))) fail("COMPOSE_CLEANUP_CONFIRMATION_REJECTED");
+      const saved = [...this.records.values()].find(v => v.prepared.command.actorId === subject.actorId && v.prepared.preview.projectId === subject.projectId
+        && v.prepared.command.idempotencyKey === subject.idempotencyKey && v.confirmationId === subject.confirmationId);
+      if (!saved) fail("COMPOSE_CLEANUP_CONFIRMATION_REJECTED");
+      return this.read(saved.prepared.command.id, now);
+    });
+  }
+
+  async admit(raw: PreparedComposeResourceCleanup, rawView: ComposeResourceCleanupConfirmationViewV1, requestId: string, signal?: AbortSignal): Promise<ComposeResourceCleanupReceiptV1> {
+    return protect(() => {
+      const input = structuredClone(raw), view = structuredClone(rawView), now = this.options.clock(); signal?.throwIfAborted(); validatePrepared(input, now);
+      if (!identity.test(requestId)) fail("COMPOSE_CLEANUP_INVALID");
+      const stored = this.read(input.command.id, now), parsed = composeResourceCleanupConfirmationViewSchema.safeParse(view);
+      if (!parsed.success || digestControlInput(input) !== digestControlInput(stored.prepared)
+        || digestControlInput(parsed.data) !== digestControlInput({ ...stored.prepared.preview, commandId: stored.receipt.commandId, confirmationId: stored.confirmation.id, confirmationValidated: true })) fail("COMPOSE_CLEANUP_CONFIRMATION_REJECTED");
+      if (stored.receipt.status === "eligible") return { ...stored.receipt, idempotent: true };
+      const commands = structuredClone(this.options.ledger.commands), confirmations = structuredClone(this.options.ledger.confirmations);
+      const current = [...commands.values()].find(v => v.id === input.command.id)!; current.status = "eligible";
+      confirmations.get(stored.confirmation.id)!.consumedAt = new Date(now);
+      this.commit(this.audit(input, requestId, "admitted"), commands, confirmations, new Map(this.records), signal);
+      return { ...stored.receipt, status: "eligible", idempotent: false };
+    });
+  }
+
+  private audit(input: PreparedComposeResourceCleanup, requestId: string, suffix: "prepared" | "admitted"): AuditEventInput {
+    return { actorUserId: input.command.actorId, action: `compose.resource.cleanup.${suffix}`, targetType: "project", targetId: input.preview.projectId,
+      requestId, correlationId: input.command.correlationId, metadata: { projectId: input.preview.projectId, commandId: input.command.id, targetType: input.preview.kind,
+        inputDigest: input.preview.configDigest, valueFingerprint: input.preview.stateDigest } };
+  }
+}

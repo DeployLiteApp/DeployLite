@@ -1,11 +1,12 @@
 import type { Deployment, DeploymentExecutionAuthorityV1 } from "@deploylite/contracts";
 import { validateDeploymentAuthority, validateInitialExecution, type InitialExecutionBinding } from "./deployment-authority.js";
-import type { ControlCommand } from "../control-plane.js";
+import type { ControlCommand, ControlConfirmation } from "../control-plane.js";
 import { completeExecutionAtomically, type ExecutionCommandRecord, type ExecutionCompletionInput, type ExecutionCompletionOutcome, type ExecutionCompletionStore, type ExecutionCompletionTransaction } from "./execution-completion.js";
 
 export class InMemoryExecutionState implements ExecutionCompletionStore {
   deployments = new Map<string, Deployment>();
   commands = new Map<string, ControlCommand>();
+  confirmations = new Map<string, ControlConfirmation>();
 
   completeExecution(input: ExecutionCompletionInput, signal?: AbortSignal): Promise<ExecutionCompletionOutcome> { return completeExecutionAtomically(this, input, signal); }
 
