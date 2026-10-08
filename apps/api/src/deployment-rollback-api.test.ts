@@ -3,13 +3,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeploymentSnapshot, createSourceIntent, deploymentRollbackCommandResultSchema, trustedPriorExecutionReceiptSchema, type CanonicalRole, type Deployment, type DeploymentSnapshotV1 } from "@deploylite/contracts";
 import { parseDeployLiteEnv } from "@deploylite/config";
 import { AuthenticatedAgentCommandReceiver, DigestDeploymentDispatcher } from "@deploylite/agent";
-import { createControlCommand, InMemoryExecutionState, InMemoryProtocolTransport } from "@deploylite/domain";
+import { createControlCommand, InMemoryExecutionState, InMemoryProtocolTransport, type ControlCommand } from "@deploylite/domain";
 import { buildApiApp, createInMemoryExecutionRepositories, createRuntimeRepositories } from "./app.js";
 import { AuthenticatedAgentDeploymentTransport } from "./agent-transport.js";
 import { createPromotionDockerRunner } from "./testing/promotion-docker-runner.js";
 const imageA = `registry.example.com/team/app@sha256:${"a".repeat(64)}`, imageH = `registry.example.com/team/app@sha256:${"b".repeat(64)}`, policy = { maxOutageMs: 30_000, maxRecoveryMs: 60_000 };
 const apps: Awaited<ReturnType<typeof buildApiApp>>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); vi.restoreAllMocks(); });
+function rollbackResult(command: ControlCommand) { return deploymentRollbackCommandResultSchema.parse(command.result); }
 async function fixture(options: { preparationTimeoutMs?: number; grantProject?: string; noGrants?: boolean } = {}) {
   const runtime = await createRuntimeRepositories(parseDeployLiteEnv({ NODE_ENV: "test", DEPLOYLITE_BCRYPT_COST: "10" })), memory = createInMemoryExecutionRepositories(runtime.state.projects, runtime.auth.audit), docker = createPromotionDockerRunner();
   const dispatcher = new DigestDeploymentDispatcher({ protocol: new InMemoryProtocolTransport({ clock: { now: Date.now }, leasePolicy: { ttlMs: 120_000 }, retryPolicy: { maxAttempts: 1, deadlineMs: 0, backoffMs: () => 0 }, capabilities: ["deploy.execute"] }), runner: docker.runner, owner: "configured-owner", hostPort: 43000, temporaryHostPort: 43001, containerPort: 3000, trustedHosts: ["registry.example.com"], promotionPolicy: policy, timeoutMs: options.preparationTimeoutMs });
@@ -44,8 +45,8 @@ describe("rollback reserves stable R before confirmation", () => {
     const command = [...f.memory.completion.commands.values()][0]!; expect(command).toBeDefined(); expect(command.status).toBe("pending_confirmation");
     expect(deploymentRollbackCommandResultSchema.safeParse(command.result).success).toBe(true);
     expect(command.result).toMatchObject({ activeDeploymentId: f.A.id, sourceDeploymentId: f.H.id, snapshotHash: f.H.snapshotHash, status: "pending_confirmation" });
-    const R = command.result!.deploymentId!; expect(await f.memory.deployments.findById(R)).toBeNull(); expect(f.docker.calls).toHaveLength(count);
-    const retry = await f.request(); expect(retry.statusCode).toBe(202); expect([...f.memory.completion.commands.values()]).toHaveLength(1); expect([...f.memory.completion.commands.values()][0]!.result!.deploymentId).toBe(R);
+    const R = rollbackResult(command).deploymentId!; expect(await f.memory.deployments.findById(R)).toBeNull(); expect(f.docker.calls).toHaveLength(count);
+    const retry = await f.request(); expect(retry.statusCode).toBe(202); expect([...f.memory.completion.commands.values()]).toHaveLength(1); expect(rollbackResult([...f.memory.completion.commands.values()][0]!).deploymentId).toBe(R);
   });
 });
 
@@ -167,10 +168,10 @@ describe("rollback same-command cache, replay and terminal publication", () => {
       const responses = await Promise.all([f.request("rollback", undefined, f.A.id, f.H.id, f.H.snapshotHash!, "fresh-retry-id"), f.request("rollback", undefined, f.A.id, f.H.id, f.H.snapshotHash!, "fresh-retry-id")]);
       expect(new Set(times.slice(0, 2)).size).toBe(2); expect(responses.map((value) => value.statusCode)).toEqual([200, 200]);
       response = responses[0]!; expect(response.statusCode, response.body).toBe(200); expect(responses[1]!.json().data.deployment).toEqual(response.json().data.deployment);
-      expect(outcomes.filter((kind) => kind === "committed")).toHaveLength(1); expect(outcomes).toContain("replayed"); expect((await f.memory.deployments.listLogs(command.result!.deploymentId!)).filter((row) => row.message === "Agent rollback succeeded.")).toHaveLength(1); expect(audit.mock.calls.filter(([event]) => event.action === "deployment.rollback.succeeded" && event.targetId === command.result!.deploymentId)).toHaveLength(1);
+      expect(outcomes.filter((kind) => kind === "committed")).toHaveLength(1); expect(outcomes).toContain("replayed"); expect((await f.memory.deployments.listLogs(rollbackResult(command).deploymentId!)).filter((row) => row.message === "Agent rollback succeeded.")).toHaveLength(1); expect(audit.mock.calls.filter(([event]) => event.action === "deployment.rollback.succeeded" && event.targetId === rollbackResult(command).deploymentId)).toHaveLength(1);
     } finally { vi.useRealTimers(); }
     expect(f.bodies.at(-1)).toMatchObject({ activeDeploymentId: f.A.id, sourceDeploymentId: f.H.id, correlationId: command.correlationId });
-    expect((await f.memory.deployments.listLogs(command.result!.deploymentId!)).find((row) => row.message === "Agent rollback succeeded.")).toMatchObject({ correlationId: command.correlationId, requestId: "fresh-retry-id" });
+    expect((await f.memory.deployments.listLogs(rollbackResult(command).deploymentId!)).find((row) => row.message === "Agent rollback succeeded.")).toMatchObject({ correlationId: command.correlationId, requestId: "fresh-retry-id" });
     const lookups = f.replay.lookups; await f.memory.deployments.remove(f.H.id); await f.memory.deployments.remove(f.A.id); f.snapshots.clear(); await f.projects.remove(f.A.projectId);
     expect((await f.request()).statusCode).toBe(200); expect(f.replay.lookups).toBe(lookups); expect(f.docker.calls).toHaveLength(effects); expect(f.replay.claims).toBe(claims);
     expect((await f.request("rollback", undefined, f.A.id, "changed-H")).statusCode).toBe(409);
@@ -247,7 +248,7 @@ describe("rollback reviewed retry interleavings", () => {
     expect((await f.request()).statusCode).toBe(500);
     const original = structuredClone([...f.memory.completion.commands.values()][0]!);
     const recovered = await f.request(); expect(recovered.statusCode).toBe(202);
-    expect(recovered.json().data).toMatchObject({ commandId: original.id, deploymentId: original.result!.deploymentId, confirmationRequired: true, correlationId: original.correlationId });
+    expect(recovered.json().data).toMatchObject({ commandId: original.id, deploymentId: rollbackResult(original).deploymentId, confirmationRequired: true, correlationId: original.correlationId });
     expect(recovered.json().data.confirmationId).toBeTruthy(); expect((await f.request()).json().data).toEqual(recovered.json().data);
     expect([...f.memory.completion.commands.values()][0]!.expiresAt).toEqual(original.expiresAt);
     expect((await f.request("rollback", recovered.json().data.confirmationId)).statusCode).toBe(200); expect(f.complete).toHaveBeenCalledOnce();

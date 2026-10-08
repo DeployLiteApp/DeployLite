@@ -92,6 +92,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/deploylite-postgres-evidence"
           pnpm --filter @deploylite/api db:verify:integration --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/deploylite-postgres-evidence/api.json" 2>&1 | tee "$RUNNER_TEMP/deploylite-postgres-evidence/api.log"
         env: { DATABASE_URL: postgres://deploylite:deploylite-ci-only@localhost:5432/deploylite }
+      - name: Verify P3 Compose atomic persistence on the same disposable PostgreSQL service
+        if: ${{ !cancelled() && steps.db_tests.outcome != 'skipped' }}
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/deploylite-postgres-evidence"
+          pnpm --filter @deploylite/db db:verify:compose --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/deploylite-postgres-evidence/p3-compose-db.json" 2>&1 | tee "$RUNNER_TEMP/deploylite-postgres-evidence/p3-compose-db.log"
+        env: { DATABASE_URL: postgres://deploylite:deploylite-ci-only@localhost:5432/deploylite }
       - name: Verify suite fixture cleanup on the exact CI service
         if: always()
         env:

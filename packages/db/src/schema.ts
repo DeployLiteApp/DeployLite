@@ -1,6 +1,6 @@
-import type { TrustedPriorExecutionReceiptV1, DeploymentExecutionAuthorityV1 } from "@deploylite/contracts";
+import type { TrustedPriorExecutionReceiptV1, DeploymentExecutionAuthorityV1, ComposePreviewV1 } from "@deploylite/contracts";
 import { sql } from "drizzle-orm";
-import { boolean, check, customType, index, integer, jsonb, pgTable, smallint, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, customType, foreignKey, index, integer, jsonb, pgTable, smallint, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 const bytea = customType<{ data: Buffer; notNull: false; default: false }>({
   dataType() {
@@ -378,3 +378,20 @@ export type ControlCommandRow = typeof controlCommands.$inferSelect;
 export type ControlGrantRow = typeof controlGrants.$inferSelect;
 export type ControlCommandConfirmationRow = typeof controlCommandConfirmations.$inferSelect;
 export type AgentReplayRow = typeof agentReplay.$inferSelect;
+
+// Logical saved intent. Runtime resource ownership is a separate P3 boundary.
+export const composeResources = pgTable("compose_resources", {
+  id: uuid("id").primaryKey(), projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
+  createdBy: uuid("created_by").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull()
+}, (table) => [uniqueIndex("compose_resources_id_project_unique").on(table.id, table.projectId), index("compose_resources_project_idx").on(table.projectId)]);
+export const composeRevisions = pgTable("compose_revisions", {
+  id: uuid("id").primaryKey().references(() => controlCommands.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  composeId: uuid("compose_id").notNull(), projectId: uuid("project_id").notNull(), number: integer("number").notNull(),
+  createdBy: uuid("created_by").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(), preview: jsonb("preview").$type<ComposePreviewV1>().notNull()
+}, (table) => [foreignKey({ name: "compose_revisions_owner_fk", columns: [table.composeId, table.projectId], foreignColumns: [composeResources.id, composeResources.projectId] }).onDelete("cascade").onUpdate("cascade"),
+  uniqueIndex("compose_revisions_number_unique").on(table.composeId, table.number), index("compose_revisions_project_idx").on(table.projectId),
+  check("compose_revisions_number_positive", sql`${table.number} > 0`),
+  check("compose_revisions_preview_safe", sql`(jsonb_typeof(${table.preview}) = 'object' and ${table.preview}->>'projectId' = ${table.projectId}::text and ${table.preview}->'executionAllowed' = 'false'::jsonb) is true`)]);
+export type ComposeRevisionRow = typeof composeRevisions.$inferSelect;

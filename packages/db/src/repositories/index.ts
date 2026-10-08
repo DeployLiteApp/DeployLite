@@ -5,3 +5,5 @@ export * from "./env-secret-values.js";
 export * from "./control-plane.js";
 export * from "./agent-replay.js";
 export * from "./execution-completion.js";
+
+export * from "./compose-revision-save.js";

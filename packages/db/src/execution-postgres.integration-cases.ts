@@ -645,7 +645,10 @@ suite("atomic execution PostgreSQL integration", () => {
   it("converges concurrent A/H/R reservation and original confirmation across PostgreSQL clients", async () => {
     const f = await rollbackFixture(), key = randomUUID(), one = f.tentative(randomUUID(), key), two = f.tentative(randomUUID(), key);
     const [a, b] = await Promise.all([controls().resolve(one), controls().resolve(two)]);
-    expect(a.command).toEqual(b.command); expect([one.result.deploymentId,two.result.deploymentId]).toContain(a.command.result?.deploymentId);
+    expect(a.command).toEqual(b.command);
+    expect(a.command.result?.action).toBe("deployment.rollback");
+    if (a.command.result?.action !== "deployment.rollback") throw new Error("Rollback reservation result is unavailable.");
+    expect([one.result.deploymentId,two.result.deploymentId]).toContain(a.command.result.deploymentId);
     const confirmation = createConfirmation({ command: a.command, classification: "destructive" }); await controls().bind(confirmation);
     expect(await controls().resolveRollbackConfirmation(b.command)).toEqual(confirmation);
     await expect(controls().findByIdempotency(f.actorId, key, "deployment.stop")).resolves.toBeNull();

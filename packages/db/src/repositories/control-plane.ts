@@ -33,21 +33,7 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
   }
 
   private async resolveOn(command: ControlCommand, db: Pick<DeployLiteDb, "insert" | "select">): Promise<{ command: ControlCommand; created: boolean }> {
-    const key = scopeKey(command.scope);
-    const [created] = await db.insert(controlCommands).values({
-      id: command.id, actorUserId: command.actorId, action: command.action, scopeKind: command.scope.kind, scopeKey: key,
-      inputDigest: command.inputDigest, idempotencyKey: command.idempotencyKey, correlationId: command.correlationId,
-      status: command.status, expiresAt: command.expiresAt, result: command.result ?? null
-    }).onConflictDoNothing().returning();
-    if (created) return { command: toCommand(created), created: true };
-
-    const [existing] = await db.select().from(controlCommands).where(and(
-      eq(controlCommands.actorUserId, command.actorId), eq(controlCommands.action, command.action),
-      eq(controlCommands.scopeKey, key), eq(controlCommands.idempotencyKey, command.idempotencyKey)
-    )).limit(1);
-    if (!existing) throw new Error("Idempotency command was not found after conflict");
-    if (existing.inputDigest !== command.inputDigest) throw new IdempotencyConflictError();
-    return { command: toCommand(existing), created: false };
+    return resolveControlCommandOn(db, command);
   }
 
   async findByIdempotency(actorId: string, idempotencyKey: string, action: "deployment.redeploy" | "deployment.stop" | "deployment.rollback" = "deployment.redeploy"): Promise<ControlCommand | null> {
@@ -300,4 +286,23 @@ function redeployResult(command: ControlCommand, status: "eligible" | "rejected"
 function toGrant(row: ControlGrantRow): ControlGrant {
   const scope = row.scopeKind === "platform" ? { kind: "platform" as const } : row.scopeKind === "deployment" ? (() => { const [projectId, deploymentId] = JSON.parse(row.scopeKey) as [string, string]; return { kind: "deployment" as const, projectId, deploymentId }; })() : { kind: "project" as const, projectId: row.scopeKey };
   return { id: row.id, actorId: row.actorUserId, action: row.action as ControlGrant["action"], scope };
+}
+
+/** Resolve through the existing command table inside a caller-owned transaction. */
+export async function resolveControlCommandOn(db: Pick<DeployLiteDb, "insert" | "select">, command: ControlCommand): Promise<{ command: ControlCommand; created: boolean }> {
+  const key = scopeKey(command.scope);
+  const [created] = await db.insert(controlCommands).values({
+    id: command.id, actorUserId: command.actorId, action: command.action, scopeKind: command.scope.kind, scopeKey: key,
+    inputDigest: command.inputDigest, idempotencyKey: command.idempotencyKey, correlationId: command.correlationId,
+    status: command.status, expiresAt: command.expiresAt, result: command.result ?? null
+  }).onConflictDoNothing().returning();
+  if (created) return { command: toCommand(created), created: true };
+
+  const [existing] = await db.select().from(controlCommands).where(and(
+    eq(controlCommands.actorUserId, command.actorId), eq(controlCommands.action, command.action),
+    eq(controlCommands.scopeKey, key), eq(controlCommands.idempotencyKey, command.idempotencyKey)
+  )).limit(1);
+  if (!existing) throw new Error("Idempotency command was not found after conflict");
+  if (existing.inputDigest !== command.inputDigest) throw new IdempotencyConflictError();
+  return { command: toCommand(existing), created: false };
 }
