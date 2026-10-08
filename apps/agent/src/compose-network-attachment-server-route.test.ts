@@ -16,6 +16,7 @@ vi.mock("@deploylite/domain", async () => {
       Promise.resolve().then(operation).then(resolve, reject).finally(() => signal?.removeEventListener("abort", cancel));
     }),
     composeVolumeBackupExecutionDigest: () => "",
+    composeResourceAttachmentExecutionDigest: () => "",
     digestControlInput: () => "",
     validateDockerImageSnapshot: () => {},
     digestComposeResourceObservation: (value: any) => {

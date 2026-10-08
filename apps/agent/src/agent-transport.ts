@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { signAgentTransport, validateAgentTransportKey, verifyAgentTransport } from "@deploylite/config";
 import { agentReceiptQuerySchema, agentCachedReceiptSchema, type AgentReceiptQuery, agentExecutionCommandSchema, CapabilityError, composeNetworkAttachmentAgentCommandSchema, composeNetworkAttachmentCachedReceiptSchema, composeNetworkAttachmentReceiptQuerySchema, composeNetworkAttachmentReceiptSchema, composeResourceAttachmentCommandSchema, composeResourceInspectionAgentCommandSchema, composeResourceInspectionAgentResponseSchema, composeResourceObservationSchema, COMPOSE_NETWORK_ATTACHMENT_CAPABILITY, COMPOSE_NETWORK_ATTACHMENT_RECEIPT_PATH, COMPOSE_RESOURCE_INSPECTION_CAPABILITY, COMPOSE_RESOURCE_INSPECTION_PATH, composeVolumeBackupAgentCommandSchema, composeVolumeBackupCachedReceiptSchema, composeVolumeBackupReceiptQuerySchema, composeVolumeBackupReceiptSchema, COMPOSE_VOLUME_BACKUP_CAPABILITY, COMPOSE_VOLUME_BACKUP_RECEIPT_PATH, createDeploymentCommand, deploymentStopAgentCommandSchema, deploymentStopAgentReceiptSchema, dockerImageExecutionReceiptSchema, FenceError, LeaseExpiredError, protocolPayloadFingerprint, TransportCanceledError, TransportTimeoutError, type AgentExecutionCommand, type ComposeNetworkAttachmentAgentCommandV1, type ComposeNetworkAttachmentReceiptV1, type ComposeVolumeBackupAgentCommandV1, type ComposeVolumeBackupReceiptQueryV1, type ComposeVolumeBackupReceiptV1, type DeploymentSnapshotV1, type DeploymentStopAgentCommand, type DeploymentStopAgentReceipt, type LeaseV1, type ProjectControlAuthorityV1, type PromotionPolicy, type DeploymentExecutionAuthorityV1 } from "@deploylite/contracts";
-import { awaitAbortable, composeVolumeBackupExecutionDigest, digestComposeResourceObservation, digestControlInput, validateDockerImageSnapshot, type ComposeResourceInspector, type DockerImageExecutionReceiptV1, type DeploymentAuthorityValidation, type PriorDockerImageExecutionReceiptV1 } from "@deploylite/domain";
+import { awaitAbortable, composeResourceAttachmentExecutionDigest, composeVolumeBackupExecutionDigest, digestComposeResourceObservation, validateDockerImageSnapshot, type ComposeResourceInspector, type DockerImageExecutionReceiptV1, type DeploymentAuthorityValidation, type PriorDockerImageExecutionReceiptV1 } from "@deploylite/domain";
 import type { ComposeVolumeBackupAuthority } from "./infrastructure/docker/docker-compose-volume-backup.js";
 
 export type RuntimeExecutionAuthority = { assertValid(): Promise<void>; readonly expiresAt?: number };
@@ -193,7 +193,7 @@ export class AuthenticatedAgentCommandReceiver {
       operation: command.operation, idempotencyKey: command.idempotencyKey, correlationId: command.context.correlationId, projectId: command.projectId,
       kind: "network", key: command.key, runtimeName: command.runtimeName, service: command.service, attachmentAction: command.attachmentAction,
       configDigest: command.configDigest, stateDigest: command.stateDigest, containerId: command.containerId, alreadySatisfied: command.alreadySatisfied });
-    if (digestControlInput(request) !== command.inputDigest) throw new FenceError("Project update input digest mismatch");
+    if (composeResourceAttachmentExecutionDigest(request) !== command.inputDigest) throw new FenceError("Project update input digest mismatch");
     const fingerprint = this.networkAttachmentFingerprint(command);
     const cached = await this.lookupReplay(command.commandId, fingerprint, command.timeoutMs, signal);
     if (cached) {

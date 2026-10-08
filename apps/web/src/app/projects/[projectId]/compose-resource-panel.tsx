@@ -1,9 +1,9 @@
 "use client";
 import { useCallback,useEffect,useId,useRef,useState } from "react";
-import type { ComposeAttachmentPreviewV1,ComposePreviewV1,ComposeResourceInspectionViewV1 } from "@deploylite/contracts";
+import type { ComposeAttachmentPreviewV1,ComposeNetworkAttachmentReceiptV1,ComposePreviewV1,ComposeResourceInspectionViewV1 } from "@deploylite/contracts";
 import { Button } from "@/components/ui/button";
 import { ComposeResourceCleanupPanel } from "./compose-resource-cleanup-panel";
-import { inspectProjectComposeResource,previewProjectComposeAttachment } from "./compose-resource-client";
+import { applyProjectComposeNetworkAttachment,inspectProjectComposeResource,previewProjectComposeAttachment } from "./compose-resource-client";
 
 export function ComposeResourcePanel({projectId,apiBaseUrl,document,preview,onCleanupLockChange}:{projectId:string;apiBaseUrl:string|null;document:string;preview:ComposePreviewV1;onCleanupLockChange(locked:boolean):void}){
   const resources=[...preview.networks.map(r=>({kind:"network" as const,key:r.key,runtimeName:r.runtimeName})),...preview.volumes.map(r=>({kind:"volume" as const,key:r.key,runtimeName:r.runtimeName}))];
@@ -12,15 +12,16 @@ export function ComposeResourcePanel({projectId,apiBaseUrl,document,preview,onCl
   const [service,setService]=useState(preview.services[0]?.name??"");
   const [inspection,setInspection]=useState<ComposeResourceInspectionViewV1|null>(null);
   const [attachment,setAttachment]=useState<ComposeAttachmentPreviewV1|null>(null);
-  const [pending,setPending]=useState<"inspection"|"attachment"|null>(null),[error,setError]=useState("");
+  const [pending,setPending]=useState<"inspection"|"attachment"|"apply"|null>(null),[error,setError]=useState("");
+  const [applyReceipt,setApplyReceipt]=useState<ComposeNetworkAttachmentReceiptV1|null>(null);
   const [cleanupLocked,setCleanupLocked]=useState(false);
-  const version=useRef(0),request=useRef<AbortController|null>(null);
+  const version=useRef(0),request=useRef<AbortController|null>(null),applyKey=useRef<{fingerprint:string;value:string}|null>(null);
   const handleCleanupLockChange=useCallback((locked:boolean)=>{setCleanupLocked(locked);onCleanupLockChange(locked);},[onCleanupLockChange]);
   const resource=resources.find(r=>`${r.kind}:${r.key}`===selection),selectedService=preview.services.find(s=>s.name===service);
   const desired=resource&&selectedService?(resource.kind==="network"?selectedService.networks.includes(resource.key):selectedService.volumes.some(m=>m.source===resource.key)):false;
-  const action=desired?"attach":"detach";
+  const action:"attach"|"detach"=desired?"attach":"detach";
   const running=inspection?.containers.some(c=>(c.service===service||c.attached)&&c.running)??false;
-  function invalidate(clearInspection:boolean){version.current++;request.current?.abort();request.current=null;setPending(null);setError("");setAttachment(null);if(clearInspection)setInspection(null);}
+  function invalidate(clearInspection:boolean){version.current++;request.current?.abort();request.current=null;applyKey.current=null;setPending(null);setError("");setAttachment(null);setApplyReceipt(null);if(clearInspection)setInspection(null);}
   useEffect(()=>{
     invalidate(true);setSelection(first?`${first.kind}:${first.key}`:"");setService(preview.services[0]?.name??"");
     return()=>{version.current++;request.current?.abort();request.current=null;onCleanupLockChange(false);};
@@ -39,6 +40,28 @@ export function ComposeResourcePanel({projectId,apiBaseUrl,document,preview,onCl
     if(request.current!==controller||version.current!==token)return;request.current=null;setPending(null);
     if(result.kind==="ready")setAttachment(result.preview);else{setInspection(null);setError(result.message);}
   }
+  async function applyAttachment(){
+    if(cleanupLocked||request.current||resource?.kind!=="network"||!selectedService||!attachment||attachment.alreadySatisfied||!apiBaseUrl)return;
+    const proposal={projectId,document,kind:"network" as const,key:resource.key,service,action,expectedConfigDigest:preview.configDigest,
+      expectedStateDigest:attachment.stateDigest,expectedContainerId:attachment.containerId};
+    const fingerprint=JSON.stringify(proposal);
+    if(!applyKey.current||applyKey.current.fingerprint!==fingerprint)applyKey.current={fingerprint,value:globalThis.crypto.randomUUID()};
+    const token=++version.current,controller=new AbortController();request.current=controller;setPending("apply");setError("");setApplyReceipt(null);
+    const result=await applyProjectComposeNetworkAttachment({...proposal,apiBaseUrl,idempotencyKey:applyKey.current.value,signal:controller.signal});
+    if(request.current!==controller||version.current!==token)return;request.current=null;setPending(null);
+    if(result.kind==="error"){
+      setError(result.message);
+      if(!result.retryable){applyKey.current=null;setAttachment(null);setInspection(null);}
+      return;
+    }
+    applyKey.current=null;setInspection(null);setAttachment(null);setApplyReceipt(result.receipt);
+  }
+  const terminalMessage=applyReceipt
+    ?applyReceipt.status==="failed"?"The network change did not reach its requested state. Inspect the resource again before retrying."
+      :applyReceipt.status==="already-attached"||applyReceipt.status==="already-detached"?"The requested network state was already satisfied."
+      :applyReceipt.status==="attached"?"Network attached. Inspect the resource again to review current use."
+      :"Network detached. Inspect the resource again to review current use."
+    :null;
   return <section aria-labelledby={`${id}-heading`} className="flex flex-col gap-3 text-sm">
     <h3 id={`${id}-heading`} className="font-medium">Inspect resources</h3>
     <p className="text-muted-foreground">Inspect current service use before reviewing an attachment. This review makes no runtime changes.</p>
@@ -53,6 +76,9 @@ export function ComposeResourcePanel({projectId,apiBaseUrl,document,preview,onCl
         {preview.services.map(s=><option key={s.name} value={s.name}>{s.name}</option>)}
       </select>
       <Button type="button" variant="outline" disabled={cleanupLocked||!!pending||!inspection||!selectedService||running||!apiBaseUrl} onClick={previewAttachment}>{pending==="attachment"?"Checking attachment...":desired?"Preview attachment":"Preview detachment"}</Button>
+      {attachment&&resource?.kind==="network"&&!attachment.alreadySatisfied?<Button type="button" disabled={cleanupLocked||!!pending||running||!apiBaseUrl} onClick={applyAttachment}>
+        {pending==="apply"?"Applying network change...":action==="attach"?"Apply attachment":"Apply detachment"}
+      </Button>:null}
     </>:<p>No declared resources to inspect.</p>}
     {inspection?<section aria-labelledby={`${id}-observed`}>
       <h4 id={`${id}-observed`} className="font-medium">Observed resource use</h4>
@@ -61,6 +87,6 @@ export function ComposeResourcePanel({projectId,apiBaseUrl,document,preview,onCl
     </section>:null}
     {resource?<ComposeResourceCleanupPanel key={`${resource.kind}:${resource.key}`} projectId={projectId} apiBaseUrl={apiBaseUrl} document={document}
       preview={preview} resource={resource} inspection={inspection} onLockChange={handleCleanupLockChange}/>:null}
-    <p role={error?"alert":"status"} aria-live="polite" className={error?"text-destructive":"text-muted-foreground"}>{error||(pending?"Checking current resource state...":attachment?attachment.alreadySatisfied?`The requested ${action==="attach"?"attachment":"detachment"} is already satisfied. No runtime change was made.`:`${action==="attach"?"Attachment":"Detachment"} preview ready. No runtime change was made.`:!apiBaseUrl?"Resource inspection is unavailable until the project API is configured.":"Inspection and preview only. No runtime change was made.")}</p>
+    <p role={error?"alert":"status"} aria-live="polite" className={error?"text-destructive":"text-muted-foreground"}>{error||(pending==="apply"?"Applying the reviewed network change...":pending?"Checking current resource state...":terminalMessage??(attachment?attachment.alreadySatisfied?("The requested "+(action==="attach"?"attachment":"detachment")+" is already satisfied. No runtime change was made."):(action==="attach"?"Attachment":"Detachment")+" preview ready. No runtime change was made.":!apiBaseUrl?"Resource inspection is unavailable until the project API is configured.":"Inspect and preview before changing network attachments."))}</p>
   </section>;
 }

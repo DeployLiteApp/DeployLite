@@ -13,7 +13,7 @@ const plan = { schemaVersion: 1 as const, operation: "compose.volume.backup.plan
   consistency: "offline-required" as const, verification: "integrity-and-completeness-required" as const,
   limits: { maxBytes: 1_000_000, maxEntries: 10, maxDurationMs: 10_000, planTtlMs: 60_000 }, planDigest: digest };
 const commandBase = { schemaVersion: 1 as const, action: "compose.volume.backup" as const, agentId: "agent-1",
-  commandId: "command-1", projectId: "project-1", operation: "compose.volume.backup.execute", idempotencyKey: "backup-once",
+  commandId: "command-1", projectId: "project-1", operation: "compose.volume.backup.execute" as const, idempotencyKey: "backup-once",
   inputDigest: digest, canonicalDocument: "{\"services\":{}}", plan };
 const inputDigest = composeVolumeBackupExecutionDigest(commandBase);
 const projectAuthority: ProjectControlAuthorityV1 = { schemaVersion: 1, projectId: "project-1", commandId: "command-1",

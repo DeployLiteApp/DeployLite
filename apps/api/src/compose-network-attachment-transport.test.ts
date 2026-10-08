@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { COMPOSE_NETWORK_ATTACHMENT_CAPABILITY, COMPOSE_NETWORK_ATTACHMENT_RECEIPT_PATH, protocolPayloadFingerprint, type ComposeNetworkAttachmentReceiptV1, type ComposeResourceObservationV1, type ProjectControlAuthorityV1 } from "@deploylite/contracts";
-import { claimProjectUpdateAuthority, createComposePreview, digestControlInput, digestComposeResourceObservation, prepareComposeAttachmentControlCommand, resolveControlCommandInMemory, type ControlCommand } from "@deploylite/domain";
+import { claimProjectUpdateAuthority, composeResourceAttachmentExecutionDigest, createComposePreview, digestComposeResourceObservation, prepareComposeAttachmentControlCommand, resolveControlCommandInMemory, type ControlCommand } from "@deploylite/domain";
 import { AuthenticatedAgentCommandReceiver, type AgentReplayStore } from "@deploylite/agent";
 import { AuthenticatedAgentDeploymentTransport } from "./agent-transport.js";
 
@@ -75,7 +75,7 @@ describe("authenticated Compose network attachment transport", () => {
 
   it("rejects an input digest that is not the server-derived project.update request", async () => {
     const f = fixture(), prepared = await f.preparedPromise;
-    expect(prepared.command.inputDigest).toBe(digestControlInput(prepared.request));
+    expect(prepared.command.inputDigest).toBe(composeResourceAttachmentExecutionDigest(prepared.request));
     expect(prepared.request.kind).toBe("network");
   });
 });

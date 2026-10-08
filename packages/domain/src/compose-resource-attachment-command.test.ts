@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { protocolPayloadFingerprint, type ComposeResourceObservationV1 } from "@deploylite/contracts";
 import { createComposePreview } from "./compose-preview.js";
 import { digestControlInput, resolveControlCommandInMemory, type ControlCommand } from "./control-plane.js";
-import { prepareComposeAttachmentControlCommand, type ComposeAttachmentCommandDependencies } from "./compose-resource-inspection.js";
+import { composeResourceAttachmentExecutionDigest, prepareComposeAttachmentControlCommand, type ComposeAttachmentCommandDependencies } from "./compose-resource-inspection.js";
 
 const policy = { policyVersion: "compose-test-1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true };
 const image = `registry.example.com/app@sha256:${"a".repeat(64)}`;
@@ -38,7 +38,7 @@ describe("Compose attachment command admission", () => {
     const f = fixture(), result = await prepareComposeAttachmentControlCommand(f.input, f.deps);
     expect(result.command).toMatchObject({ action: "project.update", scope: { kind: "project", projectId: "project-1" }, status: "eligible" });
     expect(result.request).toMatchObject({ operation: "compose.resource.attachment", projectId: "project-1", kind: "network", key: "backend", service: "api", attachmentAction: "attach", stateDigest: f.observation.stateDigest, containerId: "c".repeat(64) });
-    expect(result.command.inputDigest).toBe(digestControlInput(result.request));
+    expect(result.command.inputDigest).toBe(composeResourceAttachmentExecutionDigest(result.request));
     expect(result.preview.executionAllowed).toBe(false);
     expect(f.inspect).toHaveBeenCalledOnce();
     expect(f.resolve).toHaveBeenCalledOnce();
@@ -56,6 +56,15 @@ describe("Compose attachment command admission", () => {
     await expect(prepareComposeAttachmentControlCommand({ ...f.input, kind: "volume" }, f.deps)).rejects.toMatchObject({ code: "COMPOSE_ATTACHMENT_UNSUPPORTED" });
     expect(f.inspect).not.toHaveBeenCalled();
     expect(f.resolve).not.toHaveBeenCalled();
+  });
+
+  it("keeps the original command identity across request correlation IDs", async () => {
+    const f = fixture(), first = await prepareComposeAttachmentControlCommand(f.input, f.deps);
+    const replay = await prepareComposeAttachmentControlCommand(f.input, { ...f.deps, correlationId: "corr-2" });
+    expect(replay.created).toBe(false);
+    expect(replay.command.id).toBe(first.command.id);
+    expect(replay.command.correlationId).toBe("corr-1");
+    expect(replay.command.inputDigest).toBe(first.command.inputDigest);
   });
 
   it("replays the original command for identical intent and conflicts when observed state changes", async () => {

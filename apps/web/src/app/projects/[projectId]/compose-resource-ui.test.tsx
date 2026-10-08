@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { act,cleanup,fireEvent,render,screen } from "@testing-library/react";
 import { afterEach,describe,expect,it,vi } from "vitest";
-import type { ComposeAttachmentPreviewV1,ComposePreviewV1,ComposeResourceInspectionInput,ComposeResourceInspectionViewV1 } from "@deploylite/contracts";
-import { inspectProjectComposeResource as inspect,previewProjectComposeAttachment as attachment } from "./compose-resource-client";
+import type { ComposeAttachmentPreviewV1,ComposeNetworkAttachmentReceiptV1,ComposePreviewV1,ComposeResourceInspectionInput,ComposeResourceInspectionViewV1 } from "@deploylite/contracts";
+import { applyProjectComposeNetworkAttachment as apply,inspectProjectComposeResource as inspect,previewProjectComposeAttachment as attachment } from "./compose-resource-client";
 import { ComposePreviewCard } from "./compose-preview-card";
 
 const props={projectId:"project-1",apiBaseUrl:"https://api.example.test"};
@@ -73,6 +73,42 @@ describe("deliberate read-only project resource UI",()=>{
     const f=await observed();f.fetchImpl.mockResolvedValueOnce(wrap("preview",proposed));fireEvent.click(screen.getByRole("button",{name:"Preview attachment"}));
     expect(await screen.findByText("Attachment preview ready. No runtime change was made.")).toBeTruthy();expect(JSON.parse(String(f.fetchImpl.mock.calls[2]![1]?.body))).toMatchObject({expectedStateDigest:observation.stateDigest,expectedConfigDigest:preview.configDigest,action:"attach",service:"web"});
     expect(screen.queryByText(proposed.containerId)).toBeNull();expect(screen.getByText("web: stopped, detached")).toBeTruthy();
+  });
+  it("applies a reviewed network proposal with an explicit retry key and no caller authority",async()=>{
+    const receipt:ComposeNetworkAttachmentReceiptV1={schemaVersion:1,action:"compose.network.attachment",agentId:"agent-1",commandId:"command-1",projectId:"project-1",
+      inputDigest:"e".repeat(64),correlationId:"corr-1",key:"front",runtimeName:"dl-"+ "f".repeat(32)+"-net-front",service:"web",attachmentAction:"attach",
+      containerId:proposed.containerId,resourceId:"a".repeat(64),beforeStateDigest:proposed.stateDigest,afterStateDigest:"b".repeat(64),observedAt:1010,
+      status:"attached",reconciled:false,redacted:true,reason:null};
+    const fetchImpl=vi.fn<typeof fetch>().mockResolvedValue(wrap("attachment",receipt)),idempotencyKey="apply-network-once";
+    expect(await apply({...intent,...props,kind:"network",expectedContainerId:proposed.containerId,idempotencyKey,fetchImpl})).toEqual({kind:"ready",receipt});
+    const [url,init]=fetchImpl.mock.calls[0]!;expect(String(url)).toContain("/project-1/compose/attachments/apply");
+    expect(new Headers(init?.headers).get("idempotency-key")).toBe(idempotencyKey);
+    expect(JSON.parse(String(init?.body))).toEqual({document,kind:"network",key:"front",service:"web",action:"attach",expectedConfigDigest:preview.configDigest,
+      expectedStateDigest:observation.stateDigest,expectedContainerId:proposed.containerId});
+    expect(JSON.stringify(init?.body)).not.toContain("authority");expect(JSON.stringify(init?.body)).not.toContain("agentId");
+  });
+  it("applies the reviewed network change and clears the old observation",async()=>{
+    const f=await observed();f.fetchImpl.mockResolvedValueOnce(wrap("preview",proposed));fireEvent.click(screen.getByRole("button",{name:"Preview attachment"}));
+    await screen.findByText("Attachment preview ready. No runtime change was made.");
+    const receipt:ComposeNetworkAttachmentReceiptV1={schemaVersion:1,action:"compose.network.attachment",agentId:"agent-1",commandId:"command-1",projectId:"project-1",
+      inputDigest:"e".repeat(64),correlationId:"corr-1",key:"front",runtimeName:"dl-"+ "f".repeat(32)+"-net-front",service:"web",attachmentAction:"attach",
+      containerId:proposed.containerId,resourceId:"a".repeat(64),beforeStateDigest:proposed.stateDigest,afterStateDigest:"b".repeat(64),observedAt:1010,
+      status:"attached",reconciled:false,redacted:true,reason:null};
+    f.fetchImpl.mockResolvedValueOnce(wrap("attachment",receipt));fireEvent.click(screen.getByRole("button",{name:"Apply attachment"}));
+    expect(await screen.findByText("Network attached. Inspect the resource again to review current use.")).toBeTruthy();
+    const [url,init]=f.fetchImpl.mock.calls[3]!;expect(String(url)).toContain("/compose/attachments/apply");
+    expect(new Headers(init?.headers).get("idempotency-key")).toMatch(/^[0-9a-f-]{36}$/);
+    expect(JSON.parse(String(init?.body))).toMatchObject({kind:"network",key:"front",service:"web",action:"attach",expectedStateDigest:proposed.stateDigest,expectedContainerId:proposed.containerId});
+    expect(screen.queryByRole("heading",{name:"Observed resource use"})).toBeNull();expect(screen.queryByRole("button",{name:"Apply attachment"})).toBeNull();
+  });
+  it("retries an ambiguous apply with the same idempotency key",async()=>{
+    const f=await observed();f.fetchImpl.mockResolvedValueOnce(wrap("preview",proposed));fireEvent.click(screen.getByRole("button",{name:"Preview attachment"}));
+    await screen.findByText("Attachment preview ready. No runtime change was made.");
+    f.fetchImpl.mockResolvedValueOnce(new Response("unavailable",{status:503}));fireEvent.click(screen.getByRole("button",{name:"Apply attachment"}));
+    await screen.findByRole("alert");const firstKey=new Headers(f.fetchImpl.mock.calls[3]![1]?.headers).get("idempotency-key");
+    f.fetchImpl.mockResolvedValueOnce(new Response("unavailable",{status:503}));fireEvent.click(screen.getByRole("button",{name:"Apply attachment"}));
+    await screen.findByRole("alert");const secondKey=new Headers(f.fetchImpl.mock.calls[4]![1]?.headers).get("idempotency-key");
+    expect(firstKey).toBeTruthy();expect(secondKey).toBe(firstKey);expect(screen.getByRole("button",{name:"Apply attachment"})).toBeTruthy();
   });
   it("derives detachment from current intent for a service outside the selected network",async()=>{
     const f=await observed();fireEvent.change(screen.getByLabelText("Service for attachment preview"),{target:{value:"worker"}});f.fetchImpl.mockResolvedValueOnce(wrap("preview",{...proposed,service:"worker",action:"detach"}));fireEvent.click(screen.getByRole("button",{name:"Preview detachment"}));

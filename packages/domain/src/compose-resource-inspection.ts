@@ -5,7 +5,7 @@ import { composeAttachmentPreviewInputSchema, composeAttachmentPreviewSchema, co
   type ComposeResourceObservationV1, type ImageReferencePolicyV1, type CanonicalRole } from "@deploylite/contracts";
 import { awaitAbortable } from "./deployment-contract/docker-image-executor.js";
 import { createComposePreview } from "./compose-preview.js";
-import { createControlCommand, PolicyEvaluator, type ControlCommand, type ControlCommandRepository, type ControlGrantRepository } from "./control-plane.js";
+import { createControlCommand, digestControlInput, PolicyEvaluator, type ControlCommand, type ControlCommandRepository, type ControlGrantRepository } from "./control-plane.js";
 
 export type ComposeInspectionErrorCode = "COMPOSE_INSPECTION_INVALID" | "COMPOSE_INSPECTION_UNSUPPORTED" | "COMPOSE_INSPECTION_FAILED" | "COMPOSE_INSPECTION_LIMIT" | "COMPOSE_INSPECTION_CANCELED" | "COMPOSE_INSPECTION_UNSTABLE" | "COMPOSE_RESOURCE_FOREIGN" | "COMPOSE_RESOURCE_CONFLICT" | "COMPOSE_RESOURCE_STALE" | "COMPOSE_RESOURCE_IN_USE" | "COMPOSE_ATTACHMENT_CONFLICT" | "COMPOSE_ATTACHMENT_FORBIDDEN" | "COMPOSE_ATTACHMENT_UNSUPPORTED";
 export class ComposeResourceInspectionError extends Error {
@@ -28,6 +28,10 @@ export type ComposeAttachmentCommandDependencies = ComposeAttachmentPreviewDepen
   correlationId: string; idempotencyKey: string; commandTtlMs: number;
 }>;
 export type PreparedComposeAttachmentCommand = Readonly<{ command: ControlCommand; request: ComposeResourceAttachmentCommandV1; preview: ComposeAttachmentPreviewV1; canonicalDocument: string; agentId: string; created: boolean }>;
+/** Stable idempotency digest for attachment intent; request and correlation identifiers stay on the shared command row. */
+export function composeResourceAttachmentExecutionDigest(request: ComposeResourceAttachmentCommandV1): string {
+  return digestControlInput(Object.fromEntries(Object.entries(request).filter(([key]) => key !== "idempotencyKey" && key !== "correlationId")));
+}
 type Resource = ComposePreviewV1["networks"][number] | ComposePreviewV1["volumes"][number];
 function capture(deps: ComposeAttachmentPreviewDependencies): ComposeAttachmentPreviewDependencies {
   if (!Number.isSafeInteger(deps.maxAgeMs) || deps.maxAgeMs <= 0) fail("COMPOSE_INSPECTION_INVALID");
@@ -127,7 +131,7 @@ export async function prepareComposeAttachmentControlCommand(raw: ComposeNetwork
     operation: "compose.resource.attachment", idempotencyKey: deps.idempotencyKey, correlationId: deps.correlationId,
     projectId: input.projectId, kind: "network", key: input.key, runtimeName: resource.runtimeName, service: input.service, attachmentAction: input.action,
     configDigest: preview.configDigest, stateDigest: preview.stateDigest, containerId: preview.containerId, alreadySatisfied: preview.alreadySatisfied });
-  const command = { ...createControlCommand({ actorId: deps.actorId, action: request.action, scope: request.scope, input: request,
+  const command = { ...createControlCommand({ actorId: deps.actorId, action: request.action, scope: request.scope, input: Object.fromEntries(Object.entries(request).filter(([field]) => field !== "idempotencyKey" && field !== "correlationId")),
     idempotencyKey: request.idempotencyKey, correlationId: request.correlationId, expiresAt: new Date(now + deps.commandTtlMs) }), status: "eligible" as const };
   const resolved = await deps.controlCommands.resolve(command);
   return { command: resolved.command, request, preview, canonicalDocument: configuration.canonicalDocument, agentId: deps.agentId, created: resolved.created };

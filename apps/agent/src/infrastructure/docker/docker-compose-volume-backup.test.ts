@@ -94,7 +94,7 @@ describe("simulated local Compose volume backup", () => {
   it.each(["../escape", "unsafe-link"] as const)("rejects traversal and symlink entries without publishing %s", async unsafe => {
     const f = await fixture();
     f.resolveVolume.mockImplementation(async () => ({ root: f.sourceRoot,
-      entries: async function* () { yield unsafe === "../escape" ? entry(unsafe) : { path: "linked", kind: "symlink" as const, target: "/etc/passwd" }; } }));
+      entries: async function* () { yield unsafe === "../escape" ? entry(unsafe) : { path: "linked", kind: "symlink" as const, mode: 0, modifiedAtSeconds: 0, size: 0, target: "/etc/passwd" }; } }));
     await expect(f.executor.execute(f.input, f.authority, new AbortController().signal)).rejects.toMatchObject({ code: "COMPOSE_BACKUP_UNSAFE_SOURCE" });
     expect(await readdir(f.destinationRoot)).toEqual([]);
   });
