@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import pg from "pg";
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
-import { createComposePreview, prepareComposeRevisionSave, IdempotencyConflictError } from "@deploylite/domain";
+import { createComposePreview, prepareComposeRevisionSave, IdempotencyConflictError, prepareComposeResourceCleanup, validateConfirmedComposeResourceCleanup, digestComposeResourceObservation, composeResourceCleanupExecutionDigest } from "@deploylite/domain";
+import { InMemoryCapabilityRegistry, type ComposeResourceCleanupExecutionReceiptV1, type ComposeResourceObservationV1 } from "@deploylite/contracts";
 import { createDbClient, createDbPool, closeDbPool } from "./client.js";
 import { DbComposeRevisionSaveStore } from "./repositories/compose-revision-save.js";
+import { DbComposeResourceCleanupStore } from "./repositories/compose-resource-cleanup.js";
 import { DbControlCommandRepository } from "./repositories/control-plane.js";
 
 // Same explicit disposable PostgreSQL opt-in as the existing suite. Never loaded with a local fallback URL.
@@ -35,6 +37,40 @@ async function counts(projectId: string) {
     (SELECT count(*)::int FROM audit_events WHERE target_id=$1::text AND action='compose.revision.saved') AS audits,
     (SELECT count(*)::int FROM control_command_audits a JOIN control_commands c ON c.id=a.command_id WHERE c.action='project.update' AND c.scope_key=$1::text) AS command_audits`, [projectId]);
   return result.rows[0]!;
+}
+const cleanupDocument = JSON.stringify({ services: { web: { image: "registry.example.com/app@sha256:" + "a".repeat(64),
+  volumes: [{ type: "volume", source: "data", target: "/data" }] } }, volumes: { data: {} } });
+const cleanupStore = (clock: () => number, fault?: (stage: string) => void) =>
+  new DbComposeResourceCleanupStore(createDbClient(pool), clock, fault as never);
+async function cleanupFixture(actorId: string, projectId: string) {
+  let now = Date.now();
+  const preview = createComposePreview(cleanupDocument, projectId, policy), resource = preview.volumes[0]!;
+  const observation: ComposeResourceObservationV1 = { schemaVersion: 1, owner: "deploylite", agentId: "agent-1", projectId, kind: "volume", key: resource.key,
+    runtimeName: resource.runtimeName, physicalIdentity: "2026-10-08T00:00:00Z", configDigest: preview.configDigest, observedAt: now, stateDigest: "",
+    containers: [] };
+  observation.stateDigest = digestComposeResourceObservation(observation);
+  const input = { document: cleanupDocument, projectId, kind: "volume" as const, key: resource.key,
+    expectedConfigDigest: preview.configDigest, expectedStateDigest: observation.stateDigest };
+  const dependencies = { inspection: { imagePolicy: policy, owner: "deploylite", agentId: "agent-1",
+    inspector: { inspect: async () => structuredClone(observation) }, clock: { now: () => now }, maxAgeMs: 60_000 },
+    capabilities: new InMemoryCapabilityRegistry(["compose.resource.inspect.v1"]), actorId, role: "operator" as const, correlationId: randomUUID(),
+    idempotencyKey: randomUUID(), grants: { listForActor: async (id: string) => [{ id: randomUUID(), actorId: id, action: "project.delete" as const,
+      scope: { kind: "project" as const, projectId } }] }, deadlineMs: 5_000, confirmationTtlMs: 60_000 };
+  const prepared = await prepareComposeResourceCleanup(input, dependencies);
+  const receipt = (confirmationId: string): ComposeResourceCleanupExecutionReceiptV1 => ({ schemaVersion: 1, action: "compose.resource.cleanup",
+    agentId: prepared.agentId, commandId: prepared.command.id, cleanupCommandId: prepared.command.id, confirmationId, projectId,
+    inputDigest: prepared.command.inputDigest, cleanupInputDigest: composeResourceCleanupExecutionDigest(prepared, confirmationId),
+    correlationId: prepared.command.correlationId, kind: prepared.preview.kind, key: prepared.preview.key, runtimeName: resource.runtimeName,
+    configDigest: prepared.preview.configDigest, stateDigest: prepared.preview.stateDigest, status: "completed", physicalIdentity: observation.physicalIdentity,
+    terminalStatus: "removed", idempotent: false, redacted: true });
+  const subject = (confirmationId: string) => ({ actorId, projectId, idempotencyKey: dependencies.idempotencyKey, confirmationId });
+  const admit = async (store: DbComposeResourceCleanupStore) => {
+    const pending = await store.save(prepared, randomUUID()), record = await store.find(subject(pending.confirmationId));
+    const view = await validateConfirmedComposeResourceCleanup(input, prepared, record.confirmation, dependencies);
+    await store.admit(prepared, view, randomUUID());
+    return pending;
+  };
+  return { prepared, dependencies, clock: () => now, advance: (next: number) => { now = next; }, receipt, subject, admit };
 }
 suite("P3 Compose atomic durable acceptance on the explicit disposable database", () => {
   beforeAll(async () => {
@@ -95,4 +131,43 @@ suite("P3 Compose atomic durable acceptance on the explicit disposable database"
     const preview = variant === "missing" ? {} : { ...prepared.preview, executionAllowed: variant === "executable" ? true : "false" };
     await expect(pool.query("INSERT INTO compose_revisions(id,compose_id,project_id,number,created_by,created_at,preview) VALUES($1,$2,$3,2,$4,now(),$5)", [prepared.command.id, first.revision.composeId, f.projectId, f.actorId, JSON.stringify(preview)])).rejects.toThrow();
   });
+  it("rolls back the durable C7 dispatch claim and execution-started audit together", async () => {
+    const f = await seed(), c = await cleanupFixture(f.actorId, f.projectId), writer = cleanupStore(c.clock);
+    const pending = await c.admit(writer);
+    const failing = cleanupStore(c.clock, stage => { if (stage === "execution-started-audit-written") throw new Error("injected C7 audit failure"); });
+    await expect(failing.claimExecution(c.prepared, pending.confirmationId, randomUUID())).rejects.toMatchObject({ code: "COMPOSE_CLEANUP_FAILED" });
+    const command = await pool.query("SELECT status,result FROM control_commands WHERE id=$1", [c.prepared.command.id]);
+    expect(command.rows).toEqual([{ status: "eligible", result: null }]);
+    const audits = await pool.query("SELECT count(*)::int AS count FROM audit_events WHERE target_id=$1 AND action='compose.resource.cleanup.execution.started'", [f.projectId]);
+    expect(audits.rows[0]!.count).toBe(0);
+    expect(await writer.claimExecution(c.prepared, pending.confirmationId, randomUUID())).toMatchObject({ status: "dispatching", idempotent: false });
+  });
+
+  it("atomically persists C7 terminal receipt and recovers it after a fresh PostgreSQL pool lifecycle", async () => {
+    const f = await seed(), c = await cleanupFixture(f.actorId, f.projectId), writer = cleanupStore(c.clock), pending = await c.admit(writer);
+    await writer.claimExecution(c.prepared, pending.confirmationId, randomUUID());
+    const terminal = c.receipt(pending.confirmationId);
+    const failing = cleanupStore(c.clock, stage => { if (stage === "completed-audit-written") throw new Error("injected C7 completion failure"); });
+    await expect(failing.completeExecution(c.prepared, pending.confirmationId, terminal, randomUUID()))
+      .rejects.toMatchObject({ code: "COMPOSE_CLEANUP_FAILED" });
+    expect((await pool.query("SELECT status,result FROM control_commands WHERE id=$1", [c.prepared.command.id])).rows)
+      .toEqual([{ status: "dispatching", result: null }]);
+    expect((await pool.query("SELECT count(*)::int AS count FROM audit_events WHERE target_id=$1 AND action='compose.resource.cleanup.completed'", [f.projectId])).rows[0]!.count).toBe(0);
+
+    const completed = await writer.completeExecution(c.prepared, pending.confirmationId, terminal, randomUUID());
+    expect(completed).toMatchObject({ status: "completed", idempotent: false, execution: terminal });
+    c.advance(c.prepared.command.expiresAt.valueOf() + 1);
+    await closeDbPool(pool);
+    pool = createDbPool(databaseUrl, { max: 2 });
+    const recoveredStore = cleanupStore(c.clock);
+    const recovered = await recoveredStore.find(c.subject(pending.confirmationId));
+    expect(recovered.command).toMatchObject({ id: c.prepared.command.id, status: "completed", result: terminal });
+    expect(await recoveredStore.claimExecution(c.prepared, pending.confirmationId, randomUUID()))
+      .toMatchObject({ status: "completed", idempotent: true, execution: terminal });
+    const audits = await pool.query("SELECT action FROM audit_events WHERE actor_user_id=$1 AND target_id=$2 AND action LIKE 'compose.resource.cleanup.%'", [f.actorId, f.projectId]);
+    expect(audits.rows.map((row: { action: string }) => row.action).sort()).toEqual([
+      "compose.resource.cleanup.admitted", "compose.resource.cleanup.completed", "compose.resource.cleanup.execution.started", "compose.resource.cleanup.prepared"
+    ]);
+  });
+
 });
