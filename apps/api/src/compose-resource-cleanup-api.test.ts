@@ -7,7 +7,7 @@ import { buildApiApp, createInMemoryExecutionRepositories, InMemoryAuditReposito
 import type { ComposeResourceInspectionAccess } from "./compose-resource-inspection-route.js";
 type Receipt={commandId:string;confirmationId:string;expiresAt:string;status:"pending_confirmation"|"eligible";idempotent:boolean;preview:ComposeResourceCleanupPreviewV1};
 type Subject={actorId:string;projectId:string;idempotencyKey:string;confirmationId:string};
-type Port={available():boolean;save(input:PreparedComposeResourceCleanup,requestId:string,signal?:AbortSignal):Promise<Receipt>;find(subject:Subject,signal?:AbortSignal):Promise<{prepared:PreparedComposeResourceCleanup;confirmation:ControlConfirmation;receipt:Receipt}>;admit(input:PreparedComposeResourceCleanup,view:ComposeResourceCleanupConfirmationViewV1,requestId:string,signal?:AbortSignal):Promise<Receipt>};
+type Port={available():boolean;save(input:PreparedComposeResourceCleanup,requestId:string,signal?:AbortSignal):Promise<Receipt>;find(subject:Subject,signal?:AbortSignal):Promise<{command:PreparedComposeResourceCleanup["command"];confirmation:ControlConfirmation}>;admit(input:PreparedComposeResourceCleanup,view:ComposeResourceCleanupConfirmationViewV1,requestId:string,signal?:AbortSignal):Promise<Receipt>};
 type Plan={store:Port;confirmationTtlMs:number};
 type Options=BuildApiAppOptions&{composeResourceCleanupPlans?:ReadonlyMap<string,Plan>};
 const Store=(domain as unknown as {InMemoryComposeResourceCleanupStore?:new(options:{ledger:ReturnType<typeof createInMemoryExecutionRepositories>["completion"];clock():number;commitAudit(input:AuditEventInput,publish:()=>void):void})=>Port}).InMemoryComposeResourceCleanupStore;

@@ -7,7 +7,8 @@ import type { InMemoryExecutionState } from "./deployment-contract/execution-mem
 import type { AuditEventInput } from "./index.js";
 
 export type ComposeResourceCleanupSubject = Readonly<{ actorId: string; projectId: string; idempotencyKey: string; confirmationId: string }>;
-export type ComposeResourceCleanupRecord = Readonly<{ prepared: PreparedComposeResourceCleanup; confirmation: ControlConfirmation; receipt: ComposeResourceCleanupReceiptV1 }>;
+export type ComposeResourceCleanupRecord = Readonly<{ command: ControlCommand; confirmation: ControlConfirmation }>;
+type StoredRecord = Readonly<{ prepared: PreparedComposeResourceCleanup; confirmation: ControlConfirmation; receipt: ComposeResourceCleanupReceiptV1 }>;
 /** Atomically persists existing control metadata and safe audit, with no execution effects. */
 export type ComposeResourceCleanupStore = Readonly<{
   available(): boolean;
@@ -22,7 +23,7 @@ type Options = Readonly<{
 }>;
 const identity = /^[A-Za-z0-9_-]{1,200}$/;
 function fail(code: ConstructorParameters<typeof ComposeResourceCleanupError>[0]): never { throw new ComposeResourceCleanupError(code); }
-function validatePrepared(input: PreparedComposeResourceCleanup, now: number): void {
+export function validatePreparedComposeResourceCleanup(input: PreparedComposeResourceCleanup, now: number): void {
   const parsed = composeResourceCleanupPreviewSchema.safeParse(input.preview), c = input.command;
   if (!parsed.success || ![input.owner, input.agentId, c.id, c.actorId, c.idempotencyKey, c.correlationId].every(v => typeof v === "string" && identity.test(v))
     || !Number.isSafeInteger(input.preparedAtMs) || input.preparedAtMs < 0 || !Number.isSafeInteger(now) || now < input.preparedAtMs
@@ -43,9 +44,9 @@ export class InMemoryComposeResourceCleanupStore implements ComposeResourceClean
   constructor(private readonly options: Options) {}
   available(): boolean { return true; }
 
-  private read(id: string, now: number): ComposeResourceCleanupRecord {
+  private read(id: string, now: number): StoredRecord {
     const saved = this.records.get(id); if (!saved) fail("COMPOSE_CLEANUP_INVALID");
-    const prepared = structuredClone(saved.prepared); validatePrepared(prepared, now);
+    const prepared = structuredClone(saved.prepared); validatePreparedComposeResourceCleanup(prepared, now);
     const command = [...this.options.ledger.commands.values()].find(v => v.id === id), confirmation = this.options.ledger.confirmations.get(saved.confirmationId);
     if (!command || !confirmation || digestControlInput({ ...command, status: "pending_confirmation" }) !== digestControlInput(prepared.command)
       || !["pending_confirmation", "eligible"].includes(command.status) || !(confirmation.expiresAt instanceof Date) || !Number.isSafeInteger(confirmation.expiresAt.valueOf())
@@ -82,7 +83,7 @@ export class InMemoryComposeResourceCleanupStore implements ComposeResourceClean
 
   async save(raw: PreparedComposeResourceCleanup, requestId: string, signal?: AbortSignal): Promise<ComposeResourceCleanupReceiptV1> {
     return protect(() => {
-      const input = structuredClone(raw), now = this.options.clock(); signal?.throwIfAborted(); validatePrepared(input, now);
+      const input = structuredClone(raw), now = this.options.clock(); signal?.throwIfAborted(); validatePreparedComposeResourceCleanup(input, now);
       if (!identity.test(requestId)) fail("COMPOSE_CLEANUP_INVALID");
       const commands = structuredClone(this.options.ledger.commands), resolved = resolveControlCommandInMemory(commands, input.command);
       if (!resolved.created) return { ...this.read(resolved.command.id, now).receipt, idempotent: true };
@@ -103,13 +104,16 @@ export class InMemoryComposeResourceCleanupStore implements ComposeResourceClean
       const saved = [...this.records.values()].find(v => v.prepared.command.actorId === subject.actorId && v.prepared.preview.projectId === subject.projectId
         && v.prepared.command.idempotencyKey === subject.idempotencyKey && v.confirmationId === subject.confirmationId);
       if (!saved) fail("COMPOSE_CLEANUP_CONFIRMATION_REJECTED");
-      return this.read(saved.prepared.command.id, now);
+      const current = this.read(saved.prepared.command.id, now);
+      const command = [...this.options.ledger.commands.values()].find(v => v.id === current.receipt.commandId);
+      if (!command) fail("COMPOSE_CLEANUP_INVALID");
+      return structuredClone({ command, confirmation: current.confirmation });
     });
   }
 
   async admit(raw: PreparedComposeResourceCleanup, rawView: ComposeResourceCleanupConfirmationViewV1, requestId: string, signal?: AbortSignal): Promise<ComposeResourceCleanupReceiptV1> {
     return protect(() => {
-      const input = structuredClone(raw), view = structuredClone(rawView), now = this.options.clock(); signal?.throwIfAborted(); validatePrepared(input, now);
+      const input = structuredClone(raw), view = structuredClone(rawView), now = this.options.clock(); signal?.throwIfAborted(); validatePreparedComposeResourceCleanup(input, now);
       if (!identity.test(requestId)) fail("COMPOSE_CLEANUP_INVALID");
       const stored = this.read(input.command.id, now), parsed = composeResourceCleanupConfirmationViewSchema.safeParse(view);
       if (!parsed.success || digestControlInput(input) !== digestControlInput(stored.prepared)

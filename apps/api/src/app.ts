@@ -46,7 +46,7 @@ import {
   type DeploymentSnapshotV1,
   type ImageReferencePolicyV1
 } from "@deploylite/contracts";
-import { BcryptPasswordHasher, bootstrapInitialAdmin, closeDbPool, createDbClient, createDbPool, createOpaqueSessionToken, DbAgentRepository, DbAuditRepository, DbAuthUserRepository, DbControlCommandRepository, DbControlGrantRepository, DbDeploymentRepository, DbDeploymentExecutionRepository, DbEnvSecretValueRepository, DbEnvVariableMetadataRepository, DbProjectRepository, DbSessionRepository, hashSessionToken, type DeployLiteDb } from "@deploylite/db";
+import { BcryptPasswordHasher, bootstrapInitialAdmin, closeDbPool, createDbClient, createDbPool, createOpaqueSessionToken, DbAgentRepository, DbAuditRepository, DbAuthUserRepository, DbComposeResourceCleanupStore, DbControlCommandRepository, DbControlGrantRepository, DbDeploymentRepository, DbDeploymentExecutionRepository, DbEnvSecretValueRepository, DbEnvVariableMetadataRepository, DbProjectRepository, DbSessionRepository, hashSessionToken, type DeployLiteDb } from "@deploylite/db";
 import {
   AgentStatusService,
   awaitAbortable,
@@ -90,6 +90,7 @@ import {
   type ControlConfirmationRepository,
   type ControlGrant,
   type ControlGrantRepository,
+  type ComposeResourceCleanupStore,
   type CreateInitialAdminInput,
   type CreateSessionInput,
   type EnvSecretValueRepository,
@@ -176,6 +177,7 @@ type ApiRepositories = {
   auth: AuthAdapters;
   state: PlatformRepositories;
   shouldSeedMockData: boolean;
+  composeResourceCleanupStore?: ComposeResourceCleanupStore;
   close?: () => Promise<void>;
 };
 
@@ -1002,6 +1004,7 @@ function createDbAuthAdapters(env: DeployLiteEnv, options: BuildApiAppOptions): 
   const compose = options.state?.composeRevisionSaves ?? new DbComposeRevisionSaveStore(db);
 
   return {
+    composeResourceCleanupStore: new DbComposeResourceCleanupStore(db),
     auth: {
       audit: new DbAuditRepository(db),
       hasher: new BcryptPasswordHasher(env.DEPLOYLITE_BCRYPT_COST),
@@ -2240,7 +2243,10 @@ export async function buildApiApp(options: BuildApiAppOptions = {}): Promise<Fas
     await seedMockData(repositories.state);
   }
   registerCoreHooks(app, corsOrigin);
-  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE, options.imagePolicy ?? { policyVersion: "deployment-v1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }, options.composeResourceInspection, options.composeVolumeBackupPlans, options.composeResourceCleanupPlans);
+  const cleanupPlans = options.composeResourceCleanupPlans ?? (repositories.composeResourceCleanupStore && options.composeResourceInspection
+    ? new Map([...options.composeResourceInspection.keys()].map(projectId => [projectId, { store: repositories.composeResourceCleanupStore!, confirmationTtlMs: 60_000 }] as const))
+    : undefined);
+  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE, options.imagePolicy ?? { policyVersion: "deployment-v1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }, options.composeResourceInspection, options.composeVolumeBackupPlans, cleanupPlans);
   app.addHook("onClose", () => {
     repositories.state.deployRunner.cancelTimers();
   });

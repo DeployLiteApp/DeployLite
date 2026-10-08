@@ -75,23 +75,30 @@ export async function prepareComposeResourceCleanup(raw: unknown, supplied: Comp
 }
 
 /** Revalidates trusted repository records. Does not consume a confirmation, claim authority or delete anything. */
-export async function validateConfirmedComposeResourceCleanup(raw: unknown, original: PreparedComposeResourceCleanup, suppliedConfirmation: ControlConfirmation,
+export async function validateConfirmedComposeResourceCleanup(raw: unknown, original: PreparedComposeResourceCleanup | ControlCommand, suppliedConfirmation: ControlConfirmation,
   supplied: ComposeResourceCleanupDependencies, signal?: AbortSignal): Promise<ComposeResourceCleanupConfirmationViewV1> {
   try {
-    const prepared = structuredClone(original), confirmation = structuredClone(suppliedConfirmation), deps = captured(supplied);
-    const parsed = composeResourceCleanupPreviewSchema.safeParse(prepared.preview), command = prepared.command, now = deps.inspection.clock.now();
-    if (!parsed.success || ![prepared.owner, prepared.agentId, command.id, command.actorId, command.idempotencyKey, command.correlationId].every(v => typeof v === "string" && identity.test(v))
-      || !Number.isSafeInteger(prepared.preparedAtMs) || !Number.isSafeInteger(now) || prepared.preparedAtMs > now
+    const prepared = "preview" in original ? structuredClone(original) : undefined;
+    const command = structuredClone(prepared?.command ?? original as ControlCommand), confirmation = structuredClone(suppliedConfirmation), deps = captured(supplied);
+    const input = composeResourceCleanupInputSchema.safeParse(raw);
+    const preview = prepared?.preview ?? (input.success ? { schemaVersion: 1, operation: "compose.resource.cleanup", status: "preview", executionAllowed: false, requiresConfirmation: true,
+      projectId: input.data.projectId, kind: input.data.kind, key: input.data.key, configDigest: input.data.expectedConfigDigest, stateDigest: input.data.expectedStateDigest, confirmationTtlMs: deps.confirmationTtlMs } : null);
+    const parsed = composeResourceCleanupPreviewSchema.safeParse(preview);
+    const owner = prepared?.owner ?? deps.inspection.owner, agentId = prepared?.agentId ?? deps.inspection.agentId;
+    const preparedAtMs = prepared?.preparedAtMs ?? (command.expiresAt instanceof Date ? command.expiresAt.valueOf() - deps.confirmationTtlMs : NaN);
+    const now = deps.inspection.clock.now();
+    if (!input.success || !parsed.success || ![owner, agentId, command.id, command.actorId, command.idempotencyKey, command.correlationId].every(v => typeof v === "string" && identity.test(v))
+      || !Number.isSafeInteger(preparedAtMs) || !Number.isSafeInteger(now) || preparedAtMs > now
       || command.action !== "project.delete" || command.actorId !== deps.actorId || command.idempotencyKey !== deps.idempotencyKey
       || command.scope.kind !== "project" || command.scope.projectId !== parsed.data.projectId || command.status !== "pending_confirmation"
       || command.result || command.executionAuthority || !(command.expiresAt instanceof Date) || !Number.isSafeInteger(command.expiresAt.valueOf())
-      || command.expiresAt.valueOf() > prepared.preparedAtMs + parsed.data.confirmationTtlMs
-      || command.inputDigest !== digestControlInput(binding(parsed.data, prepared.owner, prepared.agentId))) fail("COMPOSE_CLEANUP_INVALID");
+      || command.expiresAt.valueOf() !== preparedAtMs + parsed.data.confirmationTtlMs
+      || (prepared && command.inputDigest !== digestControlInput(binding(parsed.data, owner, agentId)))) fail("COMPOSE_CLEANUP_INVALID");
     if (command.expiresAt.valueOf() <= now) fail("COMPOSE_CLEANUP_EXPIRED");
     if (!(confirmation.expiresAt instanceof Date) || !Number.isSafeInteger(confirmation.expiresAt.valueOf())) fail("COMPOSE_CLEANUP_CONFIRMATION_REJECTED");
     evaluateConfirmation(command, confirmation, new Date(now));
-    if (prepared.owner !== deps.inspection.owner || prepared.agentId !== deps.inspection.agentId) fail("COMPOSE_CLEANUP_FOREIGN");
-    const current = await prepareComposeResourceCleanup(raw, deps, signal);
+    if (owner !== deps.inspection.owner || agentId !== deps.inspection.agentId) fail("COMPOSE_CLEANUP_FOREIGN");
+    const current = await prepareComposeResourceCleanup(input.data, deps, signal);
     if (current.command.inputDigest !== command.inputDigest) fail("COMPOSE_CLEANUP_STALE");
     const finished = deps.inspection.clock.now();
     if (!Number.isSafeInteger(finished) || finished < now) fail("COMPOSE_CLEANUP_FAILED");

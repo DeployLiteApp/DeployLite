@@ -11,11 +11,10 @@ export type ComposeResourceCleanupAccess = Readonly<{ store: ComposeResourceClea
 type Options = ComposeResourceRouteOptions & Readonly<{ cleanup?: ReadonlyMap<string, ComposeResourceCleanupAccess> }>;
 const identity = /^[A-Za-z0-9_-]{1,200}$/;
 function fail(code: ConstructorParameters<typeof ComposeResourceCleanupError>[0]): never { throw new ComposeResourceCleanupError(code); }
-function receipt(raw: unknown, prepared: PreparedComposeResourceCleanup, now: number, original?: ComposeResourceCleanupReceiptV1): ComposeResourceCleanupReceiptV1 {
+function receipt(raw: unknown, prepared: PreparedComposeResourceCleanup, now: number): ComposeResourceCleanupReceiptV1 {
   const parsed = composeResourceCleanupReceiptSchema.safeParse(raw); if (!parsed.success) fail("COMPOSE_CLEANUP_INVALID"); const value = parsed.data;
   if (digestControlInput(value.preview) !== digestControlInput(prepared.preview) || !Number.isSafeInteger(now) || Date.parse(value.expiresAt) <= now
-    || Date.parse(value.expiresAt) > prepared.command.expiresAt.valueOf() || (!value.idempotent && value.commandId !== prepared.command.id)
-    || (original && (value.commandId !== original.commandId || value.confirmationId !== original.confirmationId || value.expiresAt !== original.expiresAt || value.status !== "eligible"))) fail("COMPOSE_CLEANUP_INVALID");
+    || Date.parse(value.expiresAt) > prepared.command.expiresAt.valueOf() || (!value.idempotent && value.commandId !== prepared.command.id)) fail("COMPOSE_CLEANUP_INVALID");
   return value;
 }
 
@@ -55,31 +54,39 @@ export function registerComposeResourceCleanupRoutes(app: FastifyInstance, optio
             || digestControlInput(options.imagePolicy) !== digestControlInput(inspection.imagePolicy)) fail("COMPOSE_CLEANUP_STALE");
         };
         try {
-          let prepared: PreparedComposeResourceCleanup, prior: ComposeResourceCleanupReceiptV1 | undefined, view: ComposeResourceCleanupConfirmationViewV1 | undefined;
+          let prepared: PreparedComposeResourceCleanup | undefined, view: ComposeResourceCleanupConfirmationViewV1 | undefined;
           if (mode === "preview") prepared = await awaitAbortable(() => prepareComposeResourceCleanup(input, deps, controller.signal), controller.signal);
           else {
             const record: ComposeResourceCleanupRecord = structuredClone(await awaitAbortable(() => store.find({ actorId, projectId, idempotencyKey, confirmationId: confirmationId as string }, controller.signal), controller.signal));
-            current(); prepared = record.prepared; prior = receipt(record.receipt, prepared, inspection.clock.now());
-            const command = prepared.command, confirmation = record.confirmation, now = inspection.clock.now();
-            if (command.actorId !== actorId || command.idempotencyKey !== idempotencyKey || command.action !== "project.delete" || command.status !== "pending_confirmation"
-              || command.scope.kind !== "project" || command.scope.projectId !== projectId || prepared.preview.projectId !== projectId || prepared.preview.confirmationTtlMs !== ttl
-              || command.id !== prior.commandId || confirmation.id !== prior.confirmationId || confirmation.id !== confirmationId
-              || !(command.expiresAt instanceof Date) || !Number.isSafeInteger(command.expiresAt.valueOf()) || command.expiresAt.toISOString() !== prior.expiresAt
-              || !(confirmation.expiresAt instanceof Date) || !Number.isSafeInteger(confirmation.expiresAt.valueOf())
-              || command.result || command.executionAuthority || prepared.owner !== inspection.owner || prepared.agentId !== inspection.agentId) fail("COMPOSE_CLEANUP_CONFIRMATION_REJECTED");
-            if (prior.status === "pending_confirmation") view = await awaitAbortable(() => validateConfirmedComposeResourceCleanup(input, prepared, confirmation, deps, controller.signal), controller.signal);
+            current(); const command = record.command, confirmation = record.confirmation, now = inspection.clock.now();
+            if (command.actorId !== actorId || command.idempotencyKey !== idempotencyKey || command.action !== "project.delete"
+              || !["pending_confirmation", "eligible"].includes(command.status)
+              || command.scope.kind !== "project" || command.scope.projectId !== projectId || confirmation.id !== confirmationId
+              || !(command.expiresAt instanceof Date) || !Number.isSafeInteger(command.expiresAt.valueOf())
+              || !(confirmation.expiresAt instanceof Date) || !Number.isSafeInteger(confirmation.expiresAt.valueOf()) || confirmation.expiresAt.valueOf() !== command.expiresAt.valueOf()
+              || command.result || command.executionAuthority) fail("COMPOSE_CLEANUP_CONFIRMATION_REJECTED");
+            const preparedAtMs = command.expiresAt.valueOf() - ttl;
+            if (!Number.isSafeInteger(preparedAtMs)) fail("COMPOSE_CLEANUP_CONFIRMATION_REJECTED");
+            if (command.status === "pending_confirmation") view = await awaitAbortable(() => validateConfirmedComposeResourceCleanup(input, command, confirmation, deps, controller.signal), controller.signal);
             else {
-              if (!(confirmation.consumedAt instanceof Date) || !Number.isSafeInteger(confirmation.consumedAt.valueOf()) || confirmation.consumedAt.valueOf() > now || confirmation.consumedAt.valueOf() < prepared.preparedAtMs) fail("COMPOSE_CLEANUP_CONFIRMATION_REJECTED");
+              if (!(confirmation.consumedAt instanceof Date) || !Number.isSafeInteger(confirmation.consumedAt.valueOf()) || confirmation.consumedAt.valueOf() > now || confirmation.consumedAt.valueOf() < preparedAtMs) fail("COMPOSE_CLEANUP_CONFIRMATION_REJECTED");
               try { evaluateConfirmation(command, { ...confirmation, consumedAt: null }, new Date(now)); } catch { fail("COMPOSE_CLEANUP_CONFIRMATION_REJECTED"); }
               const fresh = await awaitAbortable(() => prepareComposeResourceCleanup(input, deps, controller.signal), controller.signal);
               if (fresh.command.inputDigest !== command.inputDigest) fail("COMPOSE_CLEANUP_STALE");
               view = { ...fresh.preview, commandId: command.id, confirmationId: confirmation.id, confirmationValidated: true };
+              const { commandId: _commandId, confirmationId: _confirmationId, confirmationValidated: _validated, ...currentPreview } = view;
+              prepared = { command: { ...command, status: "pending_confirmation" }, preview: currentPreview, owner: inspection.owner, agentId: inspection.agentId, preparedAtMs };
+            }
+            if (!prepared) {
+              const { commandId: _commandId, confirmationId: _confirmationId, confirmationValidated: _validated, ...currentPreview } = view!;
+              prepared = { command: { ...command, status: "pending_confirmation" }, preview: currentPreview, owner: inspection.owner, agentId: inspection.agentId, preparedAtMs };
             }
           }
           current();
+          if (!prepared) fail("COMPOSE_CLEANUP_FAILED");
           const raw = await awaitAbortable(() => mode === "preview" ? store.save(structuredClone(prepared), request.correlationContext.requestId, controller.signal)
             : store.admit(structuredClone(prepared), view!, request.correlationContext.requestId, controller.signal), controller.signal);
-          current(); result = receipt(raw, prepared, inspection.clock.now(), prior);
+          current(); result = receipt(raw, prepared, inspection.clock.now());
         } finally { clearTimeout(timer); request.raw.off("aborted", cancel); }
       } catch (error) {
         const code = error instanceof ComposeResourceCleanupError || error instanceof ComposePreviewError || error instanceof IdempotencyConflictError ? error.code : "COMPOSE_CLEANUP_FAILED";
