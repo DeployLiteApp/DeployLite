@@ -1,9 +1,25 @@
 import { describe, expect, it, vi } from "vitest";
-import { DockerProcessError, DockerProcessRunner, type SpawnedProcess } from "./docker-process-runner.js";
+import { DockerProcessError, DockerProcessRunner, type SpawnedProcess, type SpawnProcess } from "./docker-process-runner.js";
 
 function fakeProcess() { const events = new Map<string, (...args: any[]) => void>(); const stdout = { on: vi.fn() }; const stderr = { on: vi.fn() }; const child = { stdout, stderr,  once: vi.fn((event: string, callback: (...args: any[]) => void) => { events.set(event, callback); return child; }), kill: vi.fn() } as unknown as SpawnedProcess; return { child, events, stdout, stderr }; }
 describe("DockerProcessRunner", () => {
   it("injects spawn with shell disabled and resolves bounded output", async () => { const fake = fakeProcess(); const spawn = vi.fn(() => fake.child); const runner = new DockerProcessRunner({ spawn }); const promise = runner.run(["docker", "version"], new AbortController().signal); expect(spawn).toHaveBeenCalledWith("docker", ["version"], { shell: false, detached: true, stdio: ["ignore", "pipe", "pipe"] }); fake.events.get("close")!(0, null); await expect(promise).resolves.toMatchObject({ exitCode: 0 }); });
+  it("passes a scoped environment to Docker without putting its values in argv or returned diagnostics", async () => {
+    const fake = fakeProcess(), spawn = vi.fn<SpawnProcess>(() => fake.child), runner = new DockerProcessRunner({ spawn });
+    const secret = "multiline-private-value\nsecond-line";
+    const argv = ["docker", "container", "create", "--env", "API_KEY", "registry.example/app@sha256:" + "a".repeat(64)];
+    const promise = runner.run(argv, new AbortController().signal, { API_KEY: secret });
+    const spawned = spawn.mock.calls[0]!;
+    expect(spawned[1]).toEqual(argv.slice(1)); expect(spawned[2].env?.API_KEY).toBe(secret); expect(JSON.stringify(spawned[1])).not.toContain(secret);
+    fake.stdout.on.mock.calls[0]![1](`created ${secret}`); fake.stderr.on.mock.calls[0]![1](`failed ${secret}`); fake.events.get("close")!(0, null);
+    const result = await promise; expect(result.stdout).not.toContain(secret); expect(result.stderr).not.toContain(secret);
+  });
+  it("rejects environment keys that could redirect Docker or its authenticated daemon before spawn", async () => {
+    const spawn = vi.fn(); const runner = new DockerProcessRunner({ spawn });
+    await expect(runner.run(["docker", "version"], new AbortController().signal, { DOCKER_HOST: "tcp://attacker.invalid" })).rejects.toMatchObject({ kind: "failed" });
+    await expect(runner.run(["docker", "version"], new AbortController().signal, { PATH: "/tmp" })).rejects.toMatchObject({ kind: "failed" });
+    expect(spawn).not.toHaveBeenCalled();
+  });
   it("kills on caller cancellation and never invokes Docker", async () => { const fake = fakeProcess(); const controller = new AbortController(); const promise = new DockerProcessRunner({ spawn: () => fake.child }).run(["docker", "ps"], controller.signal); controller.abort(); await expect(promise).rejects.toMatchObject({ kind: "canceled" } satisfies Partial<DockerProcessError>); expect(fake.child.kill).toHaveBeenCalled(); });
   it("rejects empty argv before spawning", async () => { const spawn = vi.fn(); await expect(new DockerProcessRunner({ spawn }).run([], new AbortController().signal)).rejects.toBeInstanceOf(DockerProcessError); expect(spawn).not.toHaveBeenCalled(); });
 

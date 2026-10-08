@@ -436,3 +436,5 @@ export * from "./compose-volume-backup-plan.js";
 export * from "./compose-resource-cleanup.js";
 
 export * from "./compose-resource-cleanup-store.js";
+
+export * from "./compose-volume-attachment-plan.js";

@@ -390,4 +390,5 @@ export * from "./compose/resource-cleanup.js";
 export { projectControlAuthoritySchema } from "./deployment-contract/project-control-authority.js";
 export type { ProjectControlAuthorityV1 } from "./deployment-contract/project-control-authority.js";
 export * from "./deployment-contract/compose-network-attachment.js";
+export * from "./deployment-contract/compose-volume-attachment.js";
 export * from "./deployment-contract/compose-volume-backup.js";

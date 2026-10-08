@@ -14,6 +14,7 @@ const common = { name: z.string().max(160), driver: z.string().max(64), scope: z
 const networkSchema = z.object({ ...common, id, internal: z.boolean() }).strict();
 const volumeSchema = z.object({ ...common, createdAt: z.string().max(64).refine(v => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)$/.test(v) && Number.isFinite(Date.parse(v))) }).strict();
 const containerSchema = z.object({ id, owner: nullableText, projectId: nullableText, service: nullableText,
+  composeRevisionId: nullableText.optional(), composeConfigDigest: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(), composeEnvironmentDigest: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
   effectiveImage: z.string().max(512), running: z.boolean(),
   networks: z.array(z.object({ name: z.string().max(160), networkId: z.string().max(64) }).strict()).max(128),
   mounts: z.array(z.object({ type: z.string().max(32), name: z.string().max(160).nullable(), target: z.string().max(256), readOnly: z.boolean() }).strict()).max(128)
@@ -112,6 +113,10 @@ export function createDockerComposeResourceInspector(supplied: DockerComposeReso
         if (attached && !owned) fail("COMPOSE_RESOURCE_FOREIGN");
         if (!owned) continue;
         containers.push({ containerId: c.id, service: service!.name, running: c.running, attached,
+          ...(c.composeRevisionId ? { composeRevisionId: c.composeRevisionId } : {}),
+          ...(c.composeConfigDigest ? { composeConfigDigest: c.composeConfigDigest } : {}),
+          ...(c.composeEnvironmentDigest ? { composeEnvironmentDigest: c.composeEnvironmentDigest } : {}),
+          networks: c.networks.map(network => ({ name: network.name, networkId: network.networkId })),
           mounts: kind === "volume" ? matchingMounts.map(m => ({ target: m.target, readOnly: m.readOnly })) : [] });
       }
       if (new Set(containers.map(c => c.service)).size !== containers.length) fail("COMPOSE_RESOURCE_CONFLICT");

@@ -70,22 +70,33 @@ export type DockerProcessExit = Readonly<{ exitCode: number | null; signal: Node
 export class DockerProcessError extends Error { constructor(readonly kind: "failed" | "timeout" | "canceled" | "output-limit", readonly result?: DockerProcessExit) { super(`docker process ${kind}`); this.name = "DockerProcessError"; } }
 export function redactDockerDiagnostic(value: string): string { return redactSecrets(value).replace(/\b(password|secret|token|authorization)\s*[:=]\s*\S+/gi, "$1=[REDACTED]").replace(/:\/\/[^\s/:]+:[^\s@]+@/g, "://[REDACTED]@"); }
 export type SpawnedProcess = Pick<ChildProcess, "stdout" | "stderr" | "once" | "kill"> & { pid?: number };
-export type SpawnProcess = (file: string, args: readonly string[], options: { shell: false; detached: boolean; stdio: ["ignore", "pipe", "pipe"] }) => SpawnedProcess;
+export type SpawnProcess = (file: string, args: readonly string[], options: { shell: false; detached: boolean; stdio: ["ignore", "pipe", "pipe"]; env?: NodeJS.ProcessEnv }) => SpawnedProcess;
 const defaultSpawn: SpawnProcess = (file, args, options) => nodeSpawn(file, args, options);
 
 export type DockerProcessRunnerOptions = Readonly<{ spawn?: SpawnProcess; timeoutMs?: number; maxOutputBytes?: number }>;
 export class DockerProcessRunner {
   readonly #spawn: SpawnProcess; readonly #timeoutMs: number; readonly #maxOutputBytes: number;
   constructor(options: DockerProcessRunnerOptions = {}) { this.#spawn = options.spawn ?? defaultSpawn; this.#timeoutMs = options.timeoutMs ?? 30_000; this.#maxOutputBytes = options.maxOutputBytes ?? 64 * 1024; }
-  run(argv: readonly string[], signal: AbortSignal): Promise<DockerProcessExit> {
+  run(argv: readonly string[], signal: AbortSignal, environment?: Readonly<Record<string, string>>): Promise<DockerProcessExit> {
     if (argv.length === 0 || argv.some((part) => typeof part !== "string")) return Promise.reject(new DockerProcessError("failed"));
+    const injected = environment ? { ...environment } : undefined;
+    if (injected && Object.entries(injected).some(([key, value]) => !/^[A-Z_][A-Z0-9_]{0,127}$/.test(key) || typeof value !== "string" || value.includes("\u0000")
+      || ["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"].includes(key))) {
+      return Promise.reject(new DockerProcessError("failed"));
+    }
     return new Promise((resolve, reject) => {
-      let child: SpawnedProcess; try { child = this.#spawn(argv[0]!, argv.slice(1), { shell: false, detached: true, stdio: ["ignore", "pipe", "pipe"] }); } catch (error) { reject(error); return; }
+      const childEnvironment = injected ? { ...process.env, ...injected, ...(process.env.PATH ? { PATH: process.env.PATH } : {}) } : undefined;
+      let child: SpawnedProcess; try { child = this.#spawn(argv[0]!, argv.slice(1), { shell: false, detached: true, stdio: ["ignore", "pipe", "pipe"], ...(childEnvironment ? { env: childEnvironment } : {}) }); } catch (error) { reject(error); return; }
       let stdout = ""; let stderr = ""; let settled = false; let timer: ReturnType<typeof setTimeout> | undefined;
+      const redactInjected = (value: string) => Object.values(injected ?? {}).filter(secret => secret.length > 0).reduce((text, secret) => text.replaceAll(secret, "[REDACTED]"), value);
       const finish = (error?: DockerProcessError) => { if (settled) return; settled = true; if (timer) clearTimeout(timer); signal.removeEventListener("abort", onAbort); if (error) reject(error); };
       const kill = () => { try { child.kill("SIGKILL"); } catch { /* process may already be gone */ } if (child.pid && process.platform !== "win32") { try { process.kill(-child.pid, "SIGKILL"); } catch { /* group may already be gone */ } } };
       const onAbort = () => { kill(); finish(new DockerProcessError("canceled")); };
-      const safeResult = (exitCode: number | null, exitSignal: NodeJS.Signals | null): DockerProcessExit => ({ exitCode, signal: exitSignal, stdout: exitCode === 0 && exitSignal === null ? redactDockerProtocolOutput(stdout, argv) : redactDockerDiagnostic(stdout), stderr: redactDockerDiagnostic(stderr) });
+      const safeResult = (exitCode: number | null, exitSignal: NodeJS.Signals | null): DockerProcessExit => ({
+        exitCode, signal: exitSignal,
+        stdout: redactInjected(exitCode === 0 && exitSignal === null ? redactDockerProtocolOutput(stdout, argv) : redactDockerDiagnostic(stdout)),
+        stderr: redactInjected(redactDockerDiagnostic(stderr))
+      });
       const append = (chunk: Buffer | string, target: "stdout" | "stderr") => { const value = chunk.toString(); if (stdout.length + stderr.length + value.length > this.#maxOutputBytes) { kill(); finish(new DockerProcessError("output-limit", safeResult(null, null))); return; } if (target === "stdout") stdout += value; else stderr += value; };
       child.stdout?.on("data", (chunk) => append(chunk, "stdout")); child.stderr?.on("data", (chunk) => append(chunk, "stderr"));
       const onExit = (exitCode: number | null, exitSignal: NodeJS.Signals | null) => { const result = safeResult(exitCode, exitSignal); if (settled) return; if (exitCode === 0) { settled = true; if (timer) clearTimeout(timer); signal.removeEventListener("abort", onAbort); resolve(result); } else finish(new DockerProcessError("failed", result)); };

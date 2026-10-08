@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { composeAttachmentPreviewInputSchema, composeAttachmentPreviewSchema, composeNetworkAttachmentCommandInputSchema, composeResourceAttachmentCommandSchema, composeResourceInspectionInputSchema, composeResourceInspectionViewSchema,
   composeResourceObservationSchema, protocolPayloadFingerprint, type Clock, type ComposeAttachmentPreviewInput, type ComposeAttachmentPreviewV1,
   type ComposeNetworkAttachmentCommandInput, type ComposePreviewV1, type ComposeResourceAttachmentCommandV1, type ComposeResourceInspectionInput, type ComposeResourceInspectionViewV1, type ComposeResourceKind,
-  type ComposeResourceObservationV1, type ImageReferencePolicyV1, type CanonicalRole } from "@deploylite/contracts";
+  type ComposeResourceObservationV1, type ImageReferencePolicyV1, type CanonicalRole, type ComposeVolumeAttachmentExecutionRequestV1 } from "@deploylite/contracts";
 import { awaitAbortable } from "./deployment-contract/docker-image-executor.js";
 import { createComposePreview } from "./compose-preview.js";
 import { createControlCommand, digestControlInput, PolicyEvaluator, type ControlCommand, type ControlCommandRepository, type ControlGrantRepository } from "./control-plane.js";
@@ -30,6 +30,9 @@ export type ComposeAttachmentCommandDependencies = ComposeAttachmentPreviewDepen
 export type PreparedComposeAttachmentCommand = Readonly<{ command: ControlCommand; request: ComposeResourceAttachmentCommandV1; preview: ComposeAttachmentPreviewV1; canonicalDocument: string; agentId: string; created: boolean }>;
 /** Stable idempotency digest for attachment intent; request and correlation identifiers stay on the shared command row. */
 export function composeResourceAttachmentExecutionDigest(request: ComposeResourceAttachmentCommandV1): string {
+  return digestControlInput(Object.fromEntries(Object.entries(request).filter(([key]) => key !== "idempotencyKey" && key !== "correlationId")));
+}
+export function composeVolumeAttachmentExecutionDigest(request: ComposeVolumeAttachmentExecutionRequestV1): string {
   return digestControlInput(Object.fromEntries(Object.entries(request).filter(([key]) => key !== "idempotencyKey" && key !== "correlationId")));
 }
 type Resource = ComposePreviewV1["networks"][number] | ComposePreviewV1["volumes"][number];
@@ -103,6 +106,8 @@ export async function createComposeAttachmentPreview(raw: ComposeAttachmentPrevi
   return composeAttachmentPreviewSchema.parse({ schemaVersion: 1, status: "preview", executionAllowed: false,
     projectId: input.projectId, kind: input.kind, key: input.key, service: input.service, action: input.action,
     configDigest: preview.configDigest, stateDigest: observation.stateDigest, containerId: container.containerId,
+    ...(container.composeRevisionId ? { observedRevisionId: container.composeRevisionId } : {}),
+    ...(container.composeConfigDigest ? { observedConfigDigest: container.composeConfigDigest } : {}),
     alreadySatisfied: container.attached === (input.action === "attach") });
 }
 

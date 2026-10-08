@@ -13,6 +13,8 @@ export const composeResourceKindSchema = z.enum(["network", "volume"]);
 export type ComposeResourceKind = z.infer<typeof composeResourceKindSchema>;
 export const composeResourceContainerObservationSchema = z.object({
   containerId: digest, service: key, running: z.boolean(), attached: z.boolean(),
+  composeRevisionId: identity.nullable().optional(), composeConfigDigest: digest.nullable().optional(), composeEnvironmentDigest: digest.nullable().optional(),
+  networks: z.array(z.object({ name: z.string().max(160), networkId: digest }).strict()).max(128).optional(),
   mounts: z.array(z.object({ target, readOnly: z.boolean() }).strict()).max(32)
 }).strict();
 export const composeResourceObservationSchema = z.object({
@@ -43,7 +45,8 @@ export type ComposeNetworkAttachmentCommandInput = z.infer<typeof composeNetwork
 export const composeAttachmentPreviewSchema = z.object({
   schemaVersion: z.literal(1), status: z.literal("preview"), executionAllowed: z.literal(false),
   projectId: identity, kind: composeResourceKindSchema, key, service: key, action: z.enum(["attach", "detach"]),
-  configDigest: digest, stateDigest: digest, containerId: digest, alreadySatisfied: z.boolean()
+  configDigest: digest, stateDigest: digest, containerId: digest, alreadySatisfied: z.boolean(),
+  observedRevisionId: identity.optional(), observedConfigDigest: digest.optional()
 }).strict();
 export type ComposeAttachmentPreviewV1 = z.infer<typeof composeAttachmentPreviewSchema>;
 export const composeResourceInspectionInputSchema = composeAttachmentPreviewInputSchema.pick({ document: true, projectId: true, kind: true, key: true, expectedConfigDigest: true });

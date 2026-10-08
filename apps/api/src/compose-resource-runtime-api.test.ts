@@ -14,6 +14,12 @@ const projectsData: Project[] = ["project-one", "project-two"].map(id => ({ id, 
   defaultBranch: "main", buildCommand: null, runCommand: null, port: null, description: null, imageTag: null }));
 
 describe("API startup Compose resource project allowlist", () => {
+  it("refuses to enable volume recreation in production", async () => {
+    const binding = { projectId: "project-one", agentId: "agent-one" };
+    await expect(buildApiApp({ env: { NODE_ENV: "production" }, composeResourceProjectAgents: [binding], composeVolumeAttachmentProjectAgents: [binding] }))
+      .rejects.toThrow(/restricted to non-production environments/);
+  });
+
   it("routes only explicitly bound projects to the configured agent", async () => {
     const projectsMap = new Map(projectsData.map(value => [value.id, value]));
     const projects: ProjectRepository = { save: async value => { projectsMap.set(value.id, value); return value; }, findById: async id => projectsMap.get(id) ?? null,

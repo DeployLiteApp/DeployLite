@@ -7,7 +7,7 @@ import { DockerProcessError, type DockerProcessExit } from "./docker-process-run
 
 export class DockerCliTransportFailure extends Error { constructor(readonly operation: string, readonly exit?: DockerProcessExit) { super(`docker ${operation} failed`); this.name = "DockerCliTransportFailure"; } }
 export class DockerCliTransportCanceled extends Error { constructor(readonly operation: string) { super(`docker ${operation} canceled`); this.name = "DockerCliTransportCanceled"; } }
-export type DockerCliRunner = Readonly<{ run(argv: readonly string[], signal: AbortSignal): Promise<DockerProcessExit> }>;
+export type DockerCliRunner = Readonly<{ run(argv: readonly string[], signal: AbortSignal, environment?: Readonly<Record<string, string>>): Promise<DockerProcessExit> }>;
 export type DockerCliImageTransportOptions = Readonly<{ runner: DockerCliRunner; owner: string; hostPort: number; containerPort: number; temporaryHostPort?: number; allowedNetworks: readonly string[]; networkName?: string }>;
 const names = (candidate: DockerImageCandidateV1) => { const suffix = candidate.candidateId.slice(`${candidate.deploymentId}:candidate:`.length); return { candidate: `deploylite-candidate-${candidate.deploymentId}-${suffix}`, active: `deploylite-active-${candidate.deploymentId}` }; };
 const signal = (input: AbortSignal | undefined) => input ?? new AbortController().signal;

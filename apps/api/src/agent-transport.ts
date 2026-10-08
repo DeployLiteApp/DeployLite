@@ -1,11 +1,12 @@
-import { signAgentTransport, validateAgentTransportKey } from "@deploylite/config";
-import { agentCachedReceiptSchema, agentReceiptQuerySchema, type AgentReceiptQuery, agentCapabilityHandshakeSchema, agentExecutionReceiptSchema, composeNetworkAttachmentAgentCommandSchema, composeNetworkAttachmentCachedReceiptSchema, composeNetworkAttachmentReceiptQuerySchema, composeNetworkAttachmentReceiptSchema, COMPOSE_NETWORK_ATTACHMENT_CAPABILITY, COMPOSE_NETWORK_ATTACHMENT_PATH, composeVolumeBackupAgentCommandSchema, composeVolumeBackupCachedReceiptSchema, composeVolumeBackupReceiptQuerySchema, composeVolumeBackupReceiptSchema, COMPOSE_VOLUME_BACKUP_CAPABILITY, COMPOSE_VOLUME_BACKUP_PATH, COMPOSE_VOLUME_BACKUP_RECEIPT_PATH, deploymentStopAgentReceiptSchema, dockerImageExecutionReceiptSchema, promotionPolicySchema, type AgentExecutionCommand, type AgentReplacementV1, type ComposeNetworkAttachmentReceiptV1, type ComposeVolumeBackupAgentCommandV1, type ComposeVolumeBackupReceiptV1, type DeploymentExecutionAuthorityV1, type DeploymentSnapshotV1, type LeaseV1, type ProjectControlAuthorityV1, TransportCanceledError, TransportError, TransportTimeoutError } from "@deploylite/contracts";
-import { awaitAbortable, type DockerImageExecutionReceiptV1, type PreparedComposeAttachmentCommand } from "@deploylite/domain";
+import { sealAgentSecretEnvelope, signAgentTransport, validateAgentTransportKey } from "@deploylite/config";
+import { agentCachedReceiptSchema, agentReceiptQuerySchema, type AgentReceiptQuery, agentCapabilityHandshakeSchema, agentExecutionReceiptSchema, composeNetworkAttachmentAgentCommandSchema, composeNetworkAttachmentCachedReceiptSchema, composeNetworkAttachmentReceiptQuerySchema, composeNetworkAttachmentReceiptSchema, COMPOSE_NETWORK_ATTACHMENT_CAPABILITY, COMPOSE_NETWORK_ATTACHMENT_PATH, composeVolumeAttachmentAgentCommandSchema, composeVolumeAttachmentCachedReceiptSchema, composeVolumeAttachmentReceiptQuerySchema, composeVolumeAttachmentReceiptSchema, COMPOSE_VOLUME_ATTACHMENT_CAPABILITY, COMPOSE_VOLUME_ATTACHMENT_PATH, COMPOSE_VOLUME_ATTACHMENT_RECEIPT_PATH, composeVolumeBackupAgentCommandSchema, composeVolumeBackupCachedReceiptSchema, composeVolumeBackupReceiptQuerySchema, composeVolumeBackupReceiptSchema, COMPOSE_VOLUME_BACKUP_CAPABILITY, COMPOSE_VOLUME_BACKUP_PATH, COMPOSE_VOLUME_BACKUP_RECEIPT_PATH, deploymentStopAgentReceiptSchema, dockerImageExecutionReceiptSchema, promotionPolicySchema, type AgentExecutionCommand, type AgentReplacementV1, type ComposeNetworkAttachmentReceiptV1, type ComposeVolumeAttachmentReceiptV1, type ComposeVolumeAttachmentExecutionRequestV1, type ComposeVolumeBackupAgentCommandV1, type ComposeVolumeBackupReceiptV1, type DeploymentExecutionAuthorityV1, type DeploymentSnapshotV1, type LeaseV1, type ProjectControlAuthorityV1, TransportCanceledError, TransportError, TransportTimeoutError } from "@deploylite/contracts";
+import { awaitAbortable, type DockerImageExecutionReceiptV1, type PreparedComposeAttachmentCommand, type ControlCommand } from "@deploylite/domain";
 
 export type AgentTransportOptions = Readonly<{ endpoint: string; trustKey: string; agentId: string; allowInsecureInternal?: boolean; fetch?: typeof globalThis.fetch; timeoutMs?: number; now?: () => number }>;
 export type AgentDispatchContext = Readonly<{ requestId: string; correlationId: string; agentId: string; signal?: AbortSignal; executionDeploymentId?: string; activeDeploymentId?: string; sourceDeploymentId?: string; authority?: DeploymentExecutionAuthorityV1; replacement?: AgentReplacementV1 }>;
 export type DeploymentDispatchReceipt = DockerImageExecutionReceiptV1 & Readonly<{ projectId: string; activeDeploymentId?: string; sourceDeploymentId: string; snapshotHash: string; correlationId: string }>;
 export type AgentStopDispatchInput = Readonly<{ projectId: string; deploymentId: string; candidateId: string; effectiveImage: string; containerId?: string; commandId: string }>;
+export type PreparedComposeVolumeAttachmentCommand = Readonly<{ command: ControlCommand; request: ComposeVolumeAttachmentExecutionRequestV1; agentId: string; environment: Readonly<Record<string, string>> }>;
 export type PreparedComposeVolumeBackupCommand = Omit<ComposeVolumeBackupAgentCommandV1, "authority" | "lease" | "requiredCapabilities" | "timeoutMs" | "cancellationRequested">;
 
 // Only this local transport can prove that no POST was attempted.
@@ -104,6 +105,65 @@ export class AuthenticatedAgentDeploymentTransport {
       || receipt.inputDigest !== query.inputDigest || receipt.correlationId !== query.context.correlationId || receipt.key !== query.key
       || receipt.runtimeName !== query.runtimeName || receipt.service !== query.service || receipt.attachmentAction !== query.attachmentAction
       || receipt.containerId !== query.containerId)) throw new TransportError("agent cached network receipt scope rejected");
+    return receipt;
+  }
+
+  async dispatchComposeVolumeAttachment(prepared: PreparedComposeVolumeAttachmentCommand, authority: ProjectControlAuthorityV1, context: Pick<AgentDispatchContext, "requestId" | "correlationId" | "signal">): Promise<ComposeVolumeAttachmentReceiptV1> {
+    if (!this.available()) throw beforeDispatch(new TransportError("agent transport is not configured"));
+    if (prepared.agentId !== this.#options.agentId || authority.projectId !== prepared.request.projectId
+      || authority.commandId !== prepared.command.id || authority.inputDigest !== prepared.command.inputDigest
+      || prepared.request.correlationId !== context.correlationId) throw beforeDispatch(new TransportError("project update authority scope rejected"));
+    const timeoutMs = this.#options.timeoutMs ?? 30_000;
+    const binding = { agentId: this.#options.agentId, commandId: prepared.command.id, inputDigest: prepared.command.inputDigest, projectId: prepared.request.projectId };
+    const { action: _action, scope: _scope, correlationId: _correlationId, ...intent } = prepared.request;
+    const body = composeVolumeAttachmentAgentCommandSchema.parse({ ...intent, schemaVersion: 1, action: "compose.volume.attachment",
+      agentId: this.#options.agentId, commandId: prepared.command.id, inputDigest: prepared.command.inputDigest,
+      sealedEnvironment: sealAgentSecretEnvelope(prepared.environment, this.#options.trustKey, binding),
+      requiredCapabilities: [COMPOSE_VOLUME_ATTACHMENT_CAPABILITY], authority, lease: authority.projectLease,
+      context: { requestId: context.requestId, correlationId: context.correlationId }, timeoutMs, cancellationRequested: false });
+    const payload = JSON.stringify(body);
+    return this.operate(timeoutMs, context.signal, async (signal, sent) => {
+      const handshakeSignature = signAgentTransport("GET /capabilities", this.#options.trustKey);
+      const handshakeResponse = await awaitAbortable(() => this.#fetch(`${this.#options.endpoint.replace(/\/$/, "")}/capabilities`, { headers: { "x-deploylite-signature": handshakeSignature }, signal }), signal);
+      if (!handshakeResponse.ok || handshakeResponse.headers.get("x-deploylite-request-signature") !== handshakeSignature) throw new TransportError("capability_unavailable");
+      const handshake = agentCapabilityHandshakeSchema.parse(await awaitAbortable(() => handshakeResponse.json(), signal));
+      if (handshake.agentId !== this.#options.agentId || !handshake.capabilities.includes(COMPOSE_VOLUME_ATTACHMENT_CAPABILITY)) throw new TransportError("capability_unavailable");
+      sent();
+      const response = await awaitAbortable(() => this.#fetch(`${this.#options.endpoint.replace(/\/$/, "")}${COMPOSE_VOLUME_ATTACHMENT_PATH}`, { method: "POST", headers: { "content-type": "application/json", "x-deploylite-signature": signAgentTransport(payload, this.#options.trustKey) }, body: payload, signal }), signal);
+      if (!response.ok) throw new TransportError(`agent transport returned HTTP ${response.status}`);
+      const receipt = composeVolumeAttachmentReceiptSchema.parse(await awaitAbortable(() => response.json(), signal));
+      if (receipt.agentId !== body.agentId || receipt.commandId !== body.commandId || receipt.projectId !== body.projectId || receipt.inputDigest !== body.inputDigest
+        || receipt.correlationId !== body.context.correlationId || receipt.key !== body.key || receipt.runtimeName !== body.runtimeName
+        || receipt.service !== body.service || receipt.attachmentAction !== body.attachmentAction || receipt.priorContainerId !== body.containerId) throw new TransportError("agent volume attachment receipt identity mismatch");
+      return receipt;
+    });
+  }
+
+  async readComposeVolumeAttachmentReceipt(prepared: PreparedComposeVolumeAttachmentCommand, authority: ProjectControlAuthorityV1, context: Pick<AgentDispatchContext, "requestId" | "correlationId" | "signal">): Promise<ComposeVolumeAttachmentReceiptV1 | null> {
+    if (!this.available()) throw new TransportError("agent transport is not configured");
+    if (prepared.agentId !== this.#options.agentId || authority.projectId !== prepared.request.projectId
+      || authority.commandId !== prepared.command.id || authority.inputDigest !== prepared.command.inputDigest
+      || prepared.request.correlationId !== context.correlationId) throw new TransportError("project update authority scope rejected");
+    const binding = { agentId: this.#options.agentId, commandId: prepared.command.id, inputDigest: prepared.command.inputDigest, projectId: prepared.request.projectId };
+    const { action: _action, scope: _scope, correlationId: _correlationId, ...intent } = prepared.request;
+    const body = composeVolumeAttachmentAgentCommandSchema.parse({ ...intent, schemaVersion: 1, action: "compose.volume.attachment",
+      agentId: this.#options.agentId, commandId: prepared.command.id, inputDigest: prepared.command.inputDigest,
+      sealedEnvironment: sealAgentSecretEnvelope(prepared.environment, this.#options.trustKey, binding),
+      requiredCapabilities: [COMPOSE_VOLUME_ATTACHMENT_CAPABILITY], authority, lease: authority.projectLease,
+      context: { requestId: context.requestId, correlationId: context.correlationId }, timeoutMs: this.#options.timeoutMs ?? 30_000, cancellationRequested: false });
+    const query = composeVolumeAttachmentReceiptQuerySchema.parse(Object.fromEntries(Object.entries(body).filter(([key]) => key !== "sealedEnvironment" && key !== "cancellationRequested")));
+    const payload = JSON.stringify(query);
+    const result = await this.operate(query.timeoutMs, context.signal, async (signal, sent) => {
+      sent();
+      const response = await awaitAbortable(() => this.#fetch(`${this.#options.endpoint.replace(/\/$/, "")}${COMPOSE_VOLUME_ATTACHMENT_RECEIPT_PATH}`, { method: "POST", headers: { "content-type": "application/json", "x-deploylite-signature": signAgentTransport(`POST ${COMPOSE_VOLUME_ATTACHMENT_RECEIPT_PATH}\n${payload}`, this.#options.trustKey) }, body: payload, signal }), signal);
+      if (!response.ok) throw new TransportError(`agent cache returned HTTP ${response.status}`);
+      return composeVolumeAttachmentCachedReceiptSchema.parse(await awaitAbortable(() => response.json(), signal));
+    });
+    if (result.agentId !== this.#options.agentId || result.commandId !== query.commandId || result.correlationId !== query.context.correlationId) throw new TransportError("agent cached volume attachment identity mismatch");
+    const receipt = result.receipt;
+    if (receipt && (receipt.agentId !== query.agentId || receipt.commandId !== query.commandId || receipt.projectId !== query.projectId
+      || receipt.inputDigest !== query.inputDigest || receipt.correlationId !== query.context.correlationId || receipt.key !== query.key
+      || receipt.runtimeName !== query.runtimeName || receipt.service !== query.service || receipt.attachmentAction !== query.attachmentAction || receipt.priorContainerId !== query.containerId)) throw new TransportError("agent cached volume attachment scope rejected");
     return receipt;
   }
 
