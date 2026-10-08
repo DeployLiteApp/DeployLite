@@ -66,12 +66,12 @@ describe("project Compose preview request", () => {
 });
 
 describe("project Compose preview interaction", () => {
-  function enter(value = document) { fireEvent.change(screen.getByLabelText("Compose document (JSON)"), { target: { value } }); }
+  function enter(value = document) { fireEvent.change(screen.getByLabelText("Compose document (YAML or JSON)"), { target: { value } }); }
   it("starts empty and never requests a preview before deliberate submission", () => {
     const fetchImpl = vi.fn<typeof fetch>(); vi.stubGlobal("fetch", fetchImpl);
     render(<ComposePreviewCard {...props} />);
     expect(screen.getByRole("heading", { name: "Compose preview" })).toBeTruthy();
-    expect((screen.getByLabelText("Compose document (JSON)") as HTMLTextAreaElement).value).toBe("");
+    expect((screen.getByLabelText("Compose document (YAML or JSON)") as HTMLTextAreaElement).value).toBe("");
     expect((screen.getByRole("button", { name: "Preview Compose" }) as HTMLButtonElement).disabled).toBe(true);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -111,7 +111,7 @@ describe("project Compose preview interaction", () => {
     fireEvent.click(screen.getByRole("button", { name: "Preview Compose" }));
     await screen.findByRole("heading", { name: "Proposed resources" });
     fireEvent.click(screen.getByRole("button", { name: "Clear draft" }));
-    expect((screen.getByLabelText("Compose document (JSON)") as HTMLTextAreaElement).value).toBe("");
+    expect((screen.getByLabelText("Compose document (YAML or JSON)") as HTMLTextAreaElement).value).toBe("");
     expect(screen.queryByRole("heading", { name: "Proposed resources" })).toBeNull();
     expect(fetchImpl).toHaveBeenCalledTimes(1); expect(storage).not.toHaveBeenCalled();
   });
