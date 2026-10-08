@@ -65,6 +65,25 @@ describe("bounded project-owned revision reads through the actual API", () => {
     const f = await fixture(); const page = await f.reader.listRevisions("project-1", "compose-1", { limit: 20, offset: 0 }); f.reader.listRevisions.mockClear(); page.revisions[0]!.projectId = "foreign-project"; f.reader.listRevisions.mockResolvedValue(page);
     const response = await f.get(); expect(response.statusCode).toBe(503); expect(response.body).not.toContain("foreign-project"); expect(response.body).not.toContain(image);
   });
+  it.each(["canonical-image", "preview-image", "reference-key", "reference-id", "tag-image"] as const)("rejects corrupt stored %s on detail and history reads without reflecting credentials", async (field) => {
+    for (const path of ["/revision-2", ""]) {
+      const f = await fixture(); const raw = (await f.reader.findRevision("project-1", "revision-2"))!;
+      const credentialImage = `fixture_user:fixture_literal_secret@registry.example.com/team/app@sha256:${"a".repeat(64)}`;
+      if (field === "canonical-image") {
+        const canonical = JSON.parse(raw.preview.canonicalDocument) as { services: Record<string, { image: string }> };
+        canonical.services.web!.image = credentialImage; raw.preview.canonicalDocument = JSON.stringify(canonical);
+      } else if (field === "preview-image") raw.preview.services[0]!.image = credentialImage;
+      else if (field === "tag-image") raw.preview.services[0]!.image = "registry.example.com/team/app:fixture_literal_secret";
+      else if (field === "reference-key") raw.preview.services[0]!.secretRefs[0]!.key = "fixture_literal_secret";
+      else raw.preview.services[0]!.secretRefs[0]!.secretRefId = "fixture_literal_secret";
+      f.reader.findRevision.mockResolvedValue(raw);
+      f.reader.listRevisions.mockResolvedValue({ revisions: [raw], total: 1, limit: 20, offset: 0 });
+      const response = await f.get(path); expect(response.statusCode).toBe(503);
+      expect(response.json().error.code).toBe("COMPOSE_REVISION_READ_UNAVAILABLE");
+      expect(response.body + JSON.stringify(f.audit.inputs)).not.toContain("fixture_literal_secret");
+      expect(f.append).not.toHaveBeenCalled(); expect(f.decrypt).not.toHaveBeenCalled();
+    }
+  });
   it("does not echo a storage exception's source excerpt", async () => {
     const f = await fixture(); f.reader.listRevisions.mockRejectedValue(new Error("fixture_literal_secret")); const response = await f.get(); expect(response.statusCode).toBe(503); expect(response.body + JSON.stringify(f.audit.inputs)).not.toContain("fixture_literal_secret");
   });

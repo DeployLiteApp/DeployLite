@@ -1,12 +1,23 @@
 import { z } from "zod";
+import { validateImageReference } from "../deployment-contract/source-intent.js";
 import { composeDocumentSchema, composePreviewSchema } from "./preview.js";
 
 const id = z.string().min(1).max(200).regex(/^[A-Za-z0-9_-]+$/);
+// Archived shape validation only. Admission still uses the real configured policy in the factory.
+function canonicalDigestImage(reference: string): boolean {
+  try {
+    const candidateHost = reference.slice(0, reference.indexOf("/"));
+    return validateImageReference(reference, { policyVersion: "compose-revision-shape", trustedHosts: [candidateHost], allowTags: false, allowDigests: true }).reference === reference;
+  } catch { return false; }
+}
+const referenceIdentifier = /^[A-Z_][A-Z0-9_]{0,127}$/;
 function safeCanonicalDocument(document: string): boolean {
   try {
     const decoded: unknown = JSON.parse(document);
     // Machine-generated JSON only: no duplicate-key/whitespace source retention.
-    return JSON.stringify(decoded) === document && composeDocumentSchema.safeParse(decoded).success;
+    const parsed = composeDocumentSchema.safeParse(decoded);
+    return JSON.stringify(decoded) === document && parsed.success
+      && Object.values(parsed.data.services).every((service) => canonicalDigestImage(service.image));
   } catch { return false; }
 }
 
@@ -20,6 +31,8 @@ export const composeRevisionSchema = z.object({
   createdBy: id,
   createdAt: z.string().datetime({ offset: true }),
   preview: composePreviewSchema.extend({ canonicalDocument: z.string().max(262_144).refine(safeCanonicalDocument) })
+    .refine((preview) => preview.services.every((service) => canonicalDigestImage(service.image)
+      && service.secretRefs.every((ref) => referenceIdentifier.test(ref.key) && referenceIdentifier.test(ref.secretRefId))))
 }).strict().refine((revision) => revision.preview.projectId === revision.projectId
   && [...revision.preview.networks, ...revision.preview.volumes].every((resource) => resource.projectId === revision.projectId));
 export type ComposeRevisionV1 = z.infer<typeof composeRevisionSchema>;
