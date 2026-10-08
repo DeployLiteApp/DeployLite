@@ -3,7 +3,7 @@
   "purpose": "Expected evidence only; this manifest neither authorizes runtime nor claims PASS",
   "suites": {
     "db": {
-      "count": 57,
+      "count": 58,
       "allowSkipped": false,
       "cases": [
         {
@@ -346,6 +346,12 @@
           "fullName": "atomic execution PostgreSQL integration rolls back cancellation observed during staged rollback publication and preserves durable equal replay",
           "title": "rolls back cancellation observed during staged rollback publication and preserves durable equal replay",
           "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration persists cleanup admission across clients and atomically recovers concurrent commit replies",
+          "title": "persists cleanup admission across clients and atomically recovers concurrent commit replies",
+          "file": "packages/db/src/postgres.integration.test.ts",
           "physicalRestart": false
         }
       ],
