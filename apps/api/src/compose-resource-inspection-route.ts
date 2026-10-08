@@ -40,10 +40,11 @@ export function registerComposeResourceInspectionRoutes(app: FastifyInstance, op
         const timer = setTimeout(() => controller.abort(new ComposeResourceInspectionError("COMPOSE_INSPECTION_LIMIT")), captured.deadlineMs);
         const cancel = () => controller.abort(new ComposeResourceInspectionError("COMPOSE_INSPECTION_CANCELED"));
         request.raw.once("aborted", cancel);
+        const inspectionContext = { requestId: request.correlationContext.requestId, correlationId: request.correlationContext.correlationId };
         try {
           result = await awaitAbortable<ComposeResourceInspectionViewV1 | ComposeAttachmentPreviewV1>(() => mode === "inspect"
-            ? createComposeResourceInspectionView(input, captured, controller.signal)
-            : createComposeAttachmentPreview(composeAttachmentPreviewRequestSchema.extend({ projectId: z.literal(projectId) }).parse(input), captured, controller.signal), controller.signal);
+            ? createComposeResourceInspectionView(input, captured, controller.signal, inspectionContext)
+            : createComposeAttachmentPreview(composeAttachmentPreviewRequestSchema.extend({ projectId: z.literal(projectId) }).parse(input), captured, controller.signal, inspectionContext), controller.signal);
           if (!captured.capabilities.has(COMPOSE_RESOURCE_INSPECTION_CAPABILITY)) throw new ComposeResourceInspectionError("COMPOSE_INSPECTION_UNSUPPORTED");
           if (options.access?.get(projectId) !== configured) throw new ComposeResourceInspectionError("COMPOSE_RESOURCE_STALE");
         } finally { clearTimeout(timer); request.raw.off("aborted", cancel); }

@@ -9,7 +9,7 @@ import {
   type EnvSecretCipher
 } from "@deploylite/config";
 import { randomUUID } from "node:crypto";
-import { agentHeartbeatSchema, COMPOSE_VOLUME_BACKUP_CAPABILITY, InMemoryCapabilityRegistry, resourceSnapshotSchema, type AgentHeartbeat } from "@deploylite/contracts";
+import { agentHeartbeatSchema, COMPOSE_RESOURCE_INSPECTION_CAPABILITY, COMPOSE_VOLUME_BACKUP_CAPABILITY, InMemoryCapabilityRegistry, resourceSnapshotSchema, type AgentHeartbeat } from "@deploylite/contracts";
 import { z } from "zod";
 import { DigestDeploymentDispatcher } from "./deployment-dispatcher.js";
 import { AuthenticatedAgentCommandReceiver } from "./agent-transport.js";
@@ -129,7 +129,7 @@ export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
   const dispatcher = new DigestDeploymentDispatcher({ protocol, runner, temporaryHostPort, promotionPolicy, trustedHosts: ["docker.io", "ghcr.io", "registry.example.com"], allowedNetworks: ["deploylite-agent"] });
   if (!dispatcher.available()) { await closeDbPool(pool); throw new Error("agent dispatcher is unavailable"); }
   const volumeBackupConfig = parseComposeVolumeBackupRuntimeConfig(env[COMPOSE_VOLUME_BACKUP_CONFIG_ENV]);
-  const composeCapabilities = ["compose.resource.inspect.v1", "compose.network.attachment.v1", ...(volumeBackupConfig ? [COMPOSE_VOLUME_BACKUP_CAPABILITY] : [])];
+  const composeCapabilities = [COMPOSE_RESOURCE_INSPECTION_CAPABILITY, "compose.network.attachment.v1", ...(volumeBackupConfig ? [COMPOSE_VOLUME_BACKUP_CAPABILITY] : [])];
   const composeRegistry = new InMemoryCapabilityRegistry(composeCapabilities);
   const imagePolicy = { policyVersion: "agent-compose-v1", trustedHosts: ["docker.io", "ghcr.io", "registry.example.com"], allowTags: false, allowDigests: true };
   const composeInspector = createDockerComposeResourceInspector({ runner, owner: "deploylite", agentId: parsed.DEPLOYLITE_AGENT_ID,
@@ -141,7 +141,7 @@ export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
     source: createLocalDirectoryComposeVolumeBackupSource(volumeBackupConfig.sourceRoots), destinations: volumeBackupConfig.destinations }) : undefined;
   const receiver = new AuthenticatedAgentCommandReceiver({ agentId: parsed.DEPLOYLITE_AGENT_ID, trustKey: parsed.DEPLOYLITE_AGENT_TRUST_KEY,
     capabilities: ["deploy.execute", "deployment.stop", ...composeCapabilities], dispatcher, stopDispatcher: dispatcher, networkAttachment,
-    ...(volumeBackup ? { volumeBackup } : {}), authorityValidator, replayStore: replayStore as never });
+    resourceInspector: composeInspector, ...(volumeBackup ? { volumeBackup } : {}), authorityValidator, replayStore: replayStore as never });
   const server = await startAgentServer({ host: parsed.DEPLOYLITE_AGENT_HOST, port: parsed.DEPLOYLITE_AGENT_PORT, receiver, replayStore: replayStore as never, production: parsed.NODE_ENV === "production" });
   const close = async () => { await server.close(); await closeDbPool(pool); };
   process.once("SIGINT", close); process.once("SIGTERM", close);

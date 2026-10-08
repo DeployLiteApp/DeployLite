@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { composePreviewSchema } from "./preview.js";
 
 const key = z.string().max(63).regex(/^[a-z][a-z0-9_-]*$/).refine(value => !["constructor", "prototype", "__proto__"].includes(value));
 const identity = z.string().min(1).max(200).regex(/^[A-Za-z0-9_-]+$/);
@@ -7,6 +8,7 @@ const runtimeName = z.string().max(160).regex(/^dl-[a-f0-9]{32}-(?:net|vol)-[a-z
 const target = z.string().max(256).regex(/^\/(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+$/)
   .refine(value => !value.split("/").some(part => part === "." || part === "..") && !/^\/(?:proc|sys|dev)(?:\/|$)/.test(value));
 export const COMPOSE_RESOURCE_INSPECTION_CAPABILITY = "compose.resource.inspect.v1";
+export const COMPOSE_RESOURCE_INSPECTION_PATH = "/compose/resources/inspect" as const;
 export const composeResourceKindSchema = z.enum(["network", "volume"]);
 export type ComposeResourceKind = z.infer<typeof composeResourceKindSchema>;
 export const composeResourceContainerObservationSchema = z.object({
@@ -54,3 +56,31 @@ export const composeResourceInspectionViewSchema = z.object({
   observedAt: z.number().int().nonnegative(), containers: z.array(composeResourceContainerObservationSchema.pick({ service: true, running: true, attached: true })).max(32)
 }).strict();
 export type ComposeResourceInspectionViewV1 = z.infer<typeof composeResourceInspectionViewSchema>;
+
+const inspectionContextSchema = z.object({ requestId: identity, correlationId: identity }).strict();
+export const composeResourceInspectionAgentCommandSchema = z.object({
+  schemaVersion: z.literal(1), action: z.literal("compose.resource.inspect"), agentId: identity,
+  projectId: identity, preview: composePreviewSchema, kind: composeResourceKindSchema, key,
+  expectedConfigDigest: digest,
+  requiredCapabilities: z.tuple([z.literal(COMPOSE_RESOURCE_INSPECTION_CAPABILITY)]),
+  context: inspectionContextSchema, timeoutMs: z.number().int().positive().max(60_000)
+}).strict().superRefine((value, context) => {
+  if (value.preview.projectId !== value.projectId || value.preview.configDigest !== value.expectedConfigDigest)
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["preview"], message: "Inspection preview scope mismatch" });
+  const resources = value.kind === "network" ? value.preview.networks : value.preview.volumes;
+  if (!resources.some(resource => resource.key === value.key))
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["key"], message: "Inspection resource is not in the preview" });
+});
+export type ComposeResourceInspectionAgentCommandV1 = z.infer<typeof composeResourceInspectionAgentCommandSchema>;
+
+export const composeResourceInspectionAgentResponseSchema = z.object({
+  schemaVersion: z.literal(1), action: z.literal("compose.resource.inspect"), agentId: identity,
+  projectId: identity, configDigest: digest, kind: composeResourceKindSchema, key,
+  context: inspectionContextSchema, observation: composeResourceObservationSchema
+}).strict().superRefine((value, context) => {
+  const observation = value.observation;
+  if (observation.agentId !== value.agentId || observation.projectId !== value.projectId
+    || observation.configDigest !== value.configDigest || observation.kind !== value.kind || observation.key !== value.key)
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["observation"], message: "Inspection observation scope mismatch" });
+});
+export type ComposeResourceInspectionAgentResponseV1 = z.infer<typeof composeResourceInspectionAgentResponseSchema>;

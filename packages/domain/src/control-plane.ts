@@ -154,15 +154,3 @@ export function isRollbackClaimBound(command: ControlCommand, deployment: Deploy
   return command.status === "eligible" && !command.executionAuthority && command.result?.action === "deployment.rollback" && command.result.status === "eligible"
     && Boolean(deployment) && isRollbackAdmissionBound({ ...command, status: "pending_confirmation" }, deployment!, historical, now);
 }
-
-/** Shared memory resolver, used by normal controls and atomic Compose staging. */
-export function resolveControlCommandInMemory(commands: Map<string, ControlCommand>, command: ControlCommand): { command: ControlCommand; created: boolean } {
-  const key = `${command.actorId}:${command.action}:${scopeKey(command.scope)}:${command.idempotencyKey}`;
-  const existing = commands.get(key);
-  if (existing) {
-    if (existing.inputDigest !== command.inputDigest) throw new IdempotencyConflictError();
-    return { command: structuredClone(existing), created: false };
-  }
-  commands.set(key, structuredClone(command));
-  return { command: structuredClone(command), created: true };
-}

@@ -17,7 +17,7 @@ async function fixture({role="operator",scope="project-1",action="project.deploy
   await projects.save({id:"project-1",name:"Inspect",repoUrl:"https://github.com/DeployLiteApp/DeployLite",defaultBranch:"main",buildCommand:null,runCommand:null,port:null,description:null,imageTag:null});
   const observation:ComposeResourceObservationV1={schemaVersion:1,owner:"deploylite",agentId:"agent-1",projectId:"project-1",kind:"network",key:"app",runtimeName:preview.networks[0]!.runtimeName,physicalIdentity:"b".repeat(64),configDigest:preview.configDigest,stateDigest:"0".repeat(64),observedAt:1_000,containers:[{containerId:"c".repeat(64),service:"app",running:false,attached:false,mounts:[]}]};
   const seal=()=>{observation.stateDigest=digestComposeResourceObservation(observation);};seal();
-  const inspect=vi.fn(async (_input:unknown,_signal:AbortSignal)=>structuredClone(observation));
+  const inspect=vi.fn(async (_input:unknown,_signal:AbortSignal,_context?:{requestId:string;correlationId:string})=>structuredClone(observation));
   const access:Access={owner:"deploylite",agentId:"agent-1",inspector:{inspect},clock:{now:()=>1_010},maxAgeMs:100,capabilities:new InMemoryCapabilityRegistry(capability?["compose.resource.inspect.v1"]:[]),deadlineMs:1_000};
   const audit=new InMemoryAuditRepository(),sessions=new InMemorySessionRepository(),secrets=new InMemoryEnvSecretValueRepository();
   const user={id:"inspect-user",email:"inspect@example.test",emailNormalized:"inspect@example.test",passwordHash:"unused-fixture-hash",role,status:"active" as const,createdAt:new Date(),updatedAt:new Date()};
@@ -34,7 +34,7 @@ describe("project-owned read-only Compose resource API",()=>{
   it("returns a scoped safe inspection view, correlated audit and no resource/secret writes",async()=>{
     const f=await fixture(),r=await f.post(),payload=r.json();expect(r.statusCode).toBe(200);
     expect(payload.data.inspection).toEqual({schemaVersion:1,status:"observed",executionAllowed:false,projectId:"project-1",kind:"network",key:"app",configDigest:preview.configDigest,stateDigest:f.observation.stateDigest,observedAt:1_000,containers:[{service:"app",running:false,attached:false}]});
-    expect(f.inspect).toHaveBeenCalledOnce();expect(f.save).not.toHaveBeenCalled();expect(f.remove).not.toHaveBeenCalled();expect(f.decrypt).not.toHaveBeenCalled();
+    expect(f.inspect).toHaveBeenCalledOnce();expect(f.inspect.mock.calls[0]?.[2]).toEqual({requestId:payload.requestId,correlationId:r.headers["x-correlation-id"]});expect(f.save).not.toHaveBeenCalled();expect(f.remove).not.toHaveBeenCalled();expect(f.decrypt).not.toHaveBeenCalled();
     expect(f.audit.inputs).toEqual([expect.objectContaining({action:"compose.resource.inspect",targetType:"project",targetId:"project-1",requestId:payload.requestId,correlationId:r.headers["x-correlation-id"],metadata:expect.objectContaining({inputDigest:preview.configDigest,valueFingerprint:f.observation.stateDigest,key:"app",targetType:"network"})})]);
     expect(r.body+JSON.stringify(f.audit.inputs)).not.toContain("APP_TOKEN");expect(r.body+JSON.stringify(f.audit.inputs)).not.toContain(image);expect(r.body).not.toContain("c".repeat(64));
   });

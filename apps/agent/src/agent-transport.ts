@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { validateAgentTransportKey, verifyAgentTransport } from "@deploylite/config";
-import { agentReceiptQuerySchema, agentCachedReceiptSchema, type AgentReceiptQuery, agentExecutionCommandSchema, CapabilityError, composeNetworkAttachmentAgentCommandSchema, composeNetworkAttachmentCachedReceiptSchema, composeNetworkAttachmentReceiptQuerySchema, composeNetworkAttachmentReceiptSchema, composeResourceAttachmentCommandSchema, COMPOSE_NETWORK_ATTACHMENT_CAPABILITY, COMPOSE_NETWORK_ATTACHMENT_RECEIPT_PATH, composeVolumeBackupAgentCommandSchema, composeVolumeBackupCachedReceiptSchema, composeVolumeBackupReceiptQuerySchema, composeVolumeBackupReceiptSchema, COMPOSE_VOLUME_BACKUP_CAPABILITY, COMPOSE_VOLUME_BACKUP_RECEIPT_PATH, createDeploymentCommand, deploymentStopAgentCommandSchema, deploymentStopAgentReceiptSchema, dockerImageExecutionReceiptSchema, FenceError, LeaseExpiredError, protocolPayloadFingerprint, TransportCanceledError, TransportTimeoutError, type AgentExecutionCommand, type ComposeNetworkAttachmentAgentCommandV1, type ComposeNetworkAttachmentReceiptV1, type ComposeVolumeBackupAgentCommandV1, type ComposeVolumeBackupReceiptQueryV1, type ComposeVolumeBackupReceiptV1, type DeploymentSnapshotV1, type DeploymentStopAgentCommand, type DeploymentStopAgentReceipt, type LeaseV1, type ProjectControlAuthorityV1, type PromotionPolicy, type DeploymentExecutionAuthorityV1 } from "@deploylite/contracts";
-import { awaitAbortable, composeVolumeBackupExecutionDigest, digestControlInput, validateDockerImageSnapshot, type DockerImageExecutionReceiptV1, type DeploymentAuthorityValidation, type PriorDockerImageExecutionReceiptV1 } from "@deploylite/domain";
+import { signAgentTransport, validateAgentTransportKey, verifyAgentTransport } from "@deploylite/config";
+import { agentReceiptQuerySchema, agentCachedReceiptSchema, type AgentReceiptQuery, agentExecutionCommandSchema, CapabilityError, composeNetworkAttachmentAgentCommandSchema, composeNetworkAttachmentCachedReceiptSchema, composeNetworkAttachmentReceiptQuerySchema, composeNetworkAttachmentReceiptSchema, composeResourceAttachmentCommandSchema, composeResourceInspectionAgentCommandSchema, composeResourceInspectionAgentResponseSchema, composeResourceObservationSchema, COMPOSE_NETWORK_ATTACHMENT_CAPABILITY, COMPOSE_NETWORK_ATTACHMENT_RECEIPT_PATH, COMPOSE_RESOURCE_INSPECTION_CAPABILITY, COMPOSE_RESOURCE_INSPECTION_PATH, composeVolumeBackupAgentCommandSchema, composeVolumeBackupCachedReceiptSchema, composeVolumeBackupReceiptQuerySchema, composeVolumeBackupReceiptSchema, COMPOSE_VOLUME_BACKUP_CAPABILITY, COMPOSE_VOLUME_BACKUP_RECEIPT_PATH, createDeploymentCommand, deploymentStopAgentCommandSchema, deploymentStopAgentReceiptSchema, dockerImageExecutionReceiptSchema, FenceError, LeaseExpiredError, protocolPayloadFingerprint, TransportCanceledError, TransportTimeoutError, type AgentExecutionCommand, type ComposeNetworkAttachmentAgentCommandV1, type ComposeNetworkAttachmentReceiptV1, type ComposeVolumeBackupAgentCommandV1, type ComposeVolumeBackupReceiptQueryV1, type ComposeVolumeBackupReceiptV1, type DeploymentSnapshotV1, type DeploymentStopAgentCommand, type DeploymentStopAgentReceipt, type LeaseV1, type ProjectControlAuthorityV1, type PromotionPolicy, type DeploymentExecutionAuthorityV1 } from "@deploylite/contracts";
+import { awaitAbortable, composeVolumeBackupExecutionDigest, digestComposeResourceObservation, digestControlInput, validateDockerImageSnapshot, type ComposeResourceInspector, type DockerImageExecutionReceiptV1, type DeploymentAuthorityValidation, type PriorDockerImageExecutionReceiptV1 } from "@deploylite/domain";
 import type { ComposeVolumeBackupAuthority } from "./infrastructure/docker/docker-compose-volume-backup.js";
 
 export type RuntimeExecutionAuthority = { assertValid(): Promise<void>; readonly expiresAt?: number };
@@ -15,16 +15,21 @@ type FenceLease = ReplayLease & Readonly<{ deploymentId?: string; projectId?: st
 export type AgentReplayStore = { readonly durable?: boolean; lookup?(commandId: string, fingerprint: string): Promise<AgentReplayReceipt | null>; claim(commandId: string, fingerprint: string, lease: ReplayLease): Promise<AgentReplayClaim>; wait(commandId: string): Promise<AgentReplayReceipt>; complete(commandId: string, value: { fingerprint: string; claimToken: string; receipt: AgentReplayReceipt }): Promise<void>; release(commandId: string, claimToken?: string): Promise<void> };
 export type AgentNetworkAttachmentExecutor = { execute(command: ComposeNetworkAttachmentAgentCommandV1, authority: RuntimeExecutionAuthority, signal: AbortSignal): Promise<ComposeNetworkAttachmentReceiptV1> };
 export type AgentVolumeBackupExecutor = { execute(command: ComposeVolumeBackupAgentCommandV1, authority: ComposeVolumeBackupAuthority, signal: AbortSignal): Promise<ComposeVolumeBackupReceiptV1> };
-export type AgentCommandReceiverOptions = Readonly<{ agentId: string; trustKey: string; capabilities: readonly string[]; dispatcher: AgentCommandDispatcher; stopDispatcher?: AgentStopDispatcher; networkAttachment?: AgentNetworkAttachmentExecutor; volumeBackup?: AgentVolumeBackupExecutor; replayStore: AgentReplayStore; authorityValidator?: DeploymentAuthorityValidation; now?: () => number }>;
+export type AgentCommandReceiverOptions = Readonly<{ agentId: string; trustKey: string; capabilities: readonly string[]; dispatcher: AgentCommandDispatcher; stopDispatcher?: AgentStopDispatcher; networkAttachment?: AgentNetworkAttachmentExecutor; volumeBackup?: AgentVolumeBackupExecutor; resourceInspector?: ComposeResourceInspector; replayStore: AgentReplayStore; authorityValidator?: DeploymentAuthorityValidation; now?: () => number }>;
 
 export class AuthenticatedAgentCommandReceiver {
   readonly #options: AgentCommandReceiverOptions;
   readonly #fences = new Map<string, FenceLease>();
-  constructor(options: AgentCommandReceiverOptions) { validateAgentTransportKey(options.trustKey); this.#options = { ...options, capabilities: [...options.capabilities] }; }
+  constructor(options: AgentCommandReceiverOptions) {
+    validateAgentTransportKey(options.trustKey);
+    const capabilities = options.capabilities.filter(capability => capability !== COMPOSE_RESOURCE_INSPECTION_CAPABILITY || Boolean(options.resourceInspector));
+    this.#options = { ...options, capabilities };
+  }
   hasDurableReplayStore(): boolean { return this.#options.replayStore.durable === true; }
   get agentId(): string { return this.#options.agentId; }
   get capabilities(): readonly string[] { return this.#options.capabilities; }
   verifyRequest(payload: string, signature: string | undefined): boolean { return verifyAgentTransport(payload, signature, this.#options.trustKey); }
+  signResponse(payload: string): string { return signAgentTransport(payload, this.#options.trustKey); }
   async readReceipt(body: unknown, signature: string | undefined, signal?: AbortSignal): Promise<unknown> {
     if (signal?.aborted) throw new TransportCanceledError();
     const started = Date.now();
@@ -87,6 +92,35 @@ export class AuthenticatedAgentCommandReceiver {
     return composeVolumeBackupCachedReceiptSchema.parse({ schemaVersion: 1, action: "compose.volume.backup", agentId: this.#options.agentId,
       commandId: query.commandId, correlationId: query.context.correlationId,
       receipt: parsed ? this.replayedVolumeBackupReceipt(parsed) : null });
+  }
+  async inspectComposeResource(body: unknown, signature: string | undefined, signal?: AbortSignal): Promise<unknown> {
+    if (signal?.aborted) throw new TransportCanceledError();
+    const text = JSON.stringify(body);
+    if (!this.verifyRequest(`POST ${COMPOSE_RESOURCE_INSPECTION_PATH}\n${text}`, signature)) throw new Error("agent authentication failed");
+    const command = composeResourceInspectionAgentCommandSchema.parse(structuredClone(body));
+    const inspector = this.#options.resourceInspector;
+    if (command.agentId !== this.#options.agentId || !inspector || !this.#options.capabilities.includes(COMPOSE_RESOURCE_INSPECTION_CAPABILITY))
+      throw new CapabilityError(COMPOSE_RESOURCE_INSPECTION_CAPABILITY);
+    const start = (this.#options.now ?? Date.now)();
+    if (!Number.isSafeInteger(start) || start < 0) throw new TransportTimeoutError();
+    const controller = new AbortController();
+    const cancel = () => controller.abort(new TransportCanceledError());
+    signal?.addEventListener("abort", cancel, { once: true });
+    if (signal?.aborted) cancel();
+    const timer = setTimeout(() => controller.abort(new TransportTimeoutError()), command.timeoutMs);
+    try {
+      const observation = composeResourceObservationSchema.parse(await awaitAbortable(() => inspector.inspect(
+        { preview: structuredClone(command.preview), kind: command.kind, key: command.key }, controller.signal, command.context), controller.signal));
+      const resource = command.kind === "network" ? command.preview.networks.find(value => value.key === command.key) : command.preview.volumes.find(value => value.key === command.key);
+      if (!resource || observation.agentId !== this.#options.agentId || observation.projectId !== command.projectId
+        || observation.kind !== command.kind || observation.key !== command.key || observation.runtimeName !== resource.runtimeName
+        || observation.configDigest !== command.expectedConfigDigest || digestComposeResourceObservation(observation) !== observation.stateDigest)
+        throw new Error("agent inspection scope rejected");
+      if ((this.#options.now ?? Date.now)() >= start + command.timeoutMs) throw new TransportTimeoutError();
+      return composeResourceInspectionAgentResponseSchema.parse({ schemaVersion: 1, action: "compose.resource.inspect", agentId: this.#options.agentId,
+        projectId: command.projectId, configDigest: command.expectedConfigDigest, kind: command.kind, key: command.key,
+        context: command.context, observation });
+    } finally { clearTimeout(timer); signal?.removeEventListener("abort", cancel); }
   }
   private receiptFingerprint(query: AgentReceiptQuery, runtime?: AgentCommandDispatcher["runtimeConfig"]): string {
     return protocolPayloadFingerprint(query.action === "deploy.execute" ? { ...(query.activeDeploymentId ? { activeDeploymentId: query.activeDeploymentId } : {}), snapshot: query.snapshot, agentId: this.#options.agentId, deploymentId: query.deploymentId, sourceDeploymentId: query.sourceDeploymentId, correlationId: query.correlationId, runtimeConfig: runtime ?? null, authority: query.authority, replacement: query.replacement } : { action: query.action, agentId: query.agentId, projectId: query.projectId, deploymentId: query.deploymentId, candidateId: query.candidateId, effectiveImage: query.effectiveImage, containerId: query.containerId, correlationId: query.correlationId, authority: query.authority });

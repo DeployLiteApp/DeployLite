@@ -11,8 +11,9 @@ export type ComposeInspectionErrorCode = "COMPOSE_INSPECTION_INVALID" | "COMPOSE
 export class ComposeResourceInspectionError extends Error {
   constructor(readonly code: ComposeInspectionErrorCode) { super("Compose resource observation is unavailable or outside policy."); this.name = "ComposeResourceInspectionError"; }
 }
+export type ComposeResourceInspectionContext = Readonly<{ requestId: string; correlationId: string }>;
 export interface ComposeResourceInspector {
-  inspect(input: Readonly<{ preview: ComposePreviewV1; kind: ComposeResourceKind; key: string }>, signal: AbortSignal): Promise<ComposeResourceObservationV1>;
+  inspect(input: Readonly<{ preview: ComposePreviewV1; kind: ComposeResourceKind; key: string }>, signal: AbortSignal, context?: ComposeResourceInspectionContext): Promise<ComposeResourceObservationV1>;
 }
 export function digestComposeResourceObservation(observation: ComposeResourceObservationV1): string {
   const { observedAt: _time, stateDigest: _digest, ...state } = observation;
@@ -38,10 +39,10 @@ function currentPreview(document: string, projectId: string, expectedDigest: str
   if (preview.configDigest !== expectedDigest) fail("COMPOSE_RESOURCE_STALE");
   return preview;
 }
-async function observe(preview: ComposePreviewV1, kind: ComposeResourceKind, resource: Resource, deps: ComposeAttachmentPreviewDependencies, signal?: AbortSignal): Promise<ComposeResourceObservationV1> {
+async function observe(preview: ComposePreviewV1, kind: ComposeResourceKind, resource: Resource, deps: ComposeAttachmentPreviewDependencies, signal?: AbortSignal, context?: ComposeResourceInspectionContext): Promise<ComposeResourceObservationV1> {
   let observed: unknown;
   const abort = signal ?? new AbortController().signal;
-  try { observed = await awaitAbortable(() => deps.inspector.inspect({ preview, kind, key: resource.key }, abort), abort); }
+  try { observed = await awaitAbortable(() => deps.inspector.inspect({ preview, kind, key: resource.key }, abort, context), abort); }
   catch (error) {
     if (error instanceof ComposeResourceInspectionError) throw error;
     if (abort.aborted) fail("COMPOSE_INSPECTION_CANCELED");
@@ -59,7 +60,7 @@ async function observe(preview: ComposePreviewV1, kind: ComposeResourceKind, res
   return observation;
 }
 /** A safe view of a fresh server-bound observation, not a runtime authority or ownership-adoption receipt. */
-export async function createComposeResourceInspectionView(raw: ComposeResourceInspectionInput, supplied: ComposeAttachmentPreviewDependencies, signal?: AbortSignal): Promise<ComposeResourceInspectionViewV1> {
+export async function createComposeResourceInspectionView(raw: ComposeResourceInspectionInput, supplied: ComposeAttachmentPreviewDependencies, signal?: AbortSignal, context?: ComposeResourceInspectionContext): Promise<ComposeResourceInspectionViewV1> {
   const deps = capture(supplied);
   const parsed = composeResourceInspectionInputSchema.safeParse(raw);
   if (!parsed.success) fail("COMPOSE_INSPECTION_INVALID");
@@ -67,14 +68,14 @@ export async function createComposeResourceInspectionView(raw: ComposeResourceIn
   const preview = currentPreview(input.document, input.projectId, input.expectedConfigDigest, deps);
   const resource = (input.kind === "network" ? preview.networks : preview.volumes).find(r => r.key === input.key);
   if (!resource) fail("COMPOSE_RESOURCE_CONFLICT");
-  const observation = await observe(preview, input.kind, resource, deps, signal);
+  const observation = await observe(preview, input.kind, resource, deps, signal, context);
   return composeResourceInspectionViewSchema.parse({ schemaVersion: 1, status: "observed", executionAllowed: false,
     projectId: input.projectId, kind: input.kind, key: input.key, configDigest: observation.configDigest,
     stateDigest: observation.stateDigest, observedAt: observation.observedAt,
     containers: observation.containers.map(c => ({ service: c.service, running: c.running, attached: c.attached })) });
 }
 /** Server-side preview using an explicitly injected observation port, never a caller-supplied ownership receipt. */
-export async function createComposeAttachmentPreview(raw: ComposeAttachmentPreviewInput, supplied: ComposeAttachmentPreviewDependencies, signal?: AbortSignal): Promise<ComposeAttachmentPreviewV1> {
+export async function createComposeAttachmentPreview(raw: ComposeAttachmentPreviewInput, supplied: ComposeAttachmentPreviewDependencies, signal?: AbortSignal, context?: ComposeResourceInspectionContext): Promise<ComposeAttachmentPreviewV1> {
   const deps = capture(supplied);
   const parsed = composeAttachmentPreviewInputSchema.safeParse(raw);
   if (!parsed.success) fail("COMPOSE_INSPECTION_INVALID");
@@ -85,7 +86,7 @@ export async function createComposeAttachmentPreview(raw: ComposeAttachmentPrevi
   if (!resource || !service) fail("COMPOSE_ATTACHMENT_CONFLICT");
   const desired = input.kind === "network" ? service.networks.includes(input.key) : service.volumes.some(m => m.source === input.key);
   if (desired !== (input.action === "attach")) fail("COMPOSE_ATTACHMENT_CONFLICT");
-  const observation = await observe(preview, input.kind, resource, deps, signal);
+  const observation = await observe(preview, input.kind, resource, deps, signal, context);
   if (input.expectedStateDigest && input.expectedStateDigest !== observation.stateDigest) fail("COMPOSE_RESOURCE_STALE");
   const targets = observation.containers.filter(c => c.service === service.name);
   if (targets.length !== 1) fail("COMPOSE_ATTACHMENT_CONFLICT");
@@ -113,7 +114,8 @@ export async function prepareComposeAttachmentControlCommand(raw: ComposeNetwork
     correlationId: deps.correlationId, grants: await deps.grants.listForActor(deps.actorId) });
   if (!decision.allowed) fail("COMPOSE_ATTACHMENT_FORBIDDEN");
   const preview = await createComposeAttachmentPreview({ document: input.document, projectId: input.projectId, kind: "network", key: input.key,
-    service: input.service, action: input.action, expectedConfigDigest: input.expectedConfigDigest, expectedStateDigest: input.expectedStateDigest }, deps, signal);
+    service: input.service, action: input.action, expectedConfigDigest: input.expectedConfigDigest, expectedStateDigest: input.expectedStateDigest }, deps, signal,
+  { requestId: deps.correlationId, correlationId: deps.correlationId });
   if (preview.containerId !== input.expectedContainerId || preview.stateDigest !== input.expectedStateDigest) fail("COMPOSE_RESOURCE_STALE");
   const configuration = currentPreview(input.document, input.projectId, input.expectedConfigDigest, deps);
   const resource = configuration.networks.find(candidate => candidate.key === input.key);

@@ -1,8 +1,29 @@
 import { Readable } from "node:stream";
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { signAgentTransport } from "@deploylite/config";
-import { COMPOSE_NETWORK_ATTACHMENT_CAPABILITY, COMPOSE_NETWORK_ATTACHMENT_PATH, COMPOSE_NETWORK_ATTACHMENT_RECEIPT_PATH, type ComposeNetworkAttachmentReceiptV1 } from "@deploylite/contracts";
+import { signAgentTransport, verifyAgentTransport } from "@deploylite/config";
+import { COMPOSE_NETWORK_ATTACHMENT_CAPABILITY, COMPOSE_NETWORK_ATTACHMENT_PATH, COMPOSE_NETWORK_ATTACHMENT_RECEIPT_PATH, composeResourceInspectionAgentCommandSchema, composeResourceInspectionAgentResponseSchema, COMPOSE_RESOURCE_INSPECTION_CAPABILITY, COMPOSE_RESOURCE_INSPECTION_PATH, composePreviewSchema, protocolPayloadFingerprint, type ComposeNetworkAttachmentReceiptV1 } from "@deploylite/contracts";
 import { startAgentServer } from "./server.js";
+
+vi.mock("@deploylite/domain", async () => {
+  const { createHash } = await import("node:crypto");
+  const { protocolPayloadFingerprint } = await import("@deploylite/contracts");
+  return {
+    awaitAbortable: (operation: () => Promise<unknown>, signal?: AbortSignal) => new Promise((resolve, reject) => {
+      if (signal?.aborted) { reject(signal.reason); return; }
+      const cancel = () => reject(signal?.reason);
+      signal?.addEventListener("abort", cancel, { once: true });
+      Promise.resolve().then(operation).then(resolve, reject).finally(() => signal?.removeEventListener("abort", cancel));
+    }),
+    composeVolumeBackupExecutionDigest: () => "",
+    digestControlInput: () => "",
+    validateDockerImageSnapshot: () => {},
+    digestComposeResourceObservation: (value: any) => {
+      const { observedAt: _observedAt, stateDigest: _stateDigest, ...state } = value;
+      return createHash("sha256").update(protocolPayloadFingerprint(state)).digest("hex");
+    }
+  };
+});
 
 const serverHarness = vi.hoisted(() => ({ callback: undefined as ((request: any, response: any) => Promise<void>) | undefined }));
 vi.mock("node:http", () => ({ createServer: (callback: typeof serverHarness.callback) => {
@@ -23,7 +44,7 @@ function request(url: string, body: unknown, signature: string) {
   return stream;
 }
 function response() {
-  return { destroyed: false, status: 0, body: "", writeHead(status: number) { this.status = status; return this; }, end(body = "") { this.body = body; } };
+  return { destroyed: false, status: 0, body: "", headers: {} as Record<string, string>, writeHead(status: number, headers: Record<string, string> = {}) { this.status = status; this.headers = headers; return this; }, end(body = "") { this.body = body; } };
 }
 
 describe("simulated agent network attachment HTTP routes", () => {
@@ -43,6 +64,39 @@ describe("simulated agent network attachment HTTP routes", () => {
       await serverHarness.callback!(request(COMPOSE_NETWORK_ATTACHMENT_RECEIPT_PATH, query, signAgentTransport(`POST ${COMPOSE_NETWORK_ATTACHMENT_RECEIPT_PATH}\n${queryText}`, trustKey)), cachedResponse);
       expect(cachedResponse.status).toBe(200); expect(JSON.parse(cachedResponse.body)).toEqual(cached);
       expect(receiver.readComposeNetworkAttachmentReceipt).toHaveBeenCalledOnce();
+    } finally { await server.close(); }
+  });
+
+  it("serves signed read-only resource observations on the negotiated inspection route", async () => {
+    const image = `registry.example.com/app@sha256:${"a".repeat(64)}`;
+    const preview = composePreviewSchema.parse({ schemaVersion: 1, projectId: "project-compose", status: "preview", executionAllowed: false,
+      policyVersion: "agent-inspection-test-1", configDigest: "a".repeat(64), canonicalDocument: "{\"services\":{}}",
+      services: [{ name: "app", image, networks: ["app"], volumes: [], secretRefs: [] }],
+      networks: [{ key: "app", projectId: "project-compose", runtimeName: `dl-${"b".repeat(32)}-net-app`, attachedServices: ["app"], driver: "bridge", internal: false }], volumes: [] });
+    const body = composeResourceInspectionAgentCommandSchema.parse({ schemaVersion: 1, action: "compose.resource.inspect", agentId: "agent-compose",
+      projectId: preview.projectId, preview, kind: "network", key: "app", expectedConfigDigest: preview.configDigest,
+      requiredCapabilities: [COMPOSE_RESOURCE_INSPECTION_CAPABILITY], context: { requestId: "request-compose", correlationId: "correlation-compose" }, timeoutMs: 2_000 });
+    const observation = { schemaVersion: 1 as const, owner: "deploylite", agentId: "agent-compose", projectId: preview.projectId, kind: "network" as const,
+      key: "app", runtimeName: preview.networks[0]!.runtimeName, physicalIdentity: "b".repeat(64), configDigest: preview.configDigest,
+      observedAt: 100, stateDigest: "0".repeat(64), containers: [] };
+    const { observedAt: _observedAt, stateDigest: _stateDigest, ...state } = observation;
+    observation.stateDigest = createHash("sha256").update(protocolPayloadFingerprint(state)).digest("hex");
+    const result = composeResourceInspectionAgentResponseSchema.parse({ schemaVersion: 1, action: "compose.resource.inspect", agentId: "agent-compose",
+      projectId: preview.projectId, configDigest: preview.configDigest, kind: "network", key: "app", context: body.context, observation });
+    const receiver = { agentId: "agent-compose", capabilities: [COMPOSE_RESOURCE_INSPECTION_CAPABILITY], hasDurableReplayStore: () => true,
+      verifyRequest: (payload: string, signature: string | undefined) => verifyAgentTransport(payload, signature, trustKey),
+      signResponse: (payload: string) => signAgentTransport(payload, trustKey), inspectComposeResource: vi.fn(async () => result) };
+    const server = await startAgentServer({ host: "127.0.0.1", port: 1, receiver: receiver as never, replayStore: { durable: true } as never });
+    try {
+      const bodyText = JSON.stringify(body);
+      const res = response();
+      await serverHarness.callback!(request(COMPOSE_RESOURCE_INSPECTION_PATH, body,
+        signAgentTransport(`POST ${COMPOSE_RESOURCE_INSPECTION_PATH}\n${bodyText}`, trustKey)), res);
+      expect(res.status).toBe(200);
+      expect(composeResourceInspectionAgentResponseSchema.parse(JSON.parse(res.body))).toEqual(result);
+      expect(verifyAgentTransport(`POST ${COMPOSE_RESOURCE_INSPECTION_PATH}\n${bodyText}\n${res.body}`,
+        res.headers["x-deploylite-response-signature"], trustKey)).toBe(true);
+      expect(receiver.inspectComposeResource).toHaveBeenCalledOnce();
     } finally { await server.close(); }
   });
 });
