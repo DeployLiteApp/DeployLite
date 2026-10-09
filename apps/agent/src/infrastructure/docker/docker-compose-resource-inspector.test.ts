@@ -62,6 +62,19 @@ describe("explicit read-only Compose resource inspection", () => {
     const s = fixture(); s.f.container.networks = [];
     await expect(inspect(s)).resolves.toMatchObject({ containers: [{ containerId: "c".repeat(64), attached: false }] });
   });
+  it("observes a configured network by exact name while Docker has no endpoint ID for the stopped target", async () => {
+    const s = fixture(); s.f.container.networks = [{ name: s.f.resource.name, networkId: "" }];
+    await expect(inspect(s)).resolves.toMatchObject({ containers: [{ containerId: "c".repeat(64), running: false, attached: true,
+      networks: [{ name: s.f.resource.name, networkId: "b".repeat(64) }] }] });
+  });
+  it("rejects a configured network with a different nonempty physical ID", async () => {
+    const s = fixture(); s.f.container.networks = [{ name: s.f.resource.name, networkId: "d".repeat(64) }];
+    await expect(inspect(s)).rejects.toMatchObject({ code: "COMPOSE_RESOURCE_CONFLICT" });
+  });
+  it("rejects a running target whose network endpoint ID is missing", async () => {
+    const s = fixture(); s.f.container.running = true; s.f.container.networks = [{ name: s.f.resource.name, networkId: "" }];
+    await expect(inspect(s)).rejects.toMatchObject({ code: "COMPOSE_RESOURCE_CONFLICT" });
+  });
   it("selects the exact current revision after a cutover while ignoring a disconnected prior container", async () => {
     const s = fixture("volume"), prior = { ...structuredClone(s.f.container), id: "e".repeat(64), composeRevisionId: "revision-1",
       composeConfigDigest: "f".repeat(64), networks: [], mounts: [] };

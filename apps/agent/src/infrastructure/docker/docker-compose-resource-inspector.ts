@@ -105,18 +105,23 @@ export function createDockerComposeResourceInspector(supplied: DockerComposeReso
       const containers: { containerId: string; service: string; running: boolean; attached: boolean; composeRevisionId?: string; composeConfigDigest?: string; composeEnvironmentDigest?: string; networks: { name: string; networkId: string }[]; mounts: { target: string; readOnly: boolean }[] }[] = [];
       for (const c of first) {
         const matchingNetwork = c.networks.filter(n => n.name === planned.runtimeName || n.networkId === physicalIdentity);
-        if (kind === "network" && matchingNetwork.some(n => n.name !== planned.runtimeName || n.networkId !== physicalIdentity)) fail("COMPOSE_RESOURCE_CONFLICT");
+        if (kind === "network" && matchingNetwork.some(n => n.name !== planned.runtimeName
+          || n.networkId !== physicalIdentity && !(n.networkId === "" && !c.running))) fail("COMPOSE_RESOURCE_CONFLICT");
         const matchingMounts = c.mounts.filter(m => m.type === "volume" && m.name === planned.runtimeName);
         const attached = kind === "network" ? matchingNetwork.length > 0 : matchingMounts.length > 0;
         const service = preview.services.find(s => s.name === c.service);
         const owned = c.owner === options.owner && c.projectId === preview.projectId && service !== undefined && c.effectiveImage === service.image;
         if (attached && !owned) fail("COMPOSE_RESOURCE_FOREIGN");
         if (!owned) continue;
+        // A stopped target can retain the configured network by name without an endpoint ID. The network itself
+        // was ownership-bound above, so project this exact named edge using its current physical identity.
+        const networks = c.networks.map(network => ({ name: network.name, networkId: kind === "network" && network.name === planned.runtimeName
+          && network.networkId === "" && !c.running ? physicalIdentity : network.networkId }));
         containers.push({ containerId: c.id, service: service!.name, running: c.running, attached,
           ...(c.composeRevisionId ? { composeRevisionId: c.composeRevisionId } : {}),
           ...(c.composeConfigDigest ? { composeConfigDigest: c.composeConfigDigest } : {}),
           ...(c.composeEnvironmentDigest ? { composeEnvironmentDigest: c.composeEnvironmentDigest } : {}),
-          networks: c.networks.map(network => ({ name: network.name, networkId: network.networkId })),
+          networks,
           mounts: kind === "volume" ? matchingMounts.map(m => ({ target: m.target, readOnly: m.readOnly })) : [] });
       }
       const byService = new Map<string, typeof containers>();
