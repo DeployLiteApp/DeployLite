@@ -75,7 +75,7 @@ async function privateManifest(): Promise<Manifest> {
 }
 
 function boundedRunner(allowed: (argv: readonly string[]) => boolean, captureContainerId: (value: string) => void = () => undefined,
-  reportFailure: (operation: string, detail: string) => void = () => undefined) {
+  reportFailure: (operation: string, detail: string) => void = () => undefined, reportSuccess: (operation: string) => void = () => undefined) {
   const processRunner = new DockerProcessRunner({ timeoutMs: 15_000, maxOutputBytes: 65_536, spawn: (file, args, options) => {
     const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", LANG: "C", LC_ALL: "C", DOCKER_HOST: process.env.DOCKER_HOST!, DOCKER_CONFIG: process.env.DOCKER_CONFIG! };
     return nodeSpawn(file, args, { ...options, env });
@@ -97,6 +97,7 @@ function boundedRunner(allowed: (argv: readonly string[]) => boolean, captureCon
       throw error;
     }
     if (result.exitCode !== 0 || result.signal !== null) { reportFailure(operation, "nonzero-result"); throw new Error("P3 fixture Docker operation failed"); }
+    reportSuccess(operation);
     const args = argv.slice(1);
     if ((args[0] === "run" || args[0] === "container" && args[1] === "run") && /^[a-f0-9]{64}$/.test(result.stdout.trim())) captureContainerId(result.stdout.trim());
     return result;
@@ -156,8 +157,9 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       if (a[0] === "network" && a[1] === "ls") return a.includes("--filter");
       return false;
     };
-    const dockerFailureDiagnostics: string[] = [];
-    const runner = boundedRunner(allowed, id => allowedIds.add(id), (operation, detail) => { if (dockerFailureDiagnostics.length < 8) dockerFailureDiagnostics.push(`${operation}: ${detail}`); });
+    const dockerFailureDiagnostics: string[] = []; let lastDockerOperation = "none";
+    const runner = boundedRunner(allowed, id => allowedIds.add(id), (operation, detail) => { if (dockerFailureDiagnostics.length < 8) dockerFailureDiagnostics.push(`${operation}: ${detail}`); },
+      operation => { lastDockerOperation = operation; });
     const docker = async (args: readonly string[]) => (await runner.run(["docker", ...args], new AbortController().signal)).stdout.trim();
     const dockerJson = async <T>(args: readonly string[]) => JSON.parse(await docker(args)) as T;
     const register = (resource: Owned) => { evidence.resources.push(resource); resourceByName.set(resource.name, resource); if (resource.kind === "container") allowedIds.add(resource.id); };
@@ -251,7 +253,7 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
         catch (error) {
           const detail = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code
             : error instanceof Error ? error.name : typeof error;
-          if (dockerFailureDiagnostics.length < 8) dockerFailureDiagnostics.push(`agent-receiver: ${detail}`);
+          if (dockerFailureDiagnostics.length < 8) dockerFailureDiagnostics.push(`agent-receiver: ${detail}; last-docker=${lastDockerOperation}`);
           throw error;
         }
       };
