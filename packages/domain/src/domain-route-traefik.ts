@@ -43,8 +43,6 @@ export function renderDomainRouteDynamicConfig(input: Readonly<{ route: unknown;
     || receipt.data.container !== `deploylite-active-${route.data.deploymentId}`) {
     throw new DomainRouteRuntimeError("target-mismatch");
   }
-  if (receipt.data.network !== domainRouteNetworkName(route.data.projectId)) throw new DomainRouteRuntimeError("network-unavailable");
-
   const suffix = createHash("sha256").update(route.data.domain).digest("hex").slice(0, 24);
   const router = `domain-route-${suffix}`;
   const service = `domain-service-${suffix}`;

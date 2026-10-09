@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { CanonicalRole, ConfirmationClassification, ControlCommandStatus, ControlPlaneAction, ControlPlaneScope, Deployment, DeploymentRollbackCommandResult, DeploymentRedeployCommandResult, DeploymentStopCommandResult, DeploymentExecutionAuthorityV1, ComposeResourceCleanupExecutionReceiptV1, ComposeRevisionSaveCommandResult, ProjectControlAuthorityV1 } from "@deploylite/contracts";
+import type { CanonicalRole, ConfirmationClassification, ControlCommandStatus, ControlPlaneAction, ControlPlaneScope, Deployment, DeploymentRollbackCommandResult, DeploymentRedeployCommandResult, DeploymentStopCommandResult, DeploymentExecutionAuthorityV1, ComposeResourceCleanupExecutionReceiptV1, ComposeRevisionSaveCommandResult, ProjectControlAuthorityV1, DomainRouteApplyReceiptV1, DomainRouteApplyAgentCommandV1, DomainRouteIntentV1 } from "@deploylite/contracts";
+import type { DomainRoutePlanV1 } from "./domain-route-plan.js";
 
 export type ControlGrant = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope };
 export type ControlGrantRepository = { listForActor(actorId: string): Promise<ControlGrant[]> };
 export type PolicyRequest = { actorId: string; role: CanonicalRole; action: ControlPlaneAction; scope: ControlPlaneScope; correlationId: string; grants: ControlGrant[] };
 export type PolicyDecision = { allowed: true; grantId: string; correlationId: string } | { allowed: false; code: "FORBIDDEN" | "ROLE_DENIED" | "SCOPE_DENIED"; correlationId: string };
-export type ControlCommand = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; idempotencyKey: string; correlationId: string; status: ControlCommandStatus; expiresAt: Date; result?: DeploymentStopCommandResult | DeploymentRedeployCommandResult | DeploymentRollbackCommandResult | ComposeRevisionSaveCommandResult | ComposeResourceCleanupExecutionReceiptV1; executionAuthority?: DeploymentExecutionAuthorityV1; projectExecutionAuthority?: ProjectControlAuthorityV1 };
+export type ControlCommand = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; idempotencyKey: string; correlationId: string; status: ControlCommandStatus; expiresAt: Date; result?: DeploymentStopCommandResult | DeploymentRedeployCommandResult | DeploymentRollbackCommandResult | ComposeRevisionSaveCommandResult | ComposeResourceCleanupExecutionReceiptV1 | (DomainRouteApplyReceiptV1 & { status?: "completed" }); executionAuthority?: DeploymentExecutionAuthorityV1; projectExecutionAuthority?: ProjectControlAuthorityV1 };
 export type ControlConfirmation = { id: string; commandId: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; classification: ConfirmationClassification; expiresAt: Date; consumedAt: Date | null };
 export type ConfirmationOutcome = { command: ControlCommand; accepted: boolean; reason: string | null };
 export type ConfirmedProjectDeleteInput = { command: ControlCommand; confirmation: ControlConfirmation; projectId: string; requestId: string; now?: Date };
@@ -77,6 +78,27 @@ export type ProjectUpdateControlRepository = ControlCommandRepository & {
   validateProjectUpdateAuthority(authority: ProjectControlAuthorityV1, now?: number): Promise<void>;
   completeProjectUpdate(command: ControlCommand, authority: ProjectControlAuthorityV1, audit: Readonly<{ actorUserId?: string | null; action: string; targetType: string; targetId: string; requestId: string; correlationId: string; metadata?: Record<string, unknown> }>): Promise<ControlCommand>;
 };
+export type DomainRouteApplyCompletionInput = Readonly<{
+  command: ControlCommand;
+  authority: ProjectControlAuthorityV1;
+  route: DomainRouteIntentV1;
+  plan: DomainRoutePlanV1;
+  receipt: DomainRouteApplyReceiptV1;
+  audit: Readonly<{ actorUserId?: string | null; action: string; targetType: string; targetId: string; requestId: string; correlationId: string; metadata?: Record<string, unknown> }>;
+}>;
+export type PreparedDomainRouteApplyCommand = Readonly<{
+  command: ControlCommand;
+  route: DomainRouteIntentV1;
+  executionReceipt: DomainRouteApplyAgentCommandV1["executionReceipt"];
+  effectiveImage: string;
+  agentId: string;
+}>;
+export type DomainRouteApplyCompletionStore = Readonly<{
+  available(): boolean;
+  reserveDomainRouteApply(input: Readonly<{ command: ControlCommand; route: DomainRouteIntentV1; plan: DomainRoutePlanV1 }>): Promise<void>;
+  releaseDomainRouteApply(commandId: string, hostname: string): Promise<void>;
+  completeDomainRouteApply(input: DomainRouteApplyCompletionInput): Promise<ControlCommand>;
+}>;
 export type ControlConfirmationRepository = {
   bind(confirmation: ControlConfirmation): Promise<void>;
   consume(command: ControlCommand, confirmation: ControlConfirmation, now?: Date): Promise<ConfirmationOutcome>;

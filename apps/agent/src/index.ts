@@ -9,7 +9,8 @@ import {
   type EnvSecretCipher
 } from "@deploylite/config";
 import { randomUUID } from "node:crypto";
-import { agentHeartbeatSchema, COMPOSE_RESOURCE_CLEANUP_CAPABILITY, COMPOSE_RESOURCE_INSPECTION_CAPABILITY, COMPOSE_VOLUME_ATTACHMENT_CAPABILITY, COMPOSE_VOLUME_BACKUP_CAPABILITY, InMemoryCapabilityRegistry, resourceSnapshotSchema, type AgentHeartbeat } from "@deploylite/contracts";
+import { isAbsolute } from "node:path";
+import { agentHeartbeatSchema, COMPOSE_RESOURCE_CLEANUP_CAPABILITY, COMPOSE_RESOURCE_INSPECTION_CAPABILITY, COMPOSE_VOLUME_ATTACHMENT_CAPABILITY, COMPOSE_VOLUME_BACKUP_CAPABILITY, DOMAIN_ROUTE_APPLY_CAPABILITY, InMemoryCapabilityRegistry, resourceSnapshotSchema, type AgentHeartbeat } from "@deploylite/contracts";
 import { z } from "zod";
 import { DigestDeploymentDispatcher } from "./deployment-dispatcher.js";
 import { AuthenticatedAgentCommandReceiver } from "./agent-transport.js";
@@ -23,6 +24,8 @@ import { createDockerComposeVolumeBackupExecutor, createLocalDirectoryComposeVol
 import { parseComposeVolumeBackupRuntimeConfig, COMPOSE_VOLUME_BACKUP_CONFIG_ENV } from "./infrastructure/docker/compose-volume-backup-config.js";
 import { parseComposeResourceCleanupEnabled, COMPOSE_RESOURCE_CLEANUP_ENABLED_ENV } from "./infrastructure/docker/compose-resource-cleanup-config.js";
 import { createDockerComposeResourceCleanupExecutor } from "./infrastructure/docker/docker-compose-resource-cleanup.js";
+import { TraefikDomainRouteFileStore } from "./infrastructure/traefik/traefik-domain-route-file-store.js";
+import { createTraefikDomainRouteExecutor } from "./infrastructure/traefik/traefik-domain-route-executor.js";
 
 export const safeCommandEnvelopeSchema = z.object({
   commandId: z.string().min(1),
@@ -129,6 +132,8 @@ export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
   if (!parsed.DEPLOYLITE_AGENT_ID || !parsed.DEPLOYLITE_AGENT_TRUST_KEY || !parsed.DATABASE_URL) throw new Error("agent runtime configuration is incomplete");
   const volumeAttachmentEnabled = parseComposeVolumeAttachmentEnabled(env[COMPOSE_VOLUME_ATTACHMENT_ENABLED_ENV], parsed.NODE_ENV);
   const resourceCleanupEnabled = parseComposeResourceCleanupEnabled(env[COMPOSE_RESOURCE_CLEANUP_ENABLED_ENV], parsed.NODE_ENV);
+  const traefikDynamicDir = env.DEPLOYLITE_TRAEFIK_DYNAMIC_DIR?.trim();
+  if (traefikDynamicDir && !isAbsolute(traefikDynamicDir)) throw new Error("DEPLOYLITE_TRAEFIK_DYNAMIC_DIR must be an absolute path.");
   const pool = createDbPool(parsed.DATABASE_URL); const db = createDbClient(pool);
   const replayStore = new DbAgentReplayStore(db, `${parsed.DEPLOYLITE_AGENT_ID}:${process.pid}:${randomUUID()}`);
   const authorityValidator = new DbControlCommandRepository(db);
@@ -155,8 +160,11 @@ export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
     driver: createDockerComposeVolumeReplacementDriver({ runner, owner: "deploylite" }) }) : undefined;
   const resourceCleanup = resourceCleanupEnabled ? createDockerComposeResourceCleanupExecutor({ runner, inspector: composeInspector, owner: "deploylite",
     agentId: parsed.DEPLOYLITE_AGENT_ID, imagePolicy, capabilities: composeRegistry }) : undefined;
+  const domainRouteApply = traefikDynamicDir ? createTraefikDomainRouteExecutor({ runner,
+    fileStore: new TraefikDomainRouteFileStore(traefikDynamicDir), agentId: parsed.DEPLOYLITE_AGENT_ID }) : undefined;
+  const domainRouteCapabilities = domainRouteApply ? [DOMAIN_ROUTE_APPLY_CAPABILITY] : [];
   const receiver = new AuthenticatedAgentCommandReceiver({ agentId: parsed.DEPLOYLITE_AGENT_ID, trustKey: parsed.DEPLOYLITE_AGENT_TRUST_KEY,
-    capabilities: ["deploy.execute", "deployment.stop", ...composeCapabilities], dispatcher, stopDispatcher: dispatcher, networkAttachment,
+    capabilities: ["deploy.execute", "deployment.stop", ...composeCapabilities, ...domainRouteCapabilities], dispatcher, stopDispatcher: dispatcher, networkAttachment, ...(domainRouteApply ? { domainRouteApply } : {}),
     resourceInspector: composeInspector, ...(volumeBackup ? { volumeBackup } : {}), ...(volumeAttachment ? { volumeAttachment } : {}), ...(resourceCleanup ? { resourceCleanup } : {}), authorityValidator, replayStore: replayStore as never });
   const server = await startAgentServer({ host: parsed.DEPLOYLITE_AGENT_HOST, port: parsed.DEPLOYLITE_AGENT_PORT, receiver, replayStore: replayStore as never, production: parsed.NODE_ENV === "production" });
   const close = async () => { await server.close(); await closeDbPool(pool); };

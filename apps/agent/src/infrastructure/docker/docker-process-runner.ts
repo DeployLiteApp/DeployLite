@@ -6,6 +6,7 @@ import { buildDockerActiveIdentityInspectArgv, buildDockerImageIdentityInspectAr
   buildDockerStopOwnershipInspectArgv } from "./docker-cli-argv.js";
 
 import { COMPOSE_INSPECTION_FORMATS, COMPOSE_REPLACEMENT_CANDIDATE_INSPECT_FORMAT } from "./docker-compose-resource-argv.js";
+import { DOMAIN_ROUTE_CONTAINER_INSPECT_FORMAT, DOMAIN_ROUTE_NETWORK_INSPECT_FORMAT, DOMAIN_ROUTE_TRAEFIK_INSPECT_FORMAT } from "../traefik/traefik-domain-route-argv.js";
 
 const DOCKER_ID = /^(?:sha256:)?[0-9a-f]{64}$/;
 const DOCKER_IMAGE = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[1-9][0-9]{0,4})?\/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[0-9a-f]{64}$/;
@@ -18,6 +19,7 @@ const protocolFormats = new Set([
     buildDockerActiveIdentityInspectArgv({ candidate: { ...protocolSample, runtimePort: 8080, networkName: "probe" },
       projectId: "probe", owner: "probe", containerName: "probe", hostPort: 49170, containerPort: 8080, allowedNetworks: ["probe"], networkName: "probe" })
   ].map((argv) => argv[argv.indexOf("--format") + 1]!),
+  DOMAIN_ROUTE_NETWORK_INSPECT_FORMAT, DOMAIN_ROUTE_TRAEFIK_INSPECT_FORMAT, DOMAIN_ROUTE_CONTAINER_INSPECT_FORMAT,
   "{{.ID}}", "{{.ID}}|{{.Status}}",
   '{"id":{{json .ID}},"os":{{json .OSType}},"architecture":{{json .Architecture}},"cpu":{{json .NCPU}},"memory":{{json .MemTotal}}}',
   '{"id":{{json .Id}},"os":{{json .Os}},"arch":{{json .Architecture}},"repoDigests":{{json .RepoDigests}},"healthType":{{if .Config.Healthcheck}}{{if .Config.Healthcheck.Test}}{{json (index .Config.Healthcheck.Test 0)}}{{else}}null{{end}}{{else}}null{{end}},"healthInterval":{{if .Config.Healthcheck}}{{json .Config.Healthcheck.Interval}}{{else}}0{{end}}}',

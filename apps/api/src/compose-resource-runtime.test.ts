@@ -63,8 +63,11 @@ describe("project-scoped Compose runtime configuration", () => {
     expect(runtime.volumeAttachmentExecutions.get(project.id)?.commandTtlMs).toBe(30_000);
     expect([...runtime.cleanupExecutions.keys()]).toEqual([project.id]);
     expect(runtime.cleanupExecutions.get(project.id)?.transport).toBeDefined();
+    expect([...runtime.domainRouteApplyExecutions.keys()]).toEqual([project.id]);
+    expect(runtime.domainRouteApplyExecutions.get(project.id)).toMatchObject({ agentId: "agent-one", commandTtlMs: 30_000 });
     expect(runtime.attachmentExecutions.get("another-project")).toBeUndefined();
     expect(runtime.volumeAttachmentExecutions.get("another-project")).toBeUndefined();
+    expect(runtime.domainRouteApplyExecutions.get("another-project")).toBeUndefined();
     expect(projects.findById).toHaveBeenCalledWith(project.id);
   });
 

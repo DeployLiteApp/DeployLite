@@ -12,8 +12,9 @@ import { DbAgentRepository, DbDeploymentRepository, DbProjectRepository } from "
 import { DbControlCommandRepository, DbControlGrantRepository } from "./repositories/control-plane.js";
 import { DbAgentReplayStore } from "./repositories/agent-replay.js";
 import { DbComposeResourceCleanupStore } from "./repositories/compose-resource-cleanup.js";
-import { IdempotencyConflictError, createConfirmation, createControlCommand, digestControlInput } from "@deploylite/domain";
-import { createDeploymentSnapshot, createSourceIntent } from "@deploylite/contracts";
+import { DbDomainRouteClaimReader } from "./repositories/domain-routes.js";
+import { IdempotencyConflictError, createConfirmation, createControlCommand, createDomainRoutePlan, digestControlInput, domainRouteNetworkName } from "@deploylite/domain";
+import { createDeploymentSnapshot, createSourceIntent, domainRouteIntentSchema, type DomainRouteApplyReceiptV1 } from "@deploylite/contracts";
 import { createComposePreview, type PreparedComposeResourceCleanup } from "@deploylite/domain";
 import type { ComposeResourceCleanupConfirmationViewV1, ComposeResourceCleanupInput } from "@deploylite/contracts";
 
@@ -336,6 +337,135 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
     await client.query("INSERT INTO control_commands (id, actor_user_id, action, scope_kind, scope_key, input_digest, idempotency_key, correlation_id, expires_at) VALUES ($1, $2, 'project.delete', 'project', $3, $4, 'rollback-key', 'corr-rollback', now())", [rolledBackId, actorId, randomUUID(), digestControlInput({ rollback: true })]);
     await client.query("ROLLBACK");
     await expect(client.query("SELECT id FROM control_commands WHERE id = $1", [rolledBackId])).resolves.toMatchObject({ rowCount: 0 });
+  });
+
+  it("atomically persists a domain route apply and replays its terminal receipt", async () => {
+    const client = requirePool();
+    const adminRole = (await client.query<{ id: string }>("SELECT id FROM roles WHERE name = 'admin'")).rows[0];
+    if (!adminRole) throw new Error("Canonical admin role was not seeded");
+
+    const actorId = randomUUID();
+    const projectId = randomUUID();
+    const deploymentId = randomUUID();
+    const agentRowId = randomUUID();
+    const now = new Date().toISOString();
+    const agentId = `route-agent-${randomUUID()}`;
+    const route = domainRouteIntentSchema.parse({
+      schemaVersion: 1,
+      projectId,
+      deploymentId,
+      domain: `route-${projectId.slice(0, 8)}.integration.test`
+    });
+
+    await client.query("INSERT INTO users (id, email, email_normalized, password_hash, role_id) VALUES ($1, $2, $2, $3, $4)", [
+      actorId, `${actorId}@example.test`, "hash", adminRole.id
+    ]);
+    await new DbAgentRepository(requireDb()).save({
+      id: agentRowId,
+      name: "Route integration agent",
+      endpoint: "https://route-agent.integration.test",
+      status: "online",
+      lastHeartbeatAt: now,
+      resourceSnapshot: null
+    });
+    await requireDbProjectRepository().save({
+      id: projectId,
+      name: "Route integration project",
+      repoUrl: "https://github.com/example/deploylite-route-integration",
+      defaultBranch: "main",
+      buildCommand: null,
+      runCommand: "node server.js",
+      port: 3000,
+      description: null,
+      imageTag: null
+    });
+    await requireDbDeploymentRepository().save({
+      id: deploymentId,
+      projectId,
+      agentId: agentRowId,
+      status: "succeeded",
+      commitSha: "abcdef1234567",
+      startedAt: now,
+      finishedAt: now
+    });
+
+    const command = {
+      ...createControlCommand({
+        actorId,
+        action: "project.update",
+        scope: { kind: "project", projectId },
+        input: { domainRoute: route },
+        idempotencyKey: "domain-route-apply-pg",
+        correlationId: "corr-domain-route-apply-pg"
+      }),
+      status: "eligible" as const
+    };
+    const commandRepo = new DbControlCommandRepository(requireDb());
+    await commandRepo.resolve(command);
+    const claimed = await commandRepo.claimProjectUpdate(command);
+    expect(claimed.claimed).toBe(true);
+    if (!claimed.authority) throw new Error("Project update authority was not claimed");
+
+    const routeStore = new DbDomainRouteClaimReader(requireDb());
+    const plan = createDomainRoutePlan({ desired: route, currentClaims: await routeStore.listClaims() });
+    expect(plan.action).toBe("create");
+    await routeStore.reserveDomainRouteApply({ command: claimed.command, route, plan });
+
+    const receipt: DomainRouteApplyReceiptV1 = {
+      schemaVersion: 1,
+      action: "domain.route.apply",
+      agentId,
+      commandId: command.id,
+      projectId,
+      domain: route.domain,
+      deploymentId,
+      inputDigest: command.inputDigest,
+      correlationId: command.correlationId,
+      networkName: domainRouteNetworkName(projectId),
+      networkId: "a".repeat(64),
+      targetContainerId: "b".repeat(64),
+      traefikContainerId: "c".repeat(64),
+      fileName: `domain-route-${createHash("sha256").update(projectId).digest("hex").slice(0, 24)}.yml`,
+      contentDigest: "d".repeat(64),
+      state: "created",
+      observedAt: Date.now(),
+      failureReason: null,
+      redacted: true
+    };
+    const completion = {
+      command: claimed.command,
+      authority: claimed.authority,
+      route,
+      plan,
+      receipt,
+      audit: {
+        actorUserId: actorId,
+        action: "domain.route.applied",
+        targetType: "project",
+        targetId: projectId,
+        requestId: "req-domain-route-apply-pg",
+        correlationId: command.correlationId,
+        metadata: { agentId }
+      }
+    };
+
+    await expect(routeStore.completeDomainRouteApply(completion)).resolves.toMatchObject({ status: "completed", result: receipt });
+    await expect(routeStore.completeDomainRouteApply(completion)).resolves.toMatchObject({ status: "completed", result: receipt });
+    await expect(client.query("SELECT project_id, hostname, deployment_id, status, metadata FROM domains WHERE hostname = $1", [route.domain])).resolves.toMatchObject({
+      rows: [expect.objectContaining({ project_id: projectId, hostname: route.domain, deployment_id: deploymentId, status: "active", metadata: expect.objectContaining({ commandId: command.id, networkName: domainRouteNetworkName(projectId) }) })]
+    });
+    await expect(client.query("SELECT status, result FROM control_commands WHERE id = $1", [command.id])).resolves.toMatchObject({
+      rows: [{ status: "completed", result: receipt }]
+    });
+    await expect(client.query("SELECT outcome, correlation_id FROM control_command_audits WHERE command_id = $1", [command.id])).resolves.toMatchObject({
+      rowCount: 1,
+      rows: [{ outcome: "completed", correlation_id: command.correlationId }]
+    });
+    await expect(client.query("SELECT action, request_id, correlation_id, metadata FROM audit_events WHERE target_id = $1 AND action = 'domain.route.applied'", [projectId])).resolves.toMatchObject({
+      rowCount: 1,
+      rows: [expect.objectContaining({ request_id: "req-domain-route-apply-pg", correlation_id: command.correlationId, metadata: expect.objectContaining({ commandId: command.id, agentId }) })]
+    });
+    await expect(client.query("SELECT hostname FROM domain_route_reservations WHERE hostname = $1", [route.domain])).resolves.toMatchObject({ rowCount: 0, rows: [] });
   });
 
   it("loads only persisted actor/action grants and fails closed for absent or cross-project scopes", async () => {

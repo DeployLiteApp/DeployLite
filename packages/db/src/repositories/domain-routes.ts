@@ -1,8 +1,12 @@
-import { asc, eq } from "drizzle-orm";
-import { domainRouteClaimSchema, type DomainRouteClaimV1 } from "@deploylite/contracts";
-import type { DomainRouteClaimReader } from "@deploylite/domain";
+import { and, asc, eq, or, sql } from "drizzle-orm";
+import { domainRouteApplyReceiptSchema, domainRouteClaimSchema, domainRouteIntentSchema, projectControlAuthoritySchema,
+  protocolPayloadFingerprint, type DomainRouteApplyReceiptV1, type DomainRouteClaimV1 } from "@deploylite/contracts";
+import { domainRouteNetworkName, validateProjectUpdateAuthority, type ControlCommand, type DomainRouteApplyCompletionInput,
+  type DomainRouteApplyCompletionStore, type DomainRouteClaimReader } from "@deploylite/domain";
 import type { DeployLiteDb } from "../client.js";
-import { deployments, domains } from "../schema.js";
+import { auditEvents, controlCommandAudits, controlCommands, deployments, domainRouteReservations, domains } from "../schema.js";
+import { redactAuditMetadata } from "./auth.js";
+import { toCommand } from "./control-plane.js";
 
 type DomainRouteReadRow = Readonly<{
   projectId: string;
@@ -11,7 +15,7 @@ type DomainRouteReadRow = Readonly<{
   deploymentProjectId: string | null;
 }>;
 
-export type DomainRouteStoreErrorCode = "stored-claim-invalid" | "stored-binding-invalid";
+export type DomainRouteStoreErrorCode = "stored-claim-invalid" | "stored-binding-invalid" | "domain-conflict" | "stale-plan" | "completion-rejected";
 
 export class DomainRouteStoreError extends Error {
   constructor(readonly code: DomainRouteStoreErrorCode) {
@@ -20,7 +24,7 @@ export class DomainRouteStoreError extends Error {
   }
 }
 
-export class DbDomainRouteClaimReader implements DomainRouteClaimReader {
+export class DbDomainRouteClaimReader implements DomainRouteClaimReader, DomainRouteApplyCompletionStore {
   constructor(private readonly db: DeployLiteDb) {}
   available(): boolean { return true; }
 
@@ -44,6 +48,130 @@ export class DbDomainRouteClaimReader implements DomainRouteClaimReader {
       });
       if (!claim.success) throw new DomainRouteStoreError("stored-claim-invalid");
       return claim.data;
+    });
+  }
+
+  async reserveDomainRouteApply(input: Readonly<{ command: ControlCommand; route: import("@deploylite/contracts").DomainRouteIntentV1;
+    plan: import("@deploylite/domain").DomainRoutePlanV1 }>): Promise<void> {
+    const route = domainRouteIntentSchema.safeParse(input.route);
+    if (!route.success || input.plan.route.domain !== route.data.domain || input.plan.route.projectId !== route.data.projectId
+      || input.plan.route.deploymentId !== route.data.deploymentId
+      || input.command.action !== "project.update" || input.command.scope.kind !== "project" || input.command.scope.projectId !== route.data.projectId
+      || !["eligible", "dispatching"].includes(input.command.status)) throw new DomainRouteStoreError("completion-rejected");
+    await this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`deploylite:execution:${route.data.projectId}`}, 0))`);
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`deploylite:domain-route:${route.data.domain}`}, 0))`);
+      let [reservation] = await tx.select().from(domainRouteReservations).where(eq(domainRouteReservations.hostname, route.data.domain)).limit(1).for("update");
+      if (reservation?.commandId === input.command.id) {
+        if (reservation.projectId !== route.data.projectId || protocolPayloadFingerprint(reservation.route) !== protocolPayloadFingerprint(route.data)
+          || protocolPayloadFingerprint(reservation.plan) !== protocolPayloadFingerprint(input.plan)) throw new DomainRouteStoreError("completion-rejected");
+        return;
+      }
+      if (reservation) {
+        const [reservedCommand] = await tx.select().from(controlCommands).where(eq(controlCommands.id, reservation.commandId)).limit(1).for("update");
+        const prior = reservedCommand ? toCommand(reservedCommand) : null;
+        const priorReceipt = prior?.result && domainRouteApplyReceiptSchema.safeParse(prior.result);
+        const repairable = reservation.projectId === route.data.projectId && prior?.status === "completed" && priorReceipt?.success
+          && priorReceipt.data.state === "failed" && priorReceipt.data.failureReason === "config-write-failed";
+        if (!repairable) throw new DomainRouteStoreError("domain-conflict");
+        await tx.delete(domainRouteReservations).where(eq(domainRouteReservations.hostname, route.data.domain));
+      }
+      const [existing] = await tx.select().from(domains).where(eq(domains.hostname, route.data.domain)).limit(1).for("update");
+      const matchesExpected = input.plan.action === "create" ? !existing
+        : input.plan.action === "attach" ? Boolean(existing && existing.projectId === route.data.projectId && existing.deploymentId === null)
+        : input.plan.action === "retarget" ? Boolean(existing && existing.projectId === route.data.projectId && existing.deploymentId === input.plan.previousDeploymentId)
+        : input.plan.action === "no-op" ? Boolean(existing && existing.projectId === route.data.projectId && existing.deploymentId === route.data.deploymentId)
+        : false;
+      if (!matchesExpected) throw new DomainRouteStoreError(existing && existing.projectId !== route.data.projectId ? "domain-conflict" : "stale-plan");
+      await tx.insert(domainRouteReservations).values({ hostname: route.data.domain, projectId: route.data.projectId, commandId: input.command.id,
+        route: route.data, plan: input.plan });
+    });
+  }
+
+  async releaseDomainRouteApply(commandId: string, hostname: string): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      const [reservation] = await tx.select().from(domainRouteReservations).where(eq(domainRouteReservations.hostname, hostname)).limit(1).for("update");
+      if (reservation?.commandId === commandId) await tx.delete(domainRouteReservations).where(eq(domainRouteReservations.hostname, hostname));
+    });
+  }
+
+  async completeDomainRouteApply(input: DomainRouteApplyCompletionInput): Promise<ControlCommand> {
+    const route = domainRouteIntentSchema.safeParse(input.route);
+    const receipt = domainRouteApplyReceiptSchema.safeParse(input.receipt);
+    const authority = projectControlAuthoritySchema.safeParse(input.authority);
+    if (!route.success || !receipt.success || !authority.success || input.command.action !== "project.update" || input.command.scope.kind !== "project"
+      || input.command.scope.projectId !== route.data.projectId || input.command.id !== authority.data.commandId
+      || input.command.inputDigest !== authority.data.inputDigest || authority.data.projectId !== route.data.projectId
+      || input.plan.route.projectId !== route.data.projectId || input.plan.route.deploymentId !== route.data.deploymentId
+      || input.plan.route.domain !== route.data.domain
+      || receipt.data.commandId !== input.command.id || receipt.data.projectId !== route.data.projectId
+      || receipt.data.deploymentId !== route.data.deploymentId || receipt.data.domain !== route.data.domain
+      || receipt.data.inputDigest !== input.command.inputDigest || receipt.data.agentId !== input.audit.metadata?.agentId
+      || (receipt.data.state !== "failed" && receipt.data.networkName !== domainRouteNetworkName(route.data.projectId))
+      || input.audit.action !== (receipt.data.state === "failed" ? "domain.route.failed" : "domain.route.applied")
+      || input.audit.actorUserId !== input.command.actorId || input.audit.targetType !== "project" || input.audit.targetId !== route.data.projectId
+      || input.audit.requestId.length === 0 || input.audit.correlationId !== input.command.correlationId) {
+      throw new DomainRouteStoreError("completion-rejected");
+    }
+    return this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`deploylite:execution:${route.data.projectId}`}, 0))`);
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`deploylite:domain-route:${route.data.domain}`}, 0))`);
+      const [storedCommand] = await tx.select().from(controlCommands).where(eq(controlCommands.id, input.command.id)).limit(1).for("update");
+      if (!storedCommand) throw new DomainRouteStoreError("completion-rejected");
+      const current = toCommand(storedCommand);
+      if (current.status === "completed") {
+        if (current.action !== "project.update" || !current.projectExecutionAuthority
+          || protocolPayloadFingerprint(current.projectExecutionAuthority) !== protocolPayloadFingerprint(authority.data)
+          || protocolPayloadFingerprint(current.result) !== protocolPayloadFingerprint(receipt.data)) throw new DomainRouteStoreError("completion-rejected");
+        return current;
+      }
+      if (current.status !== "dispatching" || current.action !== "project.update" || current.scope.kind !== "project"
+        || current.scope.projectId !== route.data.projectId || current.inputDigest !== receipt.data.inputDigest
+        || !current.projectExecutionAuthority || protocolPayloadFingerprint(current.projectExecutionAuthority) !== protocolPayloadFingerprint(authority.data)) {
+        throw new DomainRouteStoreError("completion-rejected");
+      }
+      const relatedRows = await tx.select().from(controlCommands).where(or(
+        and(eq(controlCommands.scopeKind, "project"), eq(controlCommands.scopeKey, route.data.projectId)),
+        and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${route.data.projectId}`)
+      ));
+      try { validateProjectUpdateAuthority(relatedRows.map(toCommand), authority.data); }
+      catch { throw new DomainRouteStoreError("completion-rejected"); }
+
+      const [reservation] = await tx.select().from(domainRouteReservations).where(eq(domainRouteReservations.hostname, route.data.domain)).limit(1).for("update");
+      if (!reservation || reservation.commandId !== input.command.id || reservation.projectId !== route.data.projectId
+        || protocolPayloadFingerprint(reservation.route) !== protocolPayloadFingerprint(route.data)
+        || protocolPayloadFingerprint(reservation.plan) !== protocolPayloadFingerprint(input.plan)) throw new DomainRouteStoreError("completion-rejected");
+
+      if (receipt.data.state !== "failed") {
+        const [existing] = await tx.select().from(domains).where(eq(domains.hostname, route.data.domain)).limit(1).for("update");
+        const matchesExpected = input.plan.action === "create" ? !existing
+          : input.plan.action === "attach" ? Boolean(existing && existing.projectId === route.data.projectId && existing.deploymentId === null)
+          : input.plan.action === "retarget" ? Boolean(existing && existing.projectId === route.data.projectId && existing.deploymentId === input.plan.previousDeploymentId)
+        : input.plan.action === "no-op" ? Boolean(existing && existing.projectId === route.data.projectId && existing.deploymentId === route.data.deploymentId)
+          : false;
+        if (!matchesExpected) throw new DomainRouteStoreError(existing && existing.projectId !== route.data.projectId ? "domain-conflict" : "stale-plan");
+        const metadata = { schemaVersion: 1, agentId: receipt.data.agentId, networkName: receipt.data.networkName,
+          networkId: receipt.data.networkId, containerId: receipt.data.targetContainerId, routeFile: receipt.data.fileName,
+          configDigest: receipt.data.contentDigest, commandId: input.command.id };
+        if (existing) {
+          await tx.update(domains).set({ deploymentId: route.data.deploymentId, status: "active", metadata, updatedAt: new Date() }).where(eq(domains.id, existing.id));
+        } else {
+          await tx.insert(domains).values({ projectId: route.data.projectId, hostname: route.data.domain, deploymentId: route.data.deploymentId, status: "active", metadata });
+        }
+      }
+
+      const [completed] = await tx.update(controlCommands).set({ status: "completed", result: receipt.data, updatedAt: new Date() })
+        .where(and(eq(controlCommands.id, input.command.id), eq(controlCommands.status, "dispatching"))).returning();
+      if (!completed) throw new DomainRouteStoreError("completion-rejected");
+      await tx.insert(controlCommandAudits).values({ commandId: input.command.id, confirmationId: null, correlationId: input.command.correlationId,
+        outcome: receipt.data.state === "failed" ? "failed" : "completed", reason: receipt.data.failureReason });
+      await tx.insert(auditEvents).values({ actorUserId: input.audit.actorUserId, action: input.audit.action, targetType: input.audit.targetType,
+        targetId: input.audit.targetId, requestId: input.audit.requestId, correlationId: input.audit.correlationId,
+        metadata: redactAuditMetadata({ ...(input.audit.metadata ?? {}), commandId: input.command.id, inputDigest: input.command.inputDigest }) });
+      if (receipt.data.state !== "failed" || receipt.data.failureReason !== "config-write-failed") {
+        await tx.delete(domainRouteReservations).where(eq(domainRouteReservations.hostname, route.data.domain));
+      }
+      return toCommand(completed);
     });
   }
 }

@@ -50,12 +50,16 @@ describe("Traefik domain route config", () => {
     ["foreign project", { receipt: { ...receipt, projectId: "project-2" } }],
     ["foreign deployment", { receipt: { ...receipt, deploymentId: "dep_other" } }],
     ["foreign agent", { receipt: { ...receipt, runtimeHost: "agent-2" } }],
-    ["unreachable network", { receipt: { ...receipt, network: null } }],
-    ["wrong network", { receipt: { ...receipt, network: "deploylite-agent" } }],
     ["foreign container name", { receipt: { ...receipt, container: "attacker" } }]
   ])("fails closed for %s", (_label, patch) => {
     expect(() => renderDomainRouteDynamicConfig({ route, receipt: { ...receipt, ...patch.receipt }, agentId: "agent-1" }))
       .toThrow(DomainRouteRuntimeError);
+  });
+
+  it("renders for an existing default or legacy network because apply joins a separate project route network", () => {
+    const canonical = renderDomainRouteDynamicConfig({ route, receipt, agentId: "agent-1" });
+    expect(renderDomainRouteDynamicConfig({ route, receipt: { ...receipt, network: null }, agentId: "agent-1" })).toEqual(canonical);
+    expect(renderDomainRouteDynamicConfig({ route, receipt: { ...receipt, network: "deploylite-agent" }, agentId: "agent-1" })).toEqual(canonical);
   });
 
   it("rejects noncanonical host input after normalization rather than writing a different owner route", () => {

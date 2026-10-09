@@ -337,6 +337,19 @@ export const domains = pgTable(
   ]
 );
 
+export const domainRouteReservations = pgTable("domain_route_reservations", {
+  hostname: text("hostname").primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  commandId: uuid("command_id").notNull().unique().references(() => controlCommands.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  route: jsonb("route").$type<Record<string, unknown>>().notNull(),
+  plan: jsonb("plan").$type<Record<string, unknown>>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+}, (table) => [
+  index("domain_route_reservations_project_idx").on(table.projectId),
+  check("domain_route_reservations_route_scope", sql`(${table.route}->>'domain' = ${table.hostname} and ${table.route}->>'projectId' = ${table.projectId}::text and ${table.plan}->'route' = ${table.route}) is true`),
+  check("domain_route_reservations_plan_action_valid", sql`${table.plan}->>'action' in ('create', 'attach', 'retarget', 'no-op')`)
+]);
+
 export const certificates = pgTable(
   "certificates",
   {

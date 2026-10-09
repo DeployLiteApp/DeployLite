@@ -395,3 +395,4 @@ export * from "./deployment-contract/compose-volume-attachment.js";
 export * from "./deployment-contract/compose-volume-backup.js";
 
 export * from "./domain-route.js";
+export * from "./deployment-contract/domain-route-apply.js";

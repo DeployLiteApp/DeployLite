@@ -51,10 +51,12 @@ describe("live domain route target inspection", () => {
     await expect(inspectDomainRouteTarget(replaced.input)).rejects.toThrow("Domain route target is unavailable.");
   });
 
-  it("rejects an unbound network or image before invoking Docker", async () => {
-    const noNetwork = fixture({ ...receipt, network: null });
-    await expect(inspectDomainRouteTarget(noNetwork.input)).rejects.toThrow("Domain route target is unavailable.");
-    expect(noNetwork.run).not.toHaveBeenCalled();
+  it("allows legacy bridge-only receipts during preflight and rejects an image mismatch before inspection", async () => {
+    const legacy = fixture({ ...receipt, network: null }, { ...observation, networkMode: "default",
+      networks: { bridge: { networkId: "e".repeat(64), endpointId: "f".repeat(64) } } });
+    await expect(inspectDomainRouteTarget({ ...legacy.input, requireRouteNetwork: false })).resolves.toMatchObject({
+      networkName: network, containerId: receipt.containerId
+    });
     const wrongImage = fixture(receipt);
     await expect(inspectDomainRouteTarget({ ...wrongImage.input, effectiveImage: `registry.example.com/team/other@sha256:${"c".repeat(64)}` }))
       .rejects.toThrow("Domain route target is unavailable.");
