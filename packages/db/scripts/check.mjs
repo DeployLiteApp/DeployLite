@@ -74,7 +74,8 @@ function assertRequiredFoundation(sql) {
     "deployment_logs",
     "env_variable_metadata",
     "domains",
-    "certificates"
+    "certificates",
+    "transport_port_claims"
   ];
 
   for (const table of requiredTables) {
@@ -87,7 +88,9 @@ function assertRequiredFoundation(sql) {
     "CREATE INDEX user_sessions_user_id_idx ON user_sessions (user_id)",
     "CREATE INDEX deployments_project_id_idx ON deployments (project_id)",
     "CREATE INDEX audit_events_actor_user_id_idx ON audit_events (actor_user_id)",
-    "CREATE INDEX certificates_domain_id_idx ON certificates (domain_id)"
+    "CREATE INDEX certificates_domain_id_idx ON certificates (domain_id)",
+    "CREATE INDEX transport_port_claims_project_idx ON transport_port_claims (project_id)",
+    "CONSTRAINT transport_port_claims_protocol_valid CHECK (protocol IN ('tcp', 'udp'))"
   ];
 
   for (const fragment of requiredFragments) {

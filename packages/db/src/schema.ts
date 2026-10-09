@@ -1,6 +1,6 @@
 import type { TrustedPriorExecutionReceiptV1, DeploymentExecutionAuthorityV1, ComposePreviewV1, ProjectControlAuthorityV1 } from "@deploylite/contracts";
 import { sql } from "drizzle-orm";
-import { boolean, check, customType, foreignKey, index, integer, jsonb, pgTable, smallint, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { boolean, check, customType, foreignKey, index, integer, jsonb, pgTable, primaryKey, smallint, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 
 const bytea = customType<{ data: Buffer; notNull: false; default: false }>({
   dataType() {
@@ -154,6 +154,7 @@ export const deployments = pgTable(
   (table) => [
     index("deployments_project_id_idx").on(table.projectId),
     index("deployments_agent_id_idx").on(table.agentId),
+    uniqueIndex("deployments_id_project_id_unique").on(table.id, table.projectId),
     index("deployments_snapshot_hash_idx").on(table.snapshotHash).where(sql`${table.snapshotHash} is not null`),
     check("deployments_status_valid", sql`${table.status} in ('queued', 'running', 'succeeded', 'failed', 'canceled')`)
   ]
@@ -380,6 +381,25 @@ export const domainRouteReservations = pgTable("domain_route_reservations", {
   check("domain_route_reservations_plan_action_valid", sql`${table.plan}->>'action' in ('create', 'attach', 'retarget', 'no-op')`),
   check("domain_route_reservations_operation_valid", sql`(${table.operation} = 'apply' and ${table.rollbackRevisionId} is null) or (${table.operation} = 'rollback' and ${table.rollbackRevisionId} is not null)`)
 ]);
+
+export const transportPortClaims = pgTable("transport_port_claims", {
+  protocol: text("protocol").notNull(),
+  publishedPort: integer("published_port").notNull(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  deploymentId: uuid("deployment_id"),
+  targetPort: integer("target_port").notNull(),
+  ...timestamps
+}, (table) => [
+  primaryKey({ name: "transport_port_claims_protocol_published_port_pk", columns: [table.protocol, table.publishedPort] }),
+  foreignKey({ name: "transport_port_claims_deployment_project_fk", columns: [table.deploymentId, table.projectId], foreignColumns: [deployments.id, deployments.projectId] })
+    .onDelete("restrict").onUpdate("cascade"),
+  index("transport_port_claims_project_idx").on(table.projectId),
+  index("transport_port_claims_deployment_project_idx").on(table.deploymentId, table.projectId),
+  check("transport_port_claims_protocol_valid", sql`${table.protocol} in ('tcp', 'udp')`),
+  check("transport_port_claims_published_port_valid", sql`${table.publishedPort} between 1 and 65535`),
+  check("transport_port_claims_target_port_valid", sql`${table.targetPort} between 1 and 65535`)
+]);
+export type TransportPortClaimRow = typeof transportPortClaims.$inferSelect;
 
 export const certificates = pgTable(
   "certificates",
