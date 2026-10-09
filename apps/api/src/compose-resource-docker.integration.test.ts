@@ -23,7 +23,8 @@ import { createDockerComposeVolumeAttachmentExecutor } from "../../agent/src/inf
 import { createDockerComposeVolumeReplacementDriver } from "../../agent/src/infrastructure/docker/docker-compose-volume-replacement-driver.js";
 import { createDockerComposeVolumeBackupExecutor, createLocalDirectoryComposeVolumeBackupSource } from "../../agent/src/infrastructure/docker/docker-compose-volume-backup.js";
 import { createDockerComposeResourceCleanupExecutor } from "../../agent/src/infrastructure/docker/docker-compose-resource-cleanup.js";
-import { COMPOSE_CONTAINER_INSPECT_FORMAT, COMPOSE_NETWORK_INSPECT_FORMAT, COMPOSE_REPLACEMENT_HEALTH_FORMAT } from "../../agent/src/infrastructure/docker/docker-compose-resource-argv.js";
+import { COMPOSE_CONTAINER_INSPECT_FORMAT, COMPOSE_NETWORK_INSPECT_FORMAT, COMPOSE_REPLACEMENT_HEALTHCHECK_FORMAT,
+  COMPOSE_REPLACEMENT_HEALTH_FORMAT } from "../../agent/src/infrastructure/docker/docker-compose-resource-argv.js";
 import { startAgentServer } from "../../agent/src/server.js";
 import { AuthenticatedAgentDeploymentTransport } from "./agent-transport.js";
 import { AuthenticatedAgentComposeResourceInspectionTransport } from "./compose-resource-inspection-transport.js";
@@ -362,6 +363,19 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       assert.equal(detach.statusCode, 200, detach.body); log("C4 network detach", "PASS", detach.json().data.attachment);
       const detached = await inspect(priorDocument, "network", "extra"); assert.equal(detached.containers[0]?.attached, false);
       await docker(["container", "start", serviceId]);
+      let healthyAfterRestart = false;
+      for (let attempt = 0; attempt < 30; attempt++) {
+        const health = await docker(["container", "inspect", "--format", COMPOSE_REPLACEMENT_HEALTH_FORMAT, serviceId]);
+        if (health === "healthy") { healthyAfterRestart = true; break; }
+        await new Promise(resolveDelay => setTimeout(resolveDelay, 250));
+      }
+      const healthcheck = await docker(["container", "inspect", "--format", COMPOSE_REPLACEMENT_HEALTHCHECK_FORMAT, serviceId]);
+      const writableLayerChanges = await docker(["container", "diff", serviceId]);
+      const changedPaths = writableLayerChanges.split(/\r?\n/).filter(Boolean).slice(0, 12).map(path => path.slice(0, 128));
+      dockerFailureDiagnostics.push(`volume-preflight: restartedHealthy=${healthyAfterRestart}; healthcheck=${healthcheck}; writableLayerChangeCount=${writableLayerChanges ? writableLayerChanges.split(/\r?\n/).length : 0}; changedPaths=${JSON.stringify(changedPaths)}`);
+      assert(healthyAfterRestart, "synthetic seed service did not become healthy after restart");
+      assert.equal(healthcheck, "yes|healthy", "synthetic seed service did not retain its healthcheck");
+      assert.equal(writableLayerChanges, "", "synthetic seed service writable layer is not clean");
       const volumeAttachState = await inspect(priorDocument, "volume", "data");
       assert.equal(volumeAttachState.containers[0]?.running, true); assert.equal(volumeAttachState.containers[0]?.attached, false);
       const replace = await post("volumes/attachment/apply", { priorRevisionId: priorRevision.id, revisionId: nextRevision.id, key: "data", service: "app", attachmentAction: "attach",
