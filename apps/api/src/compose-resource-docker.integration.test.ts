@@ -253,7 +253,9 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
         catch (error) {
           const detail = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code
             : error instanceof Error ? error.name : typeof error;
-          if (dockerFailureDiagnostics.length < 8) dockerFailureDiagnostics.push(`agent-receiver: ${detail}; last-docker=${lastDockerOperation}`);
+          const trace = error instanceof Error ? (error.stack ?? "").split("\n").slice(1, 5).map(line => line.trim()
+            .replace(/\b[a-f0-9]{32,64}\b/gi, "[REDACTED]")).join(" <- ").slice(0, 360) : "";
+          if (dockerFailureDiagnostics.length < 8) dockerFailureDiagnostics.push(`agent-receiver: ${detail}; last-docker=${lastDockerOperation}; trace=${trace}`);
           throw error;
         }
       };
