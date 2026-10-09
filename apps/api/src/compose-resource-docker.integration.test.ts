@@ -271,7 +271,27 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
         }
         return response;
       };
-      const deploymentTransport = new AuthenticatedAgentDeploymentTransport(transportOptions);
+      const reportAgentFailure = (source: string, error: unknown) => {
+        const identity = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code
+          : error instanceof Error ? error.name : typeof error;
+        const sanitize = (value: string) => value.replace(/(password|secret|token|authorization|api[_-]?key|credential)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]")
+          .replace(/\b[a-f0-9]{32,64}\b/gi, "[REDACTED]").replace(/[\r\n\t]+/g, " ");
+        const detail = error instanceof Error ? sanitize(error.message).slice(0, 160) : "";
+        const trace = error instanceof Error ? sanitize((error.stack ?? "").split("\n").slice(1, 5).map(line => line.trim()).join(" <- ")).slice(0, 360) : "";
+        if (dockerFailureDiagnostics.length < 8) dockerFailureDiagnostics.push(source + ": " + identity + "; last-docker=" + lastDockerOperation
+          + "; detail=" + detail + "; trace=" + trace);
+      };
+      const receiveAgentRequest = receiver.receive.bind(receiver);
+      receiver.receive = async (body, signature, signal) => {
+        try { return await receiveAgentRequest(body, signature, signal); }
+        catch (error) { reportAgentFailure("agent-request", error); throw error; }
+      };
+      const deploymentTransport = new AuthenticatedAgentDeploymentTransport({ ...transportOptions, fetch: diagnosticFetch });
+      const dispatchNetworkAttachment = deploymentTransport.dispatchComposeNetworkAttachment.bind(deploymentTransport);
+      deploymentTransport.dispatchComposeNetworkAttachment = async (prepared, authority, context) => {
+        try { return await dispatchNetworkAttachment(prepared, authority, context); }
+        catch (error) { reportAgentFailure("network-transport", error); throw error; }
+      };
       resources = new AuthenticatedAgentComposeResourceInspectionTransport({ ...transportOptions, fetch: diagnosticFetch });
       const access = { owner, agentId, inspector: resources, clock: { now: Date.now }, maxAgeMs: 30_000, capabilities: caps, deadlineMs: 15_000 };
       const rawBackupPlanStore = new InMemoryComposeVolumeBackupPlanStore({ ledger: memory.completion, appendAudit: value => { appAudit!.appendSynchronous(value); }, clock: Date.now });
