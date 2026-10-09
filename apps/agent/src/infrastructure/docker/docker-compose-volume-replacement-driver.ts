@@ -70,7 +70,9 @@ export function createDockerComposeVolumeReplacementDriver(supplied: Options): C
       const ids = idsText.split(/\r?\n/).filter(Boolean);
       if (ids.length !== 1 || !/^[a-f0-9]{64}$/.test(ids[0]!)) return fail();
       const candidate = await inspectCandidate(ids[0]!, signal);
-      if (candidate.name !== name) return fail();
+      // Treat a broad Docker name-filter hit as no candidate. We never adopt or remove
+      // it; Docker will still reject creation if the exact deterministic name is occupied.
+      if (candidate.name !== name) return null;
       const { name: _name, ...result } = candidate;
       return result;
     },

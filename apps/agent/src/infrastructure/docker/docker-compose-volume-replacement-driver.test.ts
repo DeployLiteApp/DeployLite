@@ -50,6 +50,19 @@ describe("simulated Docker Compose volume replacement driver", () => {
     expect(f.calls.map(value => value.argv.slice(0, 3))).toEqual([["docker", "container", "inspect"], ["docker", "container", "diff"]]);
   });
 
+  it("ignores a Docker name-filter result whose inspected name is not the exact candidate", async () => {
+    const f = fixture();
+    vi.mocked(f.runner.run).mockImplementation(async (argv) => {
+      const format = argv[argv.indexOf("--format") + 1];
+      if (argv[1] === "container" && argv[2] === "ls") return { exitCode: 0, signal: null, stdout: `${containerId}\n`, stderr: "" };
+      if (format === COMPOSE_REPLACEMENT_CANDIDATE_INSPECT_FORMAT) return { exitCode: 0, signal: null, stdout: JSON.stringify({ id: containerId,
+        name: `/dl-${"f".repeat(32)}-vol-candidate`, owner: "other", projectId: "other-project", service: "api", commandId: "other-command",
+        revisionId: "other-revision", configDigest: "c".repeat(64), environmentDigest: "d".repeat(64), image, running: true, networks: [], mounts: [] }), stderr: "" };
+      return { exitCode: 0, signal: null, stdout: "", stderr: "" };
+    });
+    await expect(f.driver.findCandidate(name, new AbortController().signal)).resolves.toBeNull();
+  });
+
   it("never removes the named volume while removing its exact command-owned candidate", async () => {
     const f = fixture();
     await f.driver.removeCandidate(containerId, "command-1", new AbortController().signal);
