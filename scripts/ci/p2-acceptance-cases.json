@@ -3,7 +3,7 @@
   "purpose": "Expected evidence only; this manifest neither authorizes runtime nor claims PASS",
   "suites": {
     "db": {
-      "count": 58,
+      "count": 59,
       "allowSkipped": false,
       "cases": [
         {
@@ -351,6 +351,12 @@
         {
           "fullName": "PostgreSQL auth foundation integration persists cleanup admission across clients and atomically recovers concurrent commit replies",
           "title": "persists cleanup admission across clients and atomically recovers concurrent commit replies",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration atomically persists a domain route apply and replays its terminal receipt",
+          "title": "atomically persists a domain route apply and replays its terminal receipt",
           "file": "packages/db/src/postgres.integration.test.ts",
           "physicalRestart": false
         }
@@ -983,7 +989,11 @@
     "apps/api/src/postgres.integration.test.ts",
     "packages/config/src/index.ts",
     "packages/contracts/src/deployment-contract/agent-transport.ts",
+    "packages/contracts/src/deployment-contract/domain-route-apply.ts",
+    "packages/contracts/src/deployment-contract/prior-execution-receipt.ts",
+    "packages/contracts/src/deployment-contract/project-control-authority.ts",
     "packages/contracts/src/deployment-contract/snapshot-plan.ts",
+    "packages/contracts/src/domain-route.ts",
     "packages/contracts/src/index.ts",
     "packages/db/migrations/0000_auth_postgres_foundation.sql",
     "packages/db/migrations/0001_real_product_deploy_flow.sql",
@@ -1003,18 +1013,21 @@
     "packages/db/migrations/0015_trusted_prior_execution_receipt.sql",
     "packages/db/migrations/0016_repeated_deployment_snapshot_hash.sql",
     "packages/db/migrations/0017_control_execution_authority.sql",
+    "packages/db/migrations/0021_domain_route_reservations.sql",
     "packages/db/src/execution-postgres.integration-cases.ts",
     "packages/db/src/postgres.integration.test.ts",
     "packages/db/src/repositories/agent-replay.ts",
     "packages/db/src/repositories/control-plane.ts",
     "packages/db/src/repositories/deployment-data.ts",
     "packages/db/src/repositories/execution-completion.ts",
+    "packages/db/src/repositories/domain-routes.ts",
     "packages/db/src/schema.ts",
     "packages/domain/src/control-plane.ts",
     "packages/domain/src/deployment-contract/deployment-authority.ts",
     "packages/domain/src/deployment-contract/docker-image-executor.ts",
     "packages/domain/src/deployment-contract/execution-completion.ts",
     "packages/domain/src/deployment-contract/execution-memory-state.ts",
+    "packages/domain/src/domain-route-plan.ts",
     "packages/domain/src/index.ts",
     "scripts/ci/p2-acceptance-cases.json",
     "scripts/ci/p2-physical-acceptance.py",
