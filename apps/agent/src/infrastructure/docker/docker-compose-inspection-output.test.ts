@@ -17,7 +17,7 @@ describe("closed Compose inspection process output", () => {
   it("uses an optional HostConfig mount lookup for containers without configured mounts", () => {
     expect(COMPOSE_CONTAINER_INSPECT_FORMAT).toContain('index .HostConfig "Mounts"');
     expect(COMPOSE_CONTAINER_INSPECT_FORMAT).not.toContain(".HostConfig.Mounts");
-    expect(COMPOSE_CONTAINER_INSPECT_FORMAT).toContain('index $mount "ReadOnly"');
+    expect(COMPOSE_CONTAINER_INSPECT_FORMAT).toContain('{{if index $mount "ReadOnly"}}true{{else}}false{{end}}');
     expect(COMPOSE_CONTAINER_INSPECT_FORMAT).not.toContain("$mount.ReadOnly");
   });
   it("preserves network physical ID and scoped generated name only under the exact format", async () => {
