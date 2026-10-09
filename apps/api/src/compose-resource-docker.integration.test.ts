@@ -185,7 +185,7 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       assert.equal(volumeInfo.Labels["com.deploylite.resource.kind"], "volume"); assert.equal(volumeInfo.Labels["com.deploylite.resource.key"], "data");
       register({ id: volumeInfo.CreatedAt, kind: "volume", name: volume.runtimeName, resourceKind: "volume", key: "data", created: true });
       const mountpoint = await docker(["volume", "inspect", "--format", format, volume.runtimeName]);
-      const seedName = `p3c8-${runId}-seed`, seedId = await docker(["container", "run", "--detach", "--name", seedName, "--network", "none", "--user", "0:0",
+      const seedName = `p3c8-${runId}-seed`, seedId = await docker(["run", "--detach", "--name", seedName, "--network", "none", "--user", "0:0",
         "--cpus=0.25", "--memory=33554432", "--pids-limit=32", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
         "--mount", `type=volume,source=${volume.runtimeName},target=/data`, "--entrypoint", "/bin/sh", manifest.image, "-c", `printf '%s' '${secretFreeMarker}' > /data/p3-marker.txt && sleep 30`]);
       const seedOwned = { id: seedId, kind: "container" as const, name: seedName, created: true }; register(seedOwned);
@@ -276,7 +276,7 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       assert.equal(nextSaved.statusCode, 201, nextSaved.body); const nextRevision = nextSaved.json().data.revision;
       log("C3 owned network and volume identities", "PASS", { backendId, extraId, volumeCreatedAt: volumeInfo.CreatedAt });
       const serviceName = `p3c8-${runId}-service`, environmentDigest = sha256("{}");
-      const serviceId = await docker(["container", "run", "--detach", "--name", serviceName, "--cpus=0.5", "--memory=67108864", "--pids-limit=64", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
+      const serviceId = await docker(["run", "--detach", "--name", serviceName, "--cpus=0.5", "--memory=67108864", "--pids-limit=64", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
         "--restart", "no", "--network", backend.runtimeName, "--network-alias", "app", "--label", `com.deploylite.owner=${owner}`, "--label", `com.deploylite.project=${projectId}`,
         "--label", "com.deploylite.compose.managed=v1", "--label", "com.deploylite.compose.service=app", "--label", `com.deploylite.compose.revision=${priorRevision.id}`,
         "--label", `com.deploylite.compose.config-digest=${priorPreview.configDigest}`, "--label", `com.deploylite.compose.environment-digest=${environmentDigest}`, manifest.image]);
