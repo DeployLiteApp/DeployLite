@@ -23,16 +23,20 @@ describe("closed Compose inspection process output", () => {
     expect(JSON.parse(r.stdout)).toMatchObject({ name: volume, createdAt: "2026-10-08T00:00:00Z", password: "[REDACTED]" });
   });
   it("preserves nested observed network and named-volume identities without weakening generic redaction", async () => {
-    const image = `registry.example.com/app@sha256:${"c".repeat(64)}`;
-    const r = await run(["container", "inspect", "--format", COMPOSE_CONTAINER_INSPECT_FORMAT, "b".repeat(64)], JSON.stringify({ id: "b".repeat(64), effectiveImage: image, networks: [{ name, networkId: "d".repeat(64) }], mounts: [{ name: name.replace("-net-", "-vol-"), target: "/data" }], token: "outside" }));
-    expect(JSON.parse(r.stdout)).toMatchObject({ id: "b".repeat(64), effectiveImage: image, networks: [{ name, networkId: "d".repeat(64) }], mounts: [{ name: name.replace("-net-", "-vol-"), target: "/data" }], token: "[REDACTED]" });
+    const image = `registry.example.com/app@sha256:${"c".repeat(64)}`, configDigest = "a".repeat(64), environmentDigest = "e".repeat(64);
+    const r = await run(["container", "inspect", "--format", COMPOSE_CONTAINER_INSPECT_FORMAT, "b".repeat(64)], JSON.stringify({ id: "b".repeat(64), effectiveImage: image,
+      composeConfigDigest: configDigest, composeEnvironmentDigest: environmentDigest, networks: [{ name, networkId: "d".repeat(64) }],
+      mounts: [{ name: name.replace("-net-", "-vol-"), target: "/data" }], token: "outside" }));
+    expect(JSON.parse(r.stdout)).toMatchObject({ id: "b".repeat(64), effectiveImage: image, composeConfigDigest: configDigest, composeEnvironmentDigest: environmentDigest,
+      networks: [{ name, networkId: "d".repeat(64) }], mounts: [{ name: name.replace("-net-", "-vol-"), target: "/data" }], token: "[REDACTED]" });
   });
   it("preserves full IDs for the explicit all-container ls alias", async () => {
     const r = await run(["container", "ls", "--all", "--no-trunc", "--format", "{{.ID}}"], "b".repeat(64) + "\n");
     expect(r.stdout).toBe("b".repeat(64) + "\n");
   });
   it("still redacts physical-looking values in arbitrary unrecognized templates", async () => {
-    const r = await run(["volume", "inspect", "--format", "{{json .}}", "outside"], JSON.stringify({ name, id: "b".repeat(64), password: "secret=outside" }));
-    expect(r.stdout).not.toContain("b".repeat(64)); expect(r.stdout).not.toContain("a".repeat(32)); expect(r.stdout).not.toContain("secret=outside");
+    const r = await run(["volume", "inspect", "--format", "{{json .}}", "outside"], JSON.stringify({ name, id: "b".repeat(64),
+      composeConfigDigest: "a".repeat(64), password: "secret=outside" }));
+    expect(r.stdout).not.toContain("b".repeat(64)); expect(r.stdout).not.toContain("a".repeat(64)); expect(r.stdout).not.toContain("a".repeat(32)); expect(r.stdout).not.toContain("secret=outside");
   });
 });

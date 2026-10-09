@@ -39,6 +39,8 @@ function redactDockerProtocolOutput(value: string, argv: readonly string[]): str
       if (composeFormat && key === "name" && /^dl-[a-f0-9]{32}-(?:net|vol)-[a-z][a-z0-9_-]{0,62}$/.test(nested)
         && (path.length === 1 || (path.length === 3 && ["networks", "mounts"].includes(path[0]!)))) return nested;
       if (DOCKER_ID.test(nested) && ((path.length === 1 && ["id", "imageId"].includes(key) && format!.includes(`"${key}":`)) || (path.length === 3 && path[0] === "networks" && ["networkId", "endpointId"].includes(key) && format!.includes(`"${key}":`)))) return nested;
+      if (/^[a-f0-9]{64}$/.test(nested) && composeFormat && path.length === 1
+        && ["composeConfigDigest", "composeEnvironmentDigest"].includes(key) && format!.includes(`"${key}":`)) return nested;
       if (DOCKER_IMAGE.test(nested) && ((path.length === 1 && ["image", "effectiveImage"].includes(key) && format!.includes(`"${key}":`)) || (path.length === 2 && path[0] === "repoDigests" && format!.includes(".RepoDigests")))) return nested;
       return redactDockerDiagnostic(nested);
     }
