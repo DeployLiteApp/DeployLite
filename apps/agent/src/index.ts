@@ -115,6 +115,8 @@ export { AuthenticatedAgentCommandReceiver, createAgentExecutionHandler } from "
 export { startAgentServer } from "./server.js";
 export type { AgentReplayStore } from "./agent-transport.js";
 export type { AgentServerOptions } from "./server.js";
+export { TraefikDomainRouteFileStore, TraefikDomainRouteFileStoreError } from "./infrastructure/traefik/traefik-domain-route-file-store.js";
+export type { TraefikDomainRouteApplyInput, TraefikDomainRouteApplyResult } from "./infrastructure/traefik/traefik-domain-route-file-store.js";
 
 export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
   const { parseDeployLiteEnv } = await import("@deploylite/config");
