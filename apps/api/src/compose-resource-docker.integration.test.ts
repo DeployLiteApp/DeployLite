@@ -23,7 +23,7 @@ import { createDockerComposeVolumeAttachmentExecutor } from "../../agent/src/inf
 import { createDockerComposeVolumeReplacementDriver } from "../../agent/src/infrastructure/docker/docker-compose-volume-replacement-driver.js";
 import { createDockerComposeVolumeBackupExecutor, createLocalDirectoryComposeVolumeBackupSource } from "../../agent/src/infrastructure/docker/docker-compose-volume-backup.js";
 import { createDockerComposeResourceCleanupExecutor } from "../../agent/src/infrastructure/docker/docker-compose-resource-cleanup.js";
-import { COMPOSE_CONTAINER_INSPECT_FORMAT, COMPOSE_NETWORK_INSPECT_FORMAT, COMPOSE_REPLACEMENT_HEALTHCHECK_FORMAT,
+import { COMPOSE_CONTAINER_INSPECT_FORMAT, COMPOSE_NETWORK_INSPECT_FORMAT, COMPOSE_REPLACEMENT_CANDIDATE_INSPECT_FORMAT, COMPOSE_REPLACEMENT_HEALTHCHECK_FORMAT,
   COMPOSE_REPLACEMENT_HEALTH_FORMAT } from "../../agent/src/infrastructure/docker/docker-compose-resource-argv.js";
 import { startAgentServer } from "../../agent/src/server.js";
 import { AuthenticatedAgentDeploymentTransport } from "./agent-transport.js";
@@ -161,9 +161,16 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
     };
     const dockerFailureDiagnostics: string[] = []; let lastDockerOperation = "none";
     let lastNetworkInspection: { name: string; id: string } | undefined, networkProjection = "unavailable";
+    let candidateObservation: Record<string, unknown> | undefined, createdCandidateId: string | undefined;
     const runner = boundedRunner(allowed, id => allowedIds.add(id), (operation, detail) => { if (dockerFailureDiagnostics.length < 8) dockerFailureDiagnostics.push(`${operation}: ${detail}`); },
       (operation, argv, result) => {
         lastDockerOperation = operation;
+        if (argv[1] === "run" && argv.includes("--name") && /^dl-[a-f0-9]{32}-vol-candidate$/.test(argv[argv.indexOf("--name") + 1] ?? "")) {
+          createdCandidateId = result.stdout.trim();
+        }
+        if (argv[1] === "container" && argv[2] === "inspect" && argv[4] === COMPOSE_REPLACEMENT_CANDIDATE_INSPECT_FORMAT) {
+          try { candidateObservation = JSON.parse(result.stdout) as Record<string, unknown>; } catch { candidateObservation = undefined; }
+        }
         if (argv[1] === "network" && argv[2] === "inspect" && argv[4] === COMPOSE_NETWORK_INSPECT_FORMAT) {
           try {
             const observation = JSON.parse(result.stdout) as { name?: string; id?: string };
@@ -380,6 +387,19 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       assert.equal(volumeAttachState.containers[0]?.running, true); assert.equal(volumeAttachState.containers[0]?.attached, false);
       const replace = await post("volumes/attachment/apply", { priorRevisionId: priorRevision.id, revisionId: nextRevision.id, key: "data", service: "app", attachmentAction: "attach",
         expectedStateDigest: volumeAttachState.stateDigest, expectedContainerId: serviceId }, "volume-replace-once");
+      const volumeCommand = [...commands().values()].find(value => value.idempotencyKey === "volume-replace-once");
+      if (candidateObservation && volumeCommand) {
+        const expectedCandidateName = `dl-${createHash("sha256").update(volumeCommand.id).digest("hex").slice(0, 32)}-vol-candidate`;
+        dockerFailureDiagnostics.push(`volume-candidate-checks: ${JSON.stringify({ idMatches: candidateObservation.id === createdCandidateId,
+          nameMatches: typeof candidateObservation.name === "string" && candidateObservation.name.replace(/^\//, "") === expectedCandidateName,
+          ownerMatches: candidateObservation.owner === owner, projectMatches: candidateObservation.projectId === projectId,
+          serviceMatches: candidateObservation.service === "app", commandMatches: candidateObservation.commandId === volumeCommand.id,
+          revisionMatches: candidateObservation.revisionId === nextRevision.id, configDigestMatches: candidateObservation.configDigest === nextPreview.configDigest,
+          environmentDigestMatches: candidateObservation.environmentDigest === sha256("{}"), imageMatches: candidateObservation.image === manifest.image,
+          running: candidateObservation.running === true,
+          networksMatch: JSON.stringify(candidateObservation.networks) === JSON.stringify([backend.runtimeName]),
+          mountsMatch: JSON.stringify(candidateObservation.mounts) === JSON.stringify([{ source: volume.runtimeName, target: "/data", readOnly: false }]) })}`);
+      }
       assert.equal(replace.statusCode, 200, replace.body); const replacementId = replace.json().data.attachment.replacementContainerId as string;
       assert(/^[a-f0-9]{64}$/.test(replacementId)); register({ id: replacementId, kind: "container", name: "volume-replacement-candidate", created: true });
       const persisted = await docker(["container", "exec", replacementId, "/bin/sh", "-c", "test \"$(cat /data/p3-marker.txt)\" = deploylite-p3-owned-volume-marker-v1"]);
