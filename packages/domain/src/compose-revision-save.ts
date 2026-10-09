@@ -1,7 +1,9 @@
 import { composeResourcePageSchema, composeRevisionSchema, composeRevisionSaveRequestSchema, composeRevisionSaveCommandResultSchema,
-  type ComposePreviewV1, type ComposeRevisionV1, type ComposeRevisionSaved, type ComposeResourceMetadata, type ComposeResourcePage, type ImageReferencePolicyV1 } from "@deploylite/contracts";
+  composeResourceOwnershipQuerySchema, composeResourceOwnershipSchema,
+  type ComposePreviewV1, type ComposeRevisionV1, type ComposeRevisionSaved, type ComposeResourceMetadata, type ComposeResourcePage,
+  type ComposeResourceOwnershipQueryV1, type ComposeResourceOwnershipV1, type ImageReferencePolicyV1 } from "@deploylite/contracts";
 import type { AuditEventInput } from "./index.js";
-import { createComposePreview } from "./compose-preview.js";
+import { composeRuntimeResourceName, createComposePreview } from "./compose-preview.js";
 import { ComposeRevisionError, type ComposeRevisionPageOptions, type ComposeRevisionPage } from "./compose-revision.js";
 import { createControlCommand, digestControlInput, resolveControlCommandInMemory, type ControlCommand } from "./control-plane.js";
 
@@ -12,10 +14,12 @@ export type ComposeRevisionSaveStore = {
   available(): boolean; save(input: PreparedComposeRevisionSave): Promise<ComposeRevisionSaved>;
   findRevision(projectId: string, revisionId: string): Promise<ComposeRevisionV1 | null>;
   findLatestRevision(projectId: string, composeId: string): Promise<ComposeRevisionV1 | null>;
+  findResourceOwner(query: ComposeResourceOwnershipQueryV1): Promise<ComposeResourceOwnershipV1 | null>;
   listRevisions(projectId: string, composeId: string, options: ComposeRevisionPageOptions): Promise<ComposeRevisionPage>;
   listResources(projectId: string, options: ComposeRevisionPageOptions): Promise<ComposeResourcePage>;
 };
 const identifier = /^[A-Za-z0-9_-]{1,200}$/;
+const MAX_RESOURCE_OWNER_SCAN = 1_000;
 function invalid(): never { throw new ComposeRevisionError("COMPOSE_REVISION_INVALID"); }
 function conflict(): never { throw new ComposeRevisionError("COMPOSE_REVISION_CONFLICT"); }
 function intent(input: Pick<PreparedComposeRevisionSave, "composeId" | "expectedRevisionId" | "preview">) {
@@ -98,6 +102,22 @@ export class InMemoryComposeRevisionSaveStore implements ComposeRevisionSaveStor
   }
   async findRevision(projectId: string, id: string): Promise<ComposeRevisionV1 | null> { const value = this.#revisions.get(id); return value?.projectId === projectId ? structuredClone(value) : null; }
   async findLatestRevision(projectId: string, id: string): Promise<ComposeRevisionV1 | null> { const value = this.#latest.get(id); return value?.projectId === projectId ? structuredClone(value) : null; }
+  async findResourceOwner(raw: ComposeResourceOwnershipQueryV1): Promise<ComposeResourceOwnershipV1 | null> {
+    const parsed = composeResourceOwnershipQuerySchema.safeParse(structuredClone(raw)); if (!parsed.success) invalid();
+    const query = parsed.data, current = [...this.#latest.values()].filter((revision) => revision.projectId === query.projectId);
+    if (current.length > MAX_RESOURCE_OWNER_SCAN) throw new ComposeRevisionError("COMPOSE_REVISION_CONFLICT");
+    const matches = current.flatMap((revision) => (query.kind === "network" ? revision.preview.networks : revision.preview.volumes)
+      .filter((resource) => resource.key === query.key).map((resource) => ({ revision, resource })));
+    if (matches.length > 1) throw new ComposeRevisionError("COMPOSE_REVISION_CONFLICT");
+    const match = matches[0];
+    if (!match || match.revision.preview.configDigest !== query.expectedConfigDigest) return null;
+    const owner = this.#revisions.get(match.revision.composeId);
+    if (!owner || owner.projectId !== query.projectId || owner.composeId !== match.revision.composeId) return null;
+    if (match.resource.runtimeName !== composeRuntimeResourceName(query.projectId, query.kind, query.key)) invalid();
+    return composeResourceOwnershipSchema.parse({ schemaVersion: 1, projectId: match.revision.projectId, composeId: match.revision.composeId, ownerUserId: owner.createdBy,
+      revisionId: match.revision.id, revisionNumber: match.revision.number, kind: query.kind, key: match.resource.key,
+      runtimeName: match.resource.runtimeName, configDigest: match.revision.preview.configDigest });
+  }
   async listRevisions(projectId: string, composeId: string, options: ComposeRevisionPageOptions): Promise<ComposeRevisionPage> {
     validateComposePageOptions(options); const records = [...this.#revisions.values()].filter((item) => item.projectId === projectId && item.composeId === composeId).sort((a, b) => b.number - a.number);
     return { ...options, total: records.length, revisions: structuredClone(records.slice(options.offset, options.offset + options.limit)) };

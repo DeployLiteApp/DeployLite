@@ -7,6 +7,7 @@ export { InMemorySnapshotStore } from "./deployment-contract/snapshot-memory.js"
 export { InMemoryProtocolTransport } from "./deployment-contract/protocol-memory.js";
 export * from "./deployment-contract/execution-completion.js";
 export * from "./deployment-contract/docker-image-executor.js";
+export * from "./compose-volume-backup-execution.js";
 export { FakeDockerImageTransport } from "./deployment-contract/testing/fake-docker-image-transport.js";
 
 export * from "./control-plane.js";
@@ -428,3 +429,12 @@ export * from "./compose-preview.js";
 export * from "./compose-revision.js";
 
 export * from "./compose-revision-save.js";
+
+export * from "./compose-resource-inspection.js";
+
+export * from "./compose-volume-backup-plan.js";
+export * from "./compose-resource-cleanup.js";
+
+export * from "./compose-resource-cleanup-store.js";
+
+export * from "./compose-volume-attachment-plan.js";

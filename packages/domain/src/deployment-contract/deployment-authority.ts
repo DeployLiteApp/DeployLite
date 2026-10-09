@@ -1,4 +1,4 @@
-import { deploymentExecutionAuthoritySchema, deploymentStopCommandResultSchema, type DeploymentStopCommandResult, FenceError, LeaseExpiredError, protocolPayloadFingerprint, type Deployment, type DeploymentExecutionAuthorityV1 } from "@deploylite/contracts";
+import { deploymentExecutionAuthoritySchema, deploymentStopCommandResultSchema, projectControlAuthoritySchema, type DeploymentStopCommandResult, FenceError, LeaseExpiredError, protocolPayloadFingerprint, type Deployment, type DeploymentExecutionAuthorityV1, type ProjectControlAuthorityV1 } from "@deploylite/contracts";
 import { IdempotencyConflictError, type ControlCommand } from "../control-plane.js";
 
 export type InitialExecutionBinding = Readonly<{ snapshotOriginId: string; snapshotHash: string; runtimeHost: string }>;
@@ -6,16 +6,52 @@ export type InitialExecutionBinding = Readonly<{ snapshotOriginId: string; snaps
 export type DeploymentAuthorityValidation = {
   validateInitialExecution?(projectId: string, executionId: string, binding: InitialExecutionBinding): Promise<void>;
   validateDeploymentAuthority(authority: DeploymentExecutionAuthorityV1, now?: number): Promise<void>;
+  validateProjectUpdateAuthority?(authority: ProjectControlAuthorityV1, now?: number): Promise<void>;
 };
+
+function inProject(command: ControlCommand, projectId: string): boolean {
+  return (command.scope.kind === "project" && command.scope.projectId === projectId)
+    || (command.scope.kind === "deployment" && command.scope.projectId === projectId);
+}
+function projectFence(command: ControlCommand): number {
+  return command.projectExecutionAuthority?.projectLease.fence ?? command.executionAuthority?.projectLease.fence ?? 0;
+}
+
+/** Claim the existing shared project command row for a non-destructive project.update operation. */
+export function claimProjectUpdateAuthority(commands: readonly ControlCommand[], current: ControlCommand, now = Date.now()): ProjectControlAuthorityV1 | null {
+  if (current.action !== "project.update" || current.scope.kind !== "project" || current.status !== "eligible"
+    || current.expiresAt.getTime() <= now || current.executionAuthority || current.projectExecutionAuthority) return null;
+  const projectId = current.scope.projectId;
+  const related = commands.filter(command => inProject(command, projectId));
+  if (related.some(command => command.id !== current.id && command.status === "dispatching" && command.expiresAt.getTime() > now)) return null;
+  // INITIAL execution reserves project fence 1, so every control claim starts above it.
+  const fence = Math.max(1, ...related.map(projectFence)) + 1;
+  const authority = projectControlAuthoritySchema.parse({ schemaVersion: 1, projectId, commandId: current.id, action: "project.update", inputDigest: current.inputDigest,
+    projectLease: { projectId, leaseId: `${current.id}:project:${fence}`, fence, expiresAt: current.expiresAt.getTime() } });
+  current.projectExecutionAuthority = structuredClone(authority);
+  current.status = "dispatching";
+  return authority;
+}
+
+/** Validate project.update authority against the same project fence used by deployment controls. */
+export function validateProjectUpdateAuthority(commands: readonly ControlCommand[], submitted: ProjectControlAuthorityV1, now = Date.now()): void {
+  const authority = projectControlAuthoritySchema.parse(submitted);
+  if (authority.projectLease.expiresAt <= now) throw new LeaseExpiredError();
+  const current = commands.find(command => command.id === authority.commandId);
+  if (!current || current.action !== "project.update" || current.scope.kind !== "project" || current.scope.projectId !== authority.projectId
+    || current.inputDigest !== authority.inputDigest || current.status !== "dispatching" || !current.projectExecutionAuthority
+    || protocolPayloadFingerprint(current.projectExecutionAuthority) !== protocolPayloadFingerprint(authority)) throw new FenceError("Project update authority no longer owns the command");
+  if (commands.some(command => inProject(command, authority.projectId) && projectFence(command) > authority.projectLease.fence)) throw new FenceError();
+}
 
 /** Mutate the existing eligible command synchronously after repository row locks. */
 export function claimDeploymentAuthority(commands: readonly ControlCommand[], current: ControlCommand, executionId: string, now = Date.now()): DeploymentExecutionAuthorityV1 | null {
   if (current.status !== "eligible" || current.scope.kind !== "deployment" || current.expiresAt.getTime() <= now) return null;
   const projectId = current.scope.projectId;
-  const related = commands.filter((command) => command.scope.kind === "deployment" && command.scope.projectId === projectId);
+  const related = commands.filter((command) => inProject(command, projectId));
   if (related.some((command) => command.id !== current.id && command.status === "dispatching" && command.expiresAt.getTime() > now)) return null;
   // INITIAL transport reserves fence 1; shared controls must advance beyond it.
-  const fence = Math.max(1, ...related.map((command) => command.executionAuthority?.projectLease.fence ?? 0)) + 1;
+  const fence = Math.max(1, ...related.map(projectFence)) + 1;
   const lease = (deploymentId: string, kind: string) => ({ deploymentId, fence, leaseId: `${current.id}:${kind}:${fence}`, expiresAt: current.expiresAt.getTime() });
   const authority = deploymentExecutionAuthoritySchema.parse({ projectId, commandId: current.id, action: current.action,
     projectLease: lease(projectId, "project"), executionLease: lease(executionId, "execution"),
@@ -32,14 +68,15 @@ export function validateDeploymentAuthority(commands: readonly ControlCommand[],
   if (leases.some((lease) => lease.expiresAt <= now)) throw new LeaseExpiredError();
   const current = commands.find((command) => command.id === authority.commandId);
   if (!current || current.status !== "dispatching" || current.scope.kind !== "deployment" || current.scope.projectId !== authority.projectId || !current.executionAuthority || protocolPayloadFingerprint(current.executionAuthority) !== protocolPayloadFingerprint(authority)) throw new FenceError("Deployment authority no longer owns the command");
-  if (commands.some((command) => command.scope.kind === "deployment" && command.scope.projectId === authority.projectId && (command.executionAuthority?.projectLease.fence ?? 0) > authority.projectLease.fence)) throw new FenceError();
+  if (commands.some((command) => inProject(command, authority.projectId) && projectFence(command) > authority.projectLease.fence)) throw new FenceError();
 }
 
 /** INITIAL fence 1 cannot resume after a persisted stop/replacement control of that execution. */
-export function validateInitialExecution(commands: readonly ControlCommand[], deployment: Deployment | null | undefined, projectId: string, executionId: string, binding: InitialExecutionBinding): void {
+export function validateInitialExecution(commands: readonly ControlCommand[], deployment: Deployment | null | undefined, projectId: string, executionId: string, binding: InitialExecutionBinding, now = Date.now()): void {
   if (!deployment || deployment.id !== executionId || deployment.projectId !== projectId || deployment.status !== "running") throw new FenceError("INITIAL execution no longer runs");
   if (deployment.snapshotOriginId !== binding.snapshotOriginId || deployment.snapshotHash !== binding.snapshotHash || deployment.agentId !== binding.runtimeHost) throw new FenceError("INITIAL immutable execution binding changed");
-  if (commands.some((command) => command.scope.kind === "deployment" && command.scope.projectId === projectId && ((command.executionAuthority && [command.executionAuthority.executionLease, command.executionAuthority.sourceLease].some((lease) => lease?.deploymentId === executionId && lease.fence > 1)) || (command.action === "deployment.stop" && command.scope.deploymentId === executionId && ["dispatching", "completed"].includes(command.status))))) throw new FenceError("INITIAL execution superseded by control authority");
+  if (commands.some((command) => (command.scope.kind === "deployment" && command.scope.projectId === projectId && ((command.executionAuthority && [command.executionAuthority.executionLease, command.executionAuthority.sourceLease].some((lease) => lease?.deploymentId === executionId && lease.fence > 1)) || (command.action === "deployment.stop" && command.scope.deploymentId === executionId && ["dispatching", "completed"].includes(command.status))))
+    || (command.scope.kind === "project" && command.scope.projectId === projectId && command.action === "project.update" && (projectFence(command) > 1 || (command.status === "dispatching" && (command.projectExecutionAuthority?.projectLease.expiresAt ?? 0) > now))))) throw new FenceError("INITIAL execution superseded by control authority");
 }
 
 /** Equal terminal replay precedes mutable authority; every new Stop result requires the current claim. */

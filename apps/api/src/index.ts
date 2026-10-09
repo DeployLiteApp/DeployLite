@@ -46,3 +46,4 @@ if (isMainModule()) {
 export { API_PREFIX, AUTH_HEADER, buildApiApp } from "./app.js";
 export * from "./github-cloud-read-adapter.js";
 export * from "./github-app-installation-token-provider.js";
+export * from "./compose-resource-inspection-transport.js";

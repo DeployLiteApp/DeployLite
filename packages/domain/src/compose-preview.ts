@@ -13,6 +13,9 @@ function sorted<T>(record: Record<string, T>): Record<string, T> {
   return Object.fromEntries(Object.keys(record).sort().map((name) => [name, record[name]!]));
 }
 function hash(value: string): string { return createHash("sha256").update(value).digest("hex"); }
+export function composeRuntimeResourceName(projectId: string, kind: "network" | "volume", key: string): string {
+  return "dl-" + hash(projectId).slice(0, 32) + "-" + (kind === "network" ? "net" : "vol") + "-" + key;
+}
 
 /** Pure planning only: no runtime port, secret source, file or process adapter. */
 export function createComposePreview(document: string, projectId: string, imagePolicy: ImageReferencePolicyV1): ComposePreviewV1 {
@@ -46,10 +49,9 @@ export function createComposePreview(document: string, projectId: string, imageP
   });
   const canonicalDocument = JSON.stringify({ services: sorted(model.services), networks: sorted(model.networks), volumes: sorted(model.volumes) });
   // Scoped names are proposals only. Later apply must prove ownership/conflict state.
-  const prefix = `dl-${hash(projectId).slice(0, 32)}`;
-  const networks = Object.keys(model.networks).sort().map((key) => ({ key, projectId, runtimeName: `${prefix}-net-${key}`, ...model.networks[key]!,
+  const networks = Object.keys(model.networks).sort().map((key) => ({ key, projectId, runtimeName: composeRuntimeResourceName(projectId, "network", key), ...model.networks[key]!,
     attachedServices: services.filter((service) => service.networks.includes(key)).map((service) => service.name) }));
-  const volumes = Object.keys(model.volumes).sort().map((key) => ({ key, projectId, runtimeName: `${prefix}-vol-${key}`, ...model.volumes[key]!,
+  const volumes = Object.keys(model.volumes).sort().map((key) => ({ key, projectId, runtimeName: composeRuntimeResourceName(projectId, "volume", key), ...model.volumes[key]!,
     attachedServices: services.filter((service) => service.volumes.some((mount) => mount.source === key)).map((service) => service.name) }));
   return composePreviewSchema.parse({ schemaVersion: 1, projectId, status: "preview", executionAllowed: false, policyVersion: policy.policyVersion,
     configDigest: hash(JSON.stringify({ schemaVersion: 1, projectId, policy, canonicalDocument })), canonicalDocument, services, networks, volumes });

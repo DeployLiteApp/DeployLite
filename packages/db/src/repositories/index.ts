@@ -7,3 +7,4 @@ export * from "./agent-replay.js";
 export * from "./execution-completion.js";
 
 export * from "./compose-revision-save.js";
+export * from "./compose-resource-cleanup.js";

@@ -4,6 +4,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   resolve: {
     alias: {
+      "@deploylite/config": resolve(__dirname, "../../packages/config/src/index.ts"),
       "@deploylite/contracts": resolve(__dirname, "../../packages/contracts/src/index.ts"),
       "@deploylite/domain": resolve(__dirname, "../../packages/domain/src/index.ts")
     }

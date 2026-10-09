@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { CanonicalRole, ConfirmationClassification, ControlCommandStatus, ControlPlaneAction, ControlPlaneScope, Deployment, DeploymentRollbackCommandResult, DeploymentRedeployCommandResult, DeploymentStopCommandResult, DeploymentExecutionAuthorityV1, ComposeRevisionSaveCommandResult } from "@deploylite/contracts";
+import type { CanonicalRole, ConfirmationClassification, ControlCommandStatus, ControlPlaneAction, ControlPlaneScope, Deployment, DeploymentRollbackCommandResult, DeploymentRedeployCommandResult, DeploymentStopCommandResult, DeploymentExecutionAuthorityV1, ComposeResourceCleanupExecutionReceiptV1, ComposeRevisionSaveCommandResult, ProjectControlAuthorityV1 } from "@deploylite/contracts";
 
 export type ControlGrant = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope };
 export type ControlGrantRepository = { listForActor(actorId: string): Promise<ControlGrant[]> };
 export type PolicyRequest = { actorId: string; role: CanonicalRole; action: ControlPlaneAction; scope: ControlPlaneScope; correlationId: string; grants: ControlGrant[] };
 export type PolicyDecision = { allowed: true; grantId: string; correlationId: string } | { allowed: false; code: "FORBIDDEN" | "ROLE_DENIED" | "SCOPE_DENIED"; correlationId: string };
-export type ControlCommand = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; idempotencyKey: string; correlationId: string; status: ControlCommandStatus; expiresAt: Date; result?: DeploymentStopCommandResult | DeploymentRedeployCommandResult | DeploymentRollbackCommandResult | ComposeRevisionSaveCommandResult; executionAuthority?: DeploymentExecutionAuthorityV1 };
+export type ControlCommand = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; idempotencyKey: string; correlationId: string; status: ControlCommandStatus; expiresAt: Date; result?: DeploymentStopCommandResult | DeploymentRedeployCommandResult | DeploymentRollbackCommandResult | ComposeRevisionSaveCommandResult | ComposeResourceCleanupExecutionReceiptV1; executionAuthority?: DeploymentExecutionAuthorityV1; projectExecutionAuthority?: ProjectControlAuthorityV1 };
 export type ControlConfirmation = { id: string; commandId: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; classification: ConfirmationClassification; expiresAt: Date; consumedAt: Date | null };
 export type ConfirmationOutcome = { command: ControlCommand; accepted: boolean; reason: string | null };
 export type ConfirmedProjectDeleteInput = { command: ControlCommand; confirmation: ControlConfirmation; projectId: string; requestId: string; now?: Date };
@@ -55,9 +55,27 @@ export class IdempotencyConflictError extends Error {
   constructor() { super("Idempotency key was already used with different command input"); this.name = "IdempotencyConflictError"; }
 }
 
+/** Shared actor/action/scope/idempotency resolution; callers supply the existing ledger. */
+export function resolveControlCommandInMemory(commands: Map<string, ControlCommand>, command: ControlCommand): { command: ControlCommand; created: boolean } {
+  const key = `${command.actorId}:${command.action}:${scopeKey(command.scope)}:${command.idempotencyKey}`;
+  const current = commands.get(key);
+  if (current) {
+    if (current.inputDigest !== command.inputDigest) throw new IdempotencyConflictError();
+    return { command: structuredClone(current), created: false };
+  }
+  commands.set(key, structuredClone(command));
+  return { command: structuredClone(command), created: true };
+}
+
 export type ControlCommandRepository = {
   resolve(command: ControlCommand): Promise<{ command: ControlCommand; created: boolean }>;
   complete(command: ControlCommand): Promise<ControlCommand>;
+};
+export type ProjectUpdateControlRepository = ControlCommandRepository & {
+  findProjectUpdateByIdempotency(actorId: string, projectId: string, idempotencyKey: string): Promise<ControlCommand | null>;
+  claimProjectUpdate(command: ControlCommand): Promise<{ command: ControlCommand; claimed: boolean; authority?: ProjectControlAuthorityV1 }>;
+  validateProjectUpdateAuthority(authority: ProjectControlAuthorityV1, now?: number): Promise<void>;
+  completeProjectUpdate(command: ControlCommand, authority: ProjectControlAuthorityV1, audit: Readonly<{ actorUserId?: string | null; action: string; targetType: string; targetId: string; requestId: string; correlationId: string; metadata?: Record<string, unknown> }>): Promise<ControlCommand>;
 };
 export type ControlConfirmationRepository = {
   bind(confirmation: ControlConfirmation): Promise<void>;
@@ -135,16 +153,4 @@ export type ControlRollbackRepository = ControlCommandRepository & ControlConfir
 export function isRollbackClaimBound(command: ControlCommand, deployment: Deployment | null | undefined, historical: Deployment | null | undefined, now: Date): boolean {
   return command.status === "eligible" && !command.executionAuthority && command.result?.action === "deployment.rollback" && command.result.status === "eligible"
     && Boolean(deployment) && isRollbackAdmissionBound({ ...command, status: "pending_confirmation" }, deployment!, historical, now);
-}
-
-/** Shared memory resolver, used by normal controls and atomic Compose staging. */
-export function resolveControlCommandInMemory(commands: Map<string, ControlCommand>, command: ControlCommand): { command: ControlCommand; created: boolean } {
-  const key = `${command.actorId}:${command.action}:${scopeKey(command.scope)}:${command.idempotencyKey}`;
-  const existing = commands.get(key);
-  if (existing) {
-    if (existing.inputDigest !== command.inputDigest) throw new IdempotencyConflictError();
-    return { command: structuredClone(existing), created: false };
-  }
-  commands.set(key, structuredClone(command));
-  return { command: structuredClone(command), created: true };
 }

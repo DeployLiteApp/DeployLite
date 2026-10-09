@@ -23,6 +23,11 @@ describe("parseDeployLiteEnv", () => {
     expect(input).not.toHaveProperty("DEPLOYLITE_SECRET_KEY");
   });
 
+  it("preserves the optional per-project Compose resource opt-in", () => {
+    const parsed = parseDeployLiteEnv(createEnv({ DEPLOYLITE_COMPOSE_RESOURCE_PROJECT_AGENTS_JSON: "[{\"projectId\":\"project-one\",\"agentId\":\"agent-one\"}]" }));
+    expect(parsed.DEPLOYLITE_COMPOSE_RESOURCE_PROJECT_AGENTS_JSON).toBe("[{\"projectId\":\"project-one\",\"agentId\":\"agent-one\"}]");
+  });
+
   it("preserves valid overrides and coerces environment-style numbers", () => {
     const parsed = parseDeployLiteEnv(
       createEnv({

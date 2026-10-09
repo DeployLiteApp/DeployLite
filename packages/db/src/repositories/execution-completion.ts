@@ -1,4 +1,4 @@
-import { and, eq, gt, sql } from "drizzle-orm";
+import { and, eq, gt, or, sql } from "drizzle-orm";
 import { deploymentExecutionAuthoritySchema, deploymentRedeployCommandResultSchema, deploymentRollbackCommandResultSchema, type Deployment } from "@deploylite/contracts";
 import {
   completeExecutionAtomically, validateDeploymentAuthority, validateInitialExecution,
@@ -26,12 +26,18 @@ export class DbDeploymentExecutionRepository implements DeploymentExecutionRepos
         const transaction: ExecutionCompletionTransaction = {
           lockProjectAuthority: async (projectId) => { await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`deploylite:execution:${projectId}`}, 0))`); },
           validateInitialExecution: async (projectId, executionId, binding) => {
-            const related = await tx.select().from(controlCommands).where(and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${projectId}`));
+            const related = await tx.select().from(controlCommands).where(or(
+              and(eq(controlCommands.scopeKind, "project"), eq(controlCommands.scopeKey, projectId)),
+              and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${projectId}`)
+            ));
             try { validateInitialExecution(related.map(toCommand), lockedDeployment, projectId, executionId, binding); return true; }
             catch { return false; }
           },
           validateAuthority: async (authority) => {
-            const related = await tx.select().from(controlCommands).where(and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${authority.projectId}`));
+            const related = await tx.select().from(controlCommands).where(or(
+              and(eq(controlCommands.scopeKind, "project"), eq(controlCommands.scopeKey, authority.projectId)),
+              and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${authority.projectId}`)
+            ));
             try { validateDeploymentAuthority(related.map(toCommand), authority); return true; }
             catch { return false; }
           },

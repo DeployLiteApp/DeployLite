@@ -3,7 +3,7 @@
   "purpose": "Expected evidence only; this manifest neither authorizes runtime nor claims PASS",
   "suites": {
     "db": {
-      "count": 57,
+      "count": 58,
       "allowSkipped": false,
       "cases": [
         {
@@ -346,6 +346,12 @@
           "fullName": "atomic execution PostgreSQL integration rolls back cancellation observed during staged rollback publication and preserves durable equal replay",
           "title": "rolls back cancellation observed during staged rollback publication and preserves durable equal replay",
           "file": "packages/db/src/execution-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration persists cleanup admission across clients and atomically recovers concurrent commit replies",
+          "title": "persists cleanup admission across clients and atomically recovers concurrent commit replies",
+          "file": "packages/db/src/postgres.integration.test.ts",
           "physicalRestart": false
         }
       ],
@@ -960,7 +966,7 @@
   },
   "preparedFrom": {
     "pgManifestSha256": "e5456cb0d6c3dc6ea4d12e142d1595584612085887528d1300da12700c381432",
-    "dockerFrozenSha256": "7613e8879f3386516412820db0ea6e5e42e5beec604f0359981b07ae6a876448",
+    "dockerFrozenSha256": "b58a473574f22d814abcf8f4fd402240fbc6606a15678b1c5566c2ea154eedd1",
     "status": "FINAL SOURCE CANDIDATE; physical Docker/PostgreSQL/CI NOT RUN; exact reports and disposable runtime are required"
   },
   "sourceFiles": [

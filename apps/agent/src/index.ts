@@ -9,11 +9,20 @@ import {
   type EnvSecretCipher
 } from "@deploylite/config";
 import { randomUUID } from "node:crypto";
-import { agentHeartbeatSchema, resourceSnapshotSchema, type AgentHeartbeat } from "@deploylite/contracts";
+import { agentHeartbeatSchema, COMPOSE_RESOURCE_CLEANUP_CAPABILITY, COMPOSE_RESOURCE_INSPECTION_CAPABILITY, COMPOSE_VOLUME_ATTACHMENT_CAPABILITY, COMPOSE_VOLUME_BACKUP_CAPABILITY, InMemoryCapabilityRegistry, resourceSnapshotSchema, type AgentHeartbeat } from "@deploylite/contracts";
 import { z } from "zod";
 import { DigestDeploymentDispatcher } from "./deployment-dispatcher.js";
 import { AuthenticatedAgentCommandReceiver } from "./agent-transport.js";
 import { startAgentServer } from "./server.js";
+import { createDockerComposeResourceInspector } from "./infrastructure/docker/docker-compose-resource-inspector.js";
+import { createDockerComposeNetworkAttachmentExecutor } from "./infrastructure/docker/docker-compose-network-attachment.js";
+import { createDockerComposeVolumeAttachmentExecutor } from "./infrastructure/docker/docker-compose-volume-attachment.js";
+import { createDockerComposeVolumeReplacementDriver } from "./infrastructure/docker/docker-compose-volume-replacement-driver.js";
+import { COMPOSE_VOLUME_ATTACHMENT_ENABLED_ENV, parseComposeVolumeAttachmentEnabled } from "./infrastructure/docker/compose-volume-attachment-config.js";
+import { createDockerComposeVolumeBackupExecutor, createLocalDirectoryComposeVolumeBackupSource } from "./infrastructure/docker/docker-compose-volume-backup.js";
+import { parseComposeVolumeBackupRuntimeConfig, COMPOSE_VOLUME_BACKUP_CONFIG_ENV } from "./infrastructure/docker/compose-volume-backup-config.js";
+import { parseComposeResourceCleanupEnabled, COMPOSE_RESOURCE_CLEANUP_ENABLED_ENV } from "./infrastructure/docker/compose-resource-cleanup-config.js";
+import { createDockerComposeResourceCleanupExecutor } from "./infrastructure/docker/docker-compose-resource-cleanup.js";
 
 export const safeCommandEnvelopeSchema = z.object({
   commandId: z.string().min(1),
@@ -114,6 +123,8 @@ export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
   const parsed = parseDeployLiteEnv(env);
   if (parsed.NODE_ENV === "production" && !parsed.DATABASE_URL) throw new Error("agent durable database is required");
   if (!parsed.DEPLOYLITE_AGENT_ID || !parsed.DEPLOYLITE_AGENT_TRUST_KEY || !parsed.DATABASE_URL) throw new Error("agent runtime configuration is incomplete");
+  const volumeAttachmentEnabled = parseComposeVolumeAttachmentEnabled(env[COMPOSE_VOLUME_ATTACHMENT_ENABLED_ENV], parsed.NODE_ENV);
+  const resourceCleanupEnabled = parseComposeResourceCleanupEnabled(env[COMPOSE_RESOURCE_CLEANUP_ENABLED_ENV], parsed.NODE_ENV);
   const pool = createDbPool(parsed.DATABASE_URL); const db = createDbClient(pool);
   const replayStore = new DbAgentReplayStore(db, `${parsed.DEPLOYLITE_AGENT_ID}:${process.pid}:${randomUUID()}`);
   const authorityValidator = new DbControlCommandRepository(db);
@@ -121,9 +132,28 @@ export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
   const temporaryHostPort = env.DEPLOYLITE_AGENT_TEMPORARY_HOST_PORT === undefined ? undefined : Number(env.DEPLOYLITE_AGENT_TEMPORARY_HOST_PORT);
   if (temporaryHostPort !== undefined && (!Number.isInteger(temporaryHostPort) || temporaryHostPort < 1024 || temporaryHostPort > 65535 || temporaryHostPort === 3000)) { await closeDbPool(pool); throw new Error("agent temporary host port is unsafe"); }
   const protocol = new InMemoryProtocolTransport({ clock: { now: Date.now }, leasePolicy: { ttlMs: 30_000 }, retryPolicy: { maxAttempts: 1, deadlineMs: 30_000, backoffMs: () => 0 }, capabilities: ["deploy.execute"] });
-  const dispatcher = new DigestDeploymentDispatcher({ protocol, runner: new (await import("./infrastructure/docker/docker-process-runner.js")).DockerProcessRunner(), temporaryHostPort, promotionPolicy, trustedHosts: ["docker.io", "ghcr.io", "registry.example.com"], allowedNetworks: ["deploylite-agent"] });
+  const runner = new (await import("./infrastructure/docker/docker-process-runner.js")).DockerProcessRunner();
+  const dispatcher = new DigestDeploymentDispatcher({ protocol, runner, temporaryHostPort, promotionPolicy, trustedHosts: ["docker.io", "ghcr.io", "registry.example.com"], allowedNetworks: ["deploylite-agent"] });
   if (!dispatcher.available()) { await closeDbPool(pool); throw new Error("agent dispatcher is unavailable"); }
-  const receiver = new AuthenticatedAgentCommandReceiver({ agentId: parsed.DEPLOYLITE_AGENT_ID, trustKey: parsed.DEPLOYLITE_AGENT_TRUST_KEY, capabilities: ["deploy.execute", "deployment.stop"], dispatcher, stopDispatcher: dispatcher, authorityValidator, replayStore: replayStore as never });
+  const volumeBackupConfig = parseComposeVolumeBackupRuntimeConfig(env[COMPOSE_VOLUME_BACKUP_CONFIG_ENV]);
+  const composeCapabilities = [COMPOSE_RESOURCE_INSPECTION_CAPABILITY, "compose.network.attachment.v1", ...(volumeBackupConfig ? [COMPOSE_VOLUME_BACKUP_CAPABILITY] : []), ...(volumeAttachmentEnabled ? [COMPOSE_VOLUME_ATTACHMENT_CAPABILITY] : []), ...(resourceCleanupEnabled ? [COMPOSE_RESOURCE_CLEANUP_CAPABILITY] : [])];
+  const composeRegistry = new InMemoryCapabilityRegistry(composeCapabilities);
+  const imagePolicy = { policyVersion: "agent-compose-v1", trustedHosts: ["docker.io", "ghcr.io", "registry.example.com"], allowTags: false, allowDigests: true };
+  const composeInspector = createDockerComposeResourceInspector({ runner, owner: "deploylite", agentId: parsed.DEPLOYLITE_AGENT_ID,
+    imagePolicy, capabilities: composeRegistry, clock: { now: Date.now }, limits: { maxContainers: 128, maxOutputBytes: 1_048_576, deadlineMs: 30_000 } });
+  const networkAttachment = createDockerComposeNetworkAttachmentExecutor({ runner, inspector: composeInspector, owner: "deploylite", agentId: parsed.DEPLOYLITE_AGENT_ID,
+    imagePolicy, capabilities: composeRegistry });
+  const volumeBackup = volumeBackupConfig ? createDockerComposeVolumeBackupExecutor({ owner: "deploylite", agentId: parsed.DEPLOYLITE_AGENT_ID,
+    imagePolicy, capabilities: composeRegistry, inspector: composeInspector,
+    source: createLocalDirectoryComposeVolumeBackupSource(volumeBackupConfig.sourceRoots), destinations: volumeBackupConfig.destinations }) : undefined;
+  const volumeAttachment = volumeAttachmentEnabled ? createDockerComposeVolumeAttachmentExecutor({ owner: "deploylite", agentId: parsed.DEPLOYLITE_AGENT_ID, trustKey: parsed.DEPLOYLITE_AGENT_TRUST_KEY,
+    imagePolicy, capabilities: composeRegistry, inspector: composeInspector,
+    driver: createDockerComposeVolumeReplacementDriver({ runner, owner: "deploylite" }) }) : undefined;
+  const resourceCleanup = resourceCleanupEnabled ? createDockerComposeResourceCleanupExecutor({ runner, inspector: composeInspector, owner: "deploylite",
+    agentId: parsed.DEPLOYLITE_AGENT_ID, imagePolicy, capabilities: composeRegistry }) : undefined;
+  const receiver = new AuthenticatedAgentCommandReceiver({ agentId: parsed.DEPLOYLITE_AGENT_ID, trustKey: parsed.DEPLOYLITE_AGENT_TRUST_KEY,
+    capabilities: ["deploy.execute", "deployment.stop", ...composeCapabilities], dispatcher, stopDispatcher: dispatcher, networkAttachment,
+    resourceInspector: composeInspector, ...(volumeBackup ? { volumeBackup } : {}), ...(volumeAttachment ? { volumeAttachment } : {}), ...(resourceCleanup ? { resourceCleanup } : {}), authorityValidator, replayStore: replayStore as never });
   const server = await startAgentServer({ host: parsed.DEPLOYLITE_AGENT_HOST, port: parsed.DEPLOYLITE_AGENT_PORT, receiver, replayStore: replayStore as never, production: parsed.NODE_ENV === "production" });
   const close = async () => { await server.close(); await closeDbPool(pool); };
   process.once("SIGINT", close); process.once("SIGTERM", close);

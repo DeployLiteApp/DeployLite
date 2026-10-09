@@ -2,7 +2,15 @@ import { DbComposeRevisionSaveStore } from "@deploylite/db";
 import { registerComposeRevisionSaveRoutes } from "./compose-revision-save-route.js";
 import type { ComposeRevisionSaveStore } from "@deploylite/domain";
 import { registerComposeRevisionReadRoutes, type ComposeRevisionReadCapability } from "./compose-revision-read-route.js";
+import { registerComposeResourceCleanupRoutes, type ComposeResourceCleanupAccess, type ComposeResourceCleanupExecutionAccess } from "./compose-resource-cleanup-route.js";
 import { registerComposePreviewRoute } from "./compose-preview-route.js";
+import { registerComposeResourceInspectionRoutes, type ComposeResourceInspectionAccess } from "./compose-resource-inspection-route.js";
+import { COMPOSE_RESOURCE_CLEANUP_PROJECT_AGENTS_ENV, COMPOSE_RESOURCE_PROJECT_AGENTS_ENV, COMPOSE_VOLUME_ATTACHMENT_PROJECT_AGENTS_ENV, createProjectScopedComposeResourceRuntime,
+  parseComposeResourceCleanupProjectBindings, parseComposeResourceProjectBindings, parseComposeVolumeAttachmentProjectBindings, type ComposeResourceProjectBinding } from "./compose-resource-runtime.js";
+import { registerComposeNetworkAttachmentExecutionRoute, type ComposeNetworkAttachmentExecutionAccess } from "./compose-network-attachment-execution-route.js";
+import { registerComposeVolumeAttachmentExecutionRoute, type ComposeVolumeAttachmentExecutionAccess } from "./compose-volume-attachment-execution-route.js";
+import { registerComposeVolumeBackupPlanRoute, type ComposeVolumeBackupPlanAccess } from "./compose-volume-backup-plan-route.js";
+import { registerComposeVolumeBackupExecutionRoute, type ComposeVolumeBackupExecutionAccess } from "./compose-volume-backup-execution-route.js";
 import { claimDeploymentAuthority, validateStopCompletion, validateDeploymentAuthority, validateInitialExecution } from "@deploylite/domain";
 import { createHash, randomUUID } from "node:crypto";
 import { createAuditLogRecord, createCorrelationContext, createRequestId, parseDeployLiteEnv, redactSecrets, type DeployLiteEnv, createEnvSecretCipher, EnvSecretKeyInvalidError, EnvSecretKeyMissingError, ENCRYPTION_KEY_VERSION, loadEnvSecretKey, type EnvSecretCipher } from "@deploylite/config";
@@ -43,7 +51,7 @@ import {
   type DeploymentSnapshotV1,
   type ImageReferencePolicyV1
 } from "@deploylite/contracts";
-import { BcryptPasswordHasher, bootstrapInitialAdmin, closeDbPool, createDbClient, createDbPool, createOpaqueSessionToken, DbAgentRepository, DbAuditRepository, DbAuthUserRepository, DbControlCommandRepository, DbControlGrantRepository, DbDeploymentRepository, DbDeploymentExecutionRepository, DbEnvSecretValueRepository, DbEnvVariableMetadataRepository, DbProjectRepository, DbSessionRepository, hashSessionToken, type DeployLiteDb } from "@deploylite/db";
+import { BcryptPasswordHasher, bootstrapInitialAdmin, closeDbPool, createDbClient, createDbPool, createOpaqueSessionToken, DbAgentRepository, DbAuditRepository, DbAuthUserRepository, DbComposeResourceCleanupStore, DbControlCommandRepository, DbControlGrantRepository, DbDeploymentRepository, DbDeploymentExecutionRepository, DbEnvSecretValueRepository, DbEnvVariableMetadataRepository, DbProjectRepository, DbSessionRepository, hashSessionToken, type DeployLiteDb } from "@deploylite/db";
 import {
   AgentStatusService,
   awaitAbortable,
@@ -87,6 +95,7 @@ import {
   type ControlConfirmationRepository,
   type ControlGrant,
   type ControlGrantRepository,
+  type ComposeResourceCleanupStore,
   type CreateInitialAdminInput,
   type CreateSessionInput,
   type EnvSecretValueRepository,
@@ -173,6 +182,7 @@ type ApiRepositories = {
   auth: AuthAdapters;
   state: PlatformRepositories;
   shouldSeedMockData: boolean;
+  composeResourceCleanupStore?: ComposeResourceCleanupStore;
   close?: () => Promise<void>;
 };
 
@@ -182,6 +192,16 @@ type BuildApiAppOptions = {
   corsOrigin?: string | false;
   state?: Partial<PlatformRepositoryOptions>;
   imagePolicy?: ImageReferencePolicyV1;
+  composeResourceInspection?: ReadonlyMap<string, ComposeResourceInspectionAccess>;
+  composeNetworkAttachmentExecutions?: ReadonlyMap<string, ComposeNetworkAttachmentExecutionAccess>;
+  composeResourceProjectAgents?: readonly ComposeResourceProjectBinding[];
+  composeVolumeAttachmentProjectAgents?: readonly ComposeResourceProjectBinding[];
+  composeResourceCleanupProjectAgents?: readonly ComposeResourceProjectBinding[];
+  composeVolumeAttachmentExecutions?: ReadonlyMap<string, ComposeVolumeAttachmentExecutionAccess>;
+  composeVolumeBackupPlans?: ReadonlyMap<string, ComposeVolumeBackupPlanAccess>;
+  composeVolumeBackupExecutions?: ReadonlyMap<string, ComposeVolumeBackupExecutionAccess>;
+  composeResourceCleanupPlans?: ReadonlyMap<string, ComposeResourceCleanupAccess>;
+  composeResourceCleanupExecutions?: ReadonlyMap<string, ComposeResourceCleanupExecutionAccess>;
   db?: {
     pool?: DbPool;
     client?: DeployLiteDb;
@@ -274,7 +294,10 @@ class InMemoryAuditRepository implements AuditRepository {
 
   async append(input: AuditEventInput): Promise<AuditEvent> { return this.appendSynchronous(input); }
 
-  appendSynchronous(input: AuditEventInput): AuditEvent {
+  appendSynchronous(input: AuditEventInput): AuditEvent { return this.appendAtomically(input, () => undefined); }
+
+  /** Synchronous shared-metadata publication and audit; preparation failures publish neither. */
+  appendAtomically(input: AuditEventInput, publish: () => void): AuditEvent {
     const safe = createAuditLogRecord({
       actorId: input.actorUserId === null ? "anonymous" : input.actorUserId ?? "system",
       action: input.action,
@@ -294,6 +317,7 @@ class InMemoryAuditRepository implements AuditRepository {
       correlationId: safe.correlationId,
       timestamp: safe.timestamp
     };
+    publish();
     this.inputs.push({ ...input, metadata: safe.metadata });
     this.events.push(event);
     return event;
@@ -621,7 +645,6 @@ class InMemoryControlGrantRepository implements ControlGrantRepository {
 }
 
 class InMemoryControlDeleteRepository implements ControlDeleteRepository, ControlStopRepository, ControlRedeployRepository {
-  readonly #confirmations = new Map<string, ControlConfirmation>();
 
   async resolve(command: ControlCommand): Promise<{ command: ControlCommand; created: boolean }> {
     if (command.action === "deployment.rollback") {
@@ -642,17 +665,17 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
     if (!current) return null;
     validateRollbackReservation(current, command);
     if (current.status !== "pending_confirmation" || current.expiresAt <= now) return null;
-    let confirmation = [...this.#confirmations.values()].find((value) => value.commandId === current.id);
-    if (!confirmation) { confirmation = createConfirmation({ command: current, classification: "destructive" }); this.#confirmations.set(confirmation.id, confirmation); }
+    let confirmation = [...this.executionState.confirmations.values()].find((value) => value.commandId === current.id);
+    if (!confirmation) { confirmation = createConfirmation({ command: current, classification: "destructive" }); this.executionState.confirmations.set(confirmation.id, confirmation); }
     try { evaluateConfirmation(current, confirmation, now); }
     catch (error) { if (error instanceof ConfirmationRejectedError) return null; throw error; }
     return structuredClone(confirmation);
   }
 
-  async bind(confirmation: ControlConfirmation): Promise<void> { this.#confirmations.set(confirmation.id, structuredClone(confirmation)); }
+  async bind(confirmation: ControlConfirmation): Promise<void> { this.executionState.confirmations.set(confirmation.id, structuredClone(confirmation)); }
 
   async consume(command: ControlCommand, confirmation: ControlConfirmation, now = new Date()) {
-    const stored = this.#confirmations.get(confirmation.id);
+    const stored = this.executionState.confirmations.get(confirmation.id);
     const current = [...this.executionState.commands.values()].find((candidate) => candidate.id === command.id);
     if (!stored || !current) return { command, accepted: false, reason: "confirmation_rejected" };
     try {
@@ -679,7 +702,7 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
     if (!current) throw new Error("Control command was not found");
     if (current.status === "completed") return { command: structuredClone(current), accepted: true, reason: null, result: (current.result as import("@deploylite/contracts").DeploymentStopCommandResult | undefined) ?? null, alreadyCompleted: true };
     if (current.status === "eligible" || current.status === "dispatching") return { command: structuredClone(current), accepted: true, reason: null, result: (current.result as import("@deploylite/contracts").DeploymentStopCommandResult | undefined) ?? null, alreadyCompleted: false };
-    const stored = this.#confirmations.get(confirmation.id);
+    const stored = this.executionState.confirmations.get(confirmation.id);
     if (!stored || stored.commandId !== current.id || stored.actorId !== current.actorId || stored.action !== current.action || scopeKey(stored.scope) !== scopeKey(current.scope) || stored.inputDigest !== current.inputDigest || stored.classification !== "destructive" || stored.consumedAt || stored.expiresAt <= now) {
       current.status = "rejected";
       return { command: structuredClone(current), accepted: false, reason: "confirmation_rejected", result: stopCommandResult(current, "rejected"), alreadyCompleted: false };
@@ -721,7 +744,7 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
     if (current.status === "completed") return { command: structuredClone(current), accepted: true, reason: null, result: current.result as import("@deploylite/contracts").DeploymentRedeployCommandResult | null, deployment: null, alreadyCompleted: true };
     if (current.status === "eligible" || current.status === "dispatching") return { command: structuredClone(current), accepted: true, reason: null, result: current.result as import("@deploylite/contracts").DeploymentRedeployCommandResult, deployment, alreadyCompleted: false };
     if (current.status !== "pending_confirmation") return { command: structuredClone(current), accepted: false, reason: "command_not_pending", result: redeployCommandResult(current, "rejected", null, snapshotHash, "command_not_pending"), deployment: null, alreadyCompleted: false };
-    const stored = this.#confirmations.get(confirmation.id);
+    const stored = this.executionState.confirmations.get(confirmation.id);
     if (!stored || stored.commandId !== current.id || stored.actorId !== current.actorId || stored.action !== current.action || scopeKey(stored.scope) !== scopeKey(current.scope) || stored.inputDigest !== current.inputDigest || stored.classification !== "destructive" || stored.consumedAt || stored.expiresAt <= now || stored.expiresAt > current.expiresAt) { current.status = "rejected"; current.result = redeployCommandResult(current, "rejected", null, snapshotHash); return { command: structuredClone(current), accepted: false, reason: "confirmation_rejected", result: current.result as import("@deploylite/contracts").DeploymentRedeployCommandResult, deployment: null, alreadyCompleted: false }; }
     const before = structuredClone(current); const confirmationBefore = structuredClone(stored);
     try {
@@ -748,7 +771,7 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
     if (current.status === "completed") return { command: structuredClone(current), accepted: true, reason: null, result: reserved, deployment: null, alreadyCompleted: true };
     if (current.status === "eligible" || current.status === "dispatching") return { command: structuredClone(current), accepted: true, reason: null, result: reserved, deployment: structuredClone(this.executionState.deployments.get(reserved.deploymentId) ?? null), alreadyCompleted: false };
     if (!isRollbackAdmissionBound(current, deployment, this.executionState.deployments.get(reserved.sourceDeploymentId), now)) return { command: structuredClone(current), accepted: false, reason: "execution_binding_rejected", result: null, deployment: null, alreadyCompleted: false };
-    const stored = this.#confirmations.get(confirmation.id);
+    const stored = this.executionState.confirmations.get(confirmation.id);
     if (!stored || stored.commandId !== current.id || stored.actorId !== current.actorId || stored.action !== current.action || scopeKey(stored.scope) !== scopeKey(current.scope) || stored.inputDigest !== current.inputDigest || stored.classification !== "destructive" || stored.consumedAt || stored.expiresAt <= now || stored.expiresAt > current.expiresAt) return { command: structuredClone(current), accepted: false, reason: "confirmation_rejected", result: null, deployment: null, alreadyCompleted: false };
     const queued = deploymentSchema.parse(deployment), result = { ...reserved, status: "eligible" as const };
     // Shared maps and confirmation are published synchronously; no await exposes partial admission.
@@ -773,7 +796,7 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
     const project = await this.projects.findById(projectId);
     if (!project) throw new Error("Project was not found for confirmed deletion");
     const commandBefore = [...this.executionState.commands.values()].find((candidate) => candidate.id === command.id);
-    const confirmationBefore = this.#confirmations.get(confirmation.id);
+    const confirmationBefore = this.executionState.confirmations.get(confirmation.id);
     const outcome = await this.consume(command, confirmation);
     if (!outcome.accepted || outcome.command.status === "completed") return { ...outcome, removed: outcome.command.status === "completed", auditRecorded: outcome.command.status === "completed", alreadyCompleted: outcome.command.status === "completed" };
     try {
@@ -782,7 +805,7 @@ class InMemoryControlDeleteRepository implements ControlDeleteRepository, Contro
       await this.audit.append({ actorUserId: command.actorId, action: "project.delete", targetType: "project", targetId: projectId, requestId, correlationId: command.correlationId, metadata: { commandId: command.id, confirmationId: confirmation.id } });
       return { command: completed, accepted: true, reason: null, removed: true, auditRecorded: true, alreadyCompleted: false };
     } catch (error) {
-      if (confirmationBefore) this.#confirmations.set(confirmation.id, confirmationBefore);
+      if (confirmationBefore) this.executionState.confirmations.set(confirmation.id, confirmationBefore);
       if (commandBefore) Object.assign(commandBefore, structuredClone(command));
       await this.projects.save(project);
       throw error;
@@ -993,6 +1016,7 @@ function createDbAuthAdapters(env: DeployLiteEnv, options: BuildApiAppOptions): 
   const compose = options.state?.composeRevisionSaves ?? new DbComposeRevisionSaveStore(db);
 
   return {
+    composeResourceCleanupStore: new DbComposeResourceCleanupStore(db),
     auth: {
       audit: new DbAuditRepository(db),
       hasher: new BcryptPasswordHasher(env.DEPLOYLITE_BCRYPT_COST),
@@ -1233,13 +1257,22 @@ function registerCoreHooks(app: FastifyInstance, corsOrigin: string | null): voi
   });
 }
 
-function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapters: AuthAdapters, authConfig: AuthConfig, confirmedDeleteEnabled: boolean, imagePolicy: ImageReferencePolicyV1): void {
+function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapters: AuthAdapters, authConfig: AuthConfig, confirmedDeleteEnabled: boolean, imagePolicy: ImageReferencePolicyV1, resourceAccess?: ReadonlyMap<string, ComposeResourceInspectionAccess>, backupPlans?: ReadonlyMap<string, ComposeVolumeBackupPlanAccess>, cleanupPlans?: ReadonlyMap<string, ComposeResourceCleanupAccess>, backupExecutions?: ReadonlyMap<string, ComposeVolumeBackupExecutionAccess>, attachmentExecutions?: ReadonlyMap<string, ComposeNetworkAttachmentExecutionAccess>, cleanupExecutions?: ReadonlyMap<string, ComposeResourceCleanupExecutionAccess>, volumeAttachmentExecutions?: ReadonlyMap<string, ComposeVolumeAttachmentExecutionAccess>): void {
   const requireAuth = createAuthPreHandler(adapters, authConfig);
   const requireMutationRole = createRolePreHandler(adapters, ["admin", "operator"]);
   const requireAdminRole = createRolePreHandler(adapters, ["admin"]);
   registerComposePreviewRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerComposeRevisionReadRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, revisions: state.composeRevisionReads, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerComposeRevisionSaveRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, revisions: state.composeRevisionSaves, imagePolicy, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
+  registerComposeResourceInspectionRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
+  registerComposeNetworkAttachmentExecutionRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, execution: attachmentExecutions, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
+  registerComposeVolumeAttachmentExecutionRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit,
+    revisions: state.composeRevisionSaves, secrets: state.envSecretValues, secretCipher: state.envSecretCipher, imagePolicy, access: resourceAccess,
+    execution: volumeAttachmentExecutions, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
+  registerComposeResourceCleanupRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, cleanup: cleanupPlans,
+    execution: cleanupExecutions, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
+  registerComposeVolumeBackupPlanRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, planning: backupPlans, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
+  registerComposeVolumeBackupExecutionRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, planning: backupPlans, execution: backupExecutions, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   // Audit history is an operator/admin concern. Read-only sessions are denied
   // by design so a passive role cannot enumerate every project + key change.
   const requireAuditReadRole = createRolePreHandler(adapters, ["admin", "operator"]);
@@ -2211,7 +2244,28 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
 }
 
 export async function buildApiApp(options: BuildApiAppOptions = {}): Promise<FastifyInstance> {
-  const env = parseDeployLiteEnv(options.env ?? process.env);
+  const sourceEnv = options.env ?? process.env;
+  const composeResourceProjectAgents = options.composeResourceProjectAgents ?? parseComposeResourceProjectBindings(sourceEnv[COMPOSE_RESOURCE_PROJECT_AGENTS_ENV]);
+  const composeVolumeAttachmentProjectAgents = options.composeVolumeAttachmentProjectAgents
+    ?? parseComposeVolumeAttachmentProjectBindings(sourceEnv[COMPOSE_VOLUME_ATTACHMENT_PROJECT_AGENTS_ENV], composeResourceProjectAgents);
+  const composeResourceCleanupProjectAgents = options.composeResourceCleanupProjectAgents
+    ?? parseComposeResourceCleanupProjectBindings(sourceEnv[COMPOSE_RESOURCE_CLEANUP_PROJECT_AGENTS_ENV], composeResourceProjectAgents);
+  if (composeVolumeAttachmentProjectAgents.length > 0 && composeResourceProjectAgents.length === 0) {
+    throw new Error(`${COMPOSE_VOLUME_ATTACHMENT_PROJECT_AGENTS_ENV} requires an existing resource project binding.`);
+  }
+  if (composeResourceCleanupProjectAgents.length > 0 && composeResourceProjectAgents.length === 0) {
+    throw new Error(`${COMPOSE_RESOURCE_CLEANUP_PROJECT_AGENTS_ENV} requires an existing resource project binding.`);
+  }
+  if (sourceEnv.NODE_ENV === "production" && (composeVolumeAttachmentProjectAgents.length > 0 || options.composeVolumeAttachmentExecutions)) {
+    throw new Error(`${COMPOSE_VOLUME_ATTACHMENT_PROJECT_AGENTS_ENV} is restricted to non-production environments.`);
+  }
+  if (sourceEnv.NODE_ENV === "production" && (composeResourceCleanupProjectAgents.length > 0 || options.composeResourceCleanupExecutions)) {
+    throw new Error(`${COMPOSE_RESOURCE_CLEANUP_PROJECT_AGENTS_ENV} is restricted to non-production environments.`);
+  }
+  if (composeResourceProjectAgents.length > 0 && (options.composeResourceInspection || options.composeNetworkAttachmentExecutions || options.composeVolumeAttachmentExecutions || options.composeResourceCleanupExecutions)) {
+    throw new Error("Compose resource project configuration cannot be combined with injected resource maps.");
+  }
+  const env = parseDeployLiteEnv(sourceEnv);
   const app = Fastify({ logger: false });
   const corsOrigin = options.corsOrigin === false ? null : options.corsOrigin ?? env.DEPLOYLITE_CORS_ORIGIN ?? (env.NODE_ENV === "production" ? null : "http://localhost:3000");
   const authConfig: AuthConfig = {
@@ -2227,8 +2281,27 @@ export async function buildApiApp(options: BuildApiAppOptions = {}): Promise<Fas
   if (repositories.shouldSeedMockData) {
     await seedMockData(repositories.state);
   }
+  let configuredResourceRuntime: Awaited<ReturnType<typeof createProjectScopedComposeResourceRuntime>> | undefined;
+  try {
+    configuredResourceRuntime = composeResourceProjectAgents.length > 0
+      ? await createProjectScopedComposeResourceRuntime({ bindings: composeResourceProjectAgents, projects: repositories.state.projects,
+        volumeAttachmentBindings: composeVolumeAttachmentProjectAgents, cleanupBindings: composeResourceCleanupProjectAgents,
+        controls: repositories.state.controlDeletes, agent: { endpoint: env.DEPLOYLITE_AGENT_URL, agentId: env.DEPLOYLITE_AGENT_ID, trustKey: env.DEPLOYLITE_AGENT_TRUST_KEY } })
+      : undefined;
+  } catch (error) {
+    await app.close();
+    throw error;
+  }
+  const composeResourceInspection = options.composeResourceInspection ?? configuredResourceRuntime?.inspectionAccess;
+  const composeNetworkAttachmentExecutions = options.composeNetworkAttachmentExecutions ?? configuredResourceRuntime?.attachmentExecutions;
+  const composeVolumeAttachmentExecutions = options.composeVolumeAttachmentExecutions ?? configuredResourceRuntime?.volumeAttachmentExecutions;
+  const composeResourceCleanupExecutions = options.composeResourceCleanupExecutions ?? configuredResourceRuntime?.cleanupExecutions;
   registerCoreHooks(app, corsOrigin);
-  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE, options.imagePolicy ?? { policyVersion: "deployment-v1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true });
+  const cleanupPlans = options.composeResourceCleanupPlans ?? (repositories.composeResourceCleanupStore && composeResourceInspection
+    ? new Map([...(configuredResourceRuntime ? (composeResourceCleanupExecutions?.keys() ?? []) : composeResourceInspection.keys())]
+      .map(projectId => [projectId, { store: repositories.composeResourceCleanupStore!, confirmationTtlMs: 60_000 }] as const))
+    : undefined);
+  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE, options.imagePolicy ?? { policyVersion: "deployment-v1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }, composeResourceInspection, options.composeVolumeBackupPlans, cleanupPlans, options.composeVolumeBackupExecutions, composeNetworkAttachmentExecutions, composeResourceCleanupExecutions, composeVolumeAttachmentExecutions);
   app.addHook("onClose", () => {
     repositories.state.deployRunner.cancelTimers();
   });

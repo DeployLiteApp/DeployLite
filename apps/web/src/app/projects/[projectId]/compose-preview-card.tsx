@@ -7,8 +7,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Textarea } from "@/components/ui/textarea";
 import { previewProjectCompose, saveProjectCompose } from "./compose-preview-client";
-
 import { ComposeRevisionsPanel } from "./compose-revisions-panel";
+import { ComposeResourcePanel } from "./compose-resource-panel";
 
 export function ComposePreviewCard({ projectId, apiBaseUrl }: { projectId: string; apiBaseUrl: string | null }) {
   const [document, setDocument] = useState("");
@@ -20,25 +20,28 @@ export function ComposePreviewCard({ projectId, apiBaseUrl }: { projectId: strin
   const [savedDigest, setSavedDigest] = useState<string | null>(null);
   const [savedStatus, setSavedStatus] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
+  const [cleanupLocked, setCleanupLocked] = useState(false);
   const keys = useRef(new Map<string, string>());
   const revision = useRef(0);
   const request = useRef<AbortController | null>(null);
 
   useEffect(() => {
     revision.current += 1; request.current?.abort(); request.current = null;
-    setDocument(""); setPreview(null); setError(""); setPending(false); setSaving(false); setBinding(null); setSavedDigest(null); setSavedStatus(""); keys.current.clear();
+    setDocument(""); setPreview(null); setError(""); setPending(false); setSaving(false); setBinding(null); setSavedDigest(null); setSavedStatus(""); setCleanupLocked(false); keys.current.clear();
     return () => { revision.current += 1; request.current?.abort(); request.current = null; };
   }, [projectId, apiBaseUrl]);
 
   function edit(value: string) {
+    if (cleanupLocked) return;
     revision.current += 1; setDocument(value); setPreview(null); setError(""); setSavedStatus("");
   }
   function clear() {
+    if (cleanupLocked) return;
     edit(""); request.current?.abort(); request.current = null; setPending(false); setSaving(false);
   }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (request.current || !document.trim()) return;
+    if (request.current || cleanupLocked || !document.trim()) return;
     const token = revision.current;
     const controller = new AbortController(); request.current = controller;
     setPreview(null); setError(""); setPending(true);
@@ -49,13 +52,14 @@ export function ComposePreviewCard({ projectId, apiBaseUrl }: { projectId: strin
     if (result.kind === "ready") setPreview(result.preview); else setError(result.message);
   }
 
-  function newConfiguration() { clear(); setBinding(null); setSavedDigest(null); keys.current.clear(); }
+  function newConfiguration() { if (cleanupLocked) return; clear(); setBinding(null); setSavedDigest(null); keys.current.clear(); }
   function load(saved: ComposeRevisionV1, latestRevisionId: string) {
+    if (cleanupLocked) return;
     clear(); edit(saved.preview.canonicalDocument);
     setBinding({ composeId: saved.composeId, expectedRevisionId: latestRevisionId }); setSavedDigest(null);
   }
   async function save() {
-    if (!preview || request.current || preview.configDigest === savedDigest) return;
+    if (!preview || request.current || cleanupLocked || preview.configDigest === savedDigest) return;
     const token = revision.current;
     const intent = JSON.stringify([binding, preview.configDigest]);
     let idempotencyKey = keys.current.get(intent);
@@ -83,20 +87,20 @@ export function ComposePreviewCard({ projectId, apiBaseUrl }: { projectId: strin
         <form onSubmit={submit} className="flex flex-col gap-3" aria-describedby="compose-preview-help compose-preview-status">
           <Field>
             <FieldLabel htmlFor="compose-document">Compose document (YAML or JSON)</FieldLabel>
-            <Textarea id="compose-document" value={document} onChange={(event) => edit(event.target.value)} rows={8} autoComplete="off" spellCheck={false} className="font-mono" aria-describedby="compose-preview-help" />
+            <Textarea id="compose-document" value={document} onChange={(event) => edit(event.target.value)} disabled={pending || saving || cleanupLocked} rows={8} autoComplete="off" spellCheck={false} className="font-mono" aria-describedby="compose-preview-help" />
           </Field>
           <p id="compose-preview-help" className="text-sm text-muted-foreground">Use secret references such as {"${APP_TOKEN}"}; never paste secret values. The draft stays in this page and is cleared when you leave. Use one document of at most 64 KiB; tags, anchors, aliases and merge keys are unsupported.</p>
           <div className="flex flex-wrap gap-3">
-            <Button type="submit" disabled={pending || saving || !document.trim() || !apiBaseUrl}>{pending ? "Previewing..." : "Preview Compose"}</Button>
-            <Button type="button" disabled={!preview || pending || saving || !apiBaseUrl || preview.configDigest === savedDigest} onClick={() => void save()}>{saving ? "Saving..." : "Save revision"}</Button>
-            <Button type="button" variant="outline" onClick={clear}>Clear draft</Button>
-            <Button type="button" variant="outline" onClick={newConfiguration}>New configuration</Button>
+            <Button type="submit" disabled={pending || saving || cleanupLocked || !document.trim() || !apiBaseUrl}>{pending ? "Previewing..." : "Preview Compose"}</Button>
+            <Button type="button" disabled={!preview || pending || saving || cleanupLocked || !apiBaseUrl || preview.configDigest === savedDigest} onClick={() => void save()}>{saving ? "Saving..." : "Save revision"}</Button>
+            <Button type="button" variant="outline" disabled={cleanupLocked} onClick={clear}>Clear draft</Button>
+            <Button type="button" variant="outline" disabled={cleanupLocked} onClick={newConfiguration}>New configuration</Button>
           </div>
           <p id="compose-preview-status" role={error ? "alert" : "status"} aria-live="polite" className={error ? "text-sm text-destructive" : "text-sm text-muted-foreground"}>
             {error || savedStatus || (saving ? "Saving configuration..." : pending ? "Checking the document..." : !apiBaseUrl ? "Compose preview is unavailable until the project API is configured." : "Preview only. No resources were created and no deployment was started.")}
           </p>
         </form>
-        {preview ? <ComposePreviewPlan preview={preview} /> : null}
+        {preview ? <><ComposePreviewPlan preview={preview} /><ComposeResourcePanel key={preview.configDigest} projectId={projectId} apiBaseUrl={apiBaseUrl} document={document} preview={preview} onCleanupLockChange={setCleanupLocked} /></> : null}
         <ComposeRevisionsPanel projectId={projectId} apiBaseUrl={apiBaseUrl} refreshKey={refreshKey} onLoad={load} />
       </CardContent>
     </Card>

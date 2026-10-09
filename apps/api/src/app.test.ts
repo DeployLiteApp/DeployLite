@@ -224,6 +224,7 @@ describe("DeployLite API scaffold", () => {
     );
 
     expect(repositories.auth.users.constructor.name).toBe("DbAuthUserRepository");
+    expect(repositories.composeResourceCleanupStore?.constructor.name).toBe("DbComposeResourceCleanupStore");
     expect(repositories.shouldSeedMockData).toBe(false);
   });
 

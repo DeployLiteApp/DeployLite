@@ -11,8 +11,11 @@ import { DbAuthUserRepository, DbRoleRepository, DbSessionRepository } from "./r
 import { DbAgentRepository, DbDeploymentRepository, DbProjectRepository } from "./repositories/deployment-data.js";
 import { DbControlCommandRepository, DbControlGrantRepository } from "./repositories/control-plane.js";
 import { DbAgentReplayStore } from "./repositories/agent-replay.js";
+import { DbComposeResourceCleanupStore } from "./repositories/compose-resource-cleanup.js";
 import { IdempotencyConflictError, createConfirmation, createControlCommand, digestControlInput } from "@deploylite/domain";
 import { createDeploymentSnapshot, createSourceIntent } from "@deploylite/contracts";
+import { createComposePreview, type PreparedComposeResourceCleanup } from "@deploylite/domain";
+import type { ComposeResourceCleanupConfirmationViewV1, ComposeResourceCleanupInput } from "@deploylite/contracts";
 
 const { Client } = pg;
 
@@ -459,6 +462,75 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
     await expect(new DbAgentReplayStore(requireDb(), "worker-c").claim(commandId, "payload-a", lease)).resolves.toMatchObject({ claimed: false, receipt });
   });
   it("rejects the old claimant after atomic lease reclaim", async () => { const commandId = randomUUID(); const deploymentId = randomUUID(); const receipt = { deploymentId, effectiveImage: `registry.example.com/app@sha256:${"a".repeat(64)}`, runtimePort: 3000, health: "passed" as const, terminalStatus: "succeeded" as const, rollback: { target: null, result: "not-required" as const }, proven: true as const }; const first = new DbAgentReplayStore(requireDb(), "same-process"); const second = new DbAgentReplayStore(requireDb(), "same-process"); const oldLease = { leaseId: "old", deploymentId, fence: 1, expiresAt: Date.now() + 30_000 }; const oldClaim = await first.claim(commandId, "payload", oldLease); await requirePool().query("UPDATE agent_replay SET lease_expires_at = now() - interval '1 second' WHERE command_id = $1", [commandId]); const newClaim = await second.claim(commandId, "payload", { ...oldLease, leaseId: "new", expiresAt: Date.now() + 30_000 }); await expect(first.complete(commandId, { fingerprint: "payload", claimToken: oldClaim.claimToken!, receipt })).rejects.toThrow("stale"); await second.complete(commandId, { fingerprint: "payload", claimToken: newClaim.claimToken!, receipt }); await expect(new DbAgentReplayStore(requireDb(), "reader").claim(commandId, "payload", oldLease)).resolves.toMatchObject({ claimed: false, receipt }); });
+
+  it("persists cleanup admission across clients and atomically recovers concurrent commit replies", async () => {
+    const client = requirePool(), role = (await client.query<{ id: string }>("SELECT id FROM roles WHERE name = 'admin'")).rows[0];
+    if (!role) throw new Error("Canonical admin role was not seeded");
+    const actorId = randomUUID(), projectId = randomUUID(), now = 1_791_447_000_000, ttl = 60_000;
+    await client.query("INSERT INTO users (id, email, email_normalized, password_hash, role_id) VALUES ($1, $2, $2, $3, $4)", [actorId, `${actorId}@example.test`, "hash", role.id]);
+    const policy = { policyVersion: "cleanup-pg", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true };
+    const document = JSON.stringify({ services: { app: { image: `registry.example.com/app@sha256:${"a".repeat(64)}` } } });
+    const preview = createComposePreview(document, projectId, policy);
+    const body: ComposeResourceCleanupInput = { document, projectId, kind: "volume", key: "data", expectedConfigDigest: preview.configDigest, expectedStateDigest: "b".repeat(64) };
+    const safePreview: PreparedComposeResourceCleanup["preview"] = { schemaVersion: 1, operation: "compose.resource.cleanup", status: "preview", executionAllowed: false, requiresConfirmation: true,
+      projectId, kind: "volume", key: "data", configDigest: preview.configDigest, stateDigest: body.expectedStateDigest, confirmationTtlMs: ttl };
+    const make = (key: string) => {
+      const command = createControlCommand({ actorId, action: "project.delete", scope: { kind: "project", projectId }, input: { ...safePreview, owner: "deploylite", agentId: "pg-agent" },
+        idempotencyKey: key, correlationId: `corr-${key}`, expiresAt: new Date(now + ttl) });
+      return { command, preview: safePreview, owner: "deploylite", agentId: "pg-agent", preparedAtMs: now } satisfies PreparedComposeResourceCleanup;
+    };
+    const storeA = new DbComposeResourceCleanupStore(requireDb(), () => now), prepared = make("cleanup-pg-key");
+    const [first, simultaneousRetry] = await Promise.all([storeA.save(prepared, "cleanup-request-1"), storeA.save({ ...prepared, command: { ...prepared.command, id: randomUUID() } }, "cleanup-request-2")]);
+    expect(first).toMatchObject({ commandId: expect.any(String), confirmationId: expect.any(String), status: "pending_confirmation", idempotent: false });
+    expect(simultaneousRetry).toEqual({ ...first, idempotent: true });
+    const restartPool = createDbPool(databaseUrl, { max: 2 });
+    try {
+      const restarted = new DbComposeResourceCleanupStore(createDbClient(restartPool), () => now), subject = { actorId, projectId, idempotencyKey: "cleanup-pg-key", confirmationId: first.confirmationId };
+      const record = await restarted.find(subject), original = { ...prepared, command: record.command };
+      expect(record.command).toMatchObject({ id: first.commandId, status: "pending_confirmation", inputDigest: prepared.command.inputDigest });
+      const view: ComposeResourceCleanupConfirmationViewV1 = { ...safePreview, commandId: record.command.id, confirmationId: record.confirmation.id, confirmationValidated: true };
+      const secondProcess = new DbComposeResourceCleanupStore(createDbClient(restartPool), () => now);
+      const admissions = await Promise.all([restarted.admit(original, view, "cleanup-request-3"), secondProcess.admit(original, view, "cleanup-request-4")]);
+      expect(admissions).toHaveLength(2);
+      expect(admissions.map(value => value.idempotent).sort()).toEqual([false, true]);
+      expect(admissions.map(value => value.status)).toEqual(["eligible", "eligible"]);
+      const afterRestart = new DbComposeResourceCleanupStore(createDbClient(restartPool), () => now);
+      const recovered = await afterRestart.find(subject);
+      expect(recovered.command.status).toBe("eligible"); expect(recovered.confirmation.consumedAt).toEqual(new Date(now));
+      const replay = await afterRestart.admit(original, view, "cleanup-request-5");
+      expect(replay).toEqual({ ...admissions[0]!, idempotent: true });
+      await expect(client.query("SELECT action, count(*)::int AS count FROM audit_events WHERE target_id = $1 AND action LIKE 'compose.resource.cleanup.%' GROUP BY action ORDER BY action", [projectId])).resolves.toMatchObject({ rows: [
+        { action: "compose.resource.cleanup.admitted", count: 1 }, { action: "compose.resource.cleanup.prepared", count: 1 }
+      ] });
+      await expect(client.query("SELECT status, result, execution_authority FROM control_commands WHERE id = $1", [first.commandId])).resolves.toMatchObject({ rows: [{ status: "eligible", result: null, execution_authority: null }] });
+    } finally { await closeDbPool(restartPool); }
+
+    const abort = new AbortController(), cancelStore = new DbComposeResourceCleanupStore(requireDb(), () => now, stage => { if (stage === "prepared-audit-written") abort.abort(); });
+    const canceled = make("cleanup-pg-cancel");
+    await expect(cancelStore.save(canceled, "cleanup-request-cancel", abort.signal)).rejects.toMatchObject({ code: "COMPOSE_CLEANUP_FAILED" });
+    await expect(client.query("SELECT count(*)::int AS count FROM control_commands c LEFT JOIN control_command_confirmations f ON f.command_id = c.id WHERE c.actor_user_id = $1 AND c.idempotency_key = $2", [actorId, "cleanup-pg-cancel"]))
+      .resolves.toMatchObject({ rows: [{ count: 0 }] });
+    await expect(client.query("SELECT count(*)::int AS count FROM audit_events WHERE target_id = $1 AND request_id = $2", [projectId, "cleanup-request-cancel"]))
+      .resolves.toMatchObject({ rows: [{ count: 0 }] });
+
+    const admissionPrepared = make("cleanup-pg-cancel-admit"), admissionReceipt = await storeA.save(admissionPrepared, "cleanup-request-admit-save");
+    const admissionSubject = { actorId, projectId, idempotencyKey: admissionPrepared.command.idempotencyKey, confirmationId: admissionReceipt.confirmationId };
+    const admissionRecord = await storeA.find(admissionSubject), admissionCommand = { ...admissionPrepared, command: admissionRecord.command };
+    const admissionView: ComposeResourceCleanupConfirmationViewV1 = { ...safePreview, commandId: admissionRecord.command.id,
+      confirmationId: admissionRecord.confirmation.id, confirmationValidated: true };
+    const cancelAdmission = new AbortController(), cancelAfterConsume = new DbComposeResourceCleanupStore(requireDb(), () => now,
+      stage => { if (stage === "confirmation-consumed") cancelAdmission.abort(); });
+    await expect(cancelAfterConsume.admit(admissionCommand, admissionView, "cleanup-request-admit-cancel-consume", cancelAdmission.signal))
+      .rejects.toMatchObject({ code: "COMPOSE_CLEANUP_FAILED" });
+    const cancelAudit = new AbortController(), cancelAfterAudit = new DbComposeResourceCleanupStore(requireDb(), () => now,
+      stage => { if (stage === "admitted-audit-written") cancelAudit.abort(); });
+    await expect(cancelAfterAudit.admit(admissionCommand, admissionView, "cleanup-request-admit-cancel-audit", cancelAudit.signal))
+      .rejects.toMatchObject({ code: "COMPOSE_CLEANUP_FAILED" });
+    const afterCancel = await storeA.find(admissionSubject);
+    expect(afterCancel.command.status).toBe("pending_confirmation"); expect(afterCancel.confirmation.consumedAt).toBeNull();
+    await expect(client.query("SELECT count(*)::int AS count FROM audit_events WHERE target_id = $1 AND action = 'compose.resource.cleanup.admitted'", [projectId]))
+      .resolves.toMatchObject({ rows: [{ count: 1 }] });
+  });
 });
 
 function requirePool(): pg.Pool {

@@ -68,7 +68,8 @@ class RecordingTransactionalClient {
       const row = command ? this.state.command : this.state.deployment;
       if (command) {
         this.beforeCommandWrite?.();
-        if (text.includes("clock_timestamp()") && (!this.state.command?.executionAuthority || Math.min(this.state.command.expiresAt.getTime(), this.state.command.executionAuthority.projectLease.expiresAt, this.state.command.executionAuthority.executionLease.expiresAt, this.state.command.executionAuthority.sourceLease?.expiresAt ?? Infinity) <= Date.now())) return { rows: [] };
+        const authority = this.state.command?.executionAuthority;
+        if (text.includes("clock_timestamp()") && (!authority || !("executionLease" in authority) || Math.min(this.state.command!.expiresAt.getTime(), authority.projectLease.expiresAt, authority.executionLease.expiresAt, authority.sourceLease?.expiresAt ?? Infinity) <= Date.now())) return { rows: [] };
       }
       if (command && this.failCommandWrite) throw new Error("injected command write failure");
       if (!row || this.missingWrite === (command ? "command" : "deployment")) return { rows: [] };
