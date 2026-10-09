@@ -50,4 +50,4 @@ This list makes the current work visible without treating unlike criteria as equ
 - PostgreSQL already has `domains` and `certificates` linked by `domain_id`; keep these relations and do not create duplicate domain or certificate tables.
 - Existing project image receipts and digest policy provide the registry trust foundation; L4 still needs to preserve that boundary while adding registry behavior.
 - A P4 host claim conflicts with any existing hostname row, even if that row has no application deployment target. Shared route networking is not used because it would allow cross-project app traffic; route targets use project-isolated networking.
-- Current uncommitted changes are isolated in the P4 worktree on `feat/p4-route-policy`. The protected-main checkout, other projects, and external runtime configuration are outside this delivery.
+- L3 implementation is committed locally as `22f18ef` in the isolated P4 worktree on `feat/p4-route-policy`; the hosted PR still ends at `ead30d3` until a push is explicitly authorized. The protected-main checkout, other projects, and external runtime configuration are outside this delivery.
