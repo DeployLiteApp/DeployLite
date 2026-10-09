@@ -362,8 +362,10 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       assert.equal(detach.statusCode, 200, detach.body); log("C4 network detach", "PASS", detach.json().data.attachment);
       const detached = await inspect(priorDocument, "network", "extra"); assert.equal(detached.containers[0]?.attached, false);
       await docker(["container", "start", serviceId]);
+      const volumeAttachState = await inspect(priorDocument, "volume", "data");
+      assert.equal(volumeAttachState.containers[0]?.running, true); assert.equal(volumeAttachState.containers[0]?.attached, false);
       const replace = await post("volumes/attachment/apply", { priorRevisionId: priorRevision.id, revisionId: nextRevision.id, key: "data", service: "app", attachmentAction: "attach",
-        expectedStateDigest: volumeBefore.stateDigest, expectedContainerId: serviceId }, "volume-replace-once");
+        expectedStateDigest: volumeAttachState.stateDigest, expectedContainerId: serviceId }, "volume-replace-once");
       assert.equal(replace.statusCode, 200, replace.body); const replacementId = replace.json().data.attachment.replacementContainerId as string;
       assert(/^[a-f0-9]{64}$/.test(replacementId)); register({ id: replacementId, kind: "container", name: "volume-replacement-candidate", created: true });
       const persisted = await docker(["container", "exec", replacementId, "/bin/sh", "-c", "test \"$(cat /data/p3-marker.txt)\" = deploylite-p3-owned-volume-marker-v1"]);
