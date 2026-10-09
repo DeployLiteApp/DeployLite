@@ -245,6 +245,16 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
         volumeBackup, resourceInspector: agentInspector, resourceCleanup,
         authorityValidator: { validateDeploymentAuthority: async () => { throw new Error("unexpected deployment authority"); },
           validateProjectUpdateAuthority: projectControls.validateProjectUpdateAuthority } satisfies DeploymentAuthorityValidation });
+      const inspectComposeResource = receiver.inspectComposeResource.bind(receiver);
+      receiver.inspectComposeResource = async (body, signature, signal) => {
+        try { return await inspectComposeResource(body, signature, signal); }
+        catch (error) {
+          const detail = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code
+            : error instanceof Error ? error.name : typeof error;
+          if (dockerFailureDiagnostics.length < 8) dockerFailureDiagnostics.push(`agent-receiver: ${detail}`);
+          throw error;
+        }
+      };
       server = await startAgentServer({ host: "127.0.0.1", port: 0, receiver, replayStore, production: false });
       const agentPort = (server.server.address() as AddressInfo).port, endpoint = `http://127.0.0.1:${agentPort}`;
       const transportOptions = { endpoint, trustKey, agentId, allowInsecureInternal: true, timeoutMs: 15_000 };
