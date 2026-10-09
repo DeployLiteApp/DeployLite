@@ -248,8 +248,17 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       server = await startAgentServer({ host: "127.0.0.1", port: 0, receiver, replayStore, production: false });
       const agentPort = (server.server.address() as AddressInfo).port, endpoint = `http://127.0.0.1:${agentPort}`;
       const transportOptions = { endpoint, trustKey, agentId, allowInsecureInternal: true, timeoutMs: 15_000 };
+      const diagnosticFetch: typeof globalThis.fetch = async (input, init) => {
+        const response = await globalThis.fetch(input, init);
+        if (!response.ok && dockerFailureDiagnostics.length < 8) {
+          const detail = (await response.clone().text().catch(() => "")).replace(/(password|secret|token|authorization|api[_-]?key|credential)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]")
+            .replace(/\b[a-f0-9]{32,64}\b/gi, "[REDACTED]").replace(/[\r\n\t]+/g, " ").slice(0, 200);
+          dockerFailureDiagnostics.push(`agent-http-${response.status}: ${detail || "empty"}`);
+        }
+        return response;
+      };
       const deploymentTransport = new AuthenticatedAgentDeploymentTransport(transportOptions);
-      resources = new AuthenticatedAgentComposeResourceInspectionTransport(transportOptions);
+      resources = new AuthenticatedAgentComposeResourceInspectionTransport({ ...transportOptions, fetch: diagnosticFetch });
       const access = { owner, agentId, inspector: resources, clock: { now: Date.now }, maxAgeMs: 30_000, capabilities: caps, deadlineMs: 15_000 };
       const rawBackupPlanStore = new InMemoryComposeVolumeBackupPlanStore({ ledger: memory.completion, appendAudit: value => { appAudit!.appendSynchronous(value); }, clock: Date.now });
       const backupPlanStore = { available: () => true, save: async (input: Parameters<typeof rawBackupPlanStore.save>[0]) => rawBackupPlanStore.save(input) };
