@@ -53,7 +53,15 @@ async function privateManifest(): Promise<Manifest> {
   assert.equal(process.env.DEPLOYLITE_P3_DOCKER_RUNTIME_GRANT, "P3_COMPOSE_CI_APPROVED");
   assert.equal(process.env.GITHUB_ACTIONS, "true"); assert.equal(process.env.RUNNER_ENVIRONMENT, "github-hosted");
   assert.equal(process.env.GITHUB_REPOSITORY, "DeployLiteApp/DeployLite"); assert.equal(process.env.GITHUB_JOB, "p3-docker-acceptance");
-  assert.equal(process.env.GITHUB_HEAD_REF, "feat/p3-resources-candidate"); assert.equal(process.env.DOCKER_HOST, "unix:///var/run/docker.sock");
+  assert.equal(process.env.DEPLOYLITE_P3_HEAD_REPOSITORY, "DeployLiteApp/DeployLite");
+  if (process.env.GITHUB_EVENT_NAME === "pull_request") {
+    assert.equal(process.env.GITHUB_BASE_REF, "main"); assert(process.env.GITHUB_HEAD_REF);
+  } else if (process.env.GITHUB_EVENT_NAME === "push") {
+    assert.equal(process.env.GITHUB_REF, "refs/heads/main");
+  } else {
+    assert.fail("P3 acceptance requires an internal main pull request or main push");
+  }
+  assert.equal(process.env.DOCKER_HOST, "unix:///var/run/docker.sock");
   assert(!process.env.DOCKER_CONTEXT && !process.env.DOCKER_TLS_VERIFY && !process.env.DOCKER_CERT_PATH);
   const path = process.env.DEPLOYLITE_P3_FIXTURE_MANIFEST; assert(path && resolve(path) === path);
   const stat = await lstat(path); assert(stat.isFile() && !stat.isSymbolicLink() && (stat.mode & 0o077) === 0 && stat.uid === process.getuid?.());
