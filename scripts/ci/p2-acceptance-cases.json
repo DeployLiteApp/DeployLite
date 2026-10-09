@@ -983,6 +983,7 @@
   },
   "sourceFiles": [
     ".github/workflows/baseline.yml",
+    "infra/acme-test/compose.yml",
     "apps/agent/src/agent-transport.ts",
     "apps/agent/src/deployment-dispatcher.ts",
     "apps/agent/src/index.ts",
@@ -1037,6 +1038,7 @@
     "packages/domain/src/deployment-contract/execution-memory-state.ts",
     "packages/domain/src/domain-route-plan.ts",
     "packages/domain/src/index.ts",
+    "scripts/compose.test.sh",
     "scripts/ci/p2-acceptance-cases.json",
     "scripts/ci/p2-physical-acceptance.py",
     "scripts/ci/p2-physical-acceptance.test.py",
