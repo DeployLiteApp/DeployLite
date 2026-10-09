@@ -221,7 +221,7 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       assert.equal(volumeInfo.Labels["com.deploylite.owner"], owner); assert.equal(volumeInfo.Labels["com.deploylite.project"], projectId);
       assert.equal(volumeInfo.Labels["com.deploylite.resource.kind"], "volume"); assert.equal(volumeInfo.Labels["com.deploylite.resource.key"], "data");
       register({ id: volumeInfo.CreatedAt, kind: "volume", name: volume.runtimeName, resourceKind: "volume", key: "data", created: true });
-      const mountpoint = await docker(["volume", "inspect", "--format", format, volume.runtimeName]);
+      const mountpoint = await dockerJson<string>(["volume", "inspect", "--format", format, volume.runtimeName]);
       const seedName = `p3c8-${runId}-seed`, seedId = await docker(["run", "--detach", "--name", seedName, "--network", "none", "--user", "0:0",
         "--cpus=0.25", "--memory=33554432", "--pids-limit=32", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
         "--mount", `type=volume,source=${volume.runtimeName},target=/data`, "--entrypoint", "/bin/sh", manifest.image, "-c", `printf '%s' '${secretFreeMarker}' > /data/p3-marker.txt && sleep 30`]);
