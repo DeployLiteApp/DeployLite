@@ -966,7 +966,7 @@
   },
   "preparedFrom": {
     "pgManifestSha256": "e5456cb0d6c3dc6ea4d12e142d1595584612085887528d1300da12700c381432",
-    "dockerFrozenSha256": "7613e8879f3386516412820db0ea6e5e42e5beec604f0359981b07ae6a876448",
+    "dockerFrozenSha256": "b58a473574f22d814abcf8f4fd402240fbc6606a15678b1c5566c2ea154eedd1",
     "status": "FINAL SOURCE CANDIDATE; physical Docker/PostgreSQL/CI NOT RUN; exact reports and disposable runtime are required"
   },
   "sourceFiles": [

@@ -677,9 +677,9 @@ class PhysicalFixture {
   }
   private async probe(path = this.manifest.healthPath, expectedBody?: string): Promise<boolean> {
     const begin = performance.now(); let healthy = false;
-    const signal = AbortSignal.timeout(200);
     try {
       const { awaitAbortable } = await import("@deploylite/domain");
+      const signal = AbortSignal.timeout(200);
       const response = await awaitAbortable(() => fetch(`http://127.0.0.1:49170${path}`, { signal, redirect: "error" }), signal);
       if (expectedBody === undefined) { healthy = response.status === 200; await awaitAbortable(() => response.body?.cancel() ?? Promise.resolve(), signal); }
       else {
