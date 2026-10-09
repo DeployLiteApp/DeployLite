@@ -3,7 +3,7 @@
   "purpose": "Expected evidence only; this manifest neither authorizes runtime nor claims PASS",
   "suites": {
     "db": {
-      "count": 59,
+      "count": 60,
       "allowSkipped": false,
       "cases": [
         {
@@ -357,6 +357,12 @@
         {
           "fullName": "PostgreSQL auth foundation integration atomically persists domain route revisions and replays an authorized rollback without detaching its certificate",
           "title": "atomically persists domain route revisions and replays an authorized rollback without detaching its certificate",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration atomically persists TCP/UDP reservation, apply revisions, active container state, and rollback",
+          "title": "atomically persists TCP/UDP reservation, apply revisions, active container state, and rollback",
           "file": "packages/db/src/postgres.integration.test.ts",
           "physicalRestart": false
         }
