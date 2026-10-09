@@ -167,6 +167,8 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
     let lastNetworkInspection: { name: string; id: string } | undefined, networkProjection = "unavailable";
     let candidateObservation: Record<string, unknown> | undefined, createdCandidateId: string | undefined;
     const replacementAgentObservations: Array<Record<string, unknown>> = [];
+    const replacementDriverEvents: Array<Record<string, unknown>> = [];
+    let replacementExecutionStartedAt: number | undefined, volumeAttachmentActive = false;
     let observedAgentVolumeCommand: ComposeVolumeAttachmentAgentCommandV1 | undefined;
     const runner = boundedRunner(allowed, id => allowedIds.add(id), (operation, detail) => { if (dockerFailureDiagnostics.length < 8) dockerFailureDiagnostics.push(`${operation}: ${detail}`); },
       (operation, argv, result) => {
@@ -252,8 +254,7 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
           try {
             const observation = await physicalInspector.inspect(...args);
             if (createdCandidateId && observedAgentVolumeCommand && input.preview.configDigest === nextPreview.configDigest
-              && ["volume", "network"].includes(input.kind) && replacementAgentObservations.length < 2
-              && !replacementAgentObservations.some(value => value.kind === input.kind)) {
+              && ["volume", "network"].includes(input.kind) && replacementAgentObservations.length < 8) {
               const expectedService = input.preview.services.find(value => value.name === observedAgentVolumeCommand!.service);
               const expectedNetwork = expectedService && input.preview.networks.find(value => value.key === expectedService.networks[0])?.runtimeName;
               const expectedMounts = expectedService?.volumes.map(value => ({ target: value.target, readOnly: value.readOnly })) ?? [];
@@ -264,7 +265,9 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
                 : /^[a-f0-9]{64}$/.test(observation.physicalIdentity);
               const candidate = observation.containers.find(value => value.containerId === createdCandidateId);
               const prior = observation.containers.find(value => value.containerId === observedAgentVolumeCommand!.containerId);
-              replacementAgentObservations.push({ kind: input.kind, containerCount: observation.containers.length,
+              replacementAgentObservations.push({ phase: volumeAttachmentActive ? "executor" : "after-response",
+                elapsedMs: replacementExecutionStartedAt === undefined ? null : Date.now() - replacementExecutionStartedAt,
+                kind: input.kind, containerCount: observation.containers.length,
                 observationDigestMatches: digestComposeResourceObservation(observation) === observation.stateDigest,
                 observationOwnerMatches: observation.owner === owner, observationAgentMatches: observation.agentId === observedAgentVolumeCommand.agentId,
                 observationProjectMatches: observation.projectId === observedAgentVolumeCommand.projectId,
@@ -282,12 +285,14 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
             }
             return observation;
           } catch (error) {
-            if (createdCandidateId && observedAgentVolumeCommand && input.preview.configDigest === nextPreview.configDigest
-              && ["volume", "network"].includes(input.kind) && replacementAgentObservations.length < 2
-              && !replacementAgentObservations.some(value => value.kind === input.kind)) {
+            if (createdCandidateId && observedAgentVolumeCommand && ["volume", "network"].includes(input.kind)
+              && replacementAgentObservations.length < 8) {
               const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code
                 : error instanceof Error ? error.name : typeof error;
-              replacementAgentObservations.push({ kind: input.kind, inspectionFailed: true, errorCode: code });
+              replacementAgentObservations.push({ phase: volumeAttachmentActive ? "executor" : "after-response",
+                elapsedMs: replacementExecutionStartedAt === undefined ? null : Date.now() - replacementExecutionStartedAt,
+                kind: input.kind, configMatchesNext: input.preview.configDigest === nextPreview.configDigest,
+                inspectionFailed: true, errorCode: code });
             }
             throw error;
           }
@@ -316,9 +321,37 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       };
       const networkAttachment = createDockerComposeNetworkAttachmentExecutor({ runner, inspector: agentInspector, owner, agentId, imagePolicy, capabilities: caps });
       const baseVolumeAttachment = createDockerComposeVolumeAttachmentExecutor({ inspector: agentInspector, owner, agentId, trustKey, imagePolicy, capabilities: caps,
-        driver: createDockerComposeVolumeReplacementDriver({ runner, owner }) });
+        driver: (() => {
+          const base = createDockerComposeVolumeReplacementDriver({ runner, owner });
+          const record = (value: Record<string, unknown>) => { if (replacementDriverEvents.length < 8) replacementDriverEvents.push({
+            elapsedMs: replacementExecutionStartedAt === undefined ? null : Date.now() - replacementExecutionStartedAt, ...value }); };
+          const errorCode = (error: unknown) => error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code
+            : error instanceof Error ? error.name : typeof error;
+          return { ...base,
+            async cutover(...args: Parameters<typeof base.cutover>) {
+              try { await base.cutover(...args); record({ operation: "cutover", status: "completed" }); }
+              catch (error) { record({ operation: "cutover", status: "failed", errorCode: errorCode(error) }); throw error; }
+            },
+            async restorePrior(...args: Parameters<typeof base.restorePrior>) {
+              try { await base.restorePrior(...args); record({ operation: "restorePrior", status: "completed" }); }
+              catch (error) { record({ operation: "restorePrior", status: "failed", errorCode: errorCode(error) }); throw error; }
+            },
+            async waitUntilHealthy(containerId, timeoutMs, signal) {
+              const target = containerId === createdCandidateId ? "candidate" : "prior";
+              try { const healthy = await base.waitUntilHealthy(containerId, timeoutMs, signal);
+                record({ operation: "waitUntilHealthy", target, healthy }); return healthy; }
+              catch (error) { record({ operation: "waitUntilHealthy", target, status: "failed", errorCode: errorCode(error) }); throw error; }
+            },
+            async removeCandidate(...args: Parameters<typeof base.removeCandidate>) {
+              try { await base.removeCandidate(...args); record({ operation: "removeCandidate", status: "completed" }); }
+              catch (error) { record({ operation: "removeCandidate", status: "failed", errorCode: errorCode(error) }); throw error; }
+            }
+          };
+        })() });
       const volumeAttachment = { ...baseVolumeAttachment, async execute(...args: Parameters<typeof baseVolumeAttachment.execute>) {
-        observedAgentVolumeCommand = structuredClone(args[0]); return baseVolumeAttachment.execute(...args);
+        observedAgentVolumeCommand = structuredClone(args[0]); replacementExecutionStartedAt = Date.now(); volumeAttachmentActive = true;
+        try { return await baseVolumeAttachment.execute(...args); }
+        finally { volumeAttachmentActive = false; }
       } };
       const volumeBackup = createDockerComposeVolumeBackupExecutor({ owner, agentId, imagePolicy, capabilities: caps, inspector: agentInspector,
         source: createLocalDirectoryComposeVolumeBackupSource(new Map([[volume.runtimeName, backupSourceRoot]])), destinations: new Map([["ci-artifact", archiveDestination]]) });
@@ -482,7 +515,8 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       } catch { replacementProjection = { inspectionFailed: true }; }
       dockerFailureDiagnostics.push(`volume-replacement-postcondition: ${JSON.stringify({ status: replacementReceipt.status,
         health: replacementReceipt.health, rollback: replacementReceipt.rollback, reason: replacementReceipt.reason, ...replacementProjection,
-        agentObservations: replacementAgentObservations })}`);
+        agentObservations: replacementAgentObservations, driverEvents: replacementDriverEvents,
+        replacementExecutionElapsedMs: replacementExecutionStartedAt === undefined ? null : Date.now() - replacementExecutionStartedAt })}`);
       assert.equal(replacementReceipt.status, "replaced", JSON.stringify({ status: replacementReceipt.status, health: replacementReceipt.health,
         rollback: replacementReceipt.rollback, reason: replacementReceipt.reason, ...replacementProjection }));
       assert.equal(replacementReceipt.health, "passed");
