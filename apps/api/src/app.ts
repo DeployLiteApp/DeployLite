@@ -11,6 +11,7 @@ import { registerComposeNetworkAttachmentExecutionRoute, type ComposeNetworkAtta
 import { registerComposeVolumeAttachmentExecutionRoute, type ComposeVolumeAttachmentExecutionAccess } from "./compose-volume-attachment-execution-route.js";
 import { registerComposeVolumeBackupPlanRoute, type ComposeVolumeBackupPlanAccess } from "./compose-volume-backup-plan-route.js";
 import { registerComposeVolumeBackupExecutionRoute, type ComposeVolumeBackupExecutionAccess } from "./compose-volume-backup-execution-route.js";
+import { registerDomainRoutePreviewRoute } from "./domain-route-preview-route.js";
 import { claimDeploymentAuthority, validateStopCompletion, validateDeploymentAuthority, validateInitialExecution } from "@deploylite/domain";
 import { createHash, randomUUID } from "node:crypto";
 import { createAuditLogRecord, createCorrelationContext, createRequestId, parseDeployLiteEnv, redactSecrets, type DeployLiteEnv, createEnvSecretCipher, EnvSecretKeyInvalidError, EnvSecretKeyMissingError, ENCRYPTION_KEY_VERSION, loadEnvSecretKey, type EnvSecretCipher } from "@deploylite/config";
@@ -51,7 +52,7 @@ import {
   type DeploymentSnapshotV1,
   type ImageReferencePolicyV1
 } from "@deploylite/contracts";
-import { BcryptPasswordHasher, bootstrapInitialAdmin, closeDbPool, createDbClient, createDbPool, createOpaqueSessionToken, DbAgentRepository, DbAuditRepository, DbAuthUserRepository, DbComposeResourceCleanupStore, DbControlCommandRepository, DbControlGrantRepository, DbDeploymentRepository, DbDeploymentExecutionRepository, DbEnvSecretValueRepository, DbEnvVariableMetadataRepository, DbProjectRepository, DbSessionRepository, hashSessionToken, type DeployLiteDb } from "@deploylite/db";
+import { BcryptPasswordHasher, bootstrapInitialAdmin, closeDbPool, createDbClient, createDbPool, createOpaqueSessionToken, DbAgentRepository, DbAuditRepository, DbAuthUserRepository, DbComposeResourceCleanupStore, DbControlCommandRepository, DbControlGrantRepository, DbDeploymentRepository, DbDeploymentExecutionRepository, DbDomainRouteClaimReader, DbEnvSecretValueRepository, DbEnvVariableMetadataRepository, DbProjectRepository, DbSessionRepository, hashSessionToken, type DeployLiteDb } from "@deploylite/db";
 import {
   AgentStatusService,
   awaitAbortable,
@@ -104,6 +105,7 @@ import {
   type AgentRepository,
   type DeploymentRepository,
   type DeploymentExecutionRepository,
+  type DomainRouteClaimReader,
   type ExecutionCompletionOutcome,
   type DeploymentSnapshotRepository,
   type DockerImageExecutionReceiptV1,
@@ -509,6 +511,7 @@ type PlatformRepositoryOptions = {
   agents: AgentRepository;
   deployments: DeploymentRepository;
   projects: ProjectRepository;
+  domainRouteClaims?: DomainRouteClaimReader;
   composeRevisionReads?: ComposeRevisionReadCapability;
   composeRevisionSaves?: ComposeRevisionSaveStore;
   envMetadata?: EnvVariableMetadataRepository;
@@ -634,7 +637,7 @@ function createApiState(env: EnvSecretKeySource, overrides: Partial<PlatformRepo
   const controlDeletes = overrides.controlDeletes ?? memory?.controls ?? new InMemoryControlDeleteRepository(projects, audit ?? new InMemoryAuditRepository(), deployments);
   const agentStatus = new AgentStatusService(agents);
   const deployRunner = new DeployRunner(deployments, envMetadata, agentStatus, envSecretCipher);
-  return { agents, deployments, executionCompletion, projects, composeRevisionReads: overrides.composeRevisionReads ?? overrides.composeRevisionSaves, composeRevisionSaves: overrides.composeRevisionSaves, envMetadata, envSecretValues, envSecretCipher, agentStatus, deployRunner, runtimeActivationDispatcher, deploymentDispatcher, deploymentStopDispatcher, snapshots, controlDeletes, controlRedeploy: overrides.controlRedeploy ?? memory?.controls ?? (controlDeletes as unknown as ControlRedeployRepository), controlRollback: overrides.controlRollback ?? memory?.controls ?? (typeof (controlDeletes as any).executeConfirmedDeploymentRollback === "function" ? controlDeletes as unknown as ControlRollbackRepository : undefined), controlGrants: overrides.controlGrants ?? new InMemoryControlGrantRepository() };
+  return { agents, deployments, projects, domainRouteClaims: overrides.domainRouteClaims, executionCompletion, composeRevisionReads: overrides.composeRevisionReads ?? overrides.composeRevisionSaves, composeRevisionSaves: overrides.composeRevisionSaves, envMetadata, envSecretValues, envSecretCipher, agentStatus, deployRunner, runtimeActivationDispatcher, deploymentDispatcher, deploymentStopDispatcher, snapshots, controlDeletes, controlRedeploy: overrides.controlRedeploy ?? memory?.controls ?? (controlDeletes as unknown as ControlRedeployRepository), controlRollback: overrides.controlRollback ?? memory?.controls ?? (typeof (controlDeletes as any).executeConfirmedDeploymentRollback === "function" ? controlDeletes as unknown as ControlRollbackRepository : undefined), controlGrants: overrides.controlGrants ?? new InMemoryControlGrantRepository() };
 }
 
 class InMemoryControlGrantRepository implements ControlGrantRepository {
@@ -1030,6 +1033,7 @@ function createDbAuthAdapters(env: DeployLiteEnv, options: BuildApiAppOptions): 
       deploymentStopDispatcher: options.state?.deploymentStopDispatcher,
       agents: options.state?.agents ?? new DbAgentRepository(db),
       deployments,
+      domainRouteClaims: options.state?.domainRouteClaims ?? new DbDomainRouteClaimReader(db),
       executionCompletion: options.state?.executionCompletion ?? (deployments instanceof DbDeploymentRepository ? new DbDeploymentExecutionRepository(db) : undefined),
       projects: options.state?.projects ?? new DbProjectRepository(db),
       composeRevisionReads: options.state?.composeRevisionReads ?? compose,
@@ -1262,6 +1266,7 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
   const requireMutationRole = createRolePreHandler(adapters, ["admin", "operator"]);
   const requireAdminRole = createRolePreHandler(adapters, ["admin"]);
   registerComposePreviewRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
+  registerDomainRoutePreviewRoute(app, { prefix: API_PREFIX, projects: state.projects, deployments: state.deployments, domainRouteClaims: state.domainRouteClaims, grants: state.controlGrants, audit: adapters.audit, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerComposeRevisionReadRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, revisions: state.composeRevisionReads, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerComposeRevisionSaveRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, revisions: state.composeRevisionSaves, imagePolicy, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerComposeResourceInspectionRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });

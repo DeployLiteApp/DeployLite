@@ -324,12 +324,14 @@ export const domains = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
     hostname: text("hostname").notNull(),
+    deploymentId: uuid("deployment_id").references(() => deployments.id, { onDelete: "set null", onUpdate: "cascade" }),
     status: text("status").notNull().default("pending"),
     metadata: jsonObject("metadata"),
     ...timestamps
   },
   (table) => [
     uniqueIndex("domains_hostname_unique").on(table.hostname),
+    index("domains_deployment_id_idx").on(table.deploymentId),
     index("domains_project_id_idx").on(table.projectId),
     check("domains_status_valid", sql`${table.status} in ('pending', 'active', 'failed', 'disabled')`)
   ]
