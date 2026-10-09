@@ -257,9 +257,20 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
               const expectedService = input.preview.services.find(value => value.name === observedAgentVolumeCommand!.service);
               const expectedNetwork = expectedService && input.preview.networks.find(value => value.key === expectedService.networks[0])?.runtimeName;
               const expectedMounts = expectedService?.volumes.map(value => ({ target: value.target, readOnly: value.readOnly })) ?? [];
+              const plannedResource = (input.kind === "network" ? input.preview.networks : input.preview.volumes).find(value => value.key === input.key);
+              const validPhysicalIdentity = input.kind === "volume"
+                ? /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)$/.test(observation.physicalIdentity)
+                  && Number.isFinite(Date.parse(observation.physicalIdentity))
+                : /^[a-f0-9]{64}$/.test(observation.physicalIdentity);
               const candidate = observation.containers.find(value => value.containerId === createdCandidateId);
               const prior = observation.containers.find(value => value.containerId === observedAgentVolumeCommand!.containerId);
               replacementAgentObservations.push({ kind: input.kind, containerCount: observation.containers.length,
+                observationDigestMatches: digestComposeResourceObservation(observation) === observation.stateDigest,
+                observationOwnerMatches: observation.owner === owner, observationAgentMatches: observation.agentId === observedAgentVolumeCommand.agentId,
+                observationProjectMatches: observation.projectId === observedAgentVolumeCommand.projectId,
+                observationKindMatches: observation.kind === input.kind, observationKeyMatches: observation.key === input.key,
+                observationRuntimeNameMatches: Boolean(plannedResource && observation.runtimeName === plannedResource.runtimeName),
+                observationConfigMatches: observation.configDigest === input.preview.configDigest, observationIdentityValid: validPhysicalIdentity,
                 candidateObserved: Boolean(candidate), candidateRunning: candidate?.running === true, candidateAttached: candidate?.attached === true,
                 candidateRevisionMatches: candidate?.composeRevisionId === observedAgentVolumeCommand.revisionId,
                 candidateConfigMatches: candidate?.composeConfigDigest === observedAgentVolumeCommand.configDigest,
