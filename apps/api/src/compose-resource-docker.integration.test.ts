@@ -534,7 +534,7 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       const persisted = await docker(["container", "exec", replacementId, "/bin/sh", "-c", "test \"$(cat /data/p3-marker.txt)\" = deploylite-p3-owned-volume-marker-v1"]);
       assert.equal(persisted, ""); log("C4 bounded volume replacement", "PASS", replacementReceipt);
       await docker(["container", "stop", "--time", "5", replacementId]);
-      const backupObservation = await inspect(nextDocument, "volume", "data");
+      const backupObservation = await agentInspector.inspect({ preview: nextPreview, kind: "volume", key: "data" }, new AbortController().signal);
       const stoppedVolumeConsumer = backupObservation.containers.find(value => value.containerId === replacementId);
       dockerFailureDiagnostics.push(`volume-stopped-observation: ${JSON.stringify({ consumerCount: backupObservation.containers.length,
         stoppedConsumerFound: Boolean(stoppedVolumeConsumer), attached: stoppedVolumeConsumer?.attached ?? false,
