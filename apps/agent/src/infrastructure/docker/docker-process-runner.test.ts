@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { DockerProcessError, DockerProcessRunner, type SpawnedProcess, type SpawnProcess } from "./docker-process-runner.js";
+import { buildDockerTransportPortInspectArgv } from "./docker-cli-argv.js";
 
 function fakeProcess() { const events = new Map<string, (...args: any[]) => void>(); const stdout = { on: vi.fn() }; const stderr = { on: vi.fn() }; const child = { stdout, stderr,  once: vi.fn((event: string, callback: (...args: any[]) => void) => { events.set(event, callback); return child; }), kill: vi.fn() } as unknown as SpawnedProcess; return { child, events, stdout, stderr }; }
 describe("DockerProcessRunner", () => {
@@ -36,6 +37,15 @@ describe("DockerProcessRunner", () => {
     const fake = fakeProcess(), promise = new DockerProcessRunner({ spawn: () => fake.child }).run(argv, new AbortController().signal);
     fake.stdout.on.mock.calls[0]![1](output + "\n"); fake.stderr.on.mock.calls[0]![1]("token=private-token"); fake.events.get("close")!(0, null);
     await expect(promise).resolves.toEqual({ exitCode: 0, signal: null, stdout: output + "\n", stderr: "token=[REDACTED]" });
+  });
+  it("retains only the scoped transport container identity and bindings from Docker inspect", async () => {
+    const value = { id, name: "/deploylite-active-dep-1", state: "running", running: true, health: "healthy", owner: "deploylite",
+      projectId: "project-1", deploymentId: "dep-1", candidateId: "dep-1:candidate:cmd-1", effectiveImage: image,
+      hostBindings: { "3000/tcp": [{ HostIp: "127.0.0.1", HostPort: "43000" }] }, networkMode: "default" };
+    const fake = fakeProcess(), argv = buildDockerTransportPortInspectArgv("deploylite-active-dep-1");
+    const promise = new DockerProcessRunner({ spawn: () => fake.child }).run(argv, new AbortController().signal);
+    fake.stdout.on.mock.calls[0]![1](JSON.stringify(value)); fake.events.get("close")!(0, null);
+    await expect(promise).resolves.toMatchObject({ stdout: JSON.stringify(value), exitCode: 0 });
   });
   it("keeps unknown fields, secret nesting, unrecognized formats and failed process output redacted", async () => {
     const cases = [

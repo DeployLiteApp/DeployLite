@@ -10,7 +10,7 @@ import {
 } from "@deploylite/config";
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
-import { agentHeartbeatSchema, COMPOSE_RESOURCE_CLEANUP_CAPABILITY, COMPOSE_RESOURCE_INSPECTION_CAPABILITY, COMPOSE_VOLUME_ATTACHMENT_CAPABILITY, COMPOSE_VOLUME_BACKUP_CAPABILITY, DOMAIN_ROUTE_APPLY_CAPABILITY, InMemoryCapabilityRegistry, resourceSnapshotSchema, type AgentHeartbeat } from "@deploylite/contracts";
+import { agentHeartbeatSchema, COMPOSE_RESOURCE_CLEANUP_CAPABILITY, COMPOSE_RESOURCE_INSPECTION_CAPABILITY, COMPOSE_VOLUME_ATTACHMENT_CAPABILITY, COMPOSE_VOLUME_BACKUP_CAPABILITY, DOMAIN_ROUTE_APPLY_CAPABILITY, TRANSPORT_PORT_APPLY_CAPABILITY, InMemoryCapabilityRegistry, resourceSnapshotSchema, type AgentHeartbeat } from "@deploylite/contracts";
 import { z } from "zod";
 import { DigestDeploymentDispatcher } from "./deployment-dispatcher.js";
 import { AuthenticatedAgentCommandReceiver } from "./agent-transport.js";
@@ -19,6 +19,7 @@ import { createDockerComposeResourceInspector } from "./infrastructure/docker/do
 import { createDockerComposeNetworkAttachmentExecutor } from "./infrastructure/docker/docker-compose-network-attachment.js";
 import { createDockerComposeVolumeAttachmentExecutor } from "./infrastructure/docker/docker-compose-volume-attachment.js";
 import { createDockerComposeVolumeReplacementDriver } from "./infrastructure/docker/docker-compose-volume-replacement-driver.js";
+import { DockerTransportPortExecutor } from "./infrastructure/docker/docker-transport-port-executor.js";
 import { COMPOSE_VOLUME_ATTACHMENT_ENABLED_ENV, parseComposeVolumeAttachmentEnabled } from "./infrastructure/docker/compose-volume-attachment-config.js";
 import { createDockerComposeVolumeBackupExecutor, createLocalDirectoryComposeVolumeBackupSource } from "./infrastructure/docker/docker-compose-volume-backup.js";
 import { parseComposeVolumeBackupRuntimeConfig, COMPOSE_VOLUME_BACKUP_CONFIG_ENV } from "./infrastructure/docker/compose-volume-backup-config.js";
@@ -163,9 +164,10 @@ export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
   const domainRouteApply = traefikDynamicDir ? createTraefikDomainRouteExecutor({ runner,
     fileStore: new TraefikDomainRouteFileStore(traefikDynamicDir), agentId: parsed.DEPLOYLITE_AGENT_ID }) : undefined;
   const domainRouteCapabilities = domainRouteApply ? [DOMAIN_ROUTE_APPLY_CAPABILITY] : [];
+  const transportPortApply = new DockerTransportPortExecutor({ runner, agentId: parsed.DEPLOYLITE_AGENT_ID, owner: "deploylite", allowedNetworks: ["deploylite-agent"] });
   const receiver = new AuthenticatedAgentCommandReceiver({ agentId: parsed.DEPLOYLITE_AGENT_ID, trustKey: parsed.DEPLOYLITE_AGENT_TRUST_KEY,
-    capabilities: ["deploy.execute", "deployment.stop", ...composeCapabilities, ...domainRouteCapabilities], dispatcher, stopDispatcher: dispatcher, networkAttachment, ...(domainRouteApply ? { domainRouteApply } : {}),
-    resourceInspector: composeInspector, ...(volumeBackup ? { volumeBackup } : {}), ...(volumeAttachment ? { volumeAttachment } : {}), ...(resourceCleanup ? { resourceCleanup } : {}), authorityValidator, replayStore: replayStore as never });
+    capabilities: ["deploy.execute", "deployment.stop", ...composeCapabilities, ...domainRouteCapabilities, TRANSPORT_PORT_APPLY_CAPABILITY], dispatcher, stopDispatcher: dispatcher, networkAttachment, ...(domainRouteApply ? { domainRouteApply } : {}),
+    transportPortApply, resourceInspector: composeInspector, ...(volumeBackup ? { volumeBackup } : {}), ...(volumeAttachment ? { volumeAttachment } : {}), ...(resourceCleanup ? { resourceCleanup } : {}), authorityValidator, replayStore: replayStore as never });
   const server = await startAgentServer({ host: parsed.DEPLOYLITE_AGENT_HOST, port: parsed.DEPLOYLITE_AGENT_PORT, receiver, replayStore: replayStore as never, production: parsed.NODE_ENV === "production" });
   const close = async () => { await server.close(); await closeDbPool(pool); };
   process.once("SIGINT", close); process.once("SIGTERM", close);

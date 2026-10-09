@@ -4,6 +4,10 @@ import { agentReceiptQuerySchema, agentCachedReceiptSchema, type AgentReceiptQue
 import { awaitAbortable, composeResourceAttachmentExecutionDigest, composeVolumeAttachmentExecutionDigest, composeVolumeBackupExecutionDigest, digestComposeResourceObservation, validateDockerImageSnapshot, type ComposeResourceInspector, type DockerImageExecutionReceiptV1, type DeploymentAuthorityValidation, type PriorDockerImageExecutionReceiptV1 } from "@deploylite/domain";
 import { DOMAIN_ROUTE_APPLY_CAPABILITY, DOMAIN_ROUTE_APPLY_RECEIPT_PATH, domainRouteApplyAgentCommandSchema, domainRouteApplyCachedReceiptSchema,
   domainRouteApplyReceiptQuerySchema, domainRouteApplyReceiptSchema, type DomainRouteApplyAgentCommandV1, type DomainRouteApplyReceiptV1 } from "@deploylite/contracts";
+import { TRANSPORT_PORT_APPLY_CAPABILITY, TRANSPORT_PORT_APPLY_PATH, TRANSPORT_PORT_APPLY_RECEIPT_PATH,
+  transportPortApplyAgentCommandSchema, transportPortApplyCachedReceiptSchema, transportPortApplyReceiptQuerySchema,
+  transportPortApplyReceiptSchema, type TransportPortApplyAgentCommandV1, type TransportPortApplyReceiptQueryV1,
+  type TransportPortApplyReceiptV1 } from "@deploylite/contracts";
 import { digestControlInput } from "@deploylite/domain";
 import type { ComposeVolumeBackupAuthority } from "./infrastructure/docker/docker-compose-volume-backup.js";
 
@@ -21,7 +25,8 @@ export type AgentVolumeBackupExecutor = { execute(command: ComposeVolumeBackupAg
 export type AgentComposeVolumeAttachmentExecutor = { execute(command: ComposeVolumeAttachmentAgentCommandV1, authority: RuntimeExecutionAuthority, signal: AbortSignal): Promise<ComposeVolumeAttachmentReceiptV1> };
 export type AgentComposeResourceCleanupExecutor = { execute(command: ComposeResourceCleanupAgentCommandV1, signal: AbortSignal): Promise<ComposeResourceCleanupExecutionReceiptV1> };
 export type AgentDomainRouteApplyExecutor = { execute(command: DomainRouteApplyAgentCommandV1, authority: RuntimeExecutionAuthority, signal: AbortSignal): Promise<DomainRouteApplyReceiptV1> };
-export type AgentCommandReceiverOptions = Readonly<{ agentId: string; trustKey: string; capabilities: readonly string[]; dispatcher: AgentCommandDispatcher; stopDispatcher?: AgentStopDispatcher; networkAttachment?: AgentNetworkAttachmentExecutor; volumeBackup?: AgentVolumeBackupExecutor; volumeAttachment?: AgentComposeVolumeAttachmentExecutor; resourceCleanup?: AgentComposeResourceCleanupExecutor; domainRouteApply?: AgentDomainRouteApplyExecutor; resourceInspector?: ComposeResourceInspector; replayStore: AgentReplayStore; authorityValidator?: DeploymentAuthorityValidation; now?: () => number }>;
+export type AgentTransportPortApplyExecutor = { execute(command: TransportPortApplyAgentCommandV1, authority: RuntimeExecutionAuthority, signal: AbortSignal): Promise<TransportPortApplyReceiptV1> };
+export type AgentCommandReceiverOptions = Readonly<{ agentId: string; trustKey: string; capabilities: readonly string[]; dispatcher: AgentCommandDispatcher; stopDispatcher?: AgentStopDispatcher; networkAttachment?: AgentNetworkAttachmentExecutor; volumeBackup?: AgentVolumeBackupExecutor; volumeAttachment?: AgentComposeVolumeAttachmentExecutor; resourceCleanup?: AgentComposeResourceCleanupExecutor; domainRouteApply?: AgentDomainRouteApplyExecutor; transportPortApply?: AgentTransportPortApplyExecutor; resourceInspector?: ComposeResourceInspector; replayStore: AgentReplayStore; authorityValidator?: DeploymentAuthorityValidation; now?: () => number }>;
 
 export class AuthenticatedAgentCommandReceiver {
   readonly #options: AgentCommandReceiverOptions;
@@ -31,7 +36,8 @@ export class AuthenticatedAgentCommandReceiver {
     const capabilities = options.capabilities.filter(capability => (capability !== COMPOSE_RESOURCE_INSPECTION_CAPABILITY || Boolean(options.resourceInspector))
       && (capability !== COMPOSE_VOLUME_ATTACHMENT_CAPABILITY || Boolean(options.volumeAttachment))
       && (capability !== COMPOSE_RESOURCE_CLEANUP_CAPABILITY || Boolean(options.resourceCleanup))
-      && (capability !== DOMAIN_ROUTE_APPLY_CAPABILITY || Boolean(options.domainRouteApply)));
+      && (capability !== DOMAIN_ROUTE_APPLY_CAPABILITY || Boolean(options.domainRouteApply))
+      && (capability !== TRANSPORT_PORT_APPLY_CAPABILITY || Boolean(options.transportPortApply)));
     this.#options = { ...options, capabilities };
   }
   hasDurableReplayStore(): boolean { return this.#options.replayStore.durable === true; }
@@ -99,6 +105,19 @@ export class AuthenticatedAgentCommandReceiver {
     const receipt = raw === null ? null : domainRouteApplyReceiptSchema.parse(raw);
     if (receipt && !this.matchesDomainRouteApplyReceipt(query, receipt)) throw new Error("agent cached domain route scope rejected");
     return domainRouteApplyCachedReceiptSchema.parse({ schemaVersion: 1, action: "domain.route.apply", agentId: this.#options.agentId,
+      commandId: query.commandId, correlationId: query.context.correlationId, receipt });
+  }
+  async readTransportPortApplyReceipt(body: unknown, signature: string | undefined, signal?: AbortSignal): Promise<unknown> {
+    if (signal?.aborted) throw new TransportCanceledError();
+    const text = JSON.stringify(body);
+    if (!this.verifyRequest(`POST ${TRANSPORT_PORT_APPLY_RECEIPT_PATH}\n${text}`, signature)) throw new Error("agent authentication failed");
+    const query = transportPortApplyReceiptQuerySchema.parse(structuredClone(body));
+    if (query.agentId !== this.#options.agentId || !this.#options.capabilities.includes(TRANSPORT_PORT_APPLY_CAPABILITY)) throw new Error("agent cache scope rejected");
+    const fingerprint = this.transportPortApplyFingerprint(query);
+    const raw = await this.lookupReplay(query.commandId, fingerprint, query.timeoutMs, signal);
+    const receipt = raw === null ? null : transportPortApplyReceiptSchema.parse(raw);
+    if (receipt && !this.matchesTransportPortApplyReceipt(query, receipt)) throw new Error("agent cached transport-port scope rejected");
+    return transportPortApplyCachedReceiptSchema.parse({ schemaVersion: 1, action: "transport.port.apply", agentId: this.#options.agentId,
       commandId: query.commandId, correlationId: query.context.correlationId, receipt });
   }
   async readComposeVolumeAttachmentReceipt(body: unknown, signature: string | undefined, signal?: AbortSignal): Promise<unknown> {
@@ -181,6 +200,7 @@ export class AuthenticatedAgentCommandReceiver {
     if (typeof body === "object" && body !== null && (body as { action?: string }).action === "compose.volume.backup") return this.receiveComposeVolumeBackup(body, signal);
     if (typeof body === "object" && body !== null && (body as { action?: string }).action === "compose.resource.cleanup") return this.receiveComposeResourceCleanup(body, signal);
     if (typeof body === "object" && body !== null && (body as { action?: string }).action === "domain.route.apply") return this.receiveDomainRouteApply(body, signal);
+    if (typeof body === "object" && body !== null && (body as { action?: string }).action === "transport.port.apply") return this.receiveTransportPortApply(body, signal);
     if (typeof body === "object" && body !== null && (body as { action?: string }).action === "compose.network.attachment") return this.receiveComposeNetworkAttachment(body, signal);
     if (typeof body === "object" && body !== null && (body as { action?: string }).action === "deployment.stop") return this.receiveStop(body, signal);
     const command = agentExecutionCommandSchema.parse(structuredClone(body));
@@ -324,6 +344,54 @@ export class AuthenticatedAgentCommandReceiver {
       if (admission.signal.aborted) throw admission.signal.reason;
       const receipt = domainRouteApplyReceiptSchema.parse(await this.#options.domainRouteApply.execute(command, authority, admission.signal));
       if (!this.matchesDomainRouteApplyReceipt(command, receipt)) throw new FenceError("Domain route receipt scope rejected");
+      if (!claim.claimToken) throw new Error("agent replay claim token missing");
+      await this.#options.replayStore.complete(command.commandId, { fingerprint, claimToken: claim.claimToken, receipt });
+      return receipt;
+    } catch (error) { if (claim?.claimed && claim.claimToken) this.releaseReplay(command.commandId, claim.claimToken); throw error; }
+    finally { admission.dispose(); }
+  }
+  private async receiveTransportPortApply(body: unknown, signal?: AbortSignal): Promise<TransportPortApplyReceiptV1> {
+    const command = transportPortApplyAgentCommandSchema.parse(structuredClone(body));
+    if (!this.#options.transportPortApply || !this.#options.capabilities.includes(TRANSPORT_PORT_APPLY_CAPABILITY)
+      || command.requiredCapabilities.length !== 1 || command.requiredCapabilities[0] !== TRANSPORT_PORT_APPLY_CAPABILITY) throw new CapabilityError(TRANSPORT_PORT_APPLY_CAPABILITY);
+    if (command.agentId !== this.#options.agentId || command.lease.projectId !== command.projectId
+      || command.authority.projectId !== command.projectId || command.authority.commandId !== command.commandId
+      || command.authority.inputDigest !== command.inputDigest || protocolPayloadFingerprint(command.lease) !== protocolPayloadFingerprint(command.authority.projectLease)
+      || command.inputDigest !== digestControlInput({ route: command.route, executionReceipt: command.executionReceipt,
+        effectiveImage: command.effectiveImage, operation: command.operation, rollbackRevisionId: command.rollbackRevisionId })) {
+      throw new FenceError("Transport port project authority or input digest rejected");
+    }
+    const fingerprint = this.transportPortApplyFingerprint(command);
+    const cached = await this.lookupReplay(command.commandId, fingerprint, command.timeoutMs, signal);
+    if (cached) {
+      const receipt = transportPortApplyReceiptSchema.parse(cached);
+      if (!this.matchesTransportPortApplyReceipt(command, receipt)) throw new FenceError("Cached transport port receipt scope rejected");
+      return receipt;
+    }
+    const now = this.#options.now ?? Date.now;
+    if (now() >= command.lease.expiresAt) throw new LeaseExpiredError();
+    this.validateFence(command.lease, command.projectId);
+    const validator = this.#options.authorityValidator?.validateProjectUpdateAuthority?.bind(this.#options.authorityValidator);
+    if (!validator) throw new FenceError("Persisted project update authority reader required");
+    const authority: RuntimeExecutionAuthority = { expiresAt: command.lease.expiresAt, assertValid: async () => {
+      await validator(structuredClone(command.authority), now());
+      if (now() >= command.lease.expiresAt) throw new LeaseExpiredError();
+      this.validateFence(command.lease, command.projectId);
+    } };
+    if (signal?.aborted) throw new TransportCanceledError();
+    const admission = this.admission(command.timeoutMs, command.lease, signal);
+    let claim: AgentReplayClaim | undefined;
+    try {
+      claim = await this.claimReplay(command.commandId, fingerprint, command.lease, admission.signal);
+      if (!claim.claimed) {
+        const receipt = transportPortApplyReceiptSchema.parse(claim.receipt ?? await awaitAbortable(() => this.#options.replayStore.wait(command.commandId), admission.signal));
+        if (!this.matchesTransportPortApplyReceipt(command, receipt)) throw new FenceError("Replayed transport port receipt scope rejected");
+        return receipt;
+      }
+      await awaitAbortable(() => authority.assertValid(), admission.signal);
+      if (admission.signal.aborted) throw admission.signal.reason;
+      const receipt = transportPortApplyReceiptSchema.parse(await this.#options.transportPortApply.execute(command, authority, admission.signal));
+      if (!this.matchesTransportPortApplyReceipt(command, receipt)) throw new FenceError("Transport port receipt scope rejected");
       if (!claim.claimToken) throw new Error("agent replay claim token missing");
       await this.#options.replayStore.complete(command.commandId, { fingerprint, claimToken: claim.claimToken, receipt });
       return receipt;
@@ -483,6 +551,20 @@ export class AuthenticatedAgentCommandReceiver {
     return protocolPayloadFingerprint({ action: value.action, agentId: value.agentId, commandId: value.commandId, projectId: value.projectId,
       idempotencyKey: value.idempotencyKey, inputDigest: value.inputDigest, route: value.route, executionReceipt: value.executionReceipt,
       effectiveImage: value.effectiveImage, correlationId: value.context.correlationId, authority: value.authority, lease: value.lease });
+  }
+  private transportPortApplyFingerprint(value: TransportPortApplyAgentCommandV1 | TransportPortApplyReceiptQueryV1): string {
+    return protocolPayloadFingerprint({ action: value.action, agentId: value.agentId, commandId: value.commandId, projectId: value.projectId,
+      operation: value.operation, rollbackRevisionId: value.rollbackRevisionId, idempotencyKey: value.idempotencyKey, inputDigest: value.inputDigest,
+      route: value.route, currentContainerId: value.currentContainerId, bindings: value.bindings, previousBindings: value.previousBindings,
+      executionReceipt: value.executionReceipt, effectiveImage: value.effectiveImage,
+      correlationId: value.context.correlationId, authority: value.authority, lease: value.lease });
+  }
+  private matchesTransportPortApplyReceipt(value: TransportPortApplyAgentCommandV1 | TransportPortApplyReceiptQueryV1, receipt: TransportPortApplyReceiptV1): boolean {
+    return receipt.agentId === value.agentId && receipt.commandId === value.commandId && receipt.projectId === value.projectId
+      && receipt.inputDigest === value.inputDigest && receipt.correlationId === value.context.correlationId
+      && receipt.deploymentId === value.route.deploymentId && receipt.protocol === value.route.protocol
+      && receipt.publishedPort === value.route.publishedPort && receipt.targetPort === value.route.targetPort
+      && receipt.operation === value.operation && receipt.rollbackRevisionId === value.rollbackRevisionId;
   }
   private matchesDomainRouteApplyReceipt(value: DomainRouteApplyAgentCommandV1 | import("@deploylite/contracts").DomainRouteApplyReceiptQueryV1,
     receipt: DomainRouteApplyReceiptV1): boolean {

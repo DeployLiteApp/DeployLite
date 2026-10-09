@@ -4,7 +4,8 @@ import { getTableConfig, PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 
 import { assertEnvMetadataHasNoValueColumns, toEnvVariableMetadataInsert } from "./env-metadata.js";
-import { canonicalRoleNames, controlCommands, deployments, transportPortClaims } from "./schema.js";
+import { canonicalRoleNames, controlCommands, deployments, transportPortClaims, transportPortReservations, transportPortRevisions,
+  transportPortRuntimeStates } from "./schema.js";
 
 const migrationSql = readFileSync(new URL("../migrations/0000_auth_postgres_foundation.sql", import.meta.url), "utf8");
 const envSecretValuesMigrationSql = readFileSync(
@@ -29,6 +30,23 @@ describe("TCP/UDP port claim storage schema", () => {
     expect(migration).toContain("FOREIGN KEY (deployment_id, project_id)");
     expect(migration).toContain("CHECK (published_port BETWEEN 1 AND 65535)");
     expect(migration).toContain("CHECK (target_port BETWEEN 1 AND 65535)");
+  });
+  it("stores serialized apply reservations and redacted rollback revisions per protocol/port", () => {
+    const reservation = getTableConfig(transportPortReservations), revision = getTableConfig(transportPortRevisions);
+    const runtime = getTableConfig(transportPortRuntimeStates);
+    expect(reservation.primaryKeys[0]?.columns.map(column => column.name)).toEqual(["protocol", "published_port"]);
+    expect(reservation.indexes.some(index => index.config.name === "transport_port_reservations_project_idx")).toBe(true);
+    expect(revision.indexes.some(index => index.config.name === "transport_port_revisions_command_unique" && index.config.unique)).toBe(true);
+    expect(runtime.primaryKeys[0]?.columns.map(column => column.name)).toEqual(["project_id", "deployment_id"]);
+    expect(Object.keys(getTableColumns(transportPortReservations))).toEqual(expect.arrayContaining(["currentContainerId", "bindings", "previousBindings"]));
+    const migration = readFileSync(new URL("../migrations/0024_transport_port_apply.sql", import.meta.url), "utf8");
+    expect(migration).toContain("CREATE TABLE transport_port_reservations");
+    expect(migration).toContain("CREATE TABLE transport_port_revisions");
+    expect(migration).toContain("CREATE TABLE transport_port_runtime_states");
+    expect(migration).toContain("current_container_id text NOT NULL");
+    expect(migration).toContain("PRIMARY KEY (protocol, published_port)");
+    expect(migration).toContain("evidence - 'state' - 'observedAt' - 'redacted'");
+    expect(migration).not.toMatch(/DROP TABLE|TRUNCATE|DELETE FROM/i);
   });
 });
 

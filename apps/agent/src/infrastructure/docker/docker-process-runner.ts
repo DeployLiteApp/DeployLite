@@ -2,7 +2,7 @@ import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { redactSecrets } from "@deploylite/config";
 
 import { buildDockerActiveIdentityInspectArgv, buildDockerImageIdentityInspectArgv, buildDockerLifecycleInspectArgv,
-  buildDockerOwnedStopLookupArgv, buildDockerOwnershipInspectArgv, buildDockerRestoreInspectArgv,
+  buildDockerOwnedStopLookupArgv, buildDockerOwnershipInspectArgv, buildDockerRestoreInspectArgv, buildDockerTransportPortInspectArgv,
   buildDockerStopOwnershipInspectArgv } from "./docker-cli-argv.js";
 
 import { COMPOSE_INSPECTION_FORMATS, COMPOSE_REPLACEMENT_CANDIDATE_INSPECT_FORMAT } from "./docker-compose-resource-argv.js";
@@ -15,7 +15,7 @@ const protocolFormats = new Set([
   ...COMPOSE_INSPECTION_FORMATS,
   ...[buildDockerImageIdentityInspectArgv(protocolSample.effectiveImage), buildDockerLifecycleInspectArgv("probe"),
     buildDockerOwnershipInspectArgv("probe"), buildDockerRestoreInspectArgv("probe"),
-    buildDockerStopOwnershipInspectArgv("0".repeat(64)), buildDockerOwnedStopLookupArgv(protocolSample),
+    buildDockerStopOwnershipInspectArgv("0".repeat(64)), buildDockerOwnedStopLookupArgv(protocolSample), buildDockerTransportPortInspectArgv("probe"),
     buildDockerActiveIdentityInspectArgv({ candidate: { ...protocolSample, runtimePort: 8080, networkName: "probe" },
       projectId: "probe", owner: "probe", containerName: "probe", hostPort: 49170, containerPort: 8080, allowedNetworks: ["probe"], networkName: "probe" })
   ].map((argv) => argv[argv.indexOf("--format") + 1]!),

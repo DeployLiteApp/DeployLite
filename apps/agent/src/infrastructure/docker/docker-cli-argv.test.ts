@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDockerActiveIdentityInspectArgv, buildDockerImageIdentityInspectArgv, buildDockerInspectArgv, buildDockerOwnedStopLookupArgv, buildDockerRemoveArgv, buildDockerRenameArgv, buildDockerRunArgv, buildDockerStopArgv } from "./docker-cli-argv.js";
+import { buildDockerActiveIdentityInspectArgv, buildDockerImageIdentityInspectArgv, buildDockerInspectArgv, buildDockerOwnedStopLookupArgv, buildDockerRemoveArgv, buildDockerRenameArgv, buildDockerRunArgv, buildDockerStopArgv, buildDockerTransportPortRunArgv, buildDockerTransportPortInspectArgv } from "./docker-cli-argv.js";
 
 const digest = `sha256:${"a".repeat(64)}`;
 const candidate = { candidateId: "dep-1:candidate:cmd-1", projectId: "project-1", deploymentId: "dep-1", effectiveImage: `registry.example.com/team/app@${digest}`, runtimePort: 3000 } as const;
@@ -15,6 +15,29 @@ describe("Docker CLI argv builders", () => {
   it("builds only scoped lifecycle commands", () => { expect(buildDockerInspectArgv("deploylite-candidate-cmd-1")[0]).toBe("docker"); expect(buildDockerRenameArgv("deploylite-candidate-cmd-1", "deploylite-active-dep-1")).toEqual(["docker", "rename", "deploylite-candidate-cmd-1", "deploylite-active-dep-1"]); expect(buildDockerRemoveArgv("deploylite-candidate-cmd-1")).toEqual(["docker", "rm", "--force", "deploylite-candidate-cmd-1"]); });
   it("builds exact-label stop lookup and constrained stop argv", () => { const lookup = buildDockerOwnedStopLookupArgv({ owner: "agent-1", projectId: "project-1", deploymentId: "dep-1", candidateId: candidate.candidateId, effectiveImage: candidate.effectiveImage }); expect(lookup[0]).toBe("docker"); expect(lookup).toContain("label=com.deploylite.project=project-1"); expect(buildDockerStopArgv("0123456789ab")).toEqual(["docker", "stop", "--time", "10", "0123456789ab"]); expect(() => buildDockerStopArgv("deploylite-active-dep-1")).toThrow(); });
   it("accepts production deployment identities while keeping argv tokens constrained", () => { const productionCandidate = { ...candidate, deploymentId: "dep_0123456789abcdef", candidateId: "dep_0123456789abcdef:candidate:command_1" }; const argv = buildDockerRunArgv({ ...input, candidate: productionCandidate, containerName: "deploylite-candidate-dep_0123456789abcdef-command_1" }); expect(argv.some((token) => token.includes("dep_0123456789abcdef"))).toBe(true); expect(argv.every((token) => !/[;&|`$()]/.test(token))).toBe(true); });
+  it("publishes explicit TCP and UDP bindings while keeping the app runtime port loopback-only", () => {
+    const argv = buildDockerTransportPortRunArgv({ ...input, bindings: [
+      { protocol: "tcp", publishedPort: 25565, targetPort: 25565 }, { protocol: "udp", publishedPort: 19132, targetPort: 19132 }
+    ], hostIp: "127.0.0.1" });
+    expect(argv.filter(token => token === "--publish")).toHaveLength(3);
+    expect(argv).toContain("127.0.0.1:43000:3000/tcp");
+    expect(argv).toContain("127.0.0.1:25565:25565/tcp");
+    expect(argv).toContain("127.0.0.1:19132:19132/udp");
+    expect(argv.every(token => !/[;&|`$()]/.test(token))).toBe(true);
+  });
+  it("starts a loopback-only health probe with a Docker-assigned ephemeral host port", () => {
+    const argv = buildDockerTransportPortRunArgv({ ...input, bindings: [], temporary: true });
+    expect(argv).not.toContain("127.0.0.1:43000:3000/tcp");
+    expect(argv).toContain("127.0.0.1::3000/tcp");
+    expect(argv.filter(token => token === "--publish")).toHaveLength(1);
+    expect(argv.some(token => /^(?:25565|19132):/.test(token))).toBe(false);
+  });
+  it("rejects duplicate or invalid transport binding rows", () => {
+    expect(() => buildDockerTransportPortRunArgv({ ...input, bindings: [
+      { protocol: "tcp", publishedPort: 25565, targetPort: 25565 }, { protocol: "tcp", publishedPort: 25565, targetPort: 3000 }
+    ] })).toThrow();
+    expect(() => buildDockerTransportPortRunArgv({ ...input, bindings: [{ protocol: "icmp" as "tcp", publishedPort: 25565, targetPort: 25565 }] })).toThrow();
+  });
 });
 
 describe("active identity inspection argv", () => {
@@ -38,6 +61,17 @@ describe("active identity inspection argv", () => {
   });
   it.each(["--help", "registry.example.com/team/app:latest", `${candidate.effectiveImage};docker run evil`])("rejects unsafe image selection %s", (image) => {
     expect(() => buildDockerImageIdentityInspectArgv(image)).toThrow();
+  });
+});
+
+describe("transport port inspection argv", () => {
+  it("inspects only current identity, running state, and configured host bindings", () => {
+    const argv = buildDockerTransportPortInspectArgv("deploylite-active-dep-1");
+    expect(argv[0]).toBe("docker");
+    expect(argv[argv.indexOf("--format") + 1]).toContain(".HostConfig.PortBindings");
+    expect(argv[argv.indexOf("--format") + 1]).toContain("com.deploylite.image");
+    expect(argv[argv.indexOf("--format") + 1]).not.toMatch(/\.Config\.Env|json \.Config\.Labels/);
+    expect(() => buildDockerTransportPortInspectArgv("--help")).toThrow();
   });
 });
 

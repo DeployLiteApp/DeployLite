@@ -17,6 +17,12 @@ export type DockerRunArgvInput = Readonly<{
   allowedNetworks: readonly string[];
   networkName?: string;
 }>;
+export type DockerTransportPortBinding = Readonly<{ protocol: "tcp" | "udp"; publishedPort: number; targetPort: number }>;
+export type DockerTransportPortRunArgvInput = Readonly<DockerRunArgvInput & {
+  bindings: readonly DockerTransportPortBinding[];
+  hostIp?: "0.0.0.0" | "127.0.0.1";
+  temporary?: boolean;
+}>;
 
 function reject(message: string): never { throw new Error(message); }
 function assertPort(value: number, label: string): void { if (!Number.isInteger(value) || value < 1 || value > 65535) reject(`${label} is unsafe`); }
@@ -36,6 +42,48 @@ export function buildDockerRunArgv(input: DockerRunArgvInput): readonly string[]
   assertPort(input.hostPort, "host port"); if (input.hostPort < 1024) reject("host port is unsafe"); assertPort(input.containerPort, "container port");
   if (input.networkName !== undefined && (!NETWORK.test(input.networkName) || !input.allowedNetworks.includes(input.networkName))) reject("docker network is unsafe");
   return Object.freeze(["docker", "run", "--detach", "--name", input.containerName, "--label", "com.deploylite.owner=" + input.owner, ...(input.projectId ? ["--label", "com.deploylite.project=" + input.projectId] : []), "--label", "com.deploylite.deployment=" + input.candidate.deploymentId, "--label", "com.deploylite.candidate=" + input.candidate.candidateId, "--label", "com.deploylite.image=" + input.candidate.effectiveImage, "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--restart=no", ...TMPFS.flatMap((path) => ["--tmpfs", `${path}:${TMPFS_OPTIONS}`]), ...(input.networkName ? ["--network", input.networkName] : []), "--publish", `127.0.0.1:${input.hostPort}:${input.containerPort}`, input.candidate.effectiveImage]);
+}
+
+/** Recreates a verified image with the existing loopback app port plus explicit TCP/UDP publications. */
+export function buildDockerTransportPortRunArgv(input: DockerTransportPortRunArgvInput): readonly string[] {
+  const base = buildDockerRunArgv(input);
+  if (input.bindings.length > 128) reject("transport binding count is unsafe");
+  const keys = new Set<string>();
+  for (const binding of input.bindings) {
+    assertPort(binding.publishedPort, "published port"); assertPort(binding.targetPort, "target port");
+    if (binding.protocol !== "tcp" && binding.protocol !== "udp") reject("transport protocol is unsafe");
+    const key = `${binding.protocol}:${binding.publishedPort}`;
+    if (keys.has(key)) reject("duplicate transport binding");
+    keys.add(key);
+  }
+  if (input.hostIp !== undefined && input.hostIp !== "0.0.0.0" && input.hostIp !== "127.0.0.1") reject("transport host address is unsafe");
+  const publishIndex = base.lastIndexOf("--publish");
+  const image = base.at(-1)!;
+  const args = [...base.slice(0, publishIndex)];
+  if (input.temporary) {
+    args.push("--publish", `127.0.0.1::${input.containerPort}/tcp`);
+  } else {
+    args.push("--publish", `127.0.0.1:${input.hostPort}:${input.containerPort}/tcp`);
+    const hostIp = input.hostIp === "127.0.0.1" ? "127.0.0.1:" : "";
+    for (const binding of input.bindings) args.push("--publish", `${hostIp}${binding.publishedPort}:${binding.targetPort}/${binding.protocol}`);
+  }
+  args.push(image);
+  return Object.freeze(args);
+}
+
+const TRANSPORT_PORT_INSPECT_FORMAT = [
+  '{"id":{{json .Id}},"name":{{json .Name}},"state":{{json .State.Status}},"running":{{json .State.Running}},',
+  '"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}},',
+  '"owner":{{json (index .Config.Labels "com.deploylite.owner")}},',
+  '"projectId":{{json (index .Config.Labels "com.deploylite.project")}},',
+  '"deploymentId":{{json (index .Config.Labels "com.deploylite.deployment")}},',
+  '"candidateId":{{json (index .Config.Labels "com.deploylite.candidate")}},',
+  '"effectiveImage":{{json (index .Config.Labels "com.deploylite.image")}},',
+  '"hostBindings":{{json .HostConfig.PortBindings}},"networkMode":{{json .HostConfig.NetworkMode}}}'
+].join("");
+export function buildDockerTransportPortInspectArgv(containerName: string): readonly string[] {
+  assertContainerName(containerName, "container name");
+  return Object.freeze(["docker", "container", "inspect", "--format", TRANSPORT_PORT_INSPECT_FORMAT, containerName]);
 }
 
 export function buildDockerInspectArgv(containerName: string): readonly string[] { assertContainerName(containerName, "container name"); return Object.freeze(["docker", "inspect", "--format", "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}", containerName]); }

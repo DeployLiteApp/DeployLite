@@ -401,6 +401,79 @@ export const transportPortClaims = pgTable("transport_port_claims", {
 ]);
 export type TransportPortClaimRow = typeof transportPortClaims.$inferSelect;
 
+export const transportPortRevisions = pgTable("transport_port_revisions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  protocol: text("protocol").notNull(),
+  publishedPort: integer("published_port").notNull(),
+  deploymentId: uuid("deployment_id").notNull(),
+  targetPort: integer("target_port").notNull(),
+  revisionNumber: integer("revision_number").notNull(),
+  operation: text("operation").notNull(),
+  commandId: uuid("command_id").notNull().references(() => controlCommands.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  rollbackRevisionId: uuid("rollback_revision_id").references((): AnyPgColumn => transportPortRevisions.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null", onUpdate: "cascade" }),
+  correlationId: text("correlation_id").notNull(),
+  evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+}, (table) => [
+  foreignKey({ name: "transport_port_revisions_deployment_project_fk", columns: [table.deploymentId, table.projectId],
+    foreignColumns: [deployments.id, deployments.projectId] }).onDelete("restrict").onUpdate("cascade"),
+  uniqueIndex("transport_port_revisions_key_number_unique").on(table.protocol, table.publishedPort, table.revisionNumber),
+  uniqueIndex("transport_port_revisions_command_unique").on(table.commandId),
+  index("transport_port_revisions_project_key_idx").on(table.projectId, table.protocol, table.publishedPort, table.revisionNumber),
+  check("transport_port_revisions_protocol_valid", sql`${table.protocol} in ('tcp', 'udp')`),
+  check("transport_port_revisions_published_port_valid", sql`${table.publishedPort} between 1 and 65535`),
+  check("transport_port_revisions_target_port_valid", sql`${table.targetPort} between 1 and 65535`),
+  check("transport_port_revisions_number_positive", sql`${table.revisionNumber} > 0`),
+  check("transport_port_revisions_operation_valid", sql`${table.operation} in ('apply', 'rollback')`),
+  check("transport_port_revisions_evidence_redacted", sql`(jsonb_typeof(${table.evidence}) = 'object' and ${table.evidence}->'redacted' = 'true'::jsonb and (${table.evidence} - 'state' - 'observedAt' - 'redacted') = '{}'::jsonb) is true`),
+  check("transport_port_revisions_operation_binding", sql`(${table.operation} = 'apply' and ${table.rollbackRevisionId} is null) or (${table.operation} = 'rollback' and ${table.rollbackRevisionId} is not null)`)
+]);
+export type TransportPortRevisionRow = typeof transportPortRevisions.$inferSelect;
+
+export const transportPortRuntimeStates = pgTable("transport_port_runtime_states", {
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  deploymentId: uuid("deployment_id").notNull(),
+  containerId: text("container_id").notNull(),
+  bindings: jsonb("bindings").$type<Record<string, unknown>[]>().notNull(),
+  commandId: uuid("command_id").notNull().unique().references(() => controlCommands.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+}, (table) => [
+  primaryKey({ name: "transport_port_runtime_states_project_deployment_pk", columns: [table.projectId, table.deploymentId] }),
+  foreignKey({ name: "transport_port_runtime_states_deployment_project_fk", columns: [table.deploymentId, table.projectId],
+    foreignColumns: [deployments.id, deployments.projectId] }).onDelete("restrict").onUpdate("cascade"),
+  index("transport_port_runtime_states_project_updated_idx").on(table.projectId, table.updatedAt),
+  check("transport_port_runtime_states_container_id_valid", sql`${table.containerId} ~ '^[a-f0-9]{64}$'`),
+  check("transport_port_runtime_states_bindings_array", sql`jsonb_typeof(${table.bindings}) = 'array'`)
+]);
+export type TransportPortRuntimeStateRow = typeof transportPortRuntimeStates.$inferSelect;
+
+export const transportPortReservations = pgTable("transport_port_reservations", {
+  protocol: text("protocol").notNull(),
+  publishedPort: integer("published_port").notNull(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  commandId: uuid("command_id").notNull().unique().references(() => controlCommands.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  route: jsonb("route").$type<Record<string, unknown>>().notNull(),
+  plan: jsonb("plan").$type<Record<string, unknown>>().notNull(),
+  currentContainerId: text("current_container_id").notNull(),
+  bindings: jsonb("bindings").$type<Record<string, unknown>[]>().notNull(),
+  previousBindings: jsonb("previous_bindings").$type<Record<string, unknown>[]>().notNull(),
+  operation: text("operation").notNull().default("apply"),
+  rollbackRevisionId: uuid("rollback_revision_id").references(() => transportPortRevisions.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+}, (table) => [
+  primaryKey({ name: "transport_port_reservations_key_pk", columns: [table.protocol, table.publishedPort] }),
+  index("transport_port_reservations_project_idx").on(table.projectId),
+  check("transport_port_reservations_protocol_valid", sql`${table.protocol} in ('tcp', 'udp')`),
+  check("transport_port_reservations_published_port_valid", sql`${table.publishedPort} between 1 and 65535`),
+  check("transport_port_reservations_container_id_valid", sql`${table.currentContainerId} ~ '^[a-f0-9]{64}$'`),
+  check("transport_port_reservations_bindings_array", sql`jsonb_typeof(${table.bindings}) = 'array' and jsonb_typeof(${table.previousBindings}) = 'array'`),
+  check("transport_port_reservations_route_scope", sql`(${table.route}->>'protocol' = ${table.protocol} and (${table.route}->>'publishedPort')::integer = ${table.publishedPort} and ${table.route}->>'projectId' = ${table.projectId}::text and ${table.plan}->'route' = ${table.route}) is true`),
+  check("transport_port_reservations_plan_action_valid", sql`${table.plan}->>'action' in ('create', 'attach', 'no-op', 'retarget')`),
+  check("transport_port_reservations_operation_valid", sql`(${table.operation} = 'apply' and ${table.rollbackRevisionId} is null) or (${table.operation} = 'rollback' and ${table.rollbackRevisionId} is not null)`)
+]);
+
 export const certificates = pgTable(
   "certificates",
   {

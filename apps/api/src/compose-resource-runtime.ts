@@ -6,6 +6,8 @@ import type { ComposeResourceCleanupExecutionAccess } from "./compose-resource-c
 import type { ComposeNetworkAttachmentExecutionAccess } from "./compose-network-attachment-execution-route.js";
 import type { ComposeVolumeAttachmentExecutionAccess } from "./compose-volume-attachment-execution-route.js";
 import type { DomainRouteApplyExecutionAccess } from "./domain-route-apply-route.js";
+import type { TransportPortApplyExecutionAccess } from "./transport-port-apply-route.js";
+import { AuthenticatedAgentTransportPortApplyTransport } from "./transport-port-apply-transport.js";
 import { AuthenticatedAgentComposeResourceInspectionTransport } from "./compose-resource-inspection-transport.js";
 import type { ComposeResourceInspectionAccess } from "./compose-resource-inspection-route.js";
 
@@ -22,6 +24,7 @@ export type ProjectScopedComposeResourceRuntime = Readonly<{
   volumeAttachmentExecutions: ReadonlyMap<string, ComposeVolumeAttachmentExecutionAccess>;
   cleanupExecutions: ReadonlyMap<string, ComposeResourceCleanupExecutionAccess>;
   domainRouteApplyExecutions: ReadonlyMap<string, DomainRouteApplyExecutionAccess>;
+  transportPortApplyExecutions: ReadonlyMap<string, TransportPortApplyExecutionAccess>;
 }>;
 export type ProjectScopedComposeResourceRuntimeInput = Readonly<{
   bindings: readonly ComposeResourceProjectBinding[];
@@ -92,10 +95,11 @@ export async function createProjectScopedComposeResourceRuntime(input: ProjectSc
   const volumeAttachmentExecutions = new Map<string, ComposeVolumeAttachmentExecutionAccess>();
   const cleanupExecutions = new Map<string, ComposeResourceCleanupExecutionAccess>();
   const domainRouteApplyExecutions = new Map<string, DomainRouteApplyExecutionAccess>();
+  const transportPortApplyExecutions = new Map<string, TransportPortApplyExecutionAccess>();
   if (input.bindings.length === 0) {
     if (input.volumeAttachmentBindings?.length) throw new Error("Compose volume attachment bindings require the existing resource inspection project bindings.");
     if (input.cleanupBindings?.length) throw new Error("Compose resource cleanup bindings require the existing resource inspection project bindings.");
-    return { inspectionAccess, attachmentExecutions, volumeAttachmentExecutions, cleanupExecutions, domainRouteApplyExecutions };
+    return { inspectionAccess, attachmentExecutions, volumeAttachmentExecutions, cleanupExecutions, domainRouteApplyExecutions, transportPortApplyExecutions };
   }
 
   const endpoint = input.agent.endpoint, agentId = input.agent.agentId, trustKey = input.agent.trustKey;
@@ -123,12 +127,14 @@ export async function createProjectScopedComposeResourceRuntime(input: ProjectSc
 
     const transportOptions = { endpoint, agentId, trustKey, allowInsecureInternal: true };
     const transport = new AuthenticatedAgentDeploymentTransport(transportOptions);
+    const transportPortApplyTransport = new AuthenticatedAgentTransportPortApplyTransport({ ...transportOptions, timeoutMs: 60_000 });
     const inspector = new AuthenticatedAgentComposeResourceInspectionTransport(transportOptions);
     if (!transport.available() || !inspector.available()) throw new Error(`Compose resource transport configuration is invalid for project ${binding.projectId}.`);
     inspectionAccess.set(binding.projectId, { owner: "deploylite", agentId, inspector, clock: { now: Date.now }, maxAgeMs: 30_000,
       capabilities: new InMemoryCapabilityRegistry([COMPOSE_RESOURCE_INSPECTION_CAPABILITY]), deadlineMs: 30_000 });
     attachmentExecutions.set(binding.projectId, { controls, transport, commandTtlMs: 30_000 });
     domainRouteApplyExecutions.set(binding.projectId, { controls, transport, commandTtlMs: 30_000, agentId });
+    transportPortApplyExecutions.set(binding.projectId, { controls, transport: transportPortApplyTransport, commandTtlMs: 60_000, agentId });
     if (volumeBindings.has(binding.projectId)) {
       volumeAttachmentExecutions.set(binding.projectId, { controls, transport, commandTtlMs: 30_000 });
     }
@@ -136,5 +142,5 @@ export async function createProjectScopedComposeResourceRuntime(input: ProjectSc
       cleanupExecutions.set(binding.projectId, { transport });
     }
   }
-  return { inspectionAccess, attachmentExecutions, volumeAttachmentExecutions, cleanupExecutions, domainRouteApplyExecutions };
+  return { inspectionAccess, attachmentExecutions, volumeAttachmentExecutions, cleanupExecutions, domainRouteApplyExecutions, transportPortApplyExecutions };
 }

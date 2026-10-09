@@ -21,6 +21,7 @@ const preDispatchRejections = new WeakSet<object>();
 export function isAgentPreDispatchRejection(error: unknown): boolean { return typeof error === "object" && error !== null && preDispatchRejections.has(error); }
 
 function beforeDispatch<T extends Error>(error: T): T { preDispatchRejections.add(error); return error; }
+export function markAgentPreDispatchRejection<T extends Error>(error: T): T { return beforeDispatch(error); }
 
 function buildDomainRouteApplyAgentCommand(prepared: PreparedDomainRouteApplyCommand, authority: ProjectControlAuthorityV1,
   context: Pick<AgentDispatchContext, "requestId" | "correlationId">, timeoutMs: number) {
