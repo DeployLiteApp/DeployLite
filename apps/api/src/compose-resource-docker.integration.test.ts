@@ -10,7 +10,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { hashSessionToken } from "@deploylite/db";
 import { createEnvSecretCipher, loadEnvSecretKey } from "@deploylite/config";
 import { InMemoryCapabilityRegistry, COMPOSE_RESOURCE_INSPECTION_CAPABILITY, COMPOSE_NETWORK_ATTACHMENT_CAPABILITY,
-  COMPOSE_RESOURCE_CLEANUP_CAPABILITY, COMPOSE_VOLUME_ATTACHMENT_CAPABILITY, COMPOSE_VOLUME_BACKUP_CAPABILITY, type Project, type ComposeResourceKind } from "@deploylite/contracts";
+  COMPOSE_RESOURCE_CLEANUP_CAPABILITY, COMPOSE_VOLUME_ATTACHMENT_CAPABILITY, COMPOSE_VOLUME_BACKUP_CAPABILITY, type Project, type ComposeResourceKind,
+  type ComposeVolumeAttachmentAgentCommandV1 } from "@deploylite/contracts";
 import { createComposePreview, digestComposeResourceObservation, InMemoryComposeRevisionSaveStore,
   InMemoryComposeVolumeBackupPlanStore, InMemoryComposeResourceCleanupStore, InMemoryEnvSecretValueRepository,
   claimProjectUpdateAuthority, resolveControlCommandInMemory, validateProjectUpdateAuthority,
@@ -162,6 +163,7 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
     const dockerFailureDiagnostics: string[] = []; let lastDockerOperation = "none";
     let lastNetworkInspection: { name: string; id: string } | undefined, networkProjection = "unavailable";
     let candidateObservation: Record<string, unknown> | undefined, createdCandidateId: string | undefined;
+    let observedAgentVolumeCommand: ComposeVolumeAttachmentAgentCommandV1 | undefined;
     const runner = boundedRunner(allowed, id => allowedIds.add(id), (operation, detail) => { if (dockerFailureDiagnostics.length < 8) dockerFailureDiagnostics.push(`${operation}: ${detail}`); },
       (operation, argv, result) => {
         lastDockerOperation = operation;
@@ -263,8 +265,11 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
         }
       };
       const networkAttachment = createDockerComposeNetworkAttachmentExecutor({ runner, inspector: agentInspector, owner, agentId, imagePolicy, capabilities: caps });
-      const volumeAttachment = createDockerComposeVolumeAttachmentExecutor({ inspector: agentInspector, owner, agentId, trustKey, imagePolicy, capabilities: caps,
+      const baseVolumeAttachment = createDockerComposeVolumeAttachmentExecutor({ inspector: agentInspector, owner, agentId, trustKey, imagePolicy, capabilities: caps,
         driver: createDockerComposeVolumeReplacementDriver({ runner, owner }) });
+      const volumeAttachment = { ...baseVolumeAttachment, async execute(...args: Parameters<typeof baseVolumeAttachment.execute>) {
+        observedAgentVolumeCommand = structuredClone(args[0]); return baseVolumeAttachment.execute(...args);
+      } };
       const volumeBackup = createDockerComposeVolumeBackupExecutor({ owner, agentId, imagePolicy, capabilities: caps, inspector: agentInspector,
         source: createLocalDirectoryComposeVolumeBackupSource(new Map([[volume.runtimeName, mountpoint]])), destinations: new Map([["ci-artifact", archiveDestination]]) });
       const resourceCleanup = createDockerComposeResourceCleanupExecutor({ runner, inspector: agentInspector, owner, agentId, imagePolicy, capabilities: caps });
@@ -388,17 +393,28 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       const replace = await post("volumes/attachment/apply", { priorRevisionId: priorRevision.id, revisionId: nextRevision.id, key: "data", service: "app", attachmentAction: "attach",
         expectedStateDigest: volumeAttachState.stateDigest, expectedContainerId: serviceId }, "volume-replace-once");
       const volumeCommand = [...commands().values()].find(value => value.idempotencyKey === "volume-replace-once");
-      if (candidateObservation && volumeCommand) {
-        const expectedCandidateName = `dl-${createHash("sha256").update(volumeCommand.id).digest("hex").slice(0, 32)}-vol-candidate`;
+      if (candidateObservation && volumeCommand && observedAgentVolumeCommand) {
+        const commandPreview = createComposePreview(observedAgentVolumeCommand.canonicalDocument, observedAgentVolumeCommand.projectId, policy);
+        const commandService = commandPreview.services.find(value => value.name === observedAgentVolumeCommand!.service);
+        const commandNetworkName = commandService && commandPreview.networks.find(value => value.key === commandService.networks[0])?.runtimeName;
+        const expectedCandidateName = `dl-${createHash("sha256").update(observedAgentVolumeCommand.commandId).digest("hex").slice(0, 32)}-vol-candidate`;
         dockerFailureDiagnostics.push(`volume-candidate-checks: ${JSON.stringify({ idMatches: candidateObservation.id === createdCandidateId,
           nameMatches: typeof candidateObservation.name === "string" && candidateObservation.name.replace(/^\//, "") === expectedCandidateName,
-          ownerMatches: candidateObservation.owner === owner, projectMatches: candidateObservation.projectId === projectId,
-          serviceMatches: candidateObservation.service === "app", commandMatches: candidateObservation.commandId === volumeCommand.id,
-          revisionMatches: candidateObservation.revisionId === nextRevision.id, configDigestMatches: candidateObservation.configDigest === nextPreview.configDigest,
-          environmentDigestMatches: candidateObservation.environmentDigest === sha256("{}"), imageMatches: candidateObservation.image === manifest.image,
-          running: candidateObservation.running === true,
-          networksMatch: JSON.stringify(candidateObservation.networks) === JSON.stringify([backend.runtimeName]),
-          mountsMatch: JSON.stringify(candidateObservation.mounts) === JSON.stringify([{ source: volume.runtimeName, target: "/data", readOnly: false }]) })}`);
+          ownerMatches: candidateObservation.owner === owner, projectMatchesAgent: candidateObservation.projectId === observedAgentVolumeCommand.projectId,
+          projectMatchesFixture: observedAgentVolumeCommand.projectId === projectId,
+          serviceMatchesAgent: candidateObservation.service === observedAgentVolumeCommand.service,
+          commandMatchesAgent: candidateObservation.commandId === observedAgentVolumeCommand.commandId,
+          commandMatchesControl: observedAgentVolumeCommand.commandId === volumeCommand.id,
+          revisionMatchesAgent: candidateObservation.revisionId === observedAgentVolumeCommand.revisionId,
+          revisionMatchesFixture: observedAgentVolumeCommand.revisionId === nextRevision.id,
+          configDigestMatchesAgent: candidateObservation.configDigest === observedAgentVolumeCommand.configDigest,
+          configDigestMatchesFixture: observedAgentVolumeCommand.configDigest === nextPreview.configDigest,
+          environmentDigestMatchesAgent: candidateObservation.environmentDigest === observedAgentVolumeCommand.secretDigest,
+          environmentDigestMatchesFixture: observedAgentVolumeCommand.secretDigest === sha256("{}"),
+          imageMatchesAgent: Boolean(commandService && candidateObservation.image === commandService.image), running: candidateObservation.running === true,
+          networksMatchAgent: Boolean(commandNetworkName && JSON.stringify(candidateObservation.networks) === JSON.stringify([commandNetworkName])),
+          mountsMatchAgent: Boolean(commandService && JSON.stringify(candidateObservation.mounts) === JSON.stringify(commandService.volumes.map(mount => ({
+            source: observedAgentVolumeCommand!.runtimeName, target: mount.target, readOnly: mount.readOnly })))) })}`);
       }
       assert.equal(replace.statusCode, 200, replace.body); const replacementId = replace.json().data.attachment.replacementContainerId as string;
       assert(/^[a-f0-9]{64}$/.test(replacementId)); register({ id: replacementId, kind: "container", name: "volume-replacement-candidate", created: true });
