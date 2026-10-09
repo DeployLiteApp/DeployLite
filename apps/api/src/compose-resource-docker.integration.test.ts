@@ -263,8 +263,8 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
         composeResourceCleanupPlans: new Map([[projectId, { store: cleanupStore, confirmationTtlMs: 60_000 }]]),
         composeResourceCleanupExecutions: new Map([[projectId, { transport: deploymentTransport, confirmationTtlMs: 60_000 }]]) });
       apps.push(api);
-      const headers = (key: string, confirmation?: string) => ({ cookie: `p3_session=${session}`, "idempotency-key": key, ...(confirmation ? { "x-control-confirmation-id": confirmation } : {}) });
-      const post = async (path: string, body: unknown, key: string) => api!.inject({ method: "POST", url: `/api/v1/projects/${projectId}/compose${path ? `/${path}` : ""}`, headers: headers(key), payload: body as Record<string, unknown> });
+      const headers = (key: string, confirmation?: string, controlIdempotencyKey = false) => ({ cookie: `p3_session=${session}`, [controlIdempotencyKey ? "x-control-idempotency-key" : "idempotency-key"]: key, ...(confirmation ? { "x-control-confirmation-id": confirmation } : {}) });
+      const post = async (path: string, body: unknown, key: string) => api!.inject({ method: "POST", url: `/api/v1/projects/${projectId}/compose${path ? `/${path}` : ""}`, headers: headers(key, undefined, !path), payload: body as Record<string, unknown> });
       const inspect = async (document: string, kind: ComposeResourceKind, key: string) => {
         const preview = createComposePreview(document, projectId, policy), response = await post("resources/inspect", { document, kind, key, expectedConfigDigest: preview.configDigest }, `inspect-${kind}-${key}-${randomUUID()}`);
         assert.equal(response.statusCode, 200, response.body); return response.json().data.inspection as { stateDigest: string; physicalIdentity: string; containers: Array<Record<string, unknown>> };
