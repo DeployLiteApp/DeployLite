@@ -11,7 +11,7 @@ import type { ComposeResourceRouteOptions } from "./compose-resource-inspection-
 export type ComposeResourceCleanupAccess = Readonly<{ store: ComposeResourceCleanupStore; confirmationTtlMs: number }>;
 export type PreparedComposeResourceCleanupCommand = Readonly<{ schemaVersion: 1; action: "compose.resource.cleanup"; agentId: string; commandId: string;
   cleanupCommandId: string; confirmationId: string; projectId: string; inputDigest: string; cleanupInputDigest: string; context: Readonly<{ requestId: string; correlationId: string }>;
-  kind: "network" | "volume"; key: string; runtimeName: string; configDigest: string; stateDigest: string }>;
+  canonicalDocument: string; expiresAt: number; kind: "network" | "volume"; key: string; runtimeName: string; configDigest: string; stateDigest: string }>;
 export type ComposeResourceCleanupAgentTransport = Readonly<{ available(): boolean;
   dispatchComposeResourceCleanup(command: PreparedComposeResourceCleanupCommand, signal?: AbortSignal): Promise<ComposeResourceCleanupExecutionReceiptV1>;
   readComposeResourceCleanupReceipt(command: PreparedComposeResourceCleanupCommand, signal?: AbortSignal): Promise<ComposeResourceCleanupExecutionReceiptV1 | null> }>;
@@ -40,10 +40,11 @@ function receipt(raw: unknown, prepared: PreparedComposeResourceCleanup, now: nu
     || value.execution.stateDigest !== prepared.preview.stateDigest)) fail("COMPOSE_CLEANUP_INVALID");
   return value;
 }
-function executionCommand(prepared: PreparedComposeResourceCleanup, confirmationId: string, requestId: string, runtimeName: string): PreparedComposeResourceCleanupCommand {
+function executionCommand(prepared: PreparedComposeResourceCleanup, confirmationId: string, requestId: string, runtimeName: string, canonicalDocument: string): PreparedComposeResourceCleanupCommand {
   return { schemaVersion: 1, action: "compose.resource.cleanup", agentId: prepared.agentId, commandId: prepared.command.id, cleanupCommandId: prepared.command.id,
     confirmationId, projectId: prepared.preview.projectId, inputDigest: prepared.command.inputDigest,
     cleanupInputDigest: composeResourceCleanupExecutionDigest(prepared, confirmationId), context: { requestId, correlationId: prepared.command.correlationId },
+    canonicalDocument, expiresAt: prepared.command.expiresAt.valueOf(),
     kind: prepared.preview.kind, key: prepared.preview.key, runtimeName, configDigest: prepared.preview.configDigest, stateDigest: prepared.preview.stateDigest };
 }
 function validateExecutionReceipt(raw: unknown, command: PreparedComposeResourceCleanupCommand): ComposeResourceCleanupExecutionReceiptV1 {
@@ -148,7 +149,7 @@ export function registerComposeResourceCleanupRoutes(app: FastifyInstance, optio
             const compose = createComposePreview(input.document, projectId, options.imagePolicy), resource = (input.kind === "network" ? compose.networks : compose.volumes).find(candidate => candidate.key === input.key);
             if (!resource) fail("COMPOSE_CLEANUP_STALE");
             const transport = selectedExecution.transport, command = executionCommand(prepared, confirmationIdForExecution,
-              request.correlationContext.requestId, resource.runtimeName);
+              request.correlationContext.requestId, resource.runtimeName, input.document);
             let execution: ComposeResourceCleanupExecutionReceiptV1 | null = null;
             if (result.idempotent) execution = await awaitAbortable(() => transport.readComposeResourceCleanupReceipt(command, controller.signal), controller.signal);
             if (!execution) {

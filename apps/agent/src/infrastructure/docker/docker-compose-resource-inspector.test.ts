@@ -10,7 +10,7 @@ const image = `registry.example.com/app@sha256:${"a".repeat(64)}`;
 const preview = createComposePreview(JSON.stringify({ services: { app: { image, networks: ["app"], volumes: [{ type: "volume", source: "data", target: "/data" }] } }, networks: { app: {} }, volumes: { data: {} } }), "project-1", policy);
 type Kind = ComposeResourceKind;
 type Resource = { id?: string; createdAt?: string; name: string; driver: string; scope: string; internal?: boolean; optionsCount: number; owner: string; projectId: string; resourceKind: Kind; resourceKey: string };
-type Container = { id: string; owner: string; projectId: string; service: string; effectiveImage: string; running: boolean; networks: { name: string; networkId: string }[]; mounts: { type: string; name: string; target: string; readOnly: boolean }[] };
+type Container = { id: string; owner: string; projectId: string; service: string; composeRevisionId?: string; composeConfigDigest?: string; effectiveImage: string; running: boolean; networks: { name: string; networkId: string }[]; mounts: { type: string; name: string; target: string; readOnly: boolean }[] };
 type Input = Parameters<ComposeResourceInspector["inspect"]>[0];
 const create = createDockerComposeResourceInspector;
 function fixture(kind: Kind = "network") {
@@ -61,6 +61,20 @@ describe("explicit read-only Compose resource inspection", () => {
   it("retains a scoped stopped target without its current attachment", async () => {
     const s = fixture(); s.f.container.networks = [];
     await expect(inspect(s)).resolves.toMatchObject({ containers: [{ containerId: "c".repeat(64), attached: false }] });
+  });
+  it("selects the exact current revision after a cutover while ignoring a disconnected prior container", async () => {
+    const s = fixture("volume"), prior = { ...structuredClone(s.f.container), id: "e".repeat(64), composeRevisionId: "revision-1",
+      composeConfigDigest: "f".repeat(64), networks: [], mounts: [] };
+    Object.assign(s.f.container, { id: "d".repeat(64), composeRevisionId: "revision-2", composeConfigDigest: preview.configDigest });
+    s.f.containers.splice(0, s.f.containers.length, prior, s.f.container);
+    await expect(inspect(s)).resolves.toMatchObject({ containers: [{ containerId: "d".repeat(64), attached: true, composeRevisionId: "revision-2" }] });
+  });
+  it("rejects a prior revision that still consumes the inspected resource during cutover", async () => {
+    const s = fixture("volume"), prior = { ...structuredClone(s.f.container), id: "e".repeat(64), composeRevisionId: "revision-1",
+      composeConfigDigest: "f".repeat(64) };
+    Object.assign(s.f.container, { id: "d".repeat(64), composeRevisionId: "revision-2", composeConfigDigest: preview.configDigest });
+    s.f.containers.splice(0, s.f.containers.length, prior, s.f.container);
+    await expect(inspect(s)).rejects.toMatchObject({ code: "COMPOSE_RESOURCE_CONFLICT" });
   });
   it("ignores a foreign non-consumer without publishing its metadata", async () => {
     const s = fixture(); s.f.containers.push({ ...structuredClone(s.f.container), id: "d".repeat(64), owner: "foreign", projectId: "other", effectiveImage: "password=outside-projection", networks: [], mounts: [] });

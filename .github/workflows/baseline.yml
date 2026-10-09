@@ -251,6 +251,72 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # Same-repository candidate PR only; disposable GitHub-hosted engine, exact head SHA, no secrets.
+  p3-docker-acceptance:
+    if: ${{ github.event_name == 'pull_request' && github.repository == 'DeployLiteApp/DeployLite' && github.event.pull_request.head.repo.full_name == 'DeployLiteApp/DeployLite' && github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.ref == 'feat/p3-resources-candidate' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      DEPLOYLITE_P3_DOCKER_RUNTIME_GRANT: P3_COMPOSE_CI_APPROVED
+      DOCKER_HOST: unix:///var/run/docker.sock
+      DOCKER_CONFIG: ${{ runner.temp }}/deploylite-p3-empty-docker-config
+      DEPLOYLITE_P3_FIXTURE_MANIFEST: ${{ runner.temp }}/deploylite-p3-fixture-manifest.json
+      DEPLOYLITE_P3_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+      DEPLOYLITE_P3_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+      RUNNER_ENVIRONMENT: ${{ runner.environment }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.1.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with: { version: 9.15.4 }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 24.20.0, cache: pnpm }
+      - run: corepack enable && pnpm install --frozen-lockfile
+      - name: Test hosted-job and source gates without Docker effects
+        run: python3 scripts/ci/p3-compose-physical-acceptance.test.py
+      - name: Prepare one pinned, owned fixture image then remove the registry
+        env:
+          DEPLOYLITE_P3_DOCKER_RUNTIME_GRANT: P3_COMPOSE_CI_APPROVED
+          DOCKER_HOST: unix:///var/run/docker.sock
+          DOCKER_CONFIG: ${{ runner.temp }}/deploylite-p3-empty-docker-config
+          DEPLOYLITE_P3_FIXTURE_MANIFEST: ${{ runner.temp }}/deploylite-p3-fixture-manifest.json
+          DEPLOYLITE_P3_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: python3 scripts/ci/p3-compose-physical-acceptance.py prepare
+      - name: Run exact-source P3 Compose acceptance on the disposable hosted engine
+        env:
+          DEPLOYLITE_P3_DOCKER_INTEGRATION: '1'
+          DEPLOYLITE_P3_DOCKER_RUNTIME_GRANT: P3_COMPOSE_CI_APPROVED
+          DOCKER_HOST: unix:///var/run/docker.sock
+          DOCKER_CONFIG: ${{ runner.temp }}/deploylite-p3-empty-docker-config
+          DEPLOYLITE_P3_FIXTURE_MANIFEST: ${{ runner.temp }}/deploylite-p3-fixture-manifest.json
+          DEPLOYLITE_P3_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          DEPLOYLITE_DB_INTEGRATION: '0'
+          DEPLOYLITE_API_DB_INTEGRATION: '0'
+        run: |
+          set -Eeuo pipefail
+          pnpm --filter @deploylite/api run test src/compose-resource-docker.integration.test.ts --maxWorkers=1 --no-file-parallelism --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/deploylite-p3-evidence/docker.json" 2>&1 | tee "$RUNNER_TEMP/deploylite-p3-evidence/docker.log"
+      - name: Require exact P3 case, receipts and resource cleanup
+        if: always()
+        env:
+          DEPLOYLITE_P3_DOCKER_RUNTIME_GRANT: P3_COMPOSE_CI_APPROVED
+          DOCKER_HOST: unix:///var/run/docker.sock
+          DOCKER_CONFIG: ${{ runner.temp }}/deploylite-p3-empty-docker-config
+          DEPLOYLITE_P3_FIXTURE_MANIFEST: ${{ runner.temp }}/deploylite-p3-fixture-manifest.json
+          DEPLOYLITE_P3_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: python3 scripts/ci/p3-compose-physical-acceptance.py verify
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: p3-docker-acceptance-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/deploylite-p3-evidence/
+          if-no-files-found: warn
+          retention-days: 30
+
   baseline-gate:
     if: always()
     needs: [quality, postgres-integration, compose-and-supply-chain, p2-docker-acceptance]

@@ -102,7 +102,7 @@ export function createDockerComposeResourceInspector(supplied: DockerComposeReso
       const second = await readContainers(afterIds);
       if (protocolPayloadFingerprint(first) !== protocolPayloadFingerprint(second)) fail("COMPOSE_INSPECTION_UNSTABLE");
       const physicalIdentity = "id" in before ? before.id : before.createdAt;
-      const containers = [];
+      const containers: { containerId: string; service: string; running: boolean; attached: boolean; composeRevisionId?: string; composeConfigDigest?: string; composeEnvironmentDigest?: string; networks: { name: string; networkId: string }[]; mounts: { target: string; readOnly: boolean }[] }[] = [];
       for (const c of first) {
         const matchingNetwork = c.networks.filter(n => n.name === planned.runtimeName || n.networkId === physicalIdentity);
         if (kind === "network" && matchingNetwork.some(n => n.name !== planned.runtimeName || n.networkId !== physicalIdentity)) fail("COMPOSE_RESOURCE_CONFLICT");
@@ -119,10 +119,25 @@ export function createDockerComposeResourceInspector(supplied: DockerComposeReso
           networks: c.networks.map(network => ({ name: network.name, networkId: network.networkId })),
           mounts: kind === "volume" ? matchingMounts.map(m => ({ target: m.target, readOnly: m.readOnly })) : [] });
       }
-      if (new Set(containers.map(c => c.service)).size !== containers.length) fail("COMPOSE_RESOURCE_CONFLICT");
+      const byService = new Map<string, typeof containers>();
+      for (const container of containers) {
+        const group = byService.get(container.service) ?? [];
+        group.push(container); byService.set(container.service, group);
+      }
+      const selected = [];
+      for (const group of byService.values()) {
+        if (group.length === 1) { selected.push(group[0]!); continue; }
+        // During an immutable revision cutover, a stopped prior container may remain
+        // disconnected while the new revision owns the service. Never hide an old
+        // revision that still consumes the resource being inspected.
+        const current = group.filter(container => container.composeRevisionId && container.composeConfigDigest === preview.configDigest);
+        if (current.length !== 1) fail("COMPOSE_RESOURCE_CONFLICT");
+        if (group.some(container => container !== current[0] && container.attached)) fail("COMPOSE_RESOURCE_CONFLICT");
+        selected.push(current[0]!);
+      }
       const observation = composeResourceObservationSchema.parse({ schemaVersion: 1, owner: options.owner, agentId: options.agentId,
         projectId: preview.projectId, kind, key: planned.key, runtimeName: planned.runtimeName, physicalIdentity,
-        configDigest: preview.configDigest, observedAt: options.clock.now(), stateDigest: "0".repeat(64), containers });
+        configDigest: preview.configDigest, observedAt: options.clock.now(), stateDigest: "0".repeat(64), containers: selected });
       observation.stateDigest = digestComposeResourceObservation(observation);
       assertCurrent(); return observation;
     } catch (error) {

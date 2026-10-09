@@ -20,6 +20,12 @@ describe("API startup Compose resource project allowlist", () => {
       .rejects.toThrow(/restricted to non-production environments/);
   });
 
+  it("refuses to enable physical resource cleanup in production", async () => {
+    const binding = { projectId: "project-one", agentId: "agent-one" };
+    await expect(buildApiApp({ env: { NODE_ENV: "production" }, composeResourceProjectAgents: [binding], composeResourceCleanupProjectAgents: [binding] }))
+      .rejects.toThrow(/restricted to non-production environments/);
+  });
+
   it("routes only explicitly bound projects to the configured agent", async () => {
     const projectsMap = new Map(projectsData.map(value => [value.id, value]));
     const projects: ProjectRepository = { save: async value => { projectsMap.set(value.id, value); return value; }, findById: async id => projectsMap.get(id) ?? null,

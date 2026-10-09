@@ -5,8 +5,8 @@ import { registerComposeRevisionReadRoutes, type ComposeRevisionReadCapability }
 import { registerComposeResourceCleanupRoutes, type ComposeResourceCleanupAccess, type ComposeResourceCleanupExecutionAccess } from "./compose-resource-cleanup-route.js";
 import { registerComposePreviewRoute } from "./compose-preview-route.js";
 import { registerComposeResourceInspectionRoutes, type ComposeResourceInspectionAccess } from "./compose-resource-inspection-route.js";
-import { COMPOSE_RESOURCE_PROJECT_AGENTS_ENV, COMPOSE_VOLUME_ATTACHMENT_PROJECT_AGENTS_ENV, createProjectScopedComposeResourceRuntime,
-  parseComposeResourceProjectBindings, parseComposeVolumeAttachmentProjectBindings, type ComposeResourceProjectBinding } from "./compose-resource-runtime.js";
+import { COMPOSE_RESOURCE_CLEANUP_PROJECT_AGENTS_ENV, COMPOSE_RESOURCE_PROJECT_AGENTS_ENV, COMPOSE_VOLUME_ATTACHMENT_PROJECT_AGENTS_ENV, createProjectScopedComposeResourceRuntime,
+  parseComposeResourceCleanupProjectBindings, parseComposeResourceProjectBindings, parseComposeVolumeAttachmentProjectBindings, type ComposeResourceProjectBinding } from "./compose-resource-runtime.js";
 import { registerComposeNetworkAttachmentExecutionRoute, type ComposeNetworkAttachmentExecutionAccess } from "./compose-network-attachment-execution-route.js";
 import { registerComposeVolumeAttachmentExecutionRoute, type ComposeVolumeAttachmentExecutionAccess } from "./compose-volume-attachment-execution-route.js";
 import { registerComposeVolumeBackupPlanRoute, type ComposeVolumeBackupPlanAccess } from "./compose-volume-backup-plan-route.js";
@@ -196,6 +196,7 @@ type BuildApiAppOptions = {
   composeNetworkAttachmentExecutions?: ReadonlyMap<string, ComposeNetworkAttachmentExecutionAccess>;
   composeResourceProjectAgents?: readonly ComposeResourceProjectBinding[];
   composeVolumeAttachmentProjectAgents?: readonly ComposeResourceProjectBinding[];
+  composeResourceCleanupProjectAgents?: readonly ComposeResourceProjectBinding[];
   composeVolumeAttachmentExecutions?: ReadonlyMap<string, ComposeVolumeAttachmentExecutionAccess>;
   composeVolumeBackupPlans?: ReadonlyMap<string, ComposeVolumeBackupPlanAccess>;
   composeVolumeBackupExecutions?: ReadonlyMap<string, ComposeVolumeBackupExecutionAccess>;
@@ -2247,13 +2248,21 @@ export async function buildApiApp(options: BuildApiAppOptions = {}): Promise<Fas
   const composeResourceProjectAgents = options.composeResourceProjectAgents ?? parseComposeResourceProjectBindings(sourceEnv[COMPOSE_RESOURCE_PROJECT_AGENTS_ENV]);
   const composeVolumeAttachmentProjectAgents = options.composeVolumeAttachmentProjectAgents
     ?? parseComposeVolumeAttachmentProjectBindings(sourceEnv[COMPOSE_VOLUME_ATTACHMENT_PROJECT_AGENTS_ENV], composeResourceProjectAgents);
+  const composeResourceCleanupProjectAgents = options.composeResourceCleanupProjectAgents
+    ?? parseComposeResourceCleanupProjectBindings(sourceEnv[COMPOSE_RESOURCE_CLEANUP_PROJECT_AGENTS_ENV], composeResourceProjectAgents);
   if (composeVolumeAttachmentProjectAgents.length > 0 && composeResourceProjectAgents.length === 0) {
     throw new Error(`${COMPOSE_VOLUME_ATTACHMENT_PROJECT_AGENTS_ENV} requires an existing resource project binding.`);
+  }
+  if (composeResourceCleanupProjectAgents.length > 0 && composeResourceProjectAgents.length === 0) {
+    throw new Error(`${COMPOSE_RESOURCE_CLEANUP_PROJECT_AGENTS_ENV} requires an existing resource project binding.`);
   }
   if (sourceEnv.NODE_ENV === "production" && (composeVolumeAttachmentProjectAgents.length > 0 || options.composeVolumeAttachmentExecutions)) {
     throw new Error(`${COMPOSE_VOLUME_ATTACHMENT_PROJECT_AGENTS_ENV} is restricted to non-production environments.`);
   }
-  if (composeResourceProjectAgents.length > 0 && (options.composeResourceInspection || options.composeNetworkAttachmentExecutions || options.composeVolumeAttachmentExecutions)) {
+  if (sourceEnv.NODE_ENV === "production" && (composeResourceCleanupProjectAgents.length > 0 || options.composeResourceCleanupExecutions)) {
+    throw new Error(`${COMPOSE_RESOURCE_CLEANUP_PROJECT_AGENTS_ENV} is restricted to non-production environments.`);
+  }
+  if (composeResourceProjectAgents.length > 0 && (options.composeResourceInspection || options.composeNetworkAttachmentExecutions || options.composeVolumeAttachmentExecutions || options.composeResourceCleanupExecutions)) {
     throw new Error("Compose resource project configuration cannot be combined with injected resource maps.");
   }
   const env = parseDeployLiteEnv(sourceEnv);
@@ -2276,7 +2285,7 @@ export async function buildApiApp(options: BuildApiAppOptions = {}): Promise<Fas
   try {
     configuredResourceRuntime = composeResourceProjectAgents.length > 0
       ? await createProjectScopedComposeResourceRuntime({ bindings: composeResourceProjectAgents, projects: repositories.state.projects,
-        volumeAttachmentBindings: composeVolumeAttachmentProjectAgents,
+        volumeAttachmentBindings: composeVolumeAttachmentProjectAgents, cleanupBindings: composeResourceCleanupProjectAgents,
         controls: repositories.state.controlDeletes, agent: { endpoint: env.DEPLOYLITE_AGENT_URL, agentId: env.DEPLOYLITE_AGENT_ID, trustKey: env.DEPLOYLITE_AGENT_TRUST_KEY } })
       : undefined;
   } catch (error) {
@@ -2286,11 +2295,13 @@ export async function buildApiApp(options: BuildApiAppOptions = {}): Promise<Fas
   const composeResourceInspection = options.composeResourceInspection ?? configuredResourceRuntime?.inspectionAccess;
   const composeNetworkAttachmentExecutions = options.composeNetworkAttachmentExecutions ?? configuredResourceRuntime?.attachmentExecutions;
   const composeVolumeAttachmentExecutions = options.composeVolumeAttachmentExecutions ?? configuredResourceRuntime?.volumeAttachmentExecutions;
+  const composeResourceCleanupExecutions = options.composeResourceCleanupExecutions ?? configuredResourceRuntime?.cleanupExecutions;
   registerCoreHooks(app, corsOrigin);
-  const cleanupPlans = options.composeResourceCleanupPlans ?? (!configuredResourceRuntime && repositories.composeResourceCleanupStore && composeResourceInspection
-    ? new Map([...composeResourceInspection.keys()].map(projectId => [projectId, { store: repositories.composeResourceCleanupStore!, confirmationTtlMs: 60_000 }] as const))
+  const cleanupPlans = options.composeResourceCleanupPlans ?? (repositories.composeResourceCleanupStore && composeResourceInspection
+    ? new Map([...(configuredResourceRuntime ? (composeResourceCleanupExecutions?.keys() ?? []) : composeResourceInspection.keys())]
+      .map(projectId => [projectId, { store: repositories.composeResourceCleanupStore!, confirmationTtlMs: 60_000 }] as const))
     : undefined);
-  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE, options.imagePolicy ?? { policyVersion: "deployment-v1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }, composeResourceInspection, options.composeVolumeBackupPlans, cleanupPlans, options.composeVolumeBackupExecutions, composeNetworkAttachmentExecutions, options.composeResourceCleanupExecutions, composeVolumeAttachmentExecutions);
+  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE, options.imagePolicy ?? { policyVersion: "deployment-v1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }, composeResourceInspection, options.composeVolumeBackupPlans, cleanupPlans, options.composeVolumeBackupExecutions, composeNetworkAttachmentExecutions, composeResourceCleanupExecutions, composeVolumeAttachmentExecutions);
   app.addHook("onClose", () => {
     repositories.state.deployRunner.cancelTimers();
   });

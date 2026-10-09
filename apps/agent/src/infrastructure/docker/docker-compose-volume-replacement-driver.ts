@@ -85,6 +85,7 @@ export function createDockerComposeVolumeReplacementDriver(supplied: Options): C
         "--label", "com.deploylite.compose.managed=v1", "--label", `com.deploylite.compose.service=${command.service}`,
         "--label", `com.deploylite.compose.command=${command.commandId}`, "--label", `com.deploylite.compose.revision=${command.revisionId}`,
         "--label", `com.deploylite.compose.config-digest=${command.configDigest}`, "--label", `com.deploylite.compose.environment-digest=${command.secretDigest}`,
+        "--cpus=0.5", "--memory=67108864", "--pids-limit=64", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
         "--restart", "no", "--network", networkName];
       for (const mount of service.volumes) args.push("--mount", `type=volume,source=${preview.volumes.find(value => value.key === mount.source)!.runtimeName},target=${mount.target}${mount.readOnly ? ",readonly" : ""}`);
       for (const name of Object.keys(input.environment).sort()) {

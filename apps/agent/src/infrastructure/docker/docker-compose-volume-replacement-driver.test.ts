@@ -41,6 +41,7 @@ describe("simulated Docker Compose volume replacement driver", () => {
     expect(call.environment).toEqual({ TOKEN: secret });
     expect(call.argv).toContain(`com.deploylite.compose.revision=revision-new`);
     expect(call.argv.join(" ")).toContain("type=volume,source=dl-");
+    expect(call.argv).toEqual(expect.arrayContaining(["--cpus=0.5", "--memory=67108864", "--pids-limit=64", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges"]));
   });
 
   it("accepts only a declared image health check and an empty writable layer before replacement", async () => {
