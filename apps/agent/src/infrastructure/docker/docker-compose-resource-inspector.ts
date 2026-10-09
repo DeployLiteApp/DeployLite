@@ -17,7 +17,8 @@ const containerSchema = z.object({ id, owner: nullableText, projectId: nullableT
   composeRevisionId: nullableText.optional(), composeConfigDigest: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(), composeEnvironmentDigest: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
   effectiveImage: z.string().max(512), running: z.boolean(),
   networks: z.array(z.object({ name: z.string().max(160), networkId: z.string().max(64) }).strict()).max(128),
-  mounts: z.array(z.object({ type: z.string().max(32), name: z.string().max(160).nullable(), target: z.string().max(256), readOnly: z.boolean() }).strict()).max(128)
+  mounts: z.array(z.object({ type: z.string().max(32), name: z.string().max(160).nullable(), target: z.string().max(256), readOnly: z.boolean() }).strict()).max(128),
+  configuredMounts: z.array(z.object({ type: z.string().max(32), name: z.string().max(160).nullable(), target: z.string().max(256), readOnly: z.boolean() }).strict()).max(128)
 }).strict();
 type Container = z.infer<typeof containerSchema>;
 export type DockerComposeResourceInspectorOptions = Readonly<{
@@ -107,7 +108,11 @@ export function createDockerComposeResourceInspector(supplied: DockerComposeReso
         const matchingNetwork = c.networks.filter(n => n.name === planned.runtimeName || n.networkId === physicalIdentity);
         if (kind === "network" && matchingNetwork.some(n => n.name !== planned.runtimeName
           || n.networkId !== physicalIdentity && !(n.networkId === "" && !c.running))) fail("COMPOSE_RESOURCE_CONFLICT");
-        const matchingMounts = c.mounts.filter(m => m.type === "volume" && m.name === planned.runtimeName);
+        // Docker's active Mounts projection can be empty after a container stops. Use
+        // its retained HostConfig mount declaration only for stopped consumers; a
+        // running consumer must still prove the live mount through Mounts.
+        const physicalMounts = !c.running && c.configuredMounts.length > 0 ? c.configuredMounts : c.mounts;
+        const matchingMounts = physicalMounts.filter(m => m.type === "volume" && m.name === planned.runtimeName);
         const attached = kind === "network" ? matchingNetwork.length > 0 : matchingMounts.length > 0;
         const service = preview.services.find(s => s.name === c.service);
         const owned = c.owner === options.owner && c.projectId === preview.projectId && service !== undefined && c.effectiveImage === service.image;

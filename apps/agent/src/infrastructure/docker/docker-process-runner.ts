@@ -38,7 +38,7 @@ function redactDockerProtocolOutput(value: string, argv: readonly string[]): str
     if (/(token|secret|password|passwd|api[_-]?key|authorization|cookie|credential)/i.test(key)) return "[REDACTED]";
     if (typeof nested === "string") {
       if (composeFormat && key === "name" && /^dl-[a-f0-9]{32}-(?:net|vol)-[a-z][a-z0-9_-]{0,62}$/.test(nested)
-        && (path.length === 1 || (path.length === 3 && ["networks", "mounts"].includes(path[0]!)))) return nested;
+        && (path.length === 1 || (path.length === 3 && ["networks", "mounts", "configuredMounts"].includes(path[0]!)))) return nested;
       if (candidateFormat && key === "name" && path.length === 1 && /^\/dl-[a-f0-9]{32}-vol-candidate$/.test(nested)) return nested;
       if (candidateFormat && path.length === 2 && path[0] === "networks" && /^dl-[a-f0-9]{32}-net-[a-z][a-z0-9_-]{0,62}$/.test(nested)) return nested;
       if (candidateFormat && path.length === 3 && path[0] === "mounts" && key === "source"

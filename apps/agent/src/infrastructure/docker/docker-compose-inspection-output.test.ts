@@ -27,9 +27,11 @@ describe("closed Compose inspection process output", () => {
     const image = `registry.example.com/app@sha256:${"c".repeat(64)}`, configDigest = "a".repeat(64), environmentDigest = "e".repeat(64);
     const r = await run(["container", "inspect", "--format", COMPOSE_CONTAINER_INSPECT_FORMAT, "b".repeat(64)], JSON.stringify({ id: "b".repeat(64), effectiveImage: image,
       composeConfigDigest: configDigest, composeEnvironmentDigest: environmentDigest, networks: [{ name, networkId: "d".repeat(64) }],
-      mounts: [{ name: name.replace("-net-", "-vol-"), target: "/data" }], token: "outside" }));
+      mounts: [{ name: name.replace("-net-", "-vol-"), target: "/data" }],
+      configuredMounts: [{ type: "volume", name: name.replace("-net-", "-vol-"), target: "/data", readOnly: false }], token: "outside" }));
     expect(JSON.parse(r.stdout)).toMatchObject({ id: "b".repeat(64), effectiveImage: image, composeConfigDigest: configDigest, composeEnvironmentDigest: environmentDigest,
-      networks: [{ name, networkId: "d".repeat(64) }], mounts: [{ name: name.replace("-net-", "-vol-"), target: "/data" }], token: "[REDACTED]" });
+      networks: [{ name, networkId: "d".repeat(64) }], mounts: [{ name: name.replace("-net-", "-vol-"), target: "/data" }],
+      configuredMounts: [{ type: "volume", name: name.replace("-net-", "-vol-"), target: "/data", readOnly: false }], token: "[REDACTED]" });
   });
   it("preserves only the exact replacement-candidate protocol fields needed for ownership verification", async () => {
     const image = `registry.example.com/app@sha256:${"c".repeat(64)}`, configDigest = "a".repeat(64), environmentDigest = "e".repeat(64);

@@ -10,13 +10,13 @@ const image = `registry.example.com/app@sha256:${"a".repeat(64)}`;
 const preview = createComposePreview(JSON.stringify({ services: { app: { image, networks: ["app"], volumes: [{ type: "volume", source: "data", target: "/data" }] } }, networks: { app: {} }, volumes: { data: {} } }), "project-1", policy);
 type Kind = ComposeResourceKind;
 type Resource = { id?: string; createdAt?: string; name: string; driver: string; scope: string; internal?: boolean; optionsCount: number; owner: string; projectId: string; resourceKind: Kind; resourceKey: string };
-type Container = { id: string; owner: string; projectId: string; service: string; composeRevisionId?: string; composeConfigDigest?: string; effectiveImage: string; running: boolean; networks: { name: string; networkId: string }[]; mounts: { type: string; name: string; target: string; readOnly: boolean }[] };
+type Container = { id: string; owner: string; projectId: string; service: string; composeRevisionId?: string; composeConfigDigest?: string; effectiveImage: string; running: boolean; networks: { name: string; networkId: string }[]; mounts: { type: string; name: string; target: string; readOnly: boolean }[]; configuredMounts: { type: string; name: string; target: string; readOnly: boolean }[] };
 type Input = Parameters<ComposeResourceInspector["inspect"]>[0];
 const create = createDockerComposeResourceInspector;
 function fixture(kind: Kind = "network") {
   const r = kind === "network" ? preview.networks[0]! : preview.volumes[0]!;
   const resource: Resource = { ...(kind === "network" ? { id: "b".repeat(64), internal: false } : { createdAt: "2026-10-08T00:00:00Z" }), name: r.runtimeName, driver: r.driver, scope: "local", optionsCount: 0, owner: "deploylite", projectId: "project-1", resourceKind: kind, resourceKey: r.key };
-  const container: Container = { id: "c".repeat(64), owner: "deploylite", projectId: "project-1", service: "app", effectiveImage: image, running: false, networks: [{ name: preview.networks[0]!.runtimeName, networkId: "b".repeat(64) }], mounts: [{ type: "volume", name: preview.volumes[0]!.runtimeName, target: "/data", readOnly: false }] };
+  const container: Container = { id: "c".repeat(64), owner: "deploylite", projectId: "project-1", service: "app", effectiveImage: image, running: false, networks: [{ name: preview.networks[0]!.runtimeName, networkId: "b".repeat(64) }], mounts: [{ type: "volume", name: preview.volumes[0]!.runtimeName, target: "/data", readOnly: false }], configuredMounts: [{ type: "volume", name: preview.volumes[0]!.runtimeName, target: "/data", readOnly: false }] };
   const calls: readonly string[][] = [];
   const f = { resource, container, containers: [container], calls: calls as string[][], afterResource: undefined as Resource | undefined, afterContainer: undefined as Container | undefined, afterIds: undefined as string[] | undefined, reads: 0, lists: 0, containerReads: 0, runError: undefined as Error | undefined, outputOverride: undefined as string | undefined };
   const runner: DockerCliRunner = { run: async (argv) => {
@@ -41,6 +41,14 @@ describe("explicit read-only Compose resource inspection", () => {
     expect(s.f.calls.filter(a => a[2] === "ls")).toHaveLength(2);
     for (const argv of s.f.calls) { expect(argv[0]).toBe("docker"); expect(["inspect", "ls"]).toContain(argv[2]); expect(argv).toContain("--format"); }
     expect(s.f.calls.find(a => a[2] === "ls")).toEqual(["docker", "container", "ls", "--all", "--no-trunc", "--format", "{{.ID}}"]);
+  });
+  it("observes a stopped volume consumer from its configured mount when Docker has no active mount", async () => {
+    const s = fixture("volume"); s.f.container.mounts = [];
+    await expect(inspect(s)).resolves.toMatchObject({ containers: [{ containerId: "c".repeat(64), running: false, attached: true, mounts: [{ target: "/data", readOnly: false }] }] });
+  });
+  it("does not infer a running volume attachment from stored configuration alone", async () => {
+    const s = fixture("volume"); s.f.container.running = true; s.f.container.mounts = [];
+    await expect(inspect(s)).resolves.toMatchObject({ containers: [{ containerId: "c".repeat(64), running: true, attached: false, mounts: [] }] });
   });
   for (const field of ["owner", "projectId", "resourceKey", "resourceKind"] as const) it(`rejects foreign ${field} even when runtime name matches`, async () => {
     const s = fixture(); Object.assign(s.f.resource, { [field]: "foreign" });
@@ -77,7 +85,7 @@ describe("explicit read-only Compose resource inspection", () => {
   });
   it("selects the exact current revision after a cutover while ignoring a disconnected prior container", async () => {
     const s = fixture("volume"), prior = { ...structuredClone(s.f.container), id: "e".repeat(64), composeRevisionId: "revision-1",
-      composeConfigDigest: "f".repeat(64), networks: [], mounts: [] };
+      composeConfigDigest: "f".repeat(64), networks: [], mounts: [], configuredMounts: [] };
     Object.assign(s.f.container, { id: "d".repeat(64), composeRevisionId: "revision-2", composeConfigDigest: preview.configDigest });
     s.f.containers.splice(0, s.f.containers.length, prior, s.f.container);
     await expect(inspect(s)).resolves.toMatchObject({ containers: [{ containerId: "d".repeat(64), attached: true, composeRevisionId: "revision-2" }] });
@@ -90,7 +98,7 @@ describe("explicit read-only Compose resource inspection", () => {
     await expect(inspect(s)).rejects.toMatchObject({ code: "COMPOSE_RESOURCE_CONFLICT" });
   });
   it("ignores a foreign non-consumer without publishing its metadata", async () => {
-    const s = fixture(); s.f.containers.push({ ...structuredClone(s.f.container), id: "d".repeat(64), owner: "foreign", projectId: "other", effectiveImage: "password=outside-projection", networks: [], mounts: [] });
+    const s = fixture(); s.f.containers.push({ ...structuredClone(s.f.container), id: "d".repeat(64), owner: "foreign", projectId: "other", effectiveImage: "password=outside-projection", networks: [], mounts: [], configuredMounts: [] });
     const result = await inspect(s); expect(result.containers).toHaveLength(1); expect(JSON.stringify(result)).not.toContain("outside-projection");
   });
   for (const kind of ["network", "volume"] as const) it(`rejects same-name recreated ${kind} between snapshots`, async () => {

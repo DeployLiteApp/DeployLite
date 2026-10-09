@@ -419,10 +419,27 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
           mountsMatchAgent: Boolean(commandService && JSON.stringify(candidateObservation.mounts) === JSON.stringify(commandService.volumes.map(mount => ({
             source: observedAgentVolumeCommand!.runtimeName, target: mount.target, readOnly: mount.readOnly })))) })}`);
       }
-      assert.equal(replace.statusCode, 200, replace.body); const replacementId = replace.json().data.attachment.replacementContainerId as string;
+      assert.equal(replace.statusCode, 200, replace.body); const replacementReceipt = replace.json().data.attachment;
+      const replacementId = replacementReceipt.replacementContainerId as string;
       assert(/^[a-f0-9]{64}$/.test(replacementId)); register({ id: replacementId, kind: "container", name: "volume-replacement-candidate", created: true });
+      let replacementProjection: Record<string, unknown>;
+      try {
+        const afterReplacement = await inspect(nextDocument, "volume", "data");
+        const observedCandidate = afterReplacement.containers.find(value => value.containerId === replacementId);
+        const observedPrior = afterReplacement.containers.find(value => value.containerId === serviceId);
+        const candidateMounts = observedCandidate?.mounts as Array<{ target?: string; readOnly?: boolean }> | undefined;
+        replacementProjection = { targetCount: afterReplacement.containers.length, candidateObserved: Boolean(observedCandidate),
+          candidateRunning: observedCandidate?.running === true, candidateAttached: observedCandidate?.attached === true,
+          candidateMountTargetMatches: candidateMounts?.some(value => value.target === "/data" && value.readOnly === false) === true,
+          priorObserved: Boolean(observedPrior), priorRunning: observedPrior?.running === true };
+      } catch { replacementProjection = { inspectionFailed: true }; }
+      dockerFailureDiagnostics.push(`volume-replacement-postcondition: ${JSON.stringify({ status: replacementReceipt.status,
+        health: replacementReceipt.health, rollback: replacementReceipt.rollback, reason: replacementReceipt.reason, ...replacementProjection })}`);
+      assert.equal(replacementReceipt.status, "replaced", JSON.stringify({ status: replacementReceipt.status, health: replacementReceipt.health,
+        rollback: replacementReceipt.rollback, reason: replacementReceipt.reason, ...replacementProjection }));
+      assert.equal(replacementReceipt.health, "passed");
       const persisted = await docker(["container", "exec", replacementId, "/bin/sh", "-c", "test \"$(cat /data/p3-marker.txt)\" = deploylite-p3-owned-volume-marker-v1"]);
-      assert.equal(persisted, ""); log("C4 bounded volume replacement", "PASS", replace.json().data.attachment);
+      assert.equal(persisted, ""); log("C4 bounded volume replacement", "PASS", replacementReceipt);
       await docker(["container", "stop", "--time", "5", replacementId]);
       const backupObservation = await inspect(nextDocument, "volume", "data");
       const stoppedVolumeConsumer = backupObservation.containers.find(value => value.containerId === replacementId);
