@@ -259,11 +259,8 @@ jobs:
     env:
       DEPLOYLITE_P3_DOCKER_RUNTIME_GRANT: P3_COMPOSE_CI_APPROVED
       DOCKER_HOST: unix:///var/run/docker.sock
-      DOCKER_CONFIG: ${{ runner.temp }}/deploylite-p3-empty-docker-config
-      DEPLOYLITE_P3_FIXTURE_MANIFEST: ${{ runner.temp }}/deploylite-p3-fixture-manifest.json
       DEPLOYLITE_P3_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
       DEPLOYLITE_P3_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-      RUNNER_ENVIRONMENT: ${{ runner.environment }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.1.1
         with:
