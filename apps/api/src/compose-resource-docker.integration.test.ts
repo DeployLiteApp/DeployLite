@@ -165,6 +165,7 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
     };
     const dockerFailureDiagnostics: string[] = []; let lastDockerOperation = "none";
     let lastNetworkInspection: { name: string; id: string } | undefined, networkProjection = "unavailable";
+    let stoppedVolumeMountProjection: Record<string, unknown> | undefined;
     let candidateObservation: Record<string, unknown> | undefined, createdCandidateId: string | undefined;
     const replacementAgentObservations: Array<Record<string, unknown>> = [];
     const replacementDriverEvents: Array<Record<string, unknown>> = [];
@@ -187,11 +188,21 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
         }
         if (argv[1] === "container" && argv[2] === "inspect" && argv[4] === COMPOSE_CONTAINER_INSPECT_FORMAT) {
           try {
-            const observation = JSON.parse(result.stdout) as { networks?: Array<{ name: string; networkId: string }> };
+            const observation = JSON.parse(result.stdout) as { id?: string; running?: boolean; networks?: Array<{ name: string; networkId: string }>;
+              mounts?: Array<{ type: string; name: string | null; target: string; readOnly: boolean }>;
+              configuredMounts?: Array<{ type: string; name: string | null; target: string; readOnly: boolean }> };
             networkProjection = JSON.stringify({ expectedNameLength: lastNetworkInspection?.name.length ?? 0,
               expectedIdLength: lastNetworkInspection?.id.length ?? 0,
               entries: (observation.networks ?? []).slice(0, 8).map(network => ({ nameMatches: network.name === lastNetworkInspection?.name,
                 idMatches: network.networkId === lastNetworkInspection?.id, idLength: network.networkId.length })) });
+            if (observation.id === createdCandidateId && observation.running === false) {
+              const active = observation.mounts ?? [], configured = observation.configuredMounts ?? [];
+              stoppedVolumeMountProjection = { running: false,
+                activeMountCount: active.length, activeExpectedMountCount: active.filter(mount => mount.type === "volume" && mount.name === volume.runtimeName
+                  && mount.target === "/data" && mount.readOnly === false).length,
+                configuredMountCount: configured.length, configuredExpectedMountCount: configured.filter(mount => mount.type === "volume"
+                  && mount.name === volume.runtimeName && mount.target === "/data" && mount.readOnly === false).length };
+            }
           } catch { networkProjection = "container-network-output-unparseable"; }
         }
       });
@@ -525,6 +536,10 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       await docker(["container", "stop", "--time", "5", replacementId]);
       const backupObservation = await inspect(nextDocument, "volume", "data");
       const stoppedVolumeConsumer = backupObservation.containers.find(value => value.containerId === replacementId);
+      dockerFailureDiagnostics.push(`volume-stopped-observation: ${JSON.stringify({ consumerCount: backupObservation.containers.length,
+        stoppedConsumerFound: Boolean(stoppedVolumeConsumer), attached: stoppedVolumeConsumer?.attached ?? false,
+        running: stoppedVolumeConsumer?.running ?? null, projectedMountCount: Array.isArray(stoppedVolumeConsumer?.mounts) ? stoppedVolumeConsumer.mounts.length : null,
+        dockerMountProjection: stoppedVolumeMountProjection ?? null })}`);
       assert(stoppedVolumeConsumer?.attached); assert.equal(stoppedVolumeConsumer.running, false);
       assert.equal(backupObservation.containers.filter(value => value.attached).length, 1);
       backupSourceContainerId = replacementId;
