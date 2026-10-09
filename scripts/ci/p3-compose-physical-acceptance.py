@@ -53,13 +53,21 @@ def require(ok, message):
         raise GateError(message)
 
 
+def approved_main_event(env):
+    event = env.get("GITHUB_EVENT_NAME")
+    if event == "pull_request":
+        return env.get("GITHUB_BASE_REF") == "main"
+    if event == "push":
+        return env.get("GITHUB_REF") == "refs/heads/main"
+    return False
+
+
 def native_context(env):
     require(env.get("DEPLOYLITE_P3_DOCKER_RUNTIME_GRANT") == "P3_COMPOSE_CI_APPROVED", "explicit_p3_fixture_grant_required")
-    require(env.get("GITHUB_ACTIONS") == "true" and env.get("GITHUB_EVENT_NAME") == "pull_request"
-            and env.get("RUNNER_ENVIRONMENT") == "github-hosted", "github_hosted_runner_required")
+    require(env.get("GITHUB_ACTIONS") == "true" and env.get("RUNNER_ENVIRONMENT") == "github-hosted", "github_hosted_runner_required")
     require(env.get("GITHUB_REPOSITORY") == "DeployLiteApp/DeployLite" and env.get("GITHUB_JOB") == "p3-docker-acceptance", "exact_repository_job_required")
     require(env.get("DEPLOYLITE_P3_HEAD_REPOSITORY") == "DeployLiteApp/DeployLite", "same_repository_head_required")
-    require(env.get("GITHUB_HEAD_REF") == "feat/p3-resources-candidate" and env.get("GITHUB_BASE_REF") == "main", "exact_candidate_pr_required")
+    require(approved_main_event(env), "approved_main_event_required")
     require(re.fullmatch(r"[1-9][0-9]*", env.get("GITHUB_RUN_ID", "")) and re.fullmatch(r"[1-9][0-9]*", env.get("GITHUB_RUN_ATTEMPT", "")), "run_identity_required")
     expected = env.get("DEPLOYLITE_P3_EXPECTED_SHA", "")
     require(re.fullmatch(r"[a-f0-9]{40}", expected), "exact_head_sha_required")
