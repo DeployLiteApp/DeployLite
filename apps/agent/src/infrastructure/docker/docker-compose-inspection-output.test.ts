@@ -17,6 +17,8 @@ describe("closed Compose inspection process output", () => {
   it("uses an optional HostConfig mount lookup for containers without configured mounts", () => {
     expect(COMPOSE_CONTAINER_INSPECT_FORMAT).toContain('index .HostConfig "Mounts"');
     expect(COMPOSE_CONTAINER_INSPECT_FORMAT).not.toContain(".HostConfig.Mounts");
+    expect(COMPOSE_CONTAINER_INSPECT_FORMAT).toContain('index $mount "ReadOnly"');
+    expect(COMPOSE_CONTAINER_INSPECT_FORMAT).not.toContain("$mount.ReadOnly");
   });
   it("preserves network physical ID and scoped generated name only under the exact format", async () => {
     const r = await run(["network", "inspect", "--format", COMPOSE_NETWORK_INSPECT_FORMAT, name], JSON.stringify({ id: "b".repeat(64), name, owner: "deploylite", password: "outside" }));
