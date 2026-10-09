@@ -41,8 +41,9 @@ export function createDockerComposeVolumeReplacementDriver(supplied: Options): C
     if (!Array.isArray(value.networks)) return fail();
     return value.networks.map((raw) => {
       const item = raw as Record<string, unknown>;
-      if (typeof item.name !== "string" || !Array.isArray(item.aliases) || item.aliases.some(alias => typeof alias !== "string")) return fail();
-      return { name: item.name, aliases: item.aliases as string[] };
+      const aliases = item.aliases === null || item.aliases === undefined ? [] : item.aliases;
+      if (typeof item.name !== "string" || !Array.isArray(aliases) || aliases.some(alias => typeof alias !== "string")) return fail();
+      return { name: item.name, aliases: aliases as string[] };
     });
   };
   const networkAttached = async (containerId: string, network: string, signal: AbortSignal) => (await networkState(containerId, signal)).find(value => value.name === network) ?? null;
