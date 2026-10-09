@@ -251,20 +251,20 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # Same-repository candidate PR only; disposable GitHub-hosted engine, exact head SHA, no secrets.
+  # Same-repository PRs to main and main pushes only; disposable GitHub-hosted engine, exact source SHA, no secrets.
   p3-docker-acceptance:
-    if: ${{ github.event_name == 'pull_request' && github.repository == 'DeployLiteApp/DeployLite' && github.event.pull_request.head.repo.full_name == 'DeployLiteApp/DeployLite' && github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.ref == 'feat/p3-resources-candidate' }}
+    if: ${{ github.repository == 'DeployLiteApp/DeployLite' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'DeployLiteApp/DeployLite' && github.event.pull_request.base.ref == 'main')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       DEPLOYLITE_P3_DOCKER_RUNTIME_GRANT: P3_COMPOSE_CI_APPROVED
       DOCKER_HOST: unix:///var/run/docker.sock
-      DEPLOYLITE_P3_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
-      DEPLOYLITE_P3_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+      DEPLOYLITE_P3_EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      DEPLOYLITE_P3_HEAD_REPOSITORY: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.1.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with: { version: 9.15.4 }
@@ -279,7 +279,7 @@ jobs:
           DOCKER_HOST: unix:///var/run/docker.sock
           DOCKER_CONFIG: ${{ runner.temp }}/deploylite-p3-empty-docker-config
           DEPLOYLITE_P3_FIXTURE_MANIFEST: ${{ runner.temp }}/deploylite-p3-fixture-manifest.json
-          DEPLOYLITE_P3_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          DEPLOYLITE_P3_EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: python3 scripts/ci/p3-compose-physical-acceptance.py prepare
       - name: Run exact-source P3 Compose acceptance on the disposable hosted engine
@@ -289,7 +289,7 @@ jobs:
           DOCKER_HOST: unix:///var/run/docker.sock
           DOCKER_CONFIG: ${{ runner.temp }}/deploylite-p3-empty-docker-config
           DEPLOYLITE_P3_FIXTURE_MANIFEST: ${{ runner.temp }}/deploylite-p3-fixture-manifest.json
-          DEPLOYLITE_P3_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          DEPLOYLITE_P3_EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
           DEPLOYLITE_DB_INTEGRATION: '0'
           DEPLOYLITE_API_DB_INTEGRATION: '0'
@@ -303,13 +303,13 @@ jobs:
           DOCKER_HOST: unix:///var/run/docker.sock
           DOCKER_CONFIG: ${{ runner.temp }}/deploylite-p3-empty-docker-config
           DEPLOYLITE_P3_FIXTURE_MANIFEST: ${{ runner.temp }}/deploylite-p3-fixture-manifest.json
-          DEPLOYLITE_P3_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          DEPLOYLITE_P3_EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: python3 scripts/ci/p3-compose-physical-acceptance.py verify
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: p3-docker-acceptance-${{ github.event.pull_request.head.sha }}
+          name: p3-docker-acceptance-${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           path: ${{ runner.temp }}/deploylite-p3-evidence/
           if-no-files-found: warn
           retention-days: 30
