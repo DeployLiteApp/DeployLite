@@ -5,7 +5,7 @@ import { buildDockerActiveIdentityInspectArgv, buildDockerImageIdentityInspectAr
   buildDockerOwnedStopLookupArgv, buildDockerOwnershipInspectArgv, buildDockerRestoreInspectArgv,
   buildDockerStopOwnershipInspectArgv } from "./docker-cli-argv.js";
 
-import { COMPOSE_INSPECTION_FORMATS } from "./docker-compose-resource-argv.js";
+import { COMPOSE_INSPECTION_FORMATS, COMPOSE_REPLACEMENT_CANDIDATE_INSPECT_FORMAT } from "./docker-compose-resource-argv.js";
 
 const DOCKER_ID = /^(?:sha256:)?[0-9a-f]{64}$/;
 const DOCKER_IMAGE = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[1-9][0-9]{0,4})?\/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[0-9a-f]{64}$/;
@@ -31,6 +31,7 @@ function redactDockerProtocolOutput(value: string, argv: readonly string[]): str
   const op = words[0], format = words[words.indexOf("--format") + 1];
   if (op === "run" || (op === "network" && words[1] === "create")) return /^[0-9a-f]{64}\n?$/.test(value) ? value : redactDockerDiagnostic(value);
   const composeFormat = COMPOSE_INSPECTION_FORMATS.has(format ?? "");
+  const candidateFormat = format === COMPOSE_REPLACEMENT_CANDIDATE_INSPECT_FORMAT;
   if (!(["inspect", "info", "ps"].includes(op ?? "") || (op === "container" && words[1] === "ls") || (["container", "image", "network"].includes(op ?? "") && words[1] === "inspect") || (composeFormat && op === "volume" && words[1] === "inspect")) || !words.includes("--format") || !protocolFormats.has(format ?? "")) return redactDockerDiagnostic(value);
   const safeJson = (nested: unknown, path: string[] = []): unknown => {
     const key = path.at(-1) ?? "";
@@ -38,9 +39,17 @@ function redactDockerProtocolOutput(value: string, argv: readonly string[]): str
     if (typeof nested === "string") {
       if (composeFormat && key === "name" && /^dl-[a-f0-9]{32}-(?:net|vol)-[a-z][a-z0-9_-]{0,62}$/.test(nested)
         && (path.length === 1 || (path.length === 3 && ["networks", "mounts"].includes(path[0]!)))) return nested;
+      if (candidateFormat && key === "name" && path.length === 1 && /^\/dl-[a-f0-9]{32}-vol-candidate$/.test(nested)) return nested;
+      if (candidateFormat && path.length === 2 && path[0] === "networks" && /^dl-[a-f0-9]{32}-net-[a-z][a-z0-9_-]{0,62}$/.test(nested)) return nested;
+      if (candidateFormat && path.length === 3 && path[0] === "mounts" && key === "source"
+        && /^dl-[a-f0-9]{32}-vol-[a-z][a-z0-9_-]{0,62}$/.test(nested)) return nested;
+      if (candidateFormat && path.length === 3 && path[0] === "mounts" && key === "target" && nested.length <= 256
+        && /^\/(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+$/.test(nested)
+        && !nested.split("/").some(part => part === "." || part === "..") && !/^\/(?:proc|sys|dev)(?:\/|$)/.test(nested)) return nested;
       if (DOCKER_ID.test(nested) && ((path.length === 1 && ["id", "imageId"].includes(key) && format!.includes(`"${key}":`)) || (path.length === 3 && path[0] === "networks" && ["networkId", "endpointId"].includes(key) && format!.includes(`"${key}":`)))) return nested;
       if (/^[a-f0-9]{64}$/.test(nested) && composeFormat && path.length === 1
-        && ["composeConfigDigest", "composeEnvironmentDigest"].includes(key) && format!.includes(`"${key}":`)) return nested;
+        && (["composeConfigDigest", "composeEnvironmentDigest"].includes(key)
+          || candidateFormat && ["configDigest", "environmentDigest"].includes(key)) && format!.includes(`"${key}":`)) return nested;
       if (DOCKER_IMAGE.test(nested) && ((path.length === 1 && ["image", "effectiveImage"].includes(key) && format!.includes(`"${key}":`)) || (path.length === 2 && path[0] === "repoDigests" && format!.includes(".RepoDigests")))) return nested;
       return redactDockerDiagnostic(nested);
     }

@@ -1,7 +1,8 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { COMPOSE_NETWORK_INSPECT_FORMAT, COMPOSE_VOLUME_INSPECT_FORMAT, COMPOSE_CONTAINER_INSPECT_FORMAT } from "./docker-compose-resource-argv.js";
+import { COMPOSE_NETWORK_INSPECT_FORMAT, COMPOSE_VOLUME_INSPECT_FORMAT, COMPOSE_CONTAINER_INSPECT_FORMAT,
+  COMPOSE_REPLACEMENT_CANDIDATE_INSPECT_FORMAT } from "./docker-compose-resource-argv.js";
 import { DockerProcessRunner, type SpawnProcess, type SpawnedProcess } from "./docker-process-runner.js";
 
 const name = `dl-${"a".repeat(32)}-net-app`;
@@ -29,6 +30,15 @@ describe("closed Compose inspection process output", () => {
       mounts: [{ name: name.replace("-net-", "-vol-"), target: "/data" }], token: "outside" }));
     expect(JSON.parse(r.stdout)).toMatchObject({ id: "b".repeat(64), effectiveImage: image, composeConfigDigest: configDigest, composeEnvironmentDigest: environmentDigest,
       networks: [{ name, networkId: "d".repeat(64) }], mounts: [{ name: name.replace("-net-", "-vol-"), target: "/data" }], token: "[REDACTED]" });
+  });
+  it("preserves only the exact replacement-candidate protocol fields needed for ownership verification", async () => {
+    const image = `registry.example.com/app@sha256:${"c".repeat(64)}`, configDigest = "a".repeat(64), environmentDigest = "e".repeat(64);
+    const candidateName = `dl-${"f".repeat(32)}-vol-candidate`, volumeName = `dl-${"b".repeat(32)}-vol-data`, networkName = name;
+    const candidate = { id: "b".repeat(64), name: `/${candidateName}`, owner: "deploylite", projectId: "project-1", service: "app",
+      commandId: "11111111-2222-4333-8444-555555555555", revisionId: "66666666-7777-4888-8999-aaaaaaaaaaaa", configDigest, environmentDigest,
+      image, running: true, networks: [networkName], mounts: [{ source: volumeName, target: "/data", readOnly: false }], token: "private-token" };
+    const r = await run(["container", "inspect", "--format", COMPOSE_REPLACEMENT_CANDIDATE_INSPECT_FORMAT, "b".repeat(64)], JSON.stringify(candidate));
+    expect(JSON.parse(r.stdout)).toEqual({ ...candidate, token: "[REDACTED]" });
   });
   it("preserves full IDs for the explicit all-container ls alias", async () => {
     const r = await run(["container", "ls", "--all", "--no-trunc", "--format", "{{.ID}}"], "b".repeat(64) + "\n");
