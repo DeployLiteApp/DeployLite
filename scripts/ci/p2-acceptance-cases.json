@@ -355,8 +355,8 @@
           "physicalRestart": false
         },
         {
-          "fullName": "PostgreSQL auth foundation integration atomically persists a domain route apply and replays its terminal receipt",
-          "title": "atomically persists a domain route apply and replays its terminal receipt",
+          "fullName": "PostgreSQL auth foundation integration atomically persists domain route revisions and replays an authorized rollback without detaching its certificate",
+          "title": "atomically persists domain route revisions and replays an authorized rollback without detaching its certificate",
           "file": "packages/db/src/postgres.integration.test.ts",
           "physicalRestart": false
         }
@@ -364,7 +364,13 @@
       "sourceFiles": [
         "packages/db/src/execution-postgres.integration-cases.ts",
         "packages/db/src/postgres.integration.test.ts",
-        "packages/db/migrations/0018_deployment_rollback_command.sql"
+        "packages/db/src/repositories/domain-routes.ts",
+        "packages/db/src/schema.ts",
+        "packages/domain/src/control-plane.ts",
+        "packages/contracts/src/domain-route.ts",
+        "packages/db/migrations/0018_deployment_rollback_command.sql",
+        "packages/db/migrations/0021_domain_route_reservations.sql",
+        "packages/db/migrations/0022_domain_route_revisions.sql"
       ]
     },
     "api": {
@@ -985,6 +991,7 @@
     "apps/agent/src/infrastructure/docker/docker-process-runner.ts",
     "apps/api/src/agent-transport.ts",
     "apps/api/src/app.ts",
+    "apps/api/src/domain-route-apply-route.ts",
     "apps/api/src/deployment-docker.integration.test.ts",
     "apps/api/src/postgres.integration.test.ts",
     "packages/config/src/index.ts",
@@ -1014,6 +1021,7 @@
     "packages/db/migrations/0016_repeated_deployment_snapshot_hash.sql",
     "packages/db/migrations/0017_control_execution_authority.sql",
     "packages/db/migrations/0021_domain_route_reservations.sql",
+    "packages/db/migrations/0022_domain_route_revisions.sql",
     "packages/db/src/execution-postgres.integration-cases.ts",
     "packages/db/src/postgres.integration.test.ts",
     "packages/db/src/repositories/agent-replay.ts",

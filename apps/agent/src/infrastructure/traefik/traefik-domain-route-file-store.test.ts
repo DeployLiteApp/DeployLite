@@ -48,6 +48,20 @@ describe("Traefik domain route file store", () => {
     expect(await readFile(join(root, updated.fileName), "utf8")).toContain(`http://${nextReceipt.container}:3000`);
   });
 
+  it("restores an earlier receipt-bound target through the same atomic route file on rollback", async () => {
+    const root = await directory(), store = new TraefikDomainRouteFileStore(root);
+    const original = await store.apply({ route, receipt, agentId: "agent-1" });
+    const nextId = "dep_abcdef0123456789";
+    const nextRoute = { ...route, deploymentId: nextId };
+    const nextReceipt = { ...receipt, deploymentId: nextId, candidateId: `${nextId}:candidate:deploy_abcdef0123456789`, container: `deploylite-active-${nextId}` };
+    const newer = await store.apply({ route: nextRoute, receipt: nextReceipt, agentId: "agent-1" });
+    expect(newer.state).toBe("updated");
+    const rollback = await store.apply({ route, receipt, agentId: "agent-1" });
+    expect(rollback).toMatchObject({ state: "updated", fileName: original.fileName, contentDigest: original.contentDigest });
+    expect(await readFile(join(root, rollback.fileName), "utf8")).toContain(`http://${receipt.container}:3000`);
+    expect(await readdir(root)).toEqual([original.fileName]);
+  });
+
   it("fails closed when the configured provider directory is a symlink", async () => {
     const real = await directory(), parent = await directory(), alias = join(parent, "alias");
     await symlink(real, alias);

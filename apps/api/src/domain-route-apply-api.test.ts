@@ -23,10 +23,15 @@ const project = { id: projectId, name: "fixture", repoUrl: "https://github.com/e
 const apps: ReturnType<typeof Fastify>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map(app => app.close())); vi.restoreAllMocks(); });
 
-function fixture(claims: unknown[] = [], authorized = true) {
+function fixture(claims: unknown[] = [], authorized = true, rollbackTarget: unknown = {
+  schemaVersion: 1, id: "revision-a", projectId, domain, deploymentId, revisionNumber: 1, operation: "baseline",
+  rollbackRevisionId: null, commandId: null, correlationId: null, createdAt: "2026-10-08T00:00:00.000Z",
+  evidence: { state: "baseline", contentDigest: null, observedAt: null, redacted: true }
+}) {
   const commandById = new Map<string, ControlCommand>();
   const commandIdByKey = new Map<string, string>();
-  const reservations = new Map<string, { commandId: string; route: unknown; plan: DomainRoutePlanV1 }>();
+  const reservations = new Map<string, { commandId: string; route: unknown; plan: DomainRoutePlanV1; operation: "apply" | "rollback"; rollbackRevisionId: string | null }>();
+  const revisionsByCommand = new Map<string, unknown>();
   const auditEvents: unknown[] = [];
   const keyOf = (actorId: string, key: string) => `${actorId}:${projectId}:${key}`;
   const controls = {
@@ -57,10 +62,16 @@ function fixture(claims: unknown[] = [], authorized = true) {
   const claimsReader = { available: () => true, listClaims: vi.fn(async () => structuredClone(claims)) };
   const store = {
     available: () => true,
-    reserveDomainRouteApply: vi.fn(async ({ command, route, plan }: { command: ControlCommand; route: unknown; plan: DomainRoutePlanV1 }) => {
+    findRollbackTarget: vi.fn(async () => rollbackTarget as never),
+    findDomainRouteRevisionByCommand: vi.fn(async (commandId: string) => (revisionsByCommand.get(commandId) ?? null) as never),
+    findDomainRouteReservation: vi.fn(async (commandId: string) => {
+      const row = [...reservations.values()].find(item => item.commandId === commandId);
+      return row ? { commandId, route: structuredClone(row.route) as never, plan: structuredClone(row.plan), operation: row.operation, rollbackRevisionId: row.rollbackRevisionId } : null;
+    }),
+    reserveDomainRouteApply: vi.fn(async ({ command, route, plan, operation, rollbackRevisionId }: { command: ControlCommand; route: unknown; plan: DomainRoutePlanV1; operation: "apply" | "rollback"; rollbackRevisionId: string | null }) => {
       const previous = reservations.get(domain);
       if (previous && previous.commandId !== command.id) throw new Error("domain conflict");
-      reservations.set(domain, { commandId: command.id, route: structuredClone(route), plan: structuredClone(plan) });
+      reservations.set(domain, { commandId: command.id, route: structuredClone(route), plan: structuredClone(plan), operation, rollbackRevisionId });
     }),
     releaseDomainRouteApply: vi.fn(async (commandId: string) => {
       if (reservations.get(domain)?.commandId === commandId) reservations.delete(domain);
@@ -70,6 +81,12 @@ function fixture(claims: unknown[] = [], authorized = true) {
       auditEvents.push(structuredClone(input.audit));
       const completed = { ...input.command, status: "completed" as const, result: structuredClone(input.receipt) };
       commandById.set(completed.id, structuredClone(completed));
+      if (input.operation === "rollback" && input.receipt.state !== "failed") revisionsByCommand.set(input.command.id, {
+        schemaVersion: 1, id: "revision-restored", projectId, domain, deploymentId: input.route.deploymentId, revisionNumber: 2,
+        operation: "rollback", rollbackRevisionId: input.rollbackRevisionId, commandId: input.command.id,
+        correlationId: input.command.correlationId, createdAt: "2026-10-09T00:02:00.000Z",
+        evidence: { state: input.receipt.state, contentDigest: input.receipt.contentDigest, observedAt: input.receipt.observedAt, redacted: true }
+      });
       return structuredClone(completed);
     })
   };
@@ -101,7 +118,9 @@ function fixture(claims: unknown[] = [], authorized = true) {
   apps.push(app);
   const post = (key = "apply-1") => app.inject({ method: "POST", url: `/api/v1/projects/${projectId}/domains/apply`,
     headers: { "x-control-idempotency-key": key }, payload: { domain, deploymentId } });
-  return { app, post, dispatch, controls, claimsReader, store, reservations, commandById, auditEvents };
+  const postRollback = (key = "rollback-1") => app.inject({ method: "POST", url: `/api/v1/projects/${projectId}/domains/rollback`,
+    headers: { "x-control-idempotency-key": key }, payload: { domain } });
+  return { app, post, postRollback, dispatch, controls, claimsReader, store, reservations, commandById, auditEvents };
 }
 
 describe("project domain route apply API", () => {
@@ -134,6 +153,40 @@ describe("project domain route apply API", () => {
     const response = await f.post("denied-1");
     expect(response.statusCode).toBe(403);
     expect(f.claimsReader.listClaims).not.toHaveBeenCalled();
+    expect(f.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("rolls back to the latest prior domain revision through project.update and replays correlated evidence", async () => {
+    const f = fixture([{ schemaVersion: 1, projectId, deploymentId: "deployment-b", domain }]);
+    const response = await f.postRollback();
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().data).toMatchObject({
+      operation: "rollback", rolledBack: true, rollbackRevisionId: "revision-a", routeRevisionId: "revision-restored",
+      route: { projectId, deploymentId, domain }, receipt: { state: "created", correlationId: "correlation-1" }, idempotent: false
+    });
+    expect(f.store.reserveDomainRouteApply).toHaveBeenCalledWith(expect.objectContaining({
+      operation: "rollback", rollbackRevisionId: "revision-a", plan: expect.objectContaining({ action: "retarget", previousDeploymentId: "deployment-b" })
+    }));
+    expect(f.auditEvents).toContainEqual(expect.objectContaining({ action: "domain.route.rolled_back", correlationId: "correlation-1" }));
+    const replay = await f.postRollback();
+    expect(replay.statusCode, replay.body).toBe(200);
+    expect(replay.json().data).toMatchObject({ operation: "rollback", rolledBack: true, rollbackRevisionId: "revision-a", idempotent: true });
+    expect(f.dispatch).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed when no prior route revision is available", async () => {
+    const f = fixture([{ schemaVersion: 1, projectId, deploymentId: "deployment-b", domain }], true, null);
+    const response = await f.postRollback();
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.code).toBe("DOMAIN_ROUTE_NO_ROLLBACK");
+    expect(f.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unauthorized rollback before reading revision state", async () => {
+    const f = fixture([{ schemaVersion: 1, projectId, deploymentId: "deployment-b", domain }], false);
+    const response = await f.postRollback();
+    expect(response.statusCode).toBe(403);
+    expect(f.store.findRollbackTarget).not.toHaveBeenCalled();
     expect(f.dispatch).not.toHaveBeenCalled();
   });
 });

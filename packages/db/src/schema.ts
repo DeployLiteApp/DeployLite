@@ -1,6 +1,6 @@
 import type { TrustedPriorExecutionReceiptV1, DeploymentExecutionAuthorityV1, ComposePreviewV1, ProjectControlAuthorityV1 } from "@deploylite/contracts";
 import { sql } from "drizzle-orm";
-import { boolean, check, customType, foreignKey, index, integer, jsonb, pgTable, smallint, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, customType, foreignKey, index, integer, jsonb, pgTable, smallint, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 
 const bytea = customType<{ data: Buffer; notNull: false; default: false }>({
   dataType() {
@@ -331,11 +331,39 @@ export const domains = pgTable(
   },
   (table) => [
     uniqueIndex("domains_hostname_unique").on(table.hostname),
+    uniqueIndex("domains_id_project_hostname_unique").on(table.id, table.projectId, table.hostname),
     index("domains_deployment_id_idx").on(table.deploymentId),
     index("domains_project_id_idx").on(table.projectId),
     check("domains_status_valid", sql`${table.status} in ('pending', 'active', 'failed', 'disabled')`)
   ]
 );
+
+export const domainRouteRevisions = pgTable("domain_route_revisions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  domainId: uuid("domain_id").notNull(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
+  hostname: text("hostname").notNull(),
+  deploymentId: uuid("deployment_id").notNull().references(() => deployments.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  revisionNumber: integer("revision_number").notNull(),
+  operation: text("operation").notNull(),
+  commandId: uuid("command_id").references(() => controlCommands.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  rollbackRevisionId: uuid("rollback_revision_id").references((): AnyPgColumn => domainRouteRevisions.id, { onDelete: "cascade", onUpdate: "cascade" }),
+  createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null", onUpdate: "cascade" }),
+  correlationId: text("correlation_id"),
+  evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+}, (table) => [
+  foreignKey({ name: "domain_route_revisions_domain_fk", columns: [table.domainId, table.projectId, table.hostname],
+    foreignColumns: [domains.id, domains.projectId, domains.hostname] }).onDelete("cascade").onUpdate("cascade"),
+  uniqueIndex("domain_route_revisions_domain_number_unique").on(table.domainId, table.revisionNumber),
+  uniqueIndex("domain_route_revisions_command_unique").on(table.commandId).where(sql`${table.commandId} is not null`),
+  index("domain_route_revisions_project_hostname_idx").on(table.projectId, table.hostname, table.revisionNumber),
+  check("domain_route_revisions_number_positive", sql`${table.revisionNumber} > 0`),
+  check("domain_route_revisions_operation_valid", sql`${table.operation} in ('baseline', 'apply', 'rollback')`),
+  check("domain_route_revisions_evidence_redacted", sql`(jsonb_typeof(${table.evidence}) = 'object' and ${table.evidence}->'redacted' = 'true'::jsonb and (${table.evidence} - 'state' - 'contentDigest' - 'observedAt' - 'redacted') = '{}'::jsonb) is true`),
+  check("domain_route_revisions_operation_binding", sql`(${table.operation} = 'baseline' and ${table.commandId} is null and ${table.rollbackRevisionId} is null) or (${table.operation} = 'apply' and ${table.commandId} is not null and ${table.rollbackRevisionId} is null) or (${table.operation} = 'rollback' and ${table.commandId} is not null and ${table.rollbackRevisionId} is not null)`)
+]);
+export type DomainRouteRevisionRow = typeof domainRouteRevisions.$inferSelect;
 
 export const domainRouteReservations = pgTable("domain_route_reservations", {
   hostname: text("hostname").primaryKey(),
@@ -343,11 +371,14 @@ export const domainRouteReservations = pgTable("domain_route_reservations", {
   commandId: uuid("command_id").notNull().unique().references(() => controlCommands.id, { onDelete: "restrict", onUpdate: "cascade" }),
   route: jsonb("route").$type<Record<string, unknown>>().notNull(),
   plan: jsonb("plan").$type<Record<string, unknown>>().notNull(),
+  operation: text("operation").notNull().default("apply"),
+  rollbackRevisionId: uuid("rollback_revision_id").references(() => domainRouteRevisions.id, { onDelete: "restrict", onUpdate: "cascade" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
 }, (table) => [
   index("domain_route_reservations_project_idx").on(table.projectId),
   check("domain_route_reservations_route_scope", sql`(${table.route}->>'domain' = ${table.hostname} and ${table.route}->>'projectId' = ${table.projectId}::text and ${table.plan}->'route' = ${table.route}) is true`),
-  check("domain_route_reservations_plan_action_valid", sql`${table.plan}->>'action' in ('create', 'attach', 'retarget', 'no-op')`)
+  check("domain_route_reservations_plan_action_valid", sql`${table.plan}->>'action' in ('create', 'attach', 'retarget', 'no-op')`),
+  check("domain_route_reservations_operation_valid", sql`(${table.operation} = 'apply' and ${table.rollbackRevisionId} is null) or (${table.operation} = 'rollback' and ${table.rollbackRevisionId} is not null)`)
 ]);
 
 export const certificates = pgTable(

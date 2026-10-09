@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { CanonicalRole, ConfirmationClassification, ControlCommandStatus, ControlPlaneAction, ControlPlaneScope, Deployment, DeploymentRollbackCommandResult, DeploymentRedeployCommandResult, DeploymentStopCommandResult, DeploymentExecutionAuthorityV1, ComposeResourceCleanupExecutionReceiptV1, ComposeRevisionSaveCommandResult, ProjectControlAuthorityV1, DomainRouteApplyReceiptV1, DomainRouteApplyAgentCommandV1, DomainRouteIntentV1 } from "@deploylite/contracts";
+import type { CanonicalRole, ConfirmationClassification, ControlCommandStatus, ControlPlaneAction, ControlPlaneScope, Deployment, DeploymentRollbackCommandResult, DeploymentRedeployCommandResult, DeploymentStopCommandResult, DeploymentExecutionAuthorityV1, ComposeResourceCleanupExecutionReceiptV1, ComposeRevisionSaveCommandResult, ProjectControlAuthorityV1, DomainRouteApplyReceiptV1, DomainRouteApplyAgentCommandV1, DomainRouteIntentV1, DomainRouteRevisionV1 } from "@deploylite/contracts";
 import type { DomainRoutePlanV1 } from "./domain-route-plan.js";
 
 export type ControlGrant = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope };
@@ -83,8 +83,17 @@ export type DomainRouteApplyCompletionInput = Readonly<{
   authority: ProjectControlAuthorityV1;
   route: DomainRouteIntentV1;
   plan: DomainRoutePlanV1;
+  operation: "apply" | "rollback";
+  rollbackRevisionId: string | null;
   receipt: DomainRouteApplyReceiptV1;
   audit: Readonly<{ actorUserId?: string | null; action: string; targetType: string; targetId: string; requestId: string; correlationId: string; metadata?: Record<string, unknown> }>;
+}>;
+export type DomainRouteApplyReservationV1 = Readonly<{
+  commandId: string;
+  route: DomainRouteIntentV1;
+  plan: DomainRoutePlanV1;
+  operation: "apply" | "rollback";
+  rollbackRevisionId: string | null;
 }>;
 export type PreparedDomainRouteApplyCommand = Readonly<{
   command: ControlCommand;
@@ -95,7 +104,11 @@ export type PreparedDomainRouteApplyCommand = Readonly<{
 }>;
 export type DomainRouteApplyCompletionStore = Readonly<{
   available(): boolean;
-  reserveDomainRouteApply(input: Readonly<{ command: ControlCommand; route: DomainRouteIntentV1; plan: DomainRoutePlanV1 }>): Promise<void>;
+  findRollbackTarget(projectId: string, domain: string): Promise<DomainRouteRevisionV1 | null>;
+  findDomainRouteRevisionByCommand(commandId: string): Promise<DomainRouteRevisionV1 | null>;
+  findDomainRouteReservation(commandId: string): Promise<DomainRouteApplyReservationV1 | null>;
+  reserveDomainRouteApply(input: Readonly<{ command: ControlCommand; route: DomainRouteIntentV1; plan: DomainRoutePlanV1;
+    operation: "apply" | "rollback"; rollbackRevisionId: string | null }>): Promise<void>;
   releaseDomainRouteApply(commandId: string, hostname: string): Promise<void>;
   completeDomainRouteApply(input: DomainRouteApplyCompletionInput): Promise<ControlCommand>;
 }>;
