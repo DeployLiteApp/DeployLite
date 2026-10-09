@@ -166,6 +166,7 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
     const dockerFailureDiagnostics: string[] = []; let lastDockerOperation = "none";
     let lastNetworkInspection: { name: string; id: string } | undefined, networkProjection = "unavailable";
     let candidateObservation: Record<string, unknown> | undefined, createdCandidateId: string | undefined;
+    const replacementAgentObservations: Array<Record<string, unknown>> = [];
     let observedAgentVolumeCommand: ComposeVolumeAttachmentAgentCommandV1 | undefined;
     const runner = boundedRunner(allowed, id => allowedIds.add(id), (operation, detail) => { if (dockerFailureDiagnostics.length < 8) dockerFailureDiagnostics.push(`${operation}: ${detail}`); },
       (operation, argv, result) => {
@@ -245,7 +246,42 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       const grants = { listForActor: async (actorId: string) => ["project.update", "project.deploy", "project.delete"].map(action => ({ id: `p3-${action}`, actorId,
         action: action as "project.update" | "project.deploy" | "project.delete", scope: { kind: "project" as const, projectId } })) };
       const control = memory.controls;
-      const agentInspector = physicalInspector;
+      const agentInspector: ComposeResourceInspector = {
+        async inspect(...args) {
+          const [input] = args;
+          try {
+            const observation = await physicalInspector.inspect(...args);
+            if (createdCandidateId && observedAgentVolumeCommand && input.preview.configDigest === nextPreview.configDigest
+              && ["volume", "network"].includes(input.kind) && replacementAgentObservations.length < 2
+              && !replacementAgentObservations.some(value => value.kind === input.kind)) {
+              const expectedService = input.preview.services.find(value => value.name === observedAgentVolumeCommand!.service);
+              const expectedNetwork = expectedService && input.preview.networks.find(value => value.key === expectedService.networks[0])?.runtimeName;
+              const expectedMounts = expectedService?.volumes.map(value => ({ target: value.target, readOnly: value.readOnly })) ?? [];
+              const candidate = observation.containers.find(value => value.containerId === createdCandidateId);
+              const prior = observation.containers.find(value => value.containerId === observedAgentVolumeCommand!.containerId);
+              replacementAgentObservations.push({ kind: input.kind, containerCount: observation.containers.length,
+                candidateObserved: Boolean(candidate), candidateRunning: candidate?.running === true, candidateAttached: candidate?.attached === true,
+                candidateRevisionMatches: candidate?.composeRevisionId === observedAgentVolumeCommand.revisionId,
+                candidateConfigMatches: candidate?.composeConfigDigest === observedAgentVolumeCommand.configDigest,
+                candidateEnvironmentMatches: candidate?.composeEnvironmentDigest === observedAgentVolumeCommand.secretDigest,
+                candidateMountsMatch: JSON.stringify(candidate?.mounts ?? []) === JSON.stringify(expectedMounts),
+                candidateNetworkMatches: Boolean(expectedNetwork && candidate?.networks?.some(value => value.name === expectedNetwork)),
+                candidateNetworkIdPresent: Boolean(expectedNetwork && candidate?.networks?.find(value => value.name === expectedNetwork)?.networkId),
+                priorObserved: Boolean(prior), priorRunning: prior?.running === true });
+            }
+            return observation;
+          } catch (error) {
+            if (createdCandidateId && observedAgentVolumeCommand && input.preview.configDigest === nextPreview.configDigest
+              && ["volume", "network"].includes(input.kind) && replacementAgentObservations.length < 2
+              && !replacementAgentObservations.some(value => value.kind === input.kind)) {
+              const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code
+                : error instanceof Error ? error.name : typeof error;
+              replacementAgentObservations.push({ kind: input.kind, inspectionFailed: true, errorCode: code });
+            }
+            throw error;
+          }
+        }
+      };
       const imagePolicy = policy;
       const commands = () => memory.completion.commands;
       const projectControls: ProjectUpdateControlRepository = {
@@ -424,7 +460,7 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       assert(/^[a-f0-9]{64}$/.test(replacementId)); register({ id: replacementId, kind: "container", name: "volume-replacement-candidate", created: true });
       let replacementProjection: Record<string, unknown>;
       try {
-        const afterReplacement = await inspect(nextDocument, "volume", "data");
+        const afterReplacement = await agentInspector.inspect({ preview: nextPreview, kind: "volume", key: "data" }, new AbortController().signal);
         const observedCandidate = afterReplacement.containers.find(value => value.containerId === replacementId);
         const observedPrior = afterReplacement.containers.find(value => value.containerId === serviceId);
         const candidateMounts = observedCandidate?.mounts as Array<{ target?: string; readOnly?: boolean }> | undefined;
@@ -434,7 +470,8 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
           priorObserved: Boolean(observedPrior), priorRunning: observedPrior?.running === true };
       } catch { replacementProjection = { inspectionFailed: true }; }
       dockerFailureDiagnostics.push(`volume-replacement-postcondition: ${JSON.stringify({ status: replacementReceipt.status,
-        health: replacementReceipt.health, rollback: replacementReceipt.rollback, reason: replacementReceipt.reason, ...replacementProjection })}`);
+        health: replacementReceipt.health, rollback: replacementReceipt.rollback, reason: replacementReceipt.reason, ...replacementProjection,
+        agentObservations: replacementAgentObservations })}`);
       assert.equal(replacementReceipt.status, "replaced", JSON.stringify({ status: replacementReceipt.status, health: replacementReceipt.health,
         rollback: replacementReceipt.rollback, reason: replacementReceipt.reason, ...replacementProjection }));
       assert.equal(replacementReceipt.health, "passed");
