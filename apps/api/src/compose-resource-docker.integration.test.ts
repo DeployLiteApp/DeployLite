@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn as nodeSpawn } from "node:child_process";
@@ -36,7 +36,6 @@ const fixtureImagePattern = /^127\.0\.0\.1:49172\/deploylite-p3\/[a-z0-9-]+@sha2
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const secretFreeMarker = "deploylite-p3-owned-volume-marker-v1";
 const policy = { policyVersion: "p3-disposable-ci-v1", trustedHosts: ["127.0.0.1:49172"], allowTags: false, allowDigests: true };
-const format = "{{json .Mountpoint}}";
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const apps: Awaited<ReturnType<typeof buildApiApp>>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map(app => app.close())); });
@@ -134,6 +133,8 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
     const allowedNames = new Set([backend.runtimeName, extra.runtimeName, volume.runtimeName]);
     const allowedContainerNames = new Set([`p3c8-${runId}-seed`, `p3c8-${runId}-service`]);
     const allowedIds = new Set<string>();
+    let backupSourceRoot = "";
+    let backupSourceContainerId: string | undefined;
     const allowed = (argv: readonly string[]) => {
       const a = argv.slice(1), op = a.slice(0, 2).join(" ");
       if (a[0] === "network" && a[1] === "create") return allowedNames.has(a.at(-1)!) && a.includes("--internal");
@@ -149,6 +150,8 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       };
       if (a[0] === "container" && a[1] === "run") return safeFixtureRun();
       if (a[0] === "run") return safeFixtureRun();
+      if (a[0] === "container" && a[1] === "cp") return !!backupSourceContainerId && allowedIds.has(backupSourceContainerId)
+        && a.length === 4 && a[2] === `${backupSourceContainerId}:/data/.` && a[3] === backupSourceRoot;
       if (a[0] === "container" && ["inspect", "diff", "start", "stop", "rm", "exec"].includes(a[1]!)) return allowedIds.has(a[1] === "exec" ? a[2]! : a.at(-1)!) || a[1] === "inspect" && a.includes("--format") && allowedNames.has(a.at(-1)!);
       if (a[0] === "container" && a[1] === "ls") return a.includes("--all") && a.includes("--no-trunc") || a.includes("--filter");
       if (a[0] === "network" && ["inspect", "connect", "disconnect", "rm"].includes(a[1]!)) {
@@ -194,6 +197,7 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
     const register = (resource: Owned) => { evidence.resources.push(resource); resourceByName.set(resource.name, resource); if (resource.kind === "container") allowedIds.add(resource.id); };
     let server: Awaited<ReturnType<typeof startAgentServer>> | undefined, api: Awaited<ReturnType<typeof buildApiApp>> | undefined;
     const archiveDestination = await mkdtemp(join(artifactDir, ".backup-"));
+    backupSourceRoot = await mkdtemp(join(artifactDir, ".volume-source-"));
     const caps = new InMemoryCapabilityRegistry([COMPOSE_RESOURCE_INSPECTION_CAPABILITY, COMPOSE_NETWORK_ATTACHMENT_CAPABILITY, COMPOSE_VOLUME_ATTACHMENT_CAPABILITY,
       COMPOSE_VOLUME_BACKUP_CAPABILITY, COMPOSE_RESOURCE_CLEANUP_CAPABILITY]);
     const physicalInspector = createDockerComposeResourceInspector({ runner, owner, agentId, imagePolicy: policy, capabilities: caps,
@@ -221,7 +225,6 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       assert.equal(volumeInfo.Labels["com.deploylite.owner"], owner); assert.equal(volumeInfo.Labels["com.deploylite.project"], projectId);
       assert.equal(volumeInfo.Labels["com.deploylite.resource.kind"], "volume"); assert.equal(volumeInfo.Labels["com.deploylite.resource.key"], "data");
       register({ id: volumeInfo.CreatedAt, kind: "volume", name: volume.runtimeName, resourceKind: "volume", key: "data", created: true });
-      const mountpoint = await dockerJson<string>(["volume", "inspect", "--format", format, volume.runtimeName]);
       const seedName = `p3c8-${runId}-seed`, seedId = await docker(["run", "--detach", "--name", seedName, "--network", "none", "--user", "0:0",
         "--cpus=0.25", "--memory=33554432", "--pids-limit=32", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
         "--mount", `type=volume,source=${volume.runtimeName},target=/data`, "--entrypoint", "/bin/sh", manifest.image, "-c", `printf '%s' '${secretFreeMarker}' > /data/p3-marker.txt && sleep 30`]);
@@ -271,7 +274,7 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
         observedAgentVolumeCommand = structuredClone(args[0]); return baseVolumeAttachment.execute(...args);
       } };
       const volumeBackup = createDockerComposeVolumeBackupExecutor({ owner, agentId, imagePolicy, capabilities: caps, inspector: agentInspector,
-        source: createLocalDirectoryComposeVolumeBackupSource(new Map([[volume.runtimeName, mountpoint]])), destinations: new Map([["ci-artifact", archiveDestination]]) });
+        source: createLocalDirectoryComposeVolumeBackupSource(new Map([[volume.runtimeName, backupSourceRoot]])), destinations: new Map([["ci-artifact", archiveDestination]]) });
       const resourceCleanup = createDockerComposeResourceCleanupExecutor({ runner, inspector: agentInspector, owner, agentId, imagePolicy, capabilities: caps });
       const receiver = new AuthenticatedAgentCommandReceiver({ agentId, trustKey, capabilities: ["deploy.execute", COMPOSE_RESOURCE_INSPECTION_CAPABILITY,
         COMPOSE_NETWORK_ATTACHMENT_CAPABILITY, COMPOSE_VOLUME_ATTACHMENT_CAPABILITY, COMPOSE_VOLUME_BACKUP_CAPABILITY, COMPOSE_RESOURCE_CLEANUP_CAPABILITY],
@@ -422,6 +425,15 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       assert.equal(persisted, ""); log("C4 bounded volume replacement", "PASS", replace.json().data.attachment);
       await docker(["container", "stop", "--time", "5", replacementId]);
       const backupObservation = await inspect(nextDocument, "volume", "data");
+      const stoppedVolumeConsumer = backupObservation.containers.find(value => value.containerId === replacementId);
+      assert(stoppedVolumeConsumer?.attached); assert.equal(stoppedVolumeConsumer.running, false);
+      assert.equal(backupObservation.containers.filter(value => value.attached).length, 1);
+      backupSourceContainerId = replacementId;
+      await docker(["container", "cp", `${replacementId}:/data/.`, backupSourceRoot]);
+      const stagedSourceFiles = await readdir(backupSourceRoot);
+      assert.deepEqual(stagedSourceFiles, ["p3-marker.txt"]);
+      assert.equal(await readFile(join(backupSourceRoot, "p3-marker.txt"), "utf8"), secretFreeMarker);
+      log("C6 exact stopped-volume source snapshot", "PASS", { stoppedConsumer: true, oneAttachedConsumer: true, markerVerified: true, stagedEntryCount: stagedSourceFiles.length });
       const backupPreview = await post("volumes/backup/preview", { document: nextDocument, key: "data", expectedConfigDigest: nextPreview.configDigest,
         expectedStateDigest: backupObservation.stateDigest, destinationId: "ci-artifact" }, "backup-plan-once");
       assert.equal(backupPreview.statusCode, 200, backupPreview.body);
@@ -483,6 +495,7 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
         }
         await writeFile(artifactPath, JSON.stringify(evidence, null, 2) + "\n", { mode: 0o600, flag: "w" }).catch(() => undefined);
       }
+      if (backupSourceRoot) await rm(backupSourceRoot, { recursive: true, force: true }).catch(() => undefined);
       await rm(archiveDestination, { recursive: true, force: true }).catch(() => undefined);
     }
   }, 180_000);
