@@ -23,7 +23,7 @@ import { createDockerComposeVolumeAttachmentExecutor } from "../../agent/src/inf
 import { createDockerComposeVolumeReplacementDriver } from "../../agent/src/infrastructure/docker/docker-compose-volume-replacement-driver.js";
 import { createDockerComposeVolumeBackupExecutor, createLocalDirectoryComposeVolumeBackupSource } from "../../agent/src/infrastructure/docker/docker-compose-volume-backup.js";
 import { createDockerComposeResourceCleanupExecutor } from "../../agent/src/infrastructure/docker/docker-compose-resource-cleanup.js";
-import { COMPOSE_REPLACEMENT_HEALTH_FORMAT } from "../../agent/src/infrastructure/docker/docker-compose-resource-argv.js";
+import { COMPOSE_CONTAINER_INSPECT_FORMAT, COMPOSE_NETWORK_INSPECT_FORMAT, COMPOSE_REPLACEMENT_HEALTH_FORMAT } from "../../agent/src/infrastructure/docker/docker-compose-resource-argv.js";
 import { startAgentServer } from "../../agent/src/server.js";
 import { AuthenticatedAgentDeploymentTransport } from "./agent-transport.js";
 import { AuthenticatedAgentComposeResourceInspectionTransport } from "./compose-resource-inspection-transport.js";
@@ -75,7 +75,8 @@ async function privateManifest(): Promise<Manifest> {
 }
 
 function boundedRunner(allowed: (argv: readonly string[]) => boolean, captureContainerId: (value: string) => void = () => undefined,
-  reportFailure: (operation: string, detail: string) => void = () => undefined, reportSuccess: (operation: string) => void = () => undefined) {
+  reportFailure: (operation: string, detail: string) => void = () => undefined,
+  reportSuccess: (operation: string, argv: readonly string[], result: DockerProcessExit) => void = () => undefined) {
   const processRunner = new DockerProcessRunner({ timeoutMs: 15_000, maxOutputBytes: 65_536, spawn: (file, args, options) => {
     const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", LANG: "C", LC_ALL: "C", DOCKER_HOST: process.env.DOCKER_HOST!, DOCKER_CONFIG: process.env.DOCKER_CONFIG! };
     return nodeSpawn(file, args, { ...options, env });
@@ -97,7 +98,7 @@ function boundedRunner(allowed: (argv: readonly string[]) => boolean, captureCon
       throw error;
     }
     if (result.exitCode !== 0 || result.signal !== null) { reportFailure(operation, "nonzero-result"); throw new Error("P3 fixture Docker operation failed"); }
-    reportSuccess(operation);
+    reportSuccess(operation, argv, result);
     const args = argv.slice(1);
     if ((args[0] === "run" || args[0] === "container" && args[1] === "run") && /^[a-f0-9]{64}$/.test(result.stdout.trim())) captureContainerId(result.stdout.trim());
     return result;
@@ -158,8 +159,26 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       return false;
     };
     const dockerFailureDiagnostics: string[] = []; let lastDockerOperation = "none";
+    let lastNetworkInspection: { name: string; id: string } | undefined, networkProjection = "unavailable";
     const runner = boundedRunner(allowed, id => allowedIds.add(id), (operation, detail) => { if (dockerFailureDiagnostics.length < 8) dockerFailureDiagnostics.push(`${operation}: ${detail}`); },
-      operation => { lastDockerOperation = operation; });
+      (operation, argv, result) => {
+        lastDockerOperation = operation;
+        if (argv[1] === "network" && argv[2] === "inspect" && argv[4] === COMPOSE_NETWORK_INSPECT_FORMAT) {
+          try {
+            const observation = JSON.parse(result.stdout) as { name?: string; id?: string };
+            lastNetworkInspection = { name: observation.name ?? "", id: observation.id ?? "" };
+          } catch { lastNetworkInspection = undefined; }
+        }
+        if (argv[1] === "container" && argv[2] === "inspect" && argv[4] === COMPOSE_CONTAINER_INSPECT_FORMAT) {
+          try {
+            const observation = JSON.parse(result.stdout) as { networks?: Array<{ name: string; networkId: string }> };
+            networkProjection = JSON.stringify({ expectedNameLength: lastNetworkInspection?.name.length ?? 0,
+              expectedIdLength: lastNetworkInspection?.id.length ?? 0,
+              entries: (observation.networks ?? []).slice(0, 8).map(network => ({ nameMatches: network.name === lastNetworkInspection?.name,
+                idMatches: network.networkId === lastNetworkInspection?.id, idLength: network.networkId.length })) });
+          } catch { networkProjection = "container-network-output-unparseable"; }
+        }
+      });
     const docker = async (args: readonly string[]) => (await runner.run(["docker", ...args], new AbortController().signal)).stdout.trim();
     const dockerJson = async <T>(args: readonly string[]) => JSON.parse(await docker(args)) as T;
     const register = (resource: Owned) => { evidence.resources.push(resource); resourceByName.set(resource.name, resource); if (resource.kind === "container") allowedIds.add(resource.id); };
@@ -279,7 +298,7 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
         const detail = error instanceof Error ? sanitize(error.message).slice(0, 160) : "";
         const trace = error instanceof Error ? sanitize((error.stack ?? "").split("\n").slice(1, 5).map(line => line.trim()).join(" <- ")).slice(0, 360) : "";
         if (dockerFailureDiagnostics.length < 8) dockerFailureDiagnostics.push(source + ": " + identity + "; last-docker=" + lastDockerOperation
-          + "; detail=" + detail + "; trace=" + trace);
+          + "; detail=" + detail + "; trace=" + trace + "; network-projection=" + networkProjection.slice(0, 480));
       };
       const receiveAgentRequest = receiver.receive.bind(receiver);
       receiver.receive = async (body, signature, signal) => {
