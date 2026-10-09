@@ -1,5 +1,6 @@
 import { asc, eq } from "drizzle-orm";
 import { transportPortClaimSchema, type TransportPortClaimV1 } from "@deploylite/contracts";
+import type { TransportPortClaimReader } from "@deploylite/domain";
 import type { DeployLiteDb } from "../client.js";
 import { deployments, transportPortClaims } from "../schema.js";
 
@@ -20,8 +21,10 @@ export class TransportPortClaimStoreError extends Error {
 }
 
 /** Reads the complete global claim set so protocol/port conflicts cannot be hidden by project filtering. */
-export class DbTransportPortClaimReader {
+export class DbTransportPortClaimReader implements TransportPortClaimReader {
   constructor(private readonly db: DeployLiteDb) {}
+
+  available(): boolean { return true; }
 
   async listClaims(): Promise<TransportPortClaimV1[]> {
     const rows: TransportPortClaimReadRow[] = await this.db.select({

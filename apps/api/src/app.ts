@@ -12,6 +12,7 @@ import { registerComposeVolumeAttachmentExecutionRoute, type ComposeVolumeAttach
 import { registerComposeVolumeBackupPlanRoute, type ComposeVolumeBackupPlanAccess } from "./compose-volume-backup-plan-route.js";
 import { registerComposeVolumeBackupExecutionRoute, type ComposeVolumeBackupExecutionAccess } from "./compose-volume-backup-execution-route.js";
 import { registerDomainRoutePreviewRoute } from "./domain-route-preview-route.js";
+import { registerTransportPortPreviewRoute } from "./transport-port-preview-route.js";
 import { registerDomainRouteApplyRoute, type DomainRouteApplyExecutionAccess } from "./domain-route-apply-route.js";
 import { claimDeploymentAuthority, validateStopCompletion, validateDeploymentAuthority, validateInitialExecution } from "@deploylite/domain";
 import { createHash, randomUUID } from "node:crypto";
@@ -53,7 +54,7 @@ import {
   type DeploymentSnapshotV1,
   type ImageReferencePolicyV1
 } from "@deploylite/contracts";
-import { BcryptPasswordHasher, bootstrapInitialAdmin, closeDbPool, createDbClient, createDbPool, createOpaqueSessionToken, DbAgentRepository, DbAuditRepository, DbAuthUserRepository, DbComposeResourceCleanupStore, DbControlCommandRepository, DbControlGrantRepository, DbDeploymentRepository, DbDeploymentExecutionRepository, DbDomainRouteClaimReader, DbEnvSecretValueRepository, DbEnvVariableMetadataRepository, DbProjectRepository, DbSessionRepository, hashSessionToken, type DeployLiteDb } from "@deploylite/db";
+import { BcryptPasswordHasher, bootstrapInitialAdmin, closeDbPool, createDbClient, createDbPool, createOpaqueSessionToken, DbAgentRepository, DbAuditRepository, DbAuthUserRepository, DbComposeResourceCleanupStore, DbControlCommandRepository, DbControlGrantRepository, DbDeploymentRepository, DbDeploymentExecutionRepository, DbDomainRouteClaimReader, DbTransportPortClaimReader, DbEnvSecretValueRepository, DbEnvVariableMetadataRepository, DbProjectRepository, DbSessionRepository, hashSessionToken, type DeployLiteDb } from "@deploylite/db";
 import {
   AgentStatusService,
   awaitAbortable,
@@ -107,6 +108,7 @@ import {
   type DeploymentRepository,
   type DeploymentExecutionRepository,
   type DomainRouteClaimReader,
+  type TransportPortClaimReader,
   type DomainRouteApplyCompletionStore,
   type ExecutionCompletionOutcome,
   type DeploymentSnapshotRepository,
@@ -515,6 +517,7 @@ type PlatformRepositoryOptions = {
   deployments: DeploymentRepository;
   projects: ProjectRepository;
   domainRouteClaims?: DomainRouteClaimReader;
+  transportPortClaims?: TransportPortClaimReader;
   domainRouteApplyStore?: DomainRouteApplyCompletionStore;
   composeRevisionReads?: ComposeRevisionReadCapability;
   composeRevisionSaves?: ComposeRevisionSaveStore;
@@ -641,7 +644,7 @@ function createApiState(env: EnvSecretKeySource, overrides: Partial<PlatformRepo
   const controlDeletes = overrides.controlDeletes ?? memory?.controls ?? new InMemoryControlDeleteRepository(projects, audit ?? new InMemoryAuditRepository(), deployments);
   const agentStatus = new AgentStatusService(agents);
   const deployRunner = new DeployRunner(deployments, envMetadata, agentStatus, envSecretCipher);
-  return { agents, deployments, projects, domainRouteClaims: overrides.domainRouteClaims, domainRouteApplyStore: overrides.domainRouteApplyStore,
+  return { agents, deployments, projects, domainRouteClaims: overrides.domainRouteClaims, transportPortClaims: overrides.transportPortClaims, domainRouteApplyStore: overrides.domainRouteApplyStore,
     executionCompletion, composeRevisionReads: overrides.composeRevisionReads ?? overrides.composeRevisionSaves, composeRevisionSaves: overrides.composeRevisionSaves,
     envMetadata, envSecretValues, envSecretCipher, agentStatus, deployRunner, runtimeActivationDispatcher, deploymentDispatcher, deploymentStopDispatcher,
     snapshots, controlDeletes, controlRedeploy: overrides.controlRedeploy ?? memory?.controls ?? (controlDeletes as unknown as ControlRedeployRepository),
@@ -1027,6 +1030,7 @@ function createDbAuthAdapters(env: DeployLiteEnv, options: BuildApiAppOptions): 
   const deployments = options.state?.deployments ?? new DbDeploymentRepository(db);
   const compose = options.state?.composeRevisionSaves ?? new DbComposeRevisionSaveStore(db);
   const dbDomainRouteStore = new DbDomainRouteClaimReader(db);
+  const dbTransportPortStore = new DbTransportPortClaimReader(db);
 
   return {
     composeResourceCleanupStore: new DbComposeResourceCleanupStore(db),
@@ -1044,6 +1048,7 @@ function createDbAuthAdapters(env: DeployLiteEnv, options: BuildApiAppOptions): 
       agents: options.state?.agents ?? new DbAgentRepository(db),
       deployments,
       domainRouteClaims: options.state?.domainRouteClaims ?? dbDomainRouteStore,
+      transportPortClaims: options.state?.transportPortClaims ?? dbTransportPortStore,
       domainRouteApplyStore: options.state?.domainRouteApplyStore ?? dbDomainRouteStore,
       executionCompletion: options.state?.executionCompletion ?? (deployments instanceof DbDeploymentRepository ? new DbDeploymentExecutionRepository(db) : undefined),
       projects: options.state?.projects ?? new DbProjectRepository(db),
@@ -1278,6 +1283,7 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
   const requireAdminRole = createRolePreHandler(adapters, ["admin"]);
   registerComposePreviewRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerDomainRoutePreviewRoute(app, { prefix: API_PREFIX, projects: state.projects, deployments: state.deployments, domainRouteClaims: state.domainRouteClaims, grants: state.controlGrants, audit: adapters.audit, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
+  registerTransportPortPreviewRoute(app, { prefix: API_PREFIX, projects: state.projects, deployments: state.deployments, claims: state.transportPortClaims, grants: state.controlGrants, audit: adapters.audit, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerDomainRouteApplyRoute(app, { prefix: API_PREFIX, projects: state.projects, deployments: state.deployments, claims: state.domainRouteClaims,
     applyStore: state.domainRouteApplyStore, executions: domainRouteApplyExecutions, grants: state.controlGrants, audit: adapters.audit,
     requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });

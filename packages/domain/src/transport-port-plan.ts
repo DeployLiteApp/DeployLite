@@ -6,6 +6,11 @@ export type TransportPortPlanInput = Readonly<{
   currentClaims: readonly unknown[];
 }>;
 
+export type TransportPortClaimReader = Readonly<{
+  available(): boolean;
+  listClaims(): Promise<readonly TransportPortClaimV1[]>;
+}>;
+
 export type TransportPortPlanV1 = Readonly<{
   action: "create" | "attach" | "no-op" | "retarget";
   route: TransportPortIntentV1;
