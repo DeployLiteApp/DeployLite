@@ -16,7 +16,7 @@ import { createComposePreview, digestComposeResourceObservation, InMemoryCompose
   claimProjectUpdateAuthority, resolveControlCommandInMemory, validateProjectUpdateAuthority,
   type AuditEventInput, type ComposeResourceInspector, type DeploymentAuthorityValidation, type ProjectUpdateControlRepository } from "@deploylite/domain";
 import { AuthenticatedAgentCommandReceiver } from "@deploylite/agent";
-import { DockerProcessRunner } from "../../agent/src/infrastructure/docker/docker-process-runner.js";
+import { DockerProcessError, DockerProcessRunner, type DockerProcessExit } from "../../agent/src/infrastructure/docker/docker-process-runner.js";
 import { createDockerComposeResourceInspector } from "../../agent/src/infrastructure/docker/docker-compose-resource-inspector.js";
 import { createDockerComposeNetworkAttachmentExecutor } from "../../agent/src/infrastructure/docker/docker-compose-network-attachment.js";
 import { createDockerComposeVolumeAttachmentExecutor } from "../../agent/src/infrastructure/docker/docker-compose-volume-attachment.js";
@@ -81,7 +81,16 @@ function boundedRunner(allowed: (argv: readonly string[]) => boolean, captureCon
   } });
   const runner = { async run(argv: readonly string[], signal: AbortSignal, environment?: Readonly<Record<string, string>>) {
     assert.equal(argv[0], "docker"); assert(allowed(argv), `out-of-fixture Docker operation: ${argv.slice(1, 3).join(" ")}`);
-    const result = await processRunner.run(argv, signal, environment);
+    let result: DockerProcessExit;
+    try { result = await processRunner.run(argv, signal, environment); }
+    catch (error) {
+      const failure = error instanceof DockerProcessError ? error.result : undefined;
+      if (failure) {
+        const operation = argv.slice(1, 3).join(" "), detail = failure.stderr.replace(/[\r\n]+/g, " ").slice(0, 320);
+        throw new Error(`P3 fixture Docker operation failed (${operation}; exit=${failure.exitCode}; stderr=${detail})`);
+      }
+      throw error;
+    }
     if (result.exitCode !== 0 || result.signal !== null) throw new Error("P3 fixture Docker operation failed");
     const args = argv.slice(1);
     if ((args[0] === "run" || args[0] === "container" && args[1] === "run") && /^[a-f0-9]{64}$/.test(result.stdout.trim())) captureContainerId(result.stdout.trim());
