@@ -74,24 +74,29 @@ async function privateManifest(): Promise<Manifest> {
   return value;
 }
 
-function boundedRunner(allowed: (argv: readonly string[]) => boolean, captureContainerId: (value: string) => void = () => undefined) {
+function boundedRunner(allowed: (argv: readonly string[]) => boolean, captureContainerId: (value: string) => void = () => undefined,
+  reportFailure: (operation: string, detail: string) => void = () => undefined) {
   const processRunner = new DockerProcessRunner({ timeoutMs: 15_000, maxOutputBytes: 65_536, spawn: (file, args, options) => {
     const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", LANG: "C", LC_ALL: "C", DOCKER_HOST: process.env.DOCKER_HOST!, DOCKER_CONFIG: process.env.DOCKER_CONFIG! };
     return nodeSpawn(file, args, { ...options, env });
   } });
   const runner = { async run(argv: readonly string[], signal: AbortSignal, environment?: Readonly<Record<string, string>>) {
-    assert.equal(argv[0], "docker"); assert(allowed(argv), `out-of-fixture Docker operation: ${argv.slice(1, 3).join(" ")}`);
+    assert.equal(argv[0], "docker");
+    const operation = argv.slice(1, 3).join(" ");
+    if (!allowed(argv)) { reportFailure(operation, "blocked-by-fixture-allowlist"); assert(false, `out-of-fixture Docker operation: ${operation}`); }
     let result: DockerProcessExit;
     try { result = await processRunner.run(argv, signal, environment); }
     catch (error) {
       const failure = error instanceof DockerProcessError ? error.result : undefined;
       if (failure) {
-        const operation = argv.slice(1, 3).join(" "), detail = failure.stderr.replace(/[\r\n]+/g, " ").slice(0, 320);
+        const detail = failure.stderr.replace(/[\r\n]+/g, " ").replace(/\b[a-f0-9]{32,64}\b/gi, "[REDACTED]").slice(0, 240);
+        reportFailure(operation, `exit=${failure.exitCode}; stderr=${detail || "empty"}`);
         throw new Error(`P3 fixture Docker operation failed (${operation}; exit=${failure.exitCode}; stderr=${detail})`);
       }
+      reportFailure(operation, error instanceof DockerProcessError ? `runner=${error.kind}` : "runner-error");
       throw error;
     }
-    if (result.exitCode !== 0 || result.signal !== null) throw new Error("P3 fixture Docker operation failed");
+    if (result.exitCode !== 0 || result.signal !== null) { reportFailure(operation, "nonzero-result"); throw new Error("P3 fixture Docker operation failed"); }
     const args = argv.slice(1);
     if ((args[0] === "run" || args[0] === "container" && args[1] === "run") && /^[a-f0-9]{64}$/.test(result.stdout.trim())) captureContainerId(result.stdout.trim());
     return result;
@@ -151,7 +156,8 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       if (a[0] === "network" && a[1] === "ls") return a.includes("--filter");
       return false;
     };
-    const runner = boundedRunner(allowed, id => allowedIds.add(id));
+    const dockerFailureDiagnostics: string[] = [];
+    const runner = boundedRunner(allowed, id => allowedIds.add(id), (operation, detail) => { if (dockerFailureDiagnostics.length < 8) dockerFailureDiagnostics.push(`${operation}: ${detail}`); });
     const docker = async (args: readonly string[]) => (await runner.run(["docker", ...args], new AbortController().signal)).stdout.trim();
     const dockerJson = async <T>(args: readonly string[]) => JSON.parse(await docker(args)) as T;
     const register = (resource: Owned) => { evidence.resources.push(resource); resourceByName.set(resource.name, resource); if (resource.kind === "container") allowedIds.add(resource.id); };
@@ -344,7 +350,7 @@ describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
       expect(JSON.stringify(evidence)).not.toContain(trustKey); evidence.status = "PASS";
       await writeFile(artifactPath, JSON.stringify(evidence, null, 2) + "\n", { mode: 0o600, flag: "wx" });
     } catch (error) {
-      evidence.status = "FAILED"; log("harness", "FAILED", { reason: error instanceof Error ? error.message.replace(/[^A-Za-z0-9 _:-]/g, "").slice(0, 160) : "unknown" });
+      evidence.status = "FAILED"; log("harness", "FAILED", { reason: error instanceof Error ? error.message.replace(/[^A-Za-z0-9 _:-]/g, "").slice(0, 160) : "unknown", dockerFailures: dockerFailureDiagnostics });
       await writeFile(artifactPath, JSON.stringify(evidence, null, 2) + "\n", { mode: 0o600, flag: "wx" }).catch(() => undefined);
       throw error;
     } finally {
