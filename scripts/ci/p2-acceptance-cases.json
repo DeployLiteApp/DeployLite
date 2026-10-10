@@ -1157,7 +1157,8 @@
     "packages/db/src/managed-database-credentials-postgres.cases.ts",
     "apps/api/src/managed-database-credentials-route.ts",
     "apps/api/src/managed-database-credentials-api.test.ts",
-    "apps/api/src/managed-database-credentials-wiring.test.ts"
+    "apps/api/src/managed-database-credentials-wiring.test.ts",
+    "apps/agent/src/infrastructure/docker/docker-redaction-integration.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
