@@ -220,6 +220,16 @@ jobs:
           set -Eeuo pipefail
           python3 scripts/ci/p2-physical-acceptance.py prepare
           cat "$RUNNER_TEMP/deploylite-p2-docker-evidence/environment.env" >> "$GITHUB_ENV"
+      - name: Execute original diagnostic and opt-in guards without skips
+        env:
+          DEPLOYLITE_DOCKER_INTEGRATION: '1'
+        run: |
+          set -Eeuo pipefail
+          pnpm --filter @deploylite/agent exec vitest run --allowOnly=false --config vitest.config.ts src/infrastructure/docker/docker-redaction-integration.test.ts --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/deploylite-p2-docker-evidence/diagnostics.json"
+          node - "$RUNNER_TEMP/deploylite-p2-docker-evidence/diagnostics.json" <<'JS'
+          const fs = require('node:fs'); const report = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          if (!report.success || report.numTotalTests !== 2 || report.numPassedTests !== 2 || report.numFailedTests !== 0 || report.numPendingTests !== 0) throw new Error('Diagnostic acceptance incomplete');
+          JS
       - name: Execute exact Docker receiver and API acceptance source
         id: cases
         env:
