@@ -3,7 +3,7 @@
   "purpose": "Expected evidence only; this manifest neither authorizes runtime nor claims PASS",
   "suites": {
     "db": {
-      "count": 60,
+      "count": 61,
       "allowSkipped": false,
       "cases": [
         {
@@ -365,6 +365,12 @@
           "title": "atomically persists TCP/UDP reservation, apply revisions, active container state, and rollback",
           "file": "packages/db/src/postgres.integration.test.ts",
           "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration durably isolates encrypted registry records and rotates to public across repository instances",
+          "title": "durably isolates encrypted registry records and rotates to public across repository instances",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
         }
       ],
       "sourceFiles": [
@@ -376,7 +382,10 @@
         "packages/contracts/src/domain-route.ts",
         "packages/db/migrations/0018_deployment_rollback_command.sql",
         "packages/db/migrations/0021_domain_route_reservations.sql",
-        "packages/db/migrations/0022_domain_route_revisions.sql"
+        "packages/db/migrations/0022_domain_route_revisions.sql",
+        "packages/db/src/repositories/env-secret-values.ts",
+        "packages/config/src/crypto.ts",
+        "packages/contracts/src/registry-configuration.ts"
       ]
     },
     "api": {
@@ -1057,7 +1066,10 @@
     "scripts/testing/p2-fixture/base-image.json",
     "scripts/testing/p2-fixture/h/version",
     "scripts/testing/p2-fixture/healthz",
-    "packages/db/migrations/0018_deployment_rollback_command.sql"
+    "packages/db/migrations/0018_deployment_rollback_command.sql",
+    "packages/db/src/repositories/env-secret-values.ts",
+    "packages/config/src/crypto.ts",
+    "packages/contracts/src/registry-configuration.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
