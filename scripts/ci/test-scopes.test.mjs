@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { excludedPhysicalTestFiles } from './test-scopes.mjs';
 const files = {
   db: ['src/postgres.integration.test.ts', 'src/compose-postgres.integration.test.ts'],
@@ -47,4 +47,10 @@ test('mapped suites never manufacture skipped cases; original hosted count guard
   const workflow=readFileSync(new URL('../../.github/workflows/baseline.yml',import.meta.url),'utf8');
   for(const name of ['postgres-integration','p2-docker-acceptance','p3-docker-acceptance','p4-transport-acceptance']) assert(workflow.split('  baseline-gate:\n')[1].includes(name));
   assert(workflow.includes('numPendingTests !== 0'));
+});
+
+test('every declared acceptance source exists on this exact branch', () => {
+  const root = new URL('../../', import.meta.url);
+  const manifest = JSON.parse(readFileSync(new URL('scripts/ci/p2-acceptance-cases.json', root), 'utf8'));
+  for (const path of manifest.sourceFiles) assert.ok(existsSync(new URL(path, root)), `Missing acceptance source: ${path}`);
 });
