@@ -41,6 +41,7 @@ class HostedGateTests(unittest.TestCase):
                       "DEPLOYLITE_P3_FIXTURE_MANIFEST": f"{temp_dir}/deploylite-p3-fixture-manifest.json"}
             contexts = (
                 {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_HEAD_REF": "feature/p3-follow-up", "GITHUB_BASE_REF": "main"},
+                {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_HEAD_REF": "feat/p5-database-storage-helper", "GITHUB_BASE_REF": "feat/p5-database-execution-proof"},
                 {"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main"},
             )
             for event_context in contexts:
@@ -49,10 +50,10 @@ class HostedGateTests(unittest.TestCase):
                     context = MODULE.native_context(env)
                 self.assertEqual(context[0], Path(temp_dir))
 
-    def test_fork_other_base_and_other_push_branch_fail_before_git_or_docker(self):
+    def test_fork_missing_base_and_other_push_branch_fail_before_git_or_docker(self):
         cases = (
             ({"GITHUB_EVENT_NAME": "pull_request", "GITHUB_BASE_REF": "main", "DEPLOYLITE_P3_HEAD_REPOSITORY": "fork/DeployLite"}, "same_repository_head_required"),
-            ({"GITHUB_EVENT_NAME": "pull_request", "GITHUB_BASE_REF": "release"}, "approved_main_event_required"),
+            ({"GITHUB_EVENT_NAME": "pull_request", "GITHUB_BASE_REF": ""}, "approved_main_event_required"),
             ({"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/feature/p3"}, "approved_main_event_required"),
             ({"GITHUB_EVENT_NAME": "pull_request_target", "GITHUB_BASE_REF": "main"}, "approved_main_event_required"),
         )
@@ -64,6 +65,16 @@ class HostedGateTests(unittest.TestCase):
                        **event_context}
                 with self.assertRaisesRegex(MODULE.GateError, expected_gate):
                     MODULE.native_context(env)
+
+    def test_authorized_same_repository_stack_base_runs_instead_of_skipping(self):
+        self.assertTrue(MODULE.approved_main_event({"GITHUB_EVENT_NAME": "pull_request", "GITHUB_BASE_REF": "feat/p5-database-execution-proof"}))
+        workflow=(SOURCE.parents[2]/".github/workflows/baseline.yml").read_text()
+        condition=workflow.split("  p3-docker-acceptance:\n",1)[1].split("\n",1)[0]
+        self.assertNotIn("base.ref == 'main'", condition)
+        self.assertIn("head.repo.full_name == 'DeployLiteApp/DeployLite'", condition)
+        native=(SOURCE.parents[2]/"apps/api/src/compose-resource-docker.integration.test.ts").read_text()
+        self.assertNotIn('assert.equal(process.env.GITHUB_BASE_REF, "main")', native)
+        self.assertIn("assert(process.env.GITHUB_BASE_REF)", native)
 
     def test_source_manifest_is_fixed_and_hash_shaped(self):
         values = MODULE.sources()

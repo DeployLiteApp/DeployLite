@@ -33,10 +33,14 @@ jobs:
       - run: bash scripts/vps-preview-failure-matrix.test.sh
       - run: pnpm test:docker-dry-run
       - run: pnpm ci:vitest:forbid-only
+      - name: Verify every test execution partition and mandatory physical coverage
+        run: node --test scripts/ci/test-scopes.test.mjs scripts/ci/unit-report-acceptance.test.mjs
       - run: pnpm --filter @deploylite/contracts --filter @deploylite/config --filter @deploylite/domain --filter @deploylite/agent --filter @deploylite/db build
       - run: pnpm lint
       - run: pnpm typecheck
-      - run: pnpm test
+      - run: pnpm -r --if-present run test --reporter=default --reporter=json --outputFile=.ci-unit-report.json
+      - name: Refuse every skipped or incomplete unit report
+        run: node scripts/ci/unit-report-acceptance.mjs
       - run: pnpm build
 
   postgres-integration:
@@ -220,6 +224,16 @@ jobs:
           set -Eeuo pipefail
           python3 scripts/ci/p2-physical-acceptance.py prepare
           cat "$RUNNER_TEMP/deploylite-p2-docker-evidence/environment.env" >> "$GITHUB_ENV"
+      - name: Execute original diagnostic and opt-in guards without skips
+        env:
+          DEPLOYLITE_DOCKER_INTEGRATION: '1'
+        run: |
+          set -Eeuo pipefail
+          pnpm --filter @deploylite/agent exec vitest run --allowOnly=false --config vitest.config.ts src/infrastructure/docker/docker-redaction-integration.test.ts --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/deploylite-p2-docker-evidence/diagnostics.json"
+          node - "$RUNNER_TEMP/deploylite-p2-docker-evidence/diagnostics.json" <<'JS'
+          const fs = require('node:fs'); const report = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          if (!report.success || report.numTotalTests !== 2 || report.numPassedTests !== 2 || report.numFailedTests !== 0 || report.numPendingTests !== 0) throw new Error('Diagnostic acceptance incomplete');
+          JS
       - name: Execute exact Docker receiver and API acceptance source
         id: cases
         env:
@@ -251,9 +265,9 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # Same-repository PRs to main and main pushes only; disposable GitHub-hosted engine, exact source SHA, no secrets.
+  # Jerson requires P3 on every same-repository PR, including stacks; main pushes retained. Hosted owned scope is unchanged.
   p3-docker-acceptance:
-    if: ${{ github.repository == 'DeployLiteApp/DeployLite' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'DeployLiteApp/DeployLite' && github.event.pull_request.base.ref == 'main')) }}
+    if: ${{ github.repository == 'DeployLiteApp/DeployLite' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'DeployLiteApp/DeployLite')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -338,7 +352,7 @@ jobs:
 
   baseline-gate:
     if: always()
-    needs: [quality, postgres-integration, compose-and-supply-chain, p2-docker-acceptance, p4-transport-acceptance]
+    needs: [quality, postgres-integration, compose-and-supply-chain, p2-docker-acceptance, p3-docker-acceptance, p4-transport-acceptance]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -346,11 +360,11 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 24.20.0 }
       - name: Collect pass evidence
-        if: needs.quality.result == 'success' && needs.postgres-integration.result == 'success' && needs.compose-and-supply-chain.result == 'success' && needs.p2-docker-acceptance.result == 'success' && needs.p4-transport-acceptance.result == 'success'
+        if: needs.quality.result == 'success' && needs.postgres-integration.result == 'success' && needs.compose-and-supply-chain.result == 'success' && needs.p2-docker-acceptance.result == 'success' && needs.p3-docker-acceptance.result == 'success' && needs.p4-transport-acceptance.result == 'success'
         run: |
-          node scripts/ci/collect-evidence.mjs --output artifacts/baseline-evidence.json --commit "$GITHUB_SHA" --lock-hash "$(sha256sum pnpm-lock.yaml | cut -d' ' -f1)" --compose-digest "sha256:$(cat infra/vps/compose.yml infra/vps/compose.tls.yml | sha256sum | cut -d' ' -f1)" --image "deploylite-api:ci,${{ needs.compose-and-supply-chain.outputs.api_digest }},linux/amd64,$GITHUB_RUN_ID" --image "deploylite-web:ci,${{ needs.compose-and-supply-chain.outputs.web_digest }},linux/amd64,$GITHUB_RUN_ID" --check quality:pass --check postgres-integration:pass --check compose-and-supply-chain:pass --check p2-docker-acceptance:pass --check p4-transport-acceptance:pass
+          node scripts/ci/collect-evidence.mjs --output artifacts/baseline-evidence.json --commit "$GITHUB_SHA" --lock-hash "$(sha256sum pnpm-lock.yaml | cut -d' ' -f1)" --compose-digest "sha256:$(cat infra/vps/compose.yml infra/vps/compose.tls.yml | sha256sum | cut -d' ' -f1)" --image "deploylite-api:ci,${{ needs.compose-and-supply-chain.outputs.api_digest }},linux/amd64,$GITHUB_RUN_ID" --image "deploylite-web:ci,${{ needs.compose-and-supply-chain.outputs.web_digest }},linux/amd64,$GITHUB_RUN_ID" --check quality:pass --check postgres-integration:pass --check compose-and-supply-chain:pass --check p2-docker-acceptance:pass --check p3-docker-acceptance:pass --check p4-transport-acceptance:pass
       - name: Block incomplete or failing gates
-        run: test "${{ needs.quality.result }}:${{ needs.postgres-integration.result }}:${{ needs.compose-and-supply-chain.result }}:${{ needs.p2-docker-acceptance.result }}:${{ needs.p4-transport-acceptance.result }}" = "success:success:success:success:success"
+        run: test "${{ needs.quality.result }}:${{ needs.postgres-integration.result }}:${{ needs.compose-and-supply-chain.result }}:${{ needs.p2-docker-acceptance.result }}:${{ needs.p3-docker-acceptance.result }}:${{ needs.p4-transport-acceptance.result }}" = "success:success:success:success:success:success"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with: { name: baseline-evidence, path: artifacts/baseline-evidence.json, if-no-files-found: warn, retention-days: 30 }
