@@ -15,8 +15,8 @@ Canonical boundary: P5 in `docs/community-roadmap.md`. Base protected main: `8c7
 
 | Unit | Boundary | Status |
 | --- | --- | --- |
-| R1 | Pure retention preview over verified P3 backup receipts, explicit keep-newest count and restore-protected archives | Source implemented; focused 14/14 and domain typecheck pass; full `pnpm check` passed; exact-source PR CI pending |
-| R2 | Durable backup inventory and authorized retention preview with audit/replay and stale-inventory fences | Pending |
+| R1 | Pure retention preview over verified P3 backup receipts, explicit keep-newest count and restore-protected archives | Draft PR #389; exact `806c7dd` CI 38058774713 passed 7/7; source 14/14 and full check pass; protected-main integration not yet authorized |
+| R2 | Durable backup inventory and authorized retention preview with audit/replay and stale-inventory fences | Proof preparation implemented: 19 prospective RED/GREEN cases and typecheck pass; SQL inventory/API remain pending |
 | S1 | Managed database/catalog profile planning with project-owned storage and approved immutable images | Pending; reuse Compose and image policy |
 | S2 | Generated credentials using existing cipher/repository, atomic secret-safe configuration and replay | Pending |
 | B1 | Database-consistent backup and verified durable archive evidence | Pending |
@@ -33,3 +33,8 @@ R1 is metadata planning only and grants no deletion authority. The count policy 
 - Three prospective binding assertions observed RED: inventory digest omitted scope; plan omitted protection that was already retained; retained archive integrity did not bind the plan. GREEN now binds all three. Additional guard/purity/order cases characterize the implementation and are not described as retrospective RED.
 - `pnpm --filter @deploylite/domain exec vitest run src/backup-retention.test.ts`: 14 PASS. `pnpm --filter @deploylite/domain typecheck`: exit 0, Node 24.20.0. Binding RED log: `/tmp/deploylite-p5-retention-red.log`.
 - No archive deletion, restore, local service, production credential, VPS, firewall or external DNS operation was performed. Full Node 24.20.0 `pnpm check` exits 0 (`/tmp/deploylite-p5-retention-check.log`); exact-source hosted CI remains a delivery gate. P5 remains unaccepted.
+
+- R2 proof preparation accepts only an authenticated transport receipt corroborated against a server-owned completed `project.update` command, exact project/command/digest/correlation/actor and existing successful backup audit metadata. It rejects mismatches, foreign agent/scope and invalid/future creation time. It does not authenticate arbitrary HTTP input or write inventory. The 19 negative/positive assertions observed prospective RED then GREEN (`/tmp/deploylite-p5-inventory-red.log`).
+- Automatic approval review rejected the proposed PR #389 protected-main merge because current authorization covers P5 implementation, not that specific integration. The safer draft delivery remains available; no bypass or retry was attempted. Source implementation continues on its dependent branch.
+
+- Full Node 24.20.0 `pnpm check` for the R2 proof-preparation source exits 0; receipt `/tmp/deploylite-p5-inventory-check.log`. SQL/API/durable acceptance remains pending.
