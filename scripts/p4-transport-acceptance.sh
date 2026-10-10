@@ -27,7 +27,7 @@ docker run --detach --name "$registry_name" --label "io.deploylite.owner=$owner"
 docker build --pull=false --tag "$fixture_tag" scripts/p4-fixture > "$receipt_dir/fixture-build.log" 2>&1
 docker push "$fixture_tag" > "$receipt_dir/fixture-push.log" 2>&1
 # Select only the digest belonging to this owned registry.
-fixture_image="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$fixture_tag" | rg "^localhost:$registry_port/deploylite-p4-fixture@")"
+fixture_image="$(docker image inspect --format '{{json .RepoDigests}}' "$fixture_tag" | node -e 'const fs=require("node:fs");const prefix="localhost:"+process.argv[1]+"/deploylite-p4-fixture@sha256:";const matches=JSON.parse(fs.readFileSync(0,"utf8")).filter(value=>value.startsWith(prefix));if(matches.length!==1)throw new Error("Owned registry digest unavailable");process.stdout.write(matches[0]);' "$registry_port")"
 DEPLOYLITE_P4_PHYSICAL=1 DEPLOYLITE_P4_FIXTURE_IMAGE="$fixture_image" \
   pnpm --filter @deploylite/agent exec vitest run --allowOnly=false --config vitest.config.ts \
   src/infrastructure/docker/docker-transport-port-executor.physical.test.ts \
