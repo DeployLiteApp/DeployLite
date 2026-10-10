@@ -26,12 +26,13 @@ describe("database PostgreSQL integration test gating", () => {
     expect(`${result.stdout}${result.stderr}`).toContain("DATABASE_URL must be set when DEPLOYLITE_DB_INTEGRATION=1.");
   }, 30_000);
 
-  it("skips when disabled without DATABASE_URL", () => {
+  it("rejects a disabled physical invocation instead of reporting skipped success", () => {
     const result = runIntegrationTest(false);
 
     expect(result.error).toBeUndefined();
-    expect(result.status).toBe(0);
+    expect(result.status).toBe(1);
     const output = `${result.stdout}${result.stderr}`.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
-    expect(output).toMatch(/Test Files\s+1 skipped/);
+    expect(output).toContain("No test files found, exiting with code 1");
+    expect(output).not.toMatch(/Test Files\s+1 skipped/);
   }, 30_000);
 });
