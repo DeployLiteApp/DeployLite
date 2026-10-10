@@ -260,6 +260,14 @@ class ProspectivePhysicalGuards(unittest.TestCase):
                     results=dict.fromkeys(jobs, "success"); results[job]=status
                     self.assertNotEqual(execute(results), 0)
 
+    def test_existing_diagnostic_opt_in_case_is_executed_and_not_left_uncovered(self):
+        workflow=(Path(__file__).parents[2]/".github/workflows/baseline.yml").read_text()
+        job=workflow.split("  p2-docker-acceptance:\n",1)[1].split("  p3-docker-acceptance:\n",1)[0]
+        self.assertIn("src/infrastructure/docker/docker-redaction-integration.test.ts", job)
+        self.assertIn('diagnostics.json', job)
+        self.assertIn('numPassedTests !== 2', job)
+        self.assertIn('numPendingTests !== 0', job)
+
     def test_neutral_recorded_boundaries_do_not_construct_a_native_process(self):
         with self.assertRaises(H["PhysicalError"]):
             H["run_effect"](["docker","info"],self.grant,None)
