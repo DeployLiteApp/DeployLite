@@ -14,6 +14,7 @@ import {createManagedDatabaseResourceMaterializer, type ManagedDatabaseFreshReso
 import {createManagedDatabaseReadinessVerifier} from "./docker-managed-database-readiness.js";
 import {createManagedDatabaseProcessIdentityReader} from "./docker-managed-database-process-identity.js";
 import {createDockerComposeResourceInspector} from "./docker-compose-resource-inspector.js";
+import {COMPOSE_CONTAINER_INSPECT_FORMAT} from "./docker-compose-resource-argv.js";
 import {MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT} from "./docker-managed-database-inspection-argv.js";
 import {MANAGED_DATABASE_VOLUME_INSPECT_FORMAT, MANAGED_DATABASE_NETWORK_INSPECT_FORMAT} from "./docker-managed-database-resource-argv.js";
 const engines = ["postgres", "mysql", "mariadb", "mongodb", "redis"] as const;
@@ -52,13 +53,24 @@ for (const engine of engines) {
     it(`native five-engine physical ${engine} startup and persistence`, async () => {
         const processRunner = new DockerProcessRunner({timeoutMs:60000,maxOutputBytes:131072});
         const signal = AbortSignal.timeout(170000), created = new Set<string>();
-        let lastOperation: readonly string[] = [], lastObservation:unknown;
+        let lastOperation: readonly string[] = [], lastObservation:unknown, lastProjection = "other", processFailure:unknown;
+        const composeObservations: Record<string,unknown> = {};
         let volume: {name:string;createdAt:string}|undefined, network:{name:string;id:string}|undefined;
         const profile = scope.profiles[engine]!, request = {schemaVersion:1,projectId:scope.owner,databaseId:engine,engine};
         const commandId = `p5-${engine}-${scope.nonce}`, agentId = `p5-native-${scope.runId}`;
         const runner: DockerCliRunner = {run:async (argv,abort,environment) => {
             lastOperation = argv.slice(1,3);
-            const result = await processRunner.run(argv,abort,environment);
+            lastProjection = argv.includes(COMPOSE_CONTAINER_INSPECT_FORMAT) ? "compose-container" : argv.includes(MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT) ? "native-container" : "other";
+            let result; processFailure = undefined;
+            try {result = await processRunner.run(argv,abort,environment);} catch(error) {
+                const missing = error instanceof DockerProcessError ? /map has no entry for key "([A-Za-z]+)"/.exec(error.result?.stderr ?? "")?.[1] : undefined;
+                processFailure = {kind:error instanceof DockerProcessError ? error.kind : "unknown",missingKey:missing && ["NetworkID","Name","Source","Health","Volumes","Labels","Mounts","Config","Driver"].includes(missing) ? missing : null};
+                throw error;
+            }
+            if (argv.includes(COMPOSE_CONTAINER_INSPECT_FORMAT)) {
+                const value = JSON.parse(result.stdout);
+                if (created.has(value.id) && value.owner === scope.owner && value.projectId === scope.owner) composeObservations[value.id] = value;
+            }
             if (argv.includes(MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT)) lastObservation = JSON.parse(result.stdout);
             if (argv[1] === "create" && /^[a-f0-9]{64}$/.test(result.stdout.trim())) created.add(result.stdout.trim());
             if (argv.includes(MANAGED_DATABASE_VOLUME_INSPECT_FORMAT)) {
@@ -118,7 +130,7 @@ for (const engine of engines) {
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false)],signal)).stdout.trim()).toBe(marker);
             result = {receipt,original:pinned,uid:ready.uid,authenticatedProbe:"passed",restart:"passed",persistence:"passed"};
         } catch (error) {
-            writeFileSync(resolve(directory,`diagnostic-${engine}.json`),JSON.stringify({engine,lastOperation,observation:lastObservation ?? null},null,2)+"\n",{mode:0o600});
+            writeFileSync(resolve(directory,`diagnostic-${engine}.json`),JSON.stringify({engine,lastOperation,lastProjection,processFailure:processFailure ?? null,observation:lastObservation ?? null,composeObservations,expected:{plan:runtime.plan,environmentFingerprint:runtime.environmentFingerprint}},null,2)+"\n",{mode:0o600});
             throw error;
         } finally {
             // Fixture-only cleanup: never force, adopt a replacement, or delete in-use/foreign resources.
