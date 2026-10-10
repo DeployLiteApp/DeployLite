@@ -165,3 +165,8 @@ describe("explicit read-only Compose resource inspection", () => {
     await expect(inspect(s)).rejects.toMatchObject({ code: "COMPOSE_INSPECTION_LIMIT" });
   });
 });
+
+it("retains a stopped volume consumer while omitting an empty builtin none endpoint",async()=>{
+ const s=fixture("volume");s.f.container.networks=[{name:"none",networkId:""}];
+ await expect(inspect(s)).resolves.toMatchObject({containers:[{containerId:"c".repeat(64),running:false,attached:true,networks:[],mounts:[{target:"/data",readOnly:false}]}]});
+});

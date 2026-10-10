@@ -120,7 +120,9 @@ export function createDockerComposeResourceInspector(supplied: DockerComposeReso
         if (!owned) continue;
         // A stopped target can retain the configured network by name without an endpoint ID. The network itself
         // was ownership-bound above, so project this exact named edge using its current physical identity.
-        const networks = c.networks.map(network => ({ name: network.name, networkId: kind === "network" && network.name === planned.runtimeName
+        // A stopped builtin none namespace has no physical endpoint. Retain the
+        // consumer/mount proof, but do not invent a project network identity.
+        const networks = c.networks.filter(network => !(network.name === "none" && network.networkId === "" && !c.running)).map(network => ({ name: network.name, networkId: kind === "network" && network.name === planned.runtimeName
           && network.networkId === "" && !c.running ? physicalIdentity : network.networkId }));
         containers.push({ containerId: c.id, service: service!.name, running: c.running, attached,
           ...(c.composeRevisionId ? { composeRevisionId: c.composeRevisionId } : {}),

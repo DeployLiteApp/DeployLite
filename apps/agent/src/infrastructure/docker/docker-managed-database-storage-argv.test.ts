@@ -61,3 +61,13 @@ it("never changes permissions when the empty-directory read fails", () => {
         rmSync(root, { recursive: true, force: true });
     }
 });
+
+it("binds the initializer to the existing global Compose consumer proof",()=>{
+ const argv=buildManagedDatabaseStorageInitializationArgv(fixture("postgres"));
+ expect(argv).toContain("com.deploylite.compose.managed=v1");expect(argv).toContain("com.deploylite.compose.service=db-orders");
+ expect(argv.filter(v=>v.startsWith("com.deploylite.compose.config-digest="))).toHaveLength(1);
+});
+
+it("prevents Docker copy-up from changing the proven fresh volume before permission checks",()=>{
+ const argv=buildManagedDatabaseStorageInitializationArgv(fixture("postgres"));expect(argv[argv.indexOf("--mount")+1]).toContain(",volume-nocopy");
+});

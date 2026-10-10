@@ -45,16 +45,24 @@ it("preserves existing owned or foreign resources without adopting, overwriting 
 });
 it("rejects a foreign creation race before creating the next resource", async () => {
     const f = fixture(), original = f.runner.run.getMockImplementation()!;
-    f.runner.run.mockImplementation(async (argv, signal, env) => { const result = await original(argv, signal, env); if (argv[1] === "volume" && argv[2] === "create")
-        f.state.get("volume")!.owner = "foreign"; return result; });
+    f.runner.run.mockImplementation(async (argv, signal, env) => {
+        const result = await original(argv, signal, env);
+        if (argv[1] === "volume" && argv[2] === "create")
+            f.state.get("volume")!.owner = "foreign";
+        return result;
+    });
     await expect(f.materializer.prepareFresh({ request, profile, commandId }, f.authority, new AbortController().signal)).rejects.toThrow("Database resource preparation is unavailable");
     expect(f.state.get("volume")?.owner).toBe("foreign");
     expect(f.state.has("network")).toBe(false);
 });
 it("requires the internal bridge postcondition and preserves partial preparation on failure", async () => {
     const f = fixture(), original = f.runner.run.getMockImplementation()!;
-    f.runner.run.mockImplementation(async (argv, signal, env) => { const result = await original(argv, signal, env); if (argv[1] === "network" && argv[2] === "create")
-        f.state.get("network")!.internal = false; return result; });
+    f.runner.run.mockImplementation(async (argv, signal, env) => {
+        const result = await original(argv, signal, env);
+        if (argv[1] === "network" && argv[2] === "create")
+            f.state.get("network")!.internal = false;
+        return result;
+    });
     await expect(f.materializer.prepareFresh({ request, profile, commandId }, f.authority, new AbortController().signal)).rejects.toThrow("Database resource preparation is unavailable");
     expect(f.state.has("volume")).toBe(true);
     expect(f.runner.run.mock.calls.some(([argv]) => argv.includes("rm"))).toBe(false);
@@ -92,4 +100,24 @@ it("rejects a replaced network during paired postcondition reads", async () => {
     await expect(f.materializer.prepareFresh({ request, profile, commandId }, f.authority, new AbortController().signal)).rejects.toThrow("Database resource preparation is unavailable");
     expect(f.state.has("volume")).toBe(true);
     expect(f.runner.run.mock.calls.some(([argv]) => argv.includes("rm"))).toBe(false);
+});
+it("verifies the original fresh pair through read-only observations", async () => {
+    const f = fixture(), input = { request, profile, commandId }, signal = new AbortController().signal;
+    const original = await f.materializer.prepareFresh(input, f.authority, signal);
+    f.runner.run.mockClear();
+    expect(await f.materializer.verifyFresh(input, original, f.authority, signal)).toEqual(original);
+    expect(f.runner.run.mock.calls.every(([argv]) => argv[2] === "inspect")).toBe(true);
+});
+it("rejects original identity changes without recreating or deleting resources", async () => {
+    const f = fixture(), input = { request, profile, commandId }, signal = new AbortController().signal;
+    const original = await f.materializer.prepareFresh(input, f.authority, signal);
+    f.runner.run.mockClear();
+    for (const patch of [{ network: { ...original.network, id: "e".repeat(64) } }, { volume: { ...original.volume, createdAt: "2026-10-09T00:00:00Z" } }, { projectId: "foreign" }, { commandId: "foreign" }])
+        await expect(f.materializer.verifyFresh(input, { ...original, ...patch }, f.authority, signal)).rejects.toThrow("Database resource preparation is unavailable");
+    expect(f.runner.run.mock.calls.every(([argv]) => argv[2] === "inspect")).toBe(true);
+});
+it("does not turn missing original evidence into a fresh resource operation", async () => {
+    const f = fixture();
+    await expect(f.materializer.verifyFresh({ request, profile, commandId }, undefined as unknown as import("./docker-managed-database-resources.js").ManagedDatabaseFreshResources, f.authority, new AbortController().signal)).rejects.toThrow("Database resource preparation is unavailable");
+    expect(f.runner.run).not.toHaveBeenCalled();
 });

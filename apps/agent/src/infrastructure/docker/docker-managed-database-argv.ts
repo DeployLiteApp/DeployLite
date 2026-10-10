@@ -43,7 +43,7 @@ export function buildManagedDatabaseRunArgv(input: ManagedDatabaseDockerInput): 
             "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--user", user,
             "--cpus", String(cpus), "--memory", String(memoryBytes), "--pids-limit", String(pidsLimit), "--restart=no",
             "--network", plan.network.runtimeName, "--network-alias", plan.volume.key,
-            "--mount", `type=volume,source=${plan.volume.runtimeName},target=${plan.volume.target}`,
+            "--mount", `type=volume,source=${plan.volume.runtimeName},target=${plan.volume.target},volume-nocopy`,
             "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,mode=1777,size=67108864",
             ...(plan.engine === "mongodb" ? ["--tmpfs", "/data/configdb:rw,noexec,nosuid,nodev,mode=1777,size=8388608"] : []),
             ...sockets.flatMap(path => ["--tmpfs", `${path}:rw,noexec,nosuid,nodev,mode=1777,size=8388608`]),
