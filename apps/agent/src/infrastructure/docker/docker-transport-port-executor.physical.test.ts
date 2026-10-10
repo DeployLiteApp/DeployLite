@@ -13,6 +13,7 @@ import { createRegistryDockerRunner } from './docker-registry-runner.js';
 import { buildDockerTransportPortRunArgv } from './docker-cli-argv.js';
 
 const enabled = process.env.DEPLOYLITE_P4_PHYSICAL === '1';
+if (!enabled) throw new Error('Explicit P4 physical partition required');
 const exec = promisify(execFile);
 const image = process.env.DEPLOYLITE_P4_FIXTURE_IMAGE ?? '';
 async function run(argv: readonly string[], signal = new AbortController().signal) {
@@ -39,7 +40,7 @@ async function echo(protocol: 'tcp' | 'udp', publishedPort: number) {
 }
 
 for (const protocol of ['tcp', 'udp'] as const) {
-  it.skipIf(!enabled)(`physically transfers ${protocol}, rejects stale replay, rolls back and restores both originals on failed cutover`, async () => {
+  it(`physically transfers ${protocol}, rejects stale replay, rolls back and restores both originals on failed cutover`, async () => {
     if (!/^localhost:[0-9]+\/deploylite-p4-fixture@sha256:[a-f0-9]{64}$/.test(image)) throw new Error('Explicit loopback fixture digest required');
     const projectId = 'p4-' + randomUUID(), agentId = 'p4-local', owner = 'deploylite-agent';
     const sourceId = randomUUID(), targetId = randomUUID(), sourceHostPort = await port(), targetHostPort = await port(), publishedPort = await port();
@@ -130,7 +131,7 @@ for (const protocol of ['tcp', 'udp'] as const) {
   }, 120000);
 }
 
-it.skipIf(!enabled)('integrates verified domain retarget/rollback, HTTP, WebSocket, ACME issuance/renewal and transport replacement', async () => {
+it('integrates verified domain retarget/rollback, HTTP, WebSocket, ACME issuance/renewal and transport replacement', async () => {
   const { mkdtemp, readFile, writeFile, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os'); const { join, resolve } = await import('node:path');
   const { request: httpsRequest } = await import('node:https'); const { connect: tlsConnect } = await import('node:tls');
