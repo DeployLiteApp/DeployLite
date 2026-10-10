@@ -1157,7 +1157,9 @@
     "packages/db/src/managed-database-credentials-postgres.cases.ts",
     "apps/api/src/managed-database-credentials-route.ts",
     "apps/api/src/managed-database-credentials-api.test.ts",
-    "apps/api/src/managed-database-credentials-wiring.test.ts"
+    "apps/api/src/managed-database-credentials-wiring.test.ts",
+    "packages/domain/src/managed-database-runtime-spec.ts",
+    "packages/domain/src/managed-database-runtime-spec.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
