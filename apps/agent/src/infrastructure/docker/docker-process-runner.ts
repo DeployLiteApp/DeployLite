@@ -34,7 +34,10 @@ function redactDockerProtocolOutput(value: string, argv: readonly string[]): str
   while ((words[0] === "--config" || words[0] === "--host") && words[1]) words.splice(0, 2);
   const op = words[0], format = words[words.indexOf("--format") + 1];
   const nativeInitializerCreate = op === "create" && /^dl-[a-f0-9]{32}-database-init$/.test(words[words.indexOf("--name") + 1] ?? "") && words.includes("com.deploylite.database.storage-init=v1");
-  if (op === "run" || nativeInitializerCreate || (op === "network" && words[1] === "create")) return /^[0-9a-f]{64}\n?$/.test(value) ? value : redactDockerDiagnostic(value);
+  const nativeDaemonCreate = op === "create" && /^dl-[a-f0-9]{32}-database$/.test(words[words.indexOf("--name") + 1] ?? "")
+    && words.some(word => /^com\.deploylite\.database\.engine=(?:postgres|mysql|mariadb|mongodb|redis)$/.test(word));
+  if (op === "start" && words.length === 2 && /^[a-f0-9]{64}$/.test(words[1]!) && (value === words[1] || value === words[1] + "\n")) return value;
+  if (op === "run" || nativeInitializerCreate || nativeDaemonCreate || (op === "network" && words[1] === "create")) return /^[0-9a-f]{64}\n?$/.test(value) ? value : redactDockerDiagnostic(value);
   const nativeResourceFormat = format === MANAGED_DATABASE_NETWORK_INSPECT_FORMAT || format === MANAGED_DATABASE_VOLUME_INSPECT_FORMAT;
   const nativeScopeFormat = nativeResourceFormat || format === MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT;
   const composeFormat = COMPOSE_INSPECTION_FORMATS.has(format ?? "") || nativeResourceFormat;

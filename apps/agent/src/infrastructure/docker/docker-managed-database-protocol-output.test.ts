@@ -43,3 +43,23 @@ it("preserves a labelled native initializer create ID while retaining generic re
   if(native)expect((await promise).stdout).toBe(id);else expect((await promise).stdout).not.toBe(id);
  }
 });
+
+it.each(["create", "start"] as const)("preserves only the exact native %s public ID reply", async operation => {
+    const id = "a".repeat(64), name = "dl-" + "b".repeat(32) + "-database";
+    const argv = operation === "create" ? ["docker", "create", "--name", name, "--label", "com.deploylite.database.engine=postgres", "image"] : ["docker", "start", id];
+    const f = fakeProcess(), pending = new DockerProcessRunner({spawn: () => f.child}).run(argv, new AbortController().signal);
+    f.stdout.on.mock.calls[0]![1](id + "\n"); f.callbacks.get("close")!(0, null);
+    expect((await pending).stdout).toBe(id + "\n");
+});
+it("retains diagnostic redaction for unlabelled create, different start IDs and secret-bearing replies", async () => {
+    const id = "a".repeat(64);
+    for (const [argv, output] of [
+        [["docker", "create", "image"], id],
+        [["docker", "start", id], "b".repeat(64)],
+        [["docker", "start", id], id + "\npassword=private"]
+    ] as const) {
+        const f = fakeProcess(), pending = new DockerProcessRunner({spawn: () => f.child}).run(argv, new AbortController().signal);
+        f.stdout.on.mock.calls[0]![1](output); f.callbacks.get("close")!(0, null);
+        expect((await pending).stdout).not.toBe(output);
+    }
+});
