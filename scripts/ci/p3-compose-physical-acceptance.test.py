@@ -72,6 +72,9 @@ class HostedGateTests(unittest.TestCase):
         condition=workflow.split("  p3-docker-acceptance:\n",1)[1].split("\n",1)[0]
         self.assertNotIn("base.ref == 'main'", condition)
         self.assertIn("head.repo.full_name == 'DeployLiteApp/DeployLite'", condition)
+        native=(SOURCE.parents[2]/"apps/api/src/compose-resource-docker.integration.test.ts").read_text()
+        self.assertNotIn('assert.equal(process.env.GITHUB_BASE_REF, "main")', native)
+        self.assertIn("assert(process.env.GITHUB_BASE_REF)", native)
 
     def test_source_manifest_is_fixed_and_hash_shaped(self):
         values = MODULE.sources()
