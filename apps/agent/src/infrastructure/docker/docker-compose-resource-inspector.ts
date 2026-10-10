@@ -9,12 +9,13 @@ import { COMPOSE_CONTAINER_INSPECT_FORMAT, COMPOSE_NETWORK_INSPECT_FORMAT, COMPO
 
 const id = z.string().regex(/^[a-f0-9]{64}$/);
 const nullableText = z.string().max(512).nullable();
+const optionalDigest = z.union([z.string().regex(/^[a-f0-9]{64}$/), z.literal("").transform(() => null)]).nullable().optional();
 const common = { name: z.string().max(160), driver: z.string().max(64), scope: z.string().max(64),
   optionsCount: z.number().int().nonnegative(), owner: nullableText, projectId: nullableText, resourceKind: nullableText, resourceKey: nullableText };
 const networkSchema = z.object({ ...common, id, internal: z.boolean() }).strict();
 const volumeSchema = z.object({ ...common, createdAt: z.string().max(64).refine(v => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)$/.test(v) && Number.isFinite(Date.parse(v))) }).strict();
 const containerSchema = z.object({ id, owner: nullableText, projectId: nullableText, service: nullableText,
-  composeRevisionId: nullableText.optional(), composeConfigDigest: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(), composeEnvironmentDigest: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
+  composeRevisionId: nullableText.optional(), composeConfigDigest: optionalDigest, composeEnvironmentDigest: optionalDigest,
   effectiveImage: z.string().max(512), running: z.boolean(),
   networks: z.array(z.object({ name: z.string().max(160), networkId: z.string().max(64) }).strict()).max(128),
   mounts: z.array(z.object({ type: z.string().max(32), name: z.string().max(160).nullable(), target: z.string().max(256), readOnly: z.boolean() }).strict()).max(128),

@@ -65,3 +65,14 @@ it("reads bootstrap kind and network mode without private environment fields",as
  expect(await f.inspector.inspectContainer(id,new AbortController().signal)).toEqual(value);
  expect(f.runner.run.mock.calls[0]![0].join(" ")).toContain(".HostConfig.NetworkMode");
 });
+
+it("normalizes Docker's absent optional helper fingerprint to null without accepting malformed fingerprints",async () => {
+ const f=fixture(JSON.stringify({...container,environmentFingerprint:"",storageInitialization:"v1"}));
+ await expect(f.inspector.inspectContainer(id,new AbortController().signal)).resolves.toMatchObject({environmentFingerprint:null,storageInitialization:"v1"});
+ const malformed=fixture(JSON.stringify({...container,environmentFingerprint:"private"}));
+ await expect(malformed.inspector.inspectContainer(id,new AbortController().signal)).rejects.toThrow();
+});
+it("normalizes an absent daemon initialization label while preserving explicit initializer kind",async () => {
+ const f=fixture(JSON.stringify({...container,storageInitialization:""}));
+ await expect(f.inspector.inspectContainer(id,new AbortController().signal)).resolves.toMatchObject({storageInitialization:null,environmentFingerprint:container.environmentFingerprint});
+});
