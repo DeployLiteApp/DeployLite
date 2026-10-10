@@ -1159,7 +1159,11 @@
     "apps/api/src/managed-database-credentials-api.test.ts",
     "apps/api/src/managed-database-credentials-wiring.test.ts",
     "packages/domain/src/managed-database-runtime-spec.ts",
-    "packages/domain/src/managed-database-runtime-spec.test.ts"
+    "packages/domain/src/managed-database-runtime-spec.test.ts",
+    "packages/contracts/src/deployment-contract/managed-database-runtime.ts",
+    "packages/contracts/src/deployment-contract/managed-database-runtime.test.ts",
+    "packages/domain/src/managed-database-runtime-binding.ts",
+    "packages/domain/src/managed-database-runtime-binding.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
