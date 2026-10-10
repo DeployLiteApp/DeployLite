@@ -56,7 +56,7 @@ for (const engine of engines) {
         let lastOperation: readonly string[] = [], lastObservation:unknown, lastProjection = "other", processFailure:unknown;
         const composeObservations: Record<string,unknown> = {};
         let volume: {name:string;createdAt:string}|undefined, network:{name:string;id:string}|undefined;
-        const profile = scope.profiles[engine]!, request = {schemaVersion:1,projectId:scope.owner,databaseId:engine,engine};
+        const profile = scope.profiles[engine]!, request = {schemaVersion:1,projectId:scope.owner,databaseId:`fixture_${engine}`,engine};
         const commandId = `p5-${engine}-${scope.nonce}`, agentId = `p5-native-${scope.runId}`;
         const runner: DockerCliRunner = {run:async (argv,abort,environment) => {
             lastOperation = argv.slice(1,3);
@@ -89,7 +89,7 @@ for (const engine of engines) {
         const inspector = createManagedDatabaseDockerInspector(shared), resources = createManagedDatabaseResourceMaterializer(shared);
         const original = (): ManagedDatabaseFreshResources => {
             if (!volume || !network) throw new Error("Original fixture storage unavailable.");
-            return {projectId:request.projectId,databaseId:engine,commandId,planDigest:runtime.plan.planDigest,volume,network};
+            return {projectId:request.projectId,databaseId:request.databaseId,commandId,planDigest:runtime.plan.planDigest,volume,network};
         };
         const authority = {assertValid:async () => {if(signal.aborted) throw new Error("Fixture deadline expired.");}};
         let row:EncryptedEnvSecretValueRecord|undefined;
@@ -141,7 +141,7 @@ for (const engine of engines) {
                     const absent = await runner.run(["docker","container","ls","--all","--no-trunc","--filter",`id=${id}`,"--format","{{.ID}}"],cleanup);
                     expect(absent.stdout.trim()).toBe(""); continue;
                 }
-                expect(observation).toMatchObject({owner:scope.owner,projectId:scope.owner,databaseId:engine,commandId,planDigest:runtime.plan.planDigest});
+                expect(observation).toMatchObject({owner:scope.owner,projectId:scope.owner,databaseId:request.databaseId,commandId,planDigest:runtime.plan.planDigest});
                 expect(observation.name).toMatch(/^\/dl-[a-f0-9]{32}-database(?:-init)?$/);
                 if (observation.running) await runner.run(["docker","stop","--time","10",id],cleanup);
                 expect((await inspector.inspectContainer(id,cleanup)).running).toBe(false);
