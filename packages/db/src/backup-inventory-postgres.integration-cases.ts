@@ -15,10 +15,10 @@ async function seed(projectId = randomUUID(), archiveId = randomUUID()) {
   await pool.query("INSERT INTO users(id,email,email_normalized,password_hash,role_id) SELECT $1,$2,$2,'fixture',id FROM roles WHERE name='admin'", [actorId, `${actorId}@example.test`]);
   await pool.query("INSERT INTO projects(id,name,repo_url,default_branch) VALUES($1,'P5 fixture','https://example.test/repo','main') ON CONFLICT DO NOTHING", [projectId]);
   const receipt = {schemaVersion: 1, action: "compose.volume.backup", agentId: "agent-1", commandId, projectId, inputDigest: "a".repeat(64), correlationId, volumeKey: "data", destinationId: "local-1", archiveId, status: "created", consistency: "stopped", archiveBytes: 100, entries: 2, archiveSha256: "b".repeat(64), manifestSha256: "c".repeat(64), idempotent: false, redacted: true};
-  await pool.query("INSERT INTO control_commands(id,actor_user_id,action,scope_kind,scope_key,input_digest,idempotency_key,correlation_id,status,expires_at) VALUES($1,$2,'project.update','project',$3,$4,$1::text,$5,'completed',now()+interval '1 hour')", [commandId, actorId, projectId, receipt.inputDigest, correlationId]);
+  await pool.query("INSERT INTO control_commands(id,actor_user_id,action,scope_kind,scope_key,input_digest,idempotency_key,correlation_id,status,expires_at) VALUES($1,$2,'project.update','project',$3,$4,$6,$5,'completed',now()+interval '1 hour')", [commandId, actorId, projectId, receipt.inputDigest, correlationId, commandId]);
   const metadata = Object.fromEntries(["projectId", "commandId", "inputDigest", "volumeKey", "destinationId", "archiveId", "archiveBytes", "entries", "archiveSha256", "manifestSha256", "consistency", "status"].map(key => [key, receipt[key as keyof typeof receipt]]));
   const createdAt = new Date(Date.now() - 1000);
-  await pool.query("INSERT INTO audit_events(id,actor_user_id,action,target_type,target_id,request_id,correlation_id,metadata,created_at) VALUES($1,$2,'compose.volume.backup.executed','project',$3,$1::text,$4,$5,$6)", [auditId, actorId, projectId, correlationId, metadata, createdAt]);
+  await pool.query("INSERT INTO audit_events(id,actor_user_id,action,target_type,target_id,request_id,correlation_id,metadata,created_at) VALUES($1,$2,'compose.volume.backup.executed','project',$3,$7,$4,$5,$6)", [auditId, actorId, projectId, correlationId, metadata, createdAt, auditId]);
   return {receipt, createdAt, auditId};
 }
 async function count(projectId: string) {
