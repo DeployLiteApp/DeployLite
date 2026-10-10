@@ -1184,7 +1184,8 @@
     "apps/agent/src/infrastructure/docker/docker-managed-database-startup-preparation.ts",
     "apps/agent/src/infrastructure/docker/docker-managed-database-startup-preparation.test.ts",
     "apps/agent/src/infrastructure/docker/docker-managed-database-storage-initializer.ts",
-    "apps/agent/src/infrastructure/docker/docker-managed-database-storage-initializer.test.ts"
+    "apps/agent/src/infrastructure/docker/docker-managed-database-storage-initializer.test.ts",
+    "apps/agent/src/infrastructure/docker/docker-redaction-integration.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
