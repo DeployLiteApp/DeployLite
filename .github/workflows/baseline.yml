@@ -34,11 +34,13 @@ jobs:
       - run: pnpm test:docker-dry-run
       - run: pnpm ci:vitest:forbid-only
       - name: Verify every test execution partition and mandatory physical coverage
-        run: node --test scripts/ci/test-scopes.test.mjs
+        run: node --test scripts/ci/test-scopes.test.mjs scripts/ci/unit-report-acceptance.test.mjs
       - run: pnpm --filter @deploylite/contracts --filter @deploylite/config --filter @deploylite/domain --filter @deploylite/agent --filter @deploylite/db build
       - run: pnpm lint
       - run: pnpm typecheck
-      - run: pnpm test
+      - run: pnpm -r --if-present run test --reporter=default --reporter=json --outputFile=.ci-unit-report.json
+      - name: Refuse every skipped or incomplete unit report
+        run: node scripts/ci/unit-report-acceptance.mjs
       - run: pnpm build
 
   postgres-integration:
