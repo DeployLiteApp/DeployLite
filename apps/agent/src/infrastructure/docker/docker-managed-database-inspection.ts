@@ -9,7 +9,7 @@ const imageSchema = z.object({ id: imageId, volumes: z.record(z.object({}).stric
 const containerSchema = z.object({ id: digest, name: z.string().max(160), imageId, image: z.string().max(512), owner: nullableText, projectId: nullableText, databaseId: nullableText,
     engine: nullableText, commandId: nullableText, planDigest: digest.nullable(), environmentFingerprint: z.union([z.string().regex(/^[a-f0-9]{32}$/), z.literal("").transform(() => null)]).nullable(),
     networkMode:z.string().max(160), storageInitialization:nullableText.transform(value => value === "" ? null : value), running: z.boolean(), health: z.enum(["healthy", "unhealthy", "starting"]).nullable(), user: z.string().max(64), readOnly: z.boolean(), privileged: z.boolean(),
-    capAdd: z.array(z.string().max(128)).max(64).nullable(), capDrop: z.array(z.string().max(128)).max(64).nullable(), securityOpt: z.array(z.string().max(128)).max(64).nullable(),
+    capAdd: z.array(z.string().max(128)).max(64).nullable().transform(value => value?.map(cap => cap === "CAP_CHOWN" ? "CHOWN" : cap) ?? null), capDrop: z.array(z.string().max(128)).max(64).nullable(), securityOpt: z.array(z.string().max(128)).max(64).nullable(),
     cpu: z.number().int().safe().nonnegative(), memory: z.number().int().safe().nonnegative(), pids: z.number().int().safe().nullable(),
     ports: z.record(z.array(z.object({ HostIp: z.string().max(64), HostPort: z.string().max(5).regex(/^[0-9]+$/) }).strict()).max(128)).nullable()
 }).strict();

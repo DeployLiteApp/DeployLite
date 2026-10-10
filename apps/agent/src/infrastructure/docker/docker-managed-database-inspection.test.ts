@@ -76,3 +76,10 @@ it("normalizes an absent daemon initialization label while preserving explicit i
  const f=fixture(JSON.stringify({...container,storageInitialization:""}));
  await expect(f.inspector.inspectContainer(id,new AbortController().signal)).resolves.toMatchObject({storageInitialization:null,environmentFingerprint:container.environmentFingerprint});
 });
+
+it("canonicalizes Docker CAP_CHOWN without hiding any additional capability",async () => {
+ const f=fixture(JSON.stringify({...container,capAdd:["CAP_CHOWN"]}));
+ await expect(f.inspector.inspectContainer(id,new AbortController().signal)).resolves.toMatchObject({capAdd:["CHOWN"],capDrop:["ALL"]});
+ const extra=fixture(JSON.stringify({...container,capAdd:["CAP_CHOWN","CAP_SYS_ADMIN"]}));
+ await expect(extra.inspector.inspectContainer(id,new AbortController().signal)).resolves.toMatchObject({capAdd:["CHOWN","CAP_SYS_ADMIN"]});
+});
