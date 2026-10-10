@@ -63,3 +63,11 @@ Snapshot: 2026-10-10. GitHub exact-head statusCheckRollup for all 276 returned P
 | [#2](https://github.com/DeployLiteApp/DeployLite/pull/2) | MERGED | `58e97f2044bfec49c3b212a14a26340f07fd7209` | Checks unavailable; evidence investigation required |
 
 Raw local receipts: `/tmp/deploylite-all-pr-check-audit.json`, `/tmp/deploylite-all-pr-check-audit-summary.json`. Recheck refreshed heads after correction; do not replace missing historical evidence with claims of PASS.
+
+## Complete-execution correction progress
+
+CI controls now live in draft #407 (`9ea10da`), the base of #393. Every #393–#406 branch received the complete unit/runtime partition and automatic unit JSON acceptance guard through normal merges/pushes, preserving each original case and source manifest. Refreshed exact-head CI is pending until observed; source propagation alone is not acceptance. #400 refreshed head is `76fee02`; original `6242c37` still has skipped historical P3 evidence and remains unaccepted.
+
+Reference execution only: #406 prior head `49ff6309fe843e84e3a4ec0589b593949a000efa`, run38083327173 has7/7 PASS, unit2550/2550, P2 87/87+diagnostics2/2, DB69/69, API13/13, ComposePG15/15, P3 1/1 and P4 3/3 with0pending/0failed; P2/PG130 and P3 24 source hashes match that head and cleanup is verified. This does not certify later merged heads. The new base's real local JSON path reports2376 unit cases across8 workspaces, zero skipped/failed; its report guard passes8 cases after7 prospective rejection failures.
+
+All44 historical heads with unavailable rollups were queried through Actions by exact head SHA; every query returned0 runs, with0 lookup errors (`/tmp/deploylite-historical-missing-run-lookup.json`). Missing historical evidence remains an open gap. Whole P5 and acceptance of the refreshed stack remain open.
