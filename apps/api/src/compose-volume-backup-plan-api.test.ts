@@ -1,7 +1,7 @@
 import { afterEach,describe,expect,it,vi } from "vitest";
 import { hashSessionToken } from "@deploylite/db";
-import { COMPOSE_VOLUME_BACKUP_CAPABILITY,COMPOSE_VOLUME_BACKUP_PATH,COMPOSE_VOLUME_BACKUP_RECEIPT_PATH,InMemoryCapabilityRegistry,type ComposeResourceObservationV1,type ComposeVolumeBackupPlanningProfile,type ComposeVolumeBackupPlanReceiptV1,type ComposeVolumeBackupReceiptV1,type Project } from "@deploylite/contracts";
-import { claimProjectUpdateAuthority,createComposePreview,digestComposeResourceObservation,InMemoryComposeVolumeBackupPlanStore,InMemoryEnvSecretValueRepository,resolveControlCommandInMemory,validateProjectUpdateAuthority,type AuditEventInput,type CanonicalRoleName,type ControlCommand,type PreparedComposeVolumeBackupPlan,type ComposeVolumeBackupPlanStore as Port,type ProjectRepository,type ProjectUpdateControlRepository } from "@deploylite/domain";
+import { composeVolumeBackupReceiptSchema,COMPOSE_VOLUME_BACKUP_CAPABILITY,COMPOSE_VOLUME_BACKUP_PATH,COMPOSE_VOLUME_BACKUP_RECEIPT_PATH,InMemoryCapabilityRegistry,type ComposeResourceObservationV1,type ComposeVolumeBackupPlanningProfile,type ComposeVolumeBackupPlanReceiptV1,type ComposeVolumeBackupReceiptV1,type Project } from "@deploylite/contracts";
+import { claimProjectUpdateAuthority,createComposePreview,digestComposeResourceObservation,InMemoryComposeVolumeBackupPlanStore,InMemoryEnvSecretValueRepository,resolveControlCommandInMemory,validateProjectUpdateAuthority,type BackupInventoryWriter,type AuditEventInput,type CanonicalRoleName,type ControlCommand,type PreparedComposeVolumeBackupPlan,type ComposeVolumeBackupPlanStore as Port,type ProjectRepository,type ProjectUpdateControlRepository } from "@deploylite/domain";
 import { AuthenticatedAgentCommandReceiver,type AgentReplayStore } from "@deploylite/agent";
 import type { ComposeVolumeBackupExecutionAccess } from "./compose-volume-backup-execution-route.js";
 import { AuthenticatedAgentDeploymentTransport } from "./agent-transport.js";
@@ -16,7 +16,7 @@ const policy={policyVersion:"backup-api-test",trustedHosts:["registry.example.co
 const image="registry.example.com/app@sha256:"+"a".repeat(64);
 const document=JSON.stringify({services:{app:{image,volumes:[{type:"volume",source:"data",target:"/data"}],environment:{TOKEN:"${APP_TOKEN}"}}},volumes:{data:{}}});
 const preview=createComposePreview(document,"project-1",policy);
-async function fixture({role="operator",scope="project-1",action="project.deploy",inspection=true,planning=true,capability=true,includeUpdate=false,enableExecution=true,loseFirstReply=false}:{role?:CanonicalRoleName;scope?:string;action?:string;inspection?:boolean;planning?:boolean;capability?:boolean;includeUpdate?:boolean;enableExecution?:boolean;loseFirstReply?:boolean}={}){
+async function fixture({inventory,role="operator",scope="project-1",action="project.deploy",inspection=true,planning=true,capability=true,includeUpdate=false,enableExecution=true,loseFirstReply=false}:{inventory?:BackupInventoryWriter;role?:CanonicalRoleName;scope?:string;action?:string;inspection?:boolean;planning?:boolean;capability?:boolean;includeUpdate?:boolean;enableExecution?:boolean;loseFirstReply?:boolean}={}){
   const records=new Map<string,Project>();const projects:ProjectRepository={save:async p=>{records.set(p.id,p);return p;},findById:async id=>records.get(id)??null,list:async()=>[...records.values()],remove:async id=>records.delete(id)};
   await projects.save({id:"project-1",name:"Backup plan",repoUrl:"https://github.com/DeployLiteApp/DeployLite",defaultBranch:"main",buildCommand:null,runCommand:null,port:null,description:null,imageTag:null});
   const observation:ComposeResourceObservationV1={schemaVersion:1,owner:"deploylite",agentId:"agent-1",projectId:"project-1",kind:"volume",key:"data",runtimeName:preview.volumes[0]!.runtimeName,physicalIdentity:"2026-10-08T00:00:00Z",configDigest:preview.configDigest,stateDigest:"0".repeat(64),observedAt:1000,containers:[{containerId:"c".repeat(64),service:"app",running:false,attached:true,mounts:[{target:"/data",readOnly:false}]}]};
@@ -56,7 +56,7 @@ async function fixture({role="operator",scope="project-1",action="project.deploy
         if(path===COMPOSE_VOLUME_BACKUP_PATH){const result=await receiver.receive(body,signature);if(dropReply){dropReply=false;throw new Error("simulated lost agent response");}return new Response(JSON.stringify(result));}return new Response("not found",{status:404});}
       catch(error){return new Response(JSON.stringify({error:error instanceof Error?error.message:"rejected"}),{status:403});}};
     const transport=new AuthenticatedAgentDeploymentTransport({endpoint:"https://agent.test",trustKey,agentId:"agent-1",fetch,timeoutMs:5_000,now:()=>now});
-    return{access:{controls,transport} as ComposeVolumeBackupExecutionAccess,agentExecutions:()=>agentExecutions,replayRows};
+    return{access:{controls,transport,...(inventory?{inventory}:{})} as ComposeVolumeBackupExecutionAccess,agentExecutions:()=>agentExecutions,replayRows};
   })():undefined;
   const options:Options={env:{NODE_ENV:"test",DEPLOYLITE_SECRET_KEY:"backup_fixture_secret_key_1234567890"},corsOrigin:false,imagePolicy:policy,authConfig:{cookieName:"backup_session",cookieSecure:false},auth:{users:new InMemoryAuthUserRepository([user]),sessions,audit},state:{projects,envSecretValues:secrets,controlGrants:grants,controlDeletes:memory.controls,controlRedeploy:memory.controls,controlRollback:memory.controls,executionCompletion:memory.completion},...(inspection?{composeResourceInspection:new Map([["project-1",access]])}:{}),...(planning?{composeVolumeBackupPlans:new Map([["project-1",plans]])}:{}),...(execution?{composeVolumeBackupExecutions:new Map([["project-1",execution.access]])}:{})};
   const app=await buildApiApp(options);apps.push(app);audit.inputs.length=0;audit.events.length=0;grants.listForActor.mockClear();
@@ -164,5 +164,50 @@ describe("scoped effect-free volume backup planning API",()=>{
     const result=await f.postExecute({...f.body,plan:preview.json().data.backupPlan.plan});
     expect(result.statusCode).toBe(503);expect(result.json().error.code).toBe("COMPOSE_BACKUP_UNAVAILABLE");
     expect(f.inspect).toHaveBeenCalledOnce();expect([...f.memory.completion.commands.values()].some(value=>value.action==="project.update")).toBe(false);
+  });
+});
+
+describe("P5 authenticated inventory ingestion", () => {
+  it("records only validated agent evidence after durable completion and safe audit", async () => {
+    let completeAtWrite = false;
+    let f: Awaited<ReturnType<typeof fixture>>;
+    const inventory = {available: vi.fn(() => true), recordAuthenticatedReceipt: vi.fn(async (raw: unknown) => {
+      const receipt = composeVolumeBackupReceiptSchema.parse(raw);
+      completeAtWrite = [...f.memory.completion.commands.values()].some(command => command.id === receipt.commandId && command.status === "completed")
+        && f.audit.inputs.some(event => event.action === "compose.volume.backup.executed" && event.targetId === receipt.projectId && event.correlationId === receipt.correlationId);
+      return {schemaVersion: 1 as const, receipt, createdAtMs: 1000};
+    })};
+    f = await fixture({includeUpdate: true, inventory});
+    const preview = await f.post(), payload = {...f.body, plan: preview.json().data.backupPlan.plan};
+    const response = await f.postExecute(payload);
+    expect(response.statusCode).toBe(200);
+    expect(inventory.recordAuthenticatedReceipt).toHaveBeenCalledTimes(1);
+    expect(completeAtWrite).toBe(true);
+    expect(inventory.recordAuthenticatedReceipt.mock.calls[0]![0]).toEqual(response.json().data.backup);
+    const forged = await f.postExecute({...payload, receipt: response.json().data.backup}, {key: "forged"});
+    expect(forged.statusCode).toBe(400);
+    expect(inventory.recordAuthenticatedReceipt).toHaveBeenCalledTimes(1);
+  });
+  it("recovers inventory failure through authenticated receipt replay without another backup", async () => {
+    const write = vi.fn(async (raw: unknown) => ({schemaVersion: 1 as const, receipt: composeVolumeBackupReceiptSchema.parse(raw), createdAtMs: 1000}));
+    write.mockRejectedValueOnce(new Error("private-inventory-sentinel"));
+    const f = await fixture({includeUpdate: true, inventory: {available: () => true, recordAuthenticatedReceipt: write}});
+    const preview = await f.post(), payload = {...f.body, plan: preview.json().data.backupPlan.plan};
+    const failed = await f.postExecute(payload);
+    expect(failed.statusCode).toBe(503);
+    expect(failed.body + JSON.stringify(f.audit.inputs)).not.toContain("private-inventory-sentinel");
+    const retry = await f.postExecute(payload);
+    expect(retry.statusCode).toBe(200);
+    expect(f.execution?.agentExecutions()).toBe(1);
+    expect(write).toHaveBeenCalledTimes(2);
+    expect(write.mock.calls[1]![0]).toMatchObject({status: "already-created", idempotent: true});
+  });
+  it("fails before execution when the configured durable inventory is unavailable", async () => {
+    const inventory = {available: () => false, recordAuthenticatedReceipt: vi.fn()};
+    const f = await fixture({includeUpdate: true, inventory}), preview = await f.post();
+    const response = await f.postExecute({...f.body, plan: preview.json().data.backupPlan.plan});
+    expect(response.statusCode).toBe(503);
+    expect(f.execution?.agentExecutions()).toBe(0);
+    expect(inventory.recordAuthenticatedReceipt).not.toHaveBeenCalled();
   });
 });

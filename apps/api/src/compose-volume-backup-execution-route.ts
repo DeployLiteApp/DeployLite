@@ -5,7 +5,7 @@ import { COMPOSE_PREVIEW_MAX_BYTES, COMPOSE_RESOURCE_INSPECTION_CAPABILITY, comp
   type ComposeVolumeBackupReceiptV1, type ProjectControlAuthorityV1 } from "@deploylite/contracts";
 import { awaitAbortable, ComposeBackupPlanningError, ComposePreviewError, composeVolumeBackupExecutionBinding,
   composeVolumeBackupExecutionDigest, createComposePreview, createControlCommand, digestControlInput, IdempotencyConflictError, PolicyEvaluator, prepareComposeVolumeBackupPlan,
-  type AuditEventInput, type ComposeVolumeBackupPlanStore,
+  type BackupInventoryWriter, type AuditEventInput, type ComposeVolumeBackupPlanStore,
   type ControlGrantRepository, type ProjectRepository, type ProjectUpdateControlRepository, type PreparedComposeVolumeBackupPlan } from "@deploylite/domain";
 import type { PreparedComposeVolumeBackupCommand } from "./agent-transport.js";
 import type { ComposeResourceRouteOptions } from "./compose-resource-inspection-route.js";
@@ -18,10 +18,11 @@ export type ComposeVolumeBackupAgentTransport = Readonly<{
   readComposeVolumeBackupReceipt(prepared: PreparedComposeVolumeBackupCommand, authority: ProjectControlAuthorityV1,
     context: Readonly<{ requestId: string; correlationId: string; signal?: AbortSignal }>): Promise<ComposeVolumeBackupReceiptV1 | null>;
 }>;
-export type ComposeVolumeBackupExecutionAccess = Readonly<{ controls: ProjectUpdateControlRepository; transport: ComposeVolumeBackupAgentTransport }>;
+export type ComposeVolumeBackupExecutionAccess = Readonly<{ controls: ProjectUpdateControlRepository; transport: ComposeVolumeBackupAgentTransport; inventory?: BackupInventoryWriter }>;
 type Options = ComposeResourceRouteOptions & Readonly<{
   planning?: ReadonlyMap<string, ComposeVolumeBackupPlanAccess>;
   execution?: ReadonlyMap<string, ComposeVolumeBackupExecutionAccess>;
+  inventoryFactory?: (agentId: string) => BackupInventoryWriter;
 }>;
 
 const identity = /^[A-Za-z0-9_-]{1,200}$/;
@@ -84,11 +85,16 @@ export function registerComposeVolumeBackupExecutionRoute(app: FastifyInstance, 
 
     const inspection = options.access?.get(projectId), planning = options.planning?.get(projectId), execution = options.execution?.get(projectId);
     if (!inspection || !planning || !execution || !planning.store.available() || !execution.transport.available()
+      || (execution.inventory && !execution.inventory.available())
       || !inspection.capabilities.has(COMPOSE_RESOURCE_INSPECTION_CAPABILITY)) {
       await auditFailure("capability-unavailable"); return reply.code(503).send(options.error(request, "COMPOSE_BACKUP_UNAVAILABLE", "Backup execution is unavailable or outside policy."));
     }
     const capturedInspection = { ...inspection, imagePolicy: structuredClone(options.imagePolicy) };
-    const capturedPlanning = planning, capturedExecution = execution, profileMap = planning.profiles, store = planning.store, controls = execution.controls, transport = execution.transport;
+    const capturedPlanning = planning, capturedExecution = execution, profileMap = planning.profiles, store = planning.store, controls = execution.controls, transport = execution.transport, configuredInventory = execution.inventory;
+    const inventory = configuredInventory ?? options.inventoryFactory?.(inspection.agentId);
+    if (inventory && !inventory.available()) {
+      await auditFailure("inventory-unavailable"); return reply.code(503).send(options.error(request, "COMPOSE_BACKUP_UNAVAILABLE", "Backup execution is unavailable or outside policy."));
+    }
     const profile = profileMap.get(input.destinationId);
     if (!profile || profile.projectId !== projectId || profile.agentId !== inspection.agentId || profile.owner !== inspection.owner
       || profile.destinationId !== input.destinationId) {
@@ -102,7 +108,8 @@ export function registerComposeVolumeBackupExecutionRoute(app: FastifyInstance, 
     const current = () => {
       if (!capturedInspection.capabilities.has(COMPOSE_RESOURCE_INSPECTION_CAPABILITY) || !store.available() || !transport.available()
         || options.access?.get(projectId) !== inspection || options.planning?.get(projectId) !== capturedPlanning
-        || options.execution?.get(projectId) !== capturedExecution || capturedPlanning.store !== store || capturedPlanning.profiles !== profileMap
+        || options.execution?.get(projectId) !== capturedExecution || capturedExecution.inventory !== configuredInventory
+        || (inventory && !inventory.available()) || capturedPlanning.store !== store || capturedPlanning.profiles !== profileMap
         || profileMap.get(input.destinationId) !== profile || digestControlInput(profile) !== profileDigest
         || profile.owner !== capturedInspection.owner || profile.agentId !== capturedInspection.agentId) fail("COMPOSE_BACKUP_UNAVAILABLE");
     };
@@ -117,6 +124,12 @@ export function registerComposeVolumeBackupExecutionRoute(app: FastifyInstance, 
         archiveId: receipt.archiveId, archiveBytes: receipt.archiveBytes, entries: receipt.entries, archiveSha256: receipt.archiveSha256,
         manifestSha256: receipt.manifestSha256, consistency: receipt.consistency, status: receipt.status }
     });
+    const finish = async (receipt: ComposeVolumeBackupReceiptV1) => {
+      current();
+      if (inventory) await awaitAbortable(() => inventory.recordAuthenticatedReceipt(receipt), controller.signal);
+      current();
+      return options.ok(request, { backup: receipt });
+    };
     try {
       current();
       const controlInput = composeVolumeBackupExecutionBinding({ projectId, idempotencyKey, plan: input.plan });
@@ -132,10 +145,10 @@ export function registerComposeVolumeBackupExecutionRoute(app: FastifyInstance, 
         current();
         if (cached) {
           const receipt = validateReceipt(cached, cachedCommand);
-          if (control.status === "completed") return options.ok(request, { backup: receipt });
+          if (control.status === "completed") return await finish(receipt);
           const completed = await awaitAbortable(() => controls.completeProjectUpdate(control!, authority!, successAudit(cachedCommand, receipt)), controller.signal);
           if (completed.status !== "completed") fail("COMPOSE_BACKUP_FAILED");
-          return options.ok(request, { backup: receipt });
+          return await finish(receipt);
         }
         if (control.status === "completed") fail("COMPOSE_BACKUP_FAILED");
       }
@@ -183,7 +196,7 @@ export function registerComposeVolumeBackupExecutionRoute(app: FastifyInstance, 
       current();
       const completed = await awaitAbortable(() => controls.completeProjectUpdate(control!, authority!, successAudit(command, receipt)), controller.signal);
       if (completed.status !== "completed") fail("COMPOSE_BACKUP_FAILED");
-      return options.ok(request, { backup: receipt });
+      return await finish(receipt);
     } catch (error) {
       const code = error instanceof ComposeBackupPlanningError || error instanceof ComposePreviewError || error instanceof IdempotencyConflictError
         ? error.code : error instanceof FenceError ? "COMPOSE_BACKUP_CONFLICT" : "COMPOSE_BACKUP_FAILED";

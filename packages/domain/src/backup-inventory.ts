@@ -40,3 +40,9 @@ export type BackupInventoryReader = Readonly<{
   available(): boolean;
   list(projectId: string, volumeKey: string, destinationId: string): Promise<readonly BackupInventoryRecord[]>;
 }>;
+
+/** The caller must authenticate the agent transport before submitting a receipt. */
+export type BackupInventoryWriter = Readonly<{
+  available(): boolean;
+  recordAuthenticatedReceipt(receipt: unknown): Promise<BackupInventoryRecord>;
+}>;
