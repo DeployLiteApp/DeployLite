@@ -29,6 +29,15 @@ class FakeBoundary:
         return {"returncode": 0, "stdout": "recorded-only", "stderr": ""}
 
 class ProspectivePhysicalGuards(unittest.TestCase):
+    def test_reviewed_harness_identity_accepts_current_collection_and_rejects_changes(self):
+        from unittest.mock import patch
+        paths, operations = H["harness_contract"]()
+        self.assertTrue(paths)
+        self.assertTrue(operations)
+        with patch.dict(H["MANIFEST"]["preparedFrom"], {"dockerFrozenSha256": "0" * 64}):
+            with self.assertRaisesRegex(Exception, "reviewed_harness_changed_reconciliation_required"):
+                H["harness_contract"]()
+
     def setUp(self):
         self.env = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "GITHUB_REPOSITORY": JOB["repository"],
                     "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_JOB": JOB["job"], "GITHUB_SHA": "c" * 40,
