@@ -27,7 +27,7 @@ import type { ComposeResourceCleanupConfirmationViewV1, ComposeResourceCleanupIn
 const { Client } = pg;
 
 const integrationEnabled = process.env.DEPLOYLITE_DB_INTEGRATION === "1";
-const describeIntegration = integrationEnabled ? describe : describe.skip;
+const describeIntegration = describe; // The explicit Vitest/job partition owns collection; physical admission stays mandatory.
 const configuredDatabaseUrl = integrationEnabled ? requireIntegrationDatabaseUrl() : "";
 
 let maintenanceClient: pg.Client | null = null;
@@ -867,6 +867,7 @@ function requirePool(): pg.Pool {
 }
 
 function requireIntegrationDatabaseUrl(): string {
+  if (!integrationEnabled) throw new Error("Explicit PostgreSQL test partition required");
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
     throw new Error("DATABASE_URL must be set when DEPLOYLITE_DB_INTEGRATION=1.");
