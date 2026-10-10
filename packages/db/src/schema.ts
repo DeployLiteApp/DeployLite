@@ -1,4 +1,4 @@
-import type { TrustedPriorExecutionReceiptV1, DeploymentExecutionAuthorityV1, ComposePreviewV1, ProjectControlAuthorityV1 } from "@deploylite/contracts";
+import type { TrustedPriorExecutionReceiptV1, DeploymentExecutionAuthorityV1, ComposePreviewV1, ProjectControlAuthorityV1, ComposeVolumeBackupReceiptV1 } from "@deploylite/contracts";
 import { sql } from "drizzle-orm";
 import { boolean, check, customType, foreignKey, index, integer, jsonb, pgTable, primaryKey, smallint, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 
@@ -536,3 +536,21 @@ export const composeRevisions = pgTable("compose_revisions", {
   check("compose_revisions_number_positive", sql`${table.number} > 0`),
   check("compose_revisions_preview_safe", sql`(jsonb_typeof(${table.preview}) = 'object' and ${table.preview}->>'projectId' = ${table.projectId}::text and ${table.preview}->'executionAllowed' = 'false'::jsonb) is true`)]);
 export type ComposeRevisionRow = typeof composeRevisions.$inferSelect;
+
+// Immutable projection of authenticated P3 backup evidence; no deletion authority.
+export const backupInventory = pgTable("backup_inventory", {
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  volumeKey: text("volume_key").notNull(),
+  destinationId: text("destination_id").notNull(),
+  archiveId: text("archive_id").notNull(),
+  commandId: uuid("command_id").notNull().references(() => controlCommands.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  auditId: uuid("audit_id").notNull().references(() => auditEvents.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  receipt: jsonb("receipt").$type<ComposeVolumeBackupReceiptV1>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull()
+}, table => [
+  primaryKey({ columns: [table.projectId, table.volumeKey, table.destinationId, table.archiveId] }),
+  uniqueIndex("backup_inventory_command_unique").on(table.commandId),
+  uniqueIndex("backup_inventory_audit_unique").on(table.auditId),
+  check("backup_inventory_receipt_bound", sql`${table.receipt} @> jsonb_build_object('schemaVersion', 1, 'action', 'compose.volume.backup', 'redacted', true, 'projectId', ${table.projectId}::text, 'commandId', ${table.commandId}::text, 'volumeKey', ${table.volumeKey}, 'destinationId', ${table.destinationId}, 'archiveId', ${table.archiveId})`),
+  check("backup_inventory_created_valid", sql`${table.createdAt} >= timestamptz 'epoch'`)
+]);
