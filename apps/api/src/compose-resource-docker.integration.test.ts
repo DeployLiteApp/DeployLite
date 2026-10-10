@@ -55,11 +55,12 @@ async function privateManifest(): Promise<Manifest> {
   assert.equal(process.env.GITHUB_REPOSITORY, "DeployLiteApp/DeployLite"); assert.equal(process.env.GITHUB_JOB, "p3-docker-acceptance");
   assert.equal(process.env.DEPLOYLITE_P3_HEAD_REPOSITORY, "DeployLiteApp/DeployLite");
   if (process.env.GITHUB_EVENT_NAME === "pull_request") {
-    assert.equal(process.env.GITHUB_BASE_REF, "main"); assert(process.env.GITHUB_HEAD_REF);
+    // Jerson authorizes the same disposable P3 fixture for internal stacked PRs.
+    assert(process.env.GITHUB_BASE_REF); assert(process.env.GITHUB_HEAD_REF);
   } else if (process.env.GITHUB_EVENT_NAME === "push") {
     assert.equal(process.env.GITHUB_REF, "refs/heads/main");
   } else {
-    assert.fail("P3 acceptance requires an internal main pull request or main push");
+    assert.fail("P3 acceptance requires an internal pull request or main push");
   }
   assert.equal(process.env.DOCKER_HOST, "unix:///var/run/docker.sock");
   assert(!process.env.DOCKER_CONTEXT && !process.env.DOCKER_TLS_VERIFY && !process.env.DOCKER_CERT_PATH);
