@@ -181,3 +181,11 @@ Observed RED→GREEN: four receiver behavior tests, one missing-cache contract t
 Rollback removes only the native receiver/HTTP branches and replay tests/source-manifest entry, and restores the nonnullable native cached wrapper. Keep all prior command handlers, durable rows, encrypted values and resources. API operator lifecycle wiring, configured bootstrap profiles/executor and actual five-engine startup/restart/data persistence remain pending; source transport closure is not whole-S1/P5 acceptance.
 
 Authenticated transport full Node24 `pnpm check` exits0; `/tmp/deploylite-p5-native-authenticated-check.log`. Exact-head hosted checks remain required before delivery acceptance. No claim is made that these mocked HTTP executions started native databases.
+
+### S1 explicit five-engine adapter composition — 2026-10-10
+
+A single injected composition now joins existing native/Compose inspection, fresh resources, storage initialization, sealed preparation, process identity, stopped/readiness verification, daemon start and fresh execution. It requires exactly five approved profiles (PostgreSQL, MySQL, MariaDB, MongoDB, Redis), immutable trusted images, native paths/ports/credential strategies and both declared native/existing read-only inspection capabilities. Capabilities are rechecked around the original authority callback. Construction does not discover environment/configuration, activate capability, open Docker, create a process or expose private configuration; the only returned operation is apply.
+
+Four prospective configuration/composition assertions observed RED→GREEN; source runner remains untouched in constructor tests. Agent typecheck passes; `/tmp/deploylite-p5-native-runtime-composition-red.log`, `/tmp/deploylite-p5-native-runtime-composition-green.log`. This makes the composed adapter usable by an explicit caller; configured production bootstrap/operator API and physical five-engine acceptance remain pending. Rollback removes only this composition/test/manifest additions while preserving all prior adapters and resources.
+
+Five-engine composition full Node24 `pnpm check` exits0; `/tmp/deploylite-p5-native-runtime-composition-check.log`. Existing native source/transport gates remain distinct from the upcoming isolated five-engine physical proof.
