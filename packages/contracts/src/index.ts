@@ -399,3 +399,4 @@ export * from "./transport-port.js";
 export * from "./deployment-contract/domain-route-apply.js";
 export * from "./deployment-contract/transport-port-apply.js";
 export * from './registry-configuration.js';
+export * from "./backup-retention.js";
