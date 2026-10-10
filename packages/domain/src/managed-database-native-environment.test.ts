@@ -50,3 +50,10 @@ it.each(engines)("requires the final PID1 daemon before reporting %s health", en
     const result = validateManagedDatabaseNativeEnvironment(f.input, f.profile, policy, f.environment, fingerprint);
     expect(result?.healthCommand).toContain("/proc/1/comm");
 });
+
+it("prepares Redis health with its supported loopback CLI option and sealed credential reference",()=>{
+ const f=fixture("redis"), result=validateManagedDatabaseNativeEnvironment(f.input,f.profile,policy,f.environment,fingerprint);
+ expect(result.healthCommand).toContain('REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli --no-auth-warning -h 127.0.0.1 ping');
+ expect(result.healthCommand).toContain('/proc/1/comm');expect(result.healthCommand).toContain('grep -qx PONG');
+ expect(result.healthCommand).not.toContain(password);
+});
