@@ -1057,8 +1057,10 @@
   },
   "preparedFrom": {
     "pgManifestSha256": "e5456cb0d6c3dc6ea4d12e142d1595584612085887528d1300da12700c381432",
-    "dockerFrozenSha256": "b58a473574f22d814abcf8f4fd402240fbc6606a15678b1c5566c2ea154eedd1",
-    "status": "FINAL SOURCE CANDIDATE; physical Docker/PostgreSQL/CI NOT RUN; exact reports and disposable runtime are required"
+    "dockerFrozenSha256": "3da71b27ac4a188072dfc2518945862e4045de96eb8711e2f3cc47781c964046",
+    "status": "FINAL SOURCE CANDIDATE; physical Docker/PostgreSQL/CI NOT RUN; exact reports and disposable runtime are required",
+    "previousDockerFrozenSha256": "b58a473574f22d814abcf8f4fd402240fbc6606a15678b1c5566c2ea154eedd1",
+    "collectionReconciliation": "2026-10-10: only explicit P2 collection replaces skipIf; all 13 physical case bodies, source paths and operations byte-identical to previous reviewed harness."
   },
   "sourceFiles": [
     ".github/workflows/baseline.yml",
@@ -1158,7 +1160,14 @@
     "apps/api/src/managed-database-credentials-route.ts",
     "apps/api/src/managed-database-credentials-api.test.ts",
     "apps/api/src/managed-database-credentials-wiring.test.ts",
-    "apps/agent/src/infrastructure/docker/docker-redaction-integration.test.ts"
+    "apps/agent/src/infrastructure/docker/docker-redaction-integration.test.ts",
+    "scripts/ci/test-scopes.mjs",
+    "scripts/ci/test-scopes.test.mjs",
+    "scripts/ci/unit-report-acceptance.mjs",
+    "scripts/ci/unit-report-acceptance.test.mjs",
+    "apps/agent/vitest.config.ts",
+    "apps/api/vitest.config.ts",
+    "packages/db/vitest.config.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,

@@ -9,7 +9,7 @@ import { dockerImageExecutionReceiptSchema, trustedPriorExecutionReceiptSchema, 
 import { buildApiApp, type DeploymentDispatcher, type DeploymentStopDispatcher, type BuildApiAppOptions } from "./app.js";
 
 const integrationEnabled = process.env.DEPLOYLITE_API_POSTGRES_INTEGRATION === "1";
-const describeIntegration = integrationEnabled ? describe : describe.skip;
+const describeIntegration = describe; // The dedicated PostgreSQL partition owns collection and must run every case.
 const configuredDatabaseUrl = integrationEnabled ? requireIntegrationDatabaseUrl() : "";
 const contentHeaders = { "content-type": "application/json" };
 const adminPassword = "test_fixture_admin_password";
@@ -520,6 +520,7 @@ async function confirmedPostgresRedeploy(app: FastifyInstance, cookie: string, s
 }
 
 function requireIntegrationDatabaseUrl(): string {
+  if (!integrationEnabled) throw new Error("Explicit PostgreSQL integration partition required");
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
     throw new Error("DATABASE_URL must be set when DEPLOYLITE_API_POSTGRES_INTEGRATION=1.");
