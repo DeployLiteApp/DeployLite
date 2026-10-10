@@ -153,3 +153,11 @@ Focused source tests: process identity 7/7 and admission/readiness 14/14 PASS, n
 Rollback removes only the four new process-identity/readiness files and their explicit source-manifest entries. Existing inspectors, encrypted rows, resources and history remain. Native daemon creation/start orchestration, authenticated API/transport activation, lifecycle operations and actual five-engine acceptance remain pending. No Docker daemon, database service or live credential was accessed for this unit.
 
 Full Node24 `pnpm check` exits 0 for this original-daemon unit; `/tmp/deploylite-p5-original-daemon-check.log`. Hosted exact-head checks remain required before acceptance.
+
+### S1 bounded native daemon start — 2026-10-10
+
+The next adapter starts only a newly created original daemon that passes stable stopped admission, rechecks current authority immediately before the single start effect, polls health within the whole deadline, then requires original-resource/nonroot-PID1 readiness and final authority. Changed IDs/images, malformed/failed start replies, stopped/unhealthy daemons, cancellation or timeouts withhold success. Ambiguous state is preserved; no repeated start, adoption, stop/remove or persistent-resource deletion occurs.
+
+Eleven prospective assertions observed RED against the behaviorless API stub, then GREEN (`/tmp/deploylite-p5-daemon-start-assertion-red.log`, `/tmp/deploylite-p5-daemon-start-green.log`). Two extra boundary tests characterize identity rejection, expiry and cancellation. All five engine requests exercise the same coordinator through injected ports. Agent typecheck passes. This is adapter source behavior, not physical five-engine startup. Authenticated wiring, original daemon creation, image acquisition and actual five-engine acceptance remain pending. Rollback removes only the daemon-start adapter/test and their manifest entries; original resources and prior verifiers remain.
+
+Daemon-start validation: 13/13 focused cases PASS, zero skips; `/tmp/deploylite-p5-daemon-start-refactor.log`. Full Node24 `pnpm check` exits0; `/tmp/deploylite-p5-daemon-start-check-fixed.log`. The initial typecheck failure (fixture UID literal narrower than its negative case) is preserved in `/tmp/deploylite-p5-daemon-start-check.log`; expectations were retained. Hosted exact-head checks remain required.
