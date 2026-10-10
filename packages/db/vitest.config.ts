@@ -1,4 +1,5 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
+import { excludedPhysicalTestFiles } from "../../scripts/ci/test-scopes.mjs";
 
 export default defineConfig({
   resolve: {
@@ -10,6 +11,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"]
+    include: ["src/**/*.test.ts"],
+    exclude: [...configDefaults.exclude, ...excludedPhysicalTestFiles("db")]
   }
 });

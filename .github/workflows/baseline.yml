@@ -33,6 +33,8 @@ jobs:
       - run: bash scripts/vps-preview-failure-matrix.test.sh
       - run: pnpm test:docker-dry-run
       - run: pnpm ci:vitest:forbid-only
+      - name: Verify every test execution partition and mandatory physical coverage
+        run: node --test scripts/ci/test-scopes.test.mjs
       - run: pnpm --filter @deploylite/contracts --filter @deploylite/config --filter @deploylite/domain --filter @deploylite/agent --filter @deploylite/db build
       - run: pnpm lint
       - run: pnpm typecheck
