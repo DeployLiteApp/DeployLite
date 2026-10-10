@@ -1,0 +1,11 @@
+# P5 native Docker metadata compatibility
+
+Scope: prerequisite of the isolated native five-engine fixture, based on PR413. Preserve all prior ownership, immutable image, original storage, consumer, non-root and privilege checks. This source unit alone does not accept S1 or P5 and does not activate production bootstrap/API lifecycle.
+
+Observed hosted failures: optional labels emitted empty strings; CLI raw-map fallback rejected omitted Health/Volumes; official Redis8 config declares no VOLUME; Docker canonicalizes CHOWN as CAP_CHOWN; generic diagnostic redaction corrupted the public native network identity. Normalize only the documented absent fields/exact alias, preserve every additional capability, malformed digest, extra declared volume and nested secret redaction. Redis requires its explicit original named /data mount, immutable image, fresh storage and persistent restart proof.
+
+Run38092518802 at b058251 executed all five native cases, five FAIL/zero pending, before starting the original daemon. Offline Go text/template over the actual Compose format reproduced two assertion failures: Docker omits NetworkID for stopped endpoints and Name for tmpfs mounts. Official API source: https://github.com/moby/moby/blob/v28.0.4/api/types/container/container.go. Optional map indexing projects absent endpoint identity as empty and absent tmpfs volume name as null; all consumers/mounts remain present. Existing stopped-network corroboration still requires the original owned network by name and physical identity; running consumers require a real endpoint ID.
+
+Evidence: prospective assertions RED→GREEN for absent labels, Redis explicit storage, exact capability alias and scoped network redaction; offline template RED→GREEN for native and Compose optional fields. 83 focal tests PASS, zero skipped. Preserve /tmp/deploylite-p5-compose-template-{red,green}.log and /tmp/deploylite-p5-native-b058-evidence. Complete Node24 `pnpm check` PASS (exit0); source-bound hosted fixture acceptance remains pending.
+
+Rollback: remove only these compatibility deltas/tests; preserve existing resource/runtime implementations, all historical receipts and the separate fixture. Keep the chain draft without merge.

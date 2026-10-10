@@ -170,3 +170,13 @@ it("retains a stopped volume consumer while omitting an empty builtin none endpo
  const s=fixture("volume");s.f.container.networks=[{name:"none",networkId:""}];
  await expect(inspect(s)).resolves.toMatchObject({containers:[{containerId:"c".repeat(64),running:false,attached:true,networks:[],mounts:[{target:"/data",readOnly:false}]}]});
 });
+
+for (const field of ["composeConfigDigest","composeEnvironmentDigest"] as const) it(`retains the original scoped consumer when Docker emits absent optional ${field} as empty`,async () => {
+ const s=fixture("volume");Object.assign(s.f.container,{[field]:""});
+ const observation=await inspect(s);
+ expect(observation.containers).toHaveLength(1);
+ expect(observation.containers[0]).toMatchObject({containerId:s.f.container.id,running:false,attached:true,mounts:[{target:"/data",readOnly:false}]});
+ expect(observation.containers[0]).not.toHaveProperty(field);
+ const invalid=fixture("volume");Object.assign(invalid.f.container,{[field]:"private"});
+ await expect(inspect(invalid)).rejects.toMatchObject({code:"COMPOSE_INSPECTION_INVALID"});
+});

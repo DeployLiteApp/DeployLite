@@ -72,3 +72,12 @@ it("preserves the exact pinned Traefik image only in its scoped inspection", asy
  fake.stdout.on.mock.calls[0]![1](JSON.stringify({image})); fake.events.get("close")!(0,null);
  expect(JSON.parse((await promise).stdout).image).toBe(image);
 });
+
+ it("preserves only the native network identity field while redacting nested secrets", async () => {
+  const {MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT: format} = await import("./docker-managed-database-inspection-argv.js");
+  const networkMode = `dl-${"a".repeat(32)}-net-db-postgres`;
+  const fake = fakeProcess(), promise = new DockerProcessRunner({spawn: () => fake.child}).run(["docker","container","inspect","--format",format,"b".repeat(64)],new AbortController().signal);
+  fake.stdout.on.mock.calls[0]![1](JSON.stringify({networkMode,note:{networkMode},password:networkMode})); fake.events.get("close")!(0,null);
+  const result=JSON.parse((await promise).stdout);
+  expect(result.networkMode).toBe(networkMode); expect(result.note.networkMode).not.toBe(networkMode); expect(result.password).toBe("[REDACTED]");
+ });
