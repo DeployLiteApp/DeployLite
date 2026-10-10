@@ -11,7 +11,8 @@ import { DbControlCommandRepository } from "./repositories/control-plane.js";
 
 // Same explicit disposable PostgreSQL opt-in as the existing suite. Never loaded with a local fallback URL.
 const enabled = process.env.DEPLOYLITE_DB_INTEGRATION === "1";
-const suite = enabled ? describe : describe.skip;
+if (!enabled) throw new Error("Explicit Compose PostgreSQL test partition required");
+const suite = describe; // Collected only by the existing explicit PostgreSQL partition.
 const configured = enabled ? process.env.DATABASE_URL : undefined;
 if (enabled && !configured) throw new Error("DATABASE_URL is required for explicitly enabled Compose PostgreSQL integration.");
 const policy = { policyVersion: "compose-pg-fixture", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true };
