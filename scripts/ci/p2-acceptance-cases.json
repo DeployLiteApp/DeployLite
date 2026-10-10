@@ -1116,7 +1116,13 @@
     "packages/db/src/backup-inventory.test.ts",
     "packages/domain/src/backup-inventory.ts",
     "packages/domain/src/backup-inventory.test.ts",
-    "apps/api/src/backup-inventory-wiring.test.ts"
+    "apps/api/src/backup-inventory-wiring.test.ts",
+    "packages/contracts/src/backup-retention.ts",
+    "packages/domain/src/backup-retention.ts",
+    "packages/domain/src/backup-retention-preview.ts",
+    "packages/domain/src/backup-retention-preview.test.ts",
+    "apps/api/src/backup-retention-preview-route.ts",
+    "apps/api/src/backup-retention-preview-api.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
