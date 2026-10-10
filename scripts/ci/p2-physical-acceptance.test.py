@@ -7,6 +7,8 @@ import copy
 import hashlib
 import json
 import runpy
+import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -240,6 +242,32 @@ class ProspectivePhysicalGuards(unittest.TestCase):
         self.assertIn("needs.p2-docker-acceptance.result == 'success'",gate)
         self.assertIn("--check p2-docker-acceptance:pass",gate)
         self.assertIn("success:success:success:success",gate)
+    def test_every_baseline_dependency_must_execute_successfully_including_p3(self):
+        workflow=(Path(__file__).parents[2]/".github/workflows/baseline.yml").read_text()
+        gate=workflow.split("  baseline-gate:\n",1)[1]
+        jobs=["quality", "postgres-integration", "compose-and-supply-chain", "p2-docker-acceptance", "p3-docker-acceptance", "p4-transport-acceptance"]
+        self.assertIn("p3-docker-acceptance", gate.split("    steps:",1)[0])
+        self.assertIn("needs.p3-docker-acceptance.result == 'success'", gate)
+        self.assertIn("--check p3-docker-acceptance:pass", gate)
+        command=gate.split("      - name: Block incomplete or failing gates\n",1)[1].split("        run: ",1)[1].split("\n",1)[0]
+        def execute(results):
+            bound=re.sub(r"\$\{\{ needs\.([a-z0-9-]+)\.result \}\}", lambda match: results[match[1]], command)
+            return subprocess.run(["sh", "-c", bound], capture_output=True, timeout=2).returncode
+        self.assertEqual(execute(dict.fromkeys(jobs, "success")), 0)
+        for job in jobs:
+            for status in ("skipped", "failure", "cancelled"):
+                with self.subTest(job=job, status=status):
+                    results=dict.fromkeys(jobs, "success"); results[job]=status
+                    self.assertNotEqual(execute(results), 0)
+
+    def test_existing_diagnostic_opt_in_case_is_executed_and_not_left_uncovered(self):
+        workflow=(Path(__file__).parents[2]/".github/workflows/baseline.yml").read_text()
+        job=workflow.split("  p2-docker-acceptance:\n",1)[1].split("  p3-docker-acceptance:\n",1)[0]
+        self.assertIn("src/infrastructure/docker/docker-redaction-integration.test.ts", job)
+        self.assertIn('diagnostics.json', job)
+        self.assertIn('numPassedTests !== 2', job)
+        self.assertIn('numPendingTests !== 0', job)
+
     def test_neutral_recorded_boundaries_do_not_construct_a_native_process(self):
         with self.assertRaises(H["PhysicalError"]):
             H["run_effect"](["docker","info"],self.grant,None)
