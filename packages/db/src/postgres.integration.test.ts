@@ -1,3 +1,4 @@
+import "./backup-inventory-postgres.integration-cases.js";
 import { createEnvSecretCipher, registryCredentialKey } from "@deploylite/config";
 import { DbEnvSecretValueRepository } from "./repositories/env-secret-values.js";
 import "./execution-postgres.integration-cases.js";

@@ -16,7 +16,7 @@ Canonical boundary: P5 in `docs/community-roadmap.md`. Base protected main: `8c7
 | Unit | Boundary | Status |
 | --- | --- | --- |
 | R1 | Pure retention preview over verified P3 backup receipts, explicit keep-newest count and restore-protected archives | Draft PR #389; exact `806c7dd` CI 38058774713 passed 7/7; source 14/14 and full check pass; protected-main integration not yet authorized |
-| R2 | Durable backup inventory and authorized retention preview with audit/replay and stale-inventory fences | Proof preparation implemented: 19 prospective RED/GREEN cases and typecheck pass; SQL inventory/API remain pending |
+| R2 | Durable backup inventory and authorized retention preview with audit/replay and stale-inventory fences | Proof preparation draft #390 (`78a13a7`) CI 38059688641 approved; SQL adapter implemented with 9 prospective RED/GREEN cases; 5 exact PostgreSQL cases added to hosted acceptance; authenticated backup-route ingestion/API remain pending |
 | S1 | Managed database/catalog profile planning with project-owned storage and approved immutable images | Pending; reuse Compose and image policy |
 | S2 | Generated credentials using existing cipher/repository, atomic secret-safe configuration and replay | Pending |
 | B1 | Database-consistent backup and verified durable archive evidence | Pending |
@@ -38,3 +38,7 @@ R1 is metadata planning only and grants no deletion authority. The count policy 
 - Automatic approval review rejected the proposed PR #389 protected-main merge because current authorization covers P5 implementation, not that specific integration. The safer draft delivery remains available; no bypass or retry was attempted. Source implementation continues on its dependent branch.
 
 - Full Node 24.20.0 `pnpm check` for the R2 proof-preparation source exits 0; receipt `/tmp/deploylite-p5-inventory-check.log`. SQL/API/durable acceptance remains pending.
+
+- R2 SQL unit: immutable scoped `backup_inventory` projection, project/command/audit FKs, unique archive scope/command/audit, database-enforced receipt binding and original audit time. Authenticated cache replay preserves the original audit status/time; a colliding command/archive fails without overwriting. Reader rejects invalid/foreign evidence and refuses truncated inventories above 10,000 records. Unit RED: 9 failures before implementation, then 9 GREEN; `/tmp/deploylite-p5-inventory-store-red.log`. No local PostgreSQL/Docker or migration execution occurred. Five physical PostgreSQL cases are source-prepared for the existing disposable hosted job (DB inventory now 66 cases, original 61 retained); execution is still pending. No retention deletion or destructive restore is authorized by this projection.
+
+- SQL unit full Node 24.20.0 `pnpm check` exits 0 (`/tmp/deploylite-p5-inventory-store-check-fixed.log`). Initial failure preserved in `/tmp/deploylite-p5-inventory-store-check.log`: the added suite changed the missing-URL error wording; correction retained the existing guard and its 2/2 tests pass. Mocked CI evidence guards: 38 PASS. These local checks do not claim physical P5 PostgreSQL execution.

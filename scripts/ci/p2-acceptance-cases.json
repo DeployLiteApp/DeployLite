@@ -3,7 +3,7 @@
   "purpose": "Expected evidence only; this manifest neither authorizes runtime nor claims PASS",
   "suites": {
     "db": {
-      "count": 61,
+      "count": 66,
       "allowSkipped": false,
       "cases": [
         {
@@ -371,6 +371,36 @@
           "title": "durably isolates encrypted registry records and rotates to public across repository instances",
           "file": "packages/db/src/postgres.integration.test.ts",
           "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance persists corroborated inventory across a new PostgreSQL pool lifecycle",
+          "title": "persists corroborated inventory across a new PostgreSQL pool lifecycle",
+          "file": "packages/db/src/backup-inventory-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance converges concurrent writers and authenticated replay to one immutable archive",
+          "title": "converges concurrent writers and authenticated replay to one immutable archive",
+          "file": "packages/db/src/backup-inventory-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance refuses incomplete command and mismatched audit without any inventory write",
+          "title": "refuses incomplete command and mismatched audit without any inventory write",
+          "file": "packages/db/src/backup-inventory-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance rejects competing archive evidence without overwriting the original command",
+          "title": "rejects competing archive evidence without overwriting the original command",
+          "file": "packages/db/src/backup-inventory-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance enforces SQL receipt binding and keeps reads isolated to the complete scope",
+          "title": "enforces SQL receipt binding and keeps reads isolated to the complete scope",
+          "file": "packages/db/src/backup-inventory-postgres.integration-cases.ts",
+          "physicalRestart": false
         }
       ],
       "sourceFiles": [
@@ -385,7 +415,11 @@
         "packages/db/migrations/0022_domain_route_revisions.sql",
         "packages/db/src/repositories/env-secret-values.ts",
         "packages/config/src/crypto.ts",
-        "packages/contracts/src/registry-configuration.ts"
+        "packages/contracts/src/registry-configuration.ts",
+        "packages/db/src/backup-inventory-postgres.integration-cases.ts",
+        "packages/db/src/repositories/backup-inventory.ts",
+        "packages/db/migrations/0027_backup_inventory.sql",
+        "packages/domain/src/backup-inventory.ts"
       ]
     },
     "api": {
@@ -1069,7 +1103,13 @@
     "packages/db/migrations/0018_deployment_rollback_command.sql",
     "packages/db/src/repositories/env-secret-values.ts",
     "packages/config/src/crypto.ts",
-    "packages/contracts/src/registry-configuration.ts"
+    "packages/contracts/src/registry-configuration.ts",
+    "packages/db/migrations/0027_backup_inventory.sql",
+    "packages/db/src/repositories/backup-inventory.ts",
+    "packages/db/src/backup-inventory-postgres.integration-cases.ts",
+    "packages/db/src/backup-inventory.test.ts",
+    "packages/domain/src/backup-inventory.ts",
+    "packages/domain/src/backup-inventory.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
