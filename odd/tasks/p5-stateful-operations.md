@@ -11,13 +11,21 @@ Canonical boundary: P5 in `docs/community-roadmap.md`. Base protected main: `8c7
 - Health checks and telemetry must be workload-scoped, bounded and secret-safe.
 - Actual integrated acceptance must verify the whole boundary before P5 can be marked accepted. Existing P3/P4 foundations alone grant no P5 completion credit.
 
+## Approved database scope and reference behavior
+
+Jerson explicitly selected parity with the five database engines documented by Dokploy: PostgreSQL, MySQL, MariaDB, MongoDB and Redis. This resolves the prior engine-selection question; no narrower PostgreSQL-only scope is assumed. The reference implementation is Dokploy commit `5be17d3dd01d9489521cde2eca7d997b14c54653`, inspected through public source and official documentation (Engram #25616).
+
+Required operator flows follow Dokploy per engine: create/configure/deploy/update/stop/delete; generated connection credentials, internal connection details and explicitly configured external exposure; persistent volumes and environment configuration; scoped logs, resource monitoring and health; native engine-supported backup/restore with destination, schedule, manual test and retention count. Redis behavior must be checked against Dokploy's actual engine-specific implementation before claiming backup/restore parity; SQL dump behavior must not be inferred for it. The catalog remains a separate template/Compose capability, not a silently approved list of applications.
+
+DeployLite retains its existing project authority, image policy, encrypted secret repository, cryptographic entropy, secret-safe telemetry, immutable backup evidence, restore-protection fences and destructive confirmation. Functional parity does not authorize copying weaker secret handling, bypassing required gates, opening ports, creating live credentials, or running local/production services. These approved flows remain implementation and acceptance requirements, not a claim that all five engines are already delivered.
+
 ## Active delivery units
 
 | Unit | Boundary | Status |
 | --- | --- | --- |
 | R1 | Pure retention preview over verified P3 backup receipts, explicit keep-newest count and restore-protected archives | PR #389 merged after explicit user authorization; exact `806c7dd` CI 38058774713 passed 7/7; source 14/14 and full check pass |
 | R2 | Durable backup inventory and authorized retention preview with audit/replay and stale-inventory fences | Proof, SQL inventory and authenticated ingestion PRs #390/#391/#392 merged; refreshed exact heads 6404a8f/b3c348f/a172587 each passed 7/7 gates. Ingestion physical PG67/67 includes P5 6/6. Authorized preview #393 remains draft: 8 domain and 13 API cases/full check pass, original exact d00894e CI38066864070 approved; server restore-protection persistence and executable retention remain pending |
-| S1 | Managed database/catalog profile planning with project-owned storage and approved immutable images | Pending; reuse Compose and image policy |
+| S1 | Managed database/catalog profile planning with project-owned storage and approved immutable images | Approved scope: PostgreSQL, MySQL, MariaDB, MongoDB, Redis; implementation pending, reuse Compose and image policy |
 | S2 | Generated credentials using existing cipher/repository, atomic secret-safe configuration and replay | Pending |
 | B1 | Database-consistent backup and verified durable archive evidence | Pending |
 | R3 | Authorized retention execution with fresh scope/hash/protection verification and atomic evidence | Pending |
@@ -61,4 +69,4 @@ Normal merges completed in order: #389 `9d37a6f`, #390 `60f69e2`, #391 `56f79c7`
 
 Refreshed #392 evidence `/tmp/deploylite-p5-ingestion-a172587`: DB67/67, P5inventory6/6, API12/12, zero failures/skips,80 source hashes match exact head; restart/cleanup verified. Preview #393 initial source `d00894e` run38066864070 approved all applicable gates; its physical inventory evidence `/tmp/deploylite-p5-preview-d00894e` has86 exact hashes and the same67/67+6/6 cases. #393 remains draft after retargeting to main; its endpoint has no deletion authority and requires explicit trusted protections.
 
-Whole-P5 acceptance remains open: approved engine/catalog scope, managed workload storage/image plans, generated encrypted credentials, database-consistent backups, persistent restore protection, retention execution, confirmed restore/recovery, health/telemetry and integrated phase acceptance are not supplied by these four inventory PRs.
+Whole-P5 acceptance remains open: catalog scope, managed workload storage/image plans, generated encrypted credentials, database-consistent backups, persistent restore protection, retention execution, confirmed restore/recovery, health/telemetry and integrated phase acceptance are not supplied by these four inventory PRs.
