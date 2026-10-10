@@ -11,6 +11,7 @@ import { registerComposeNetworkAttachmentExecutionRoute, type ComposeNetworkAtta
 import { registerComposeVolumeAttachmentExecutionRoute, type ComposeVolumeAttachmentExecutionAccess } from "./compose-volume-attachment-execution-route.js";
 import { registerComposeVolumeBackupPlanRoute, type ComposeVolumeBackupPlanAccess } from "./compose-volume-backup-plan-route.js";
 import { registerComposeVolumeBackupExecutionRoute, type ComposeVolumeBackupExecutionAccess } from "./compose-volume-backup-execution-route.js";
+import { registerRegistryRoutes } from "./registry-routes.js";
 import { registerDomainRoutePreviewRoute } from "./domain-route-preview-route.js";
 import { registerTransportPortPreviewRoute } from "./transport-port-preview-route.js";
 import { registerTransportPortApplyRoutes, type TransportPortApplyExecutionAccess } from "./transport-port-apply-route.js";
@@ -1288,6 +1289,7 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
   const requireMutationRole = createRolePreHandler(adapters, ["admin", "operator"]);
   const requireAdminRole = createRolePreHandler(adapters, ["admin"]);
   registerComposePreviewRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
+  registerRegistryRoutes(app, { prefix: API_PREFIX, projects: state.projects, secrets: state.envSecretValues, cipher: state.envSecretCipher, trustedHosts: imagePolicy.trustedHosts, grants: state.controlGrants, audit: adapters.audit, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerDomainRoutePreviewRoute(app, { prefix: API_PREFIX, projects: state.projects, deployments: state.deployments, domainRouteClaims: state.domainRouteClaims, grants: state.controlGrants, audit: adapters.audit, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerTransportPortPreviewRoute(app, { prefix: API_PREFIX, projects: state.projects, deployments: state.deployments, claims: state.transportPortClaims, grants: state.controlGrants, audit: adapters.audit, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerTransportPortApplyRoutes(app, { prefix: API_PREFIX, projects: state.projects, deployments: state.deployments, claims: state.transportPortClaims,

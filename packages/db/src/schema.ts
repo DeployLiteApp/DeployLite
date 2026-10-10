@@ -437,7 +437,7 @@ export const transportPortRuntimeStates = pgTable("transport_port_runtime_states
   deploymentId: uuid("deployment_id").notNull(),
   containerId: text("container_id").notNull(),
   bindings: jsonb("bindings").$type<Record<string, unknown>[]>().notNull(),
-  commandId: uuid("command_id").notNull().unique().references(() => controlCommands.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  commandId: uuid("command_id").notNull().references(() => controlCommands.id, { onDelete: "restrict", onUpdate: "cascade" }),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
 }, (table) => [
   primaryKey({ name: "transport_port_runtime_states_project_deployment_pk", columns: [table.projectId, table.deploymentId] }),
@@ -459,6 +459,7 @@ export const transportPortReservations = pgTable("transport_port_reservations", 
   currentContainerId: text("current_container_id").notNull(),
   bindings: jsonb("bindings").$type<Record<string, unknown>[]>().notNull(),
   previousBindings: jsonb("previous_bindings").$type<Record<string, unknown>[]>().notNull(),
+  portTransfer: jsonb("port_transfer").$type<Record<string, unknown> | null>(),
   operation: text("operation").notNull().default("apply"),
   rollbackRevisionId: uuid("rollback_revision_id").references(() => transportPortRevisions.id, { onDelete: "restrict", onUpdate: "cascade" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
@@ -469,6 +470,7 @@ export const transportPortReservations = pgTable("transport_port_reservations", 
   check("transport_port_reservations_published_port_valid", sql`${table.publishedPort} between 1 and 65535`),
   check("transport_port_reservations_container_id_valid", sql`${table.currentContainerId} ~ '^[a-f0-9]{64}$'`),
   check("transport_port_reservations_bindings_array", sql`jsonb_typeof(${table.bindings}) = 'array' and jsonb_typeof(${table.previousBindings}) = 'array'`),
+  check("transport_port_reservations_transfer_object", sql`${table.portTransfer} is null or jsonb_typeof(${table.portTransfer}) = 'object'`),
   check("transport_port_reservations_route_scope", sql`(${table.route}->>'protocol' = ${table.protocol} and (${table.route}->>'publishedPort')::integer = ${table.publishedPort} and ${table.route}->>'projectId' = ${table.projectId}::text and ${table.plan}->'route' = ${table.route}) is true`),
   check("transport_port_reservations_plan_action_valid", sql`${table.plan}->>'action' in ('create', 'attach', 'no-op', 'retarget')`),
   check("transport_port_reservations_operation_valid", sql`(${table.operation} = 'apply' and ${table.rollbackRevisionId} is null) or (${table.operation} = 'rollback' and ${table.rollbackRevisionId} is not null)`)

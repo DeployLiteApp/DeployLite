@@ -16,7 +16,8 @@ import { DbComposeResourceCleanupStore } from "./repositories/compose-resource-c
 import { DbDomainRouteClaimReader } from "./repositories/domain-routes.js";
 import { IdempotencyConflictError, createConfirmation, createControlCommand, createDomainRoutePlan, createTransportPortPlan, digestControlInput, domainRouteNetworkName } from "@deploylite/domain";
 import { createDeploymentSnapshot, createSourceIntent, domainRouteIntentSchema, transportPortApplyReceiptSchema, transportPortIntentSchema,
-  type DomainRouteApplyReceiptV1, type TransportPortApplyReceiptV1, type TransportPortBindingV1 } from "@deploylite/contracts";
+  trustedPriorExecutionReceiptSchema, type DomainRouteApplyReceiptV1, type TransportPortApplyReceiptV1, type TransportPortBindingV1,
+  type TransportPortTransferV1 } from "@deploylite/contracts";
 import { createComposePreview, type PreparedComposeResourceCleanup } from "@deploylite/domain";
 import type { ComposeResourceCleanupConfirmationViewV1, ComposeResourceCleanupInput } from "@deploylite/contracts";
 
@@ -743,7 +744,7 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
   });
 
   it("atomically persists TCP/UDP reservation, apply revisions, active container state, and rollback", async () => {
-    const client = requirePool(), database = requireDb(), actorId = randomUUID(), projectId = randomUUID(), deploymentId = randomUUID(), agentId = randomUUID();
+    const client = requirePool(), database = requireDb(), actorId = randomUUID(), projectId = randomUUID(), deploymentId = randomUUID(), targetDeploymentId = randomUUID(), agentId = randomUUID();
     const adminRole = (await client.query<{ id: string }>("SELECT id FROM roles WHERE name = 'admin'")).rows.at(0);
     if (!adminRole) throw new Error("Canonical admin role was not seeded");
     await client.query("INSERT INTO users (id, email, email_normalized, password_hash, role_id) VALUES ($1, $2, $2, $3, $4)",
@@ -755,16 +756,25 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
       runCommand: "node server.js", port: 3000, description: null, imageTag: null });
     await requireDbDeploymentRepository().save({ id: deploymentId, projectId, agentId, status: "succeeded", commitSha: "abcdef1234567",
       startedAt: new Date().toISOString(), finishedAt: new Date().toISOString() });
+    await requireDbDeploymentRepository().save({ id: targetDeploymentId, projectId, agentId, status: "succeeded", commitSha: "abcdef7654321",
+      startedAt: new Date().toISOString(), finishedAt: new Date().toISOString() });
 
     const publishedPort = 31_000 + Math.floor(Math.random() * 10_000), protocol = "udp" as const;
     const store = new DbTransportPortApplyStore(database), commandRepo = new DbControlCommandRepository(database);
     const makeBinding = (targetPort: number): TransportPortBindingV1 => ({ protocol, publishedPort, targetPort });
+    const image1 = `registry.example.com/team/source@sha256:${"a".repeat(64)}`, image2 = `registry.example.com/team/target@sha256:${"b".repeat(64)}`;
+    const makeProof = (id: string, image: string, containerId: string) => trustedPriorExecutionReceiptSchema.parse({ schemaVersion: 1,
+      candidateId: `${id}:candidate:trusted-command`, deploymentId: id, projectId, snapshotOriginId: id, snapshotHash: "c".repeat(64),
+      effectiveImageDigest: image.split("@")[1], runtimeHost: agentId, container: `deploylite-active-${id}`, containerId,
+      hostPort: id === deploymentId ? 43000 : 43001, containerPort: 3000, network: null });
+    const proof1 = makeProof(deploymentId, image1, "a".repeat(64)), proof2 = makeProof(targetDeploymentId, image2, "b".repeat(64));
     const execute = async (targetPort: number, operation: "apply" | "rollback", rollbackRevisionId: string | null,
-      currentContainerId: string, previousBindings: TransportPortBindingV1[], nextContainerId: string) => {
-      const route = transportPortIntentSchema.parse({ schemaVersion: 1, projectId, deploymentId, protocol, publishedPort, targetPort });
+      currentContainerId: string, previousBindings: TransportPortBindingV1[], nextContainerId: string, targetId = deploymentId,
+      portTransfer?: TransportPortTransferV1, nextSourceContainerId = "e".repeat(64)) => {
+      const route = transportPortIntentSchema.parse({ schemaVersion: 1, projectId, deploymentId: targetId, protocol, publishedPort, targetPort });
       const currentClaims = await store.listClaims(), plan = createTransportPortPlan({ desired: route, currentClaims });
       const command = { ...createControlCommand({ actorId, action: "project.update", scope: { kind: "project", projectId },
-        input: { route, operation, rollbackRevisionId }, idempotencyKey: `transport-${operation}-${targetPort}-${randomUUID()}`,
+        input: { route, operation, rollbackRevisionId, ...(portTransfer ? { portTransfer } : {}) }, idempotencyKey: `transport-${operation}-${targetPort}-${randomUUID()}`,
         correlationId: `corr-transport-${operation}-${targetPort}-${randomUUID()}`, expiresAt: new Date(Date.now() + 60_000) }), status: "eligible" as const };
       await commandRepo.resolve(command);
       const claimed = await commandRepo.claimProjectUpdate(command);
@@ -772,13 +782,14 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
       if (!claimed.authority) throw new Error("Project update authority was not claimed for transport apply");
       const bindings = [makeBinding(targetPort)];
       await store.reserveTransportPortApply({ command: claimed.command, route, plan, operation, rollbackRevisionId,
-        currentContainerId, bindings, previousBindings });
+        currentContainerId, bindings, previousBindings, ...(portTransfer ? { portTransfer } : {}) });
       const receipt: TransportPortApplyReceiptV1 = transportPortApplyReceiptSchema.parse({ schemaVersion: 1,
-        action: "transport.port.apply", agentId, commandId: command.id, projectId, protocol, publishedPort, targetPort, deploymentId,
-        operation, rollbackRevisionId, inputDigest: command.inputDigest, correlationId: command.correlationId, containerId: nextContainerId,
+        action: "transport.port.apply", agentId, commandId: command.id, projectId, protocol, publishedPort, targetPort,
+        deploymentId: targetId, operation, rollbackRevisionId, inputDigest: command.inputDigest, correlationId: command.correlationId, containerId: nextContainerId,
+        ...(portTransfer ? { portTransfer: { sourceDeploymentId: portTransfer.sourceDeploymentId, sourceContainerId: nextSourceContainerId, retainedPriorContainerIds: [] } } : {}),
         state: "updated", observedAt: Date.now(), failureReason: null, redacted: true });
       const completion = { command: claimed.command, authority: claimed.authority, route, plan, currentContainerId, bindings, previousBindings,
-        operation, rollbackRevisionId, receipt, audit: { actorUserId: actorId,
+        ...(portTransfer ? { portTransfer } : {}), operation, rollbackRevisionId, receipt, audit: { actorUserId: actorId,
           action: operation === "rollback" ? "transport.port.rolled_back" : "transport.port.applied", targetType: "project", targetId: projectId,
           requestId: `request-${command.id}`, correlationId: command.correlationId, metadata: { agentId } } };
       const completed = await store.completeTransportPortApply(completion);
@@ -795,16 +806,32 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
     expect(rollbackTarget).toMatchObject({ id: initial.revision?.id, deploymentId, targetPort: 25565 });
     const rolledBack = await execute(25565, "rollback", rollbackTarget!.id, "c".repeat(64), [makeBinding(25566)], "d".repeat(64));
     expect(rolledBack.revision).toMatchObject({ operation: "rollback", revisionNumber: 3, rollbackRevisionId: initial.revision?.id });
+    const outbound = { sourceDeploymentId: deploymentId, sourceContainerId: "d".repeat(64), sourceBindings: [],
+      sourcePreviousBindings: [makeBinding(25565)], sourceExecutionReceipt: proof1, sourceEffectiveImage: image1 } satisfies TransportPortTransferV1;
+    const transferred = await execute(25567, "apply", null, "b".repeat(64), [], "c".repeat(64), targetDeploymentId, outbound, "f".repeat(64));
+    expect(transferred.revision).toMatchObject({ operation: "apply", revisionNumber: 4, deploymentId: targetDeploymentId, targetPort: 25567 });
     await expect(store.findTransportPortRuntimeState(projectId, deploymentId)).resolves.toEqual({ projectId, deploymentId,
-      containerId: "d".repeat(64), bindings: [makeBinding(25565)] });
+      containerId: "f".repeat(64), bindings: [] });
+    await expect(store.findTransportPortRuntimeState(projectId, targetDeploymentId)).resolves.toEqual({ projectId, deploymentId: targetDeploymentId,
+      containerId: "c".repeat(64), bindings: [makeBinding(25567)] });
+    const transferRollbackTarget = await store.findRollbackTarget(projectId, protocol, publishedPort);
+    expect(transferRollbackTarget).toMatchObject({ deploymentId, targetPort: 25565 });
+    const inbound = { sourceDeploymentId: targetDeploymentId, sourceContainerId: "c".repeat(64), sourceBindings: [],
+      sourcePreviousBindings: [makeBinding(25567)], sourceExecutionReceipt: proof2, sourceEffectiveImage: image2 } satisfies TransportPortTransferV1;
+    const transferredBack = await execute(25565, "rollback", transferRollbackTarget!.id, "f".repeat(64), [], "1".repeat(64), deploymentId, inbound, "2".repeat(64));
+    expect(transferredBack.revision).toMatchObject({ operation: "rollback", revisionNumber: 5, rollbackRevisionId: transferRollbackTarget!.id });
+    await expect(store.findTransportPortRuntimeState(projectId, deploymentId)).resolves.toEqual({ projectId, deploymentId,
+      containerId: "1".repeat(64), bindings: [makeBinding(25565)] });
+    await expect(store.findTransportPortRuntimeState(projectId, targetDeploymentId)).resolves.toEqual({ projectId, deploymentId: targetDeploymentId,
+      containerId: "2".repeat(64), bindings: [] });
     await expect(client.query("SELECT target_port FROM transport_port_claims WHERE protocol = $1 AND published_port = $2", [protocol, publishedPort]))
       .resolves.toMatchObject({ rows: [{ target_port: 25565 }] });
     await expect(client.query("SELECT count(*)::int AS count FROM transport_port_reservations WHERE protocol = $1 AND published_port = $2", [protocol, publishedPort]))
       .resolves.toMatchObject({ rows: [{ count: 0 }] });
     await expect(client.query("SELECT count(*)::int AS count FROM transport_port_revisions WHERE project_id = $1 AND protocol = $2 AND published_port = $3", [projectId, protocol, publishedPort]))
-      .resolves.toMatchObject({ rows: [{ count: 3 }] });
+      .resolves.toMatchObject({ rows: [{ count: 5 }] });
     await expect(client.query("SELECT action, count(*)::int AS count FROM audit_events WHERE target_id = $1 AND action IN ('transport.port.applied', 'transport.port.rolled_back') GROUP BY action ORDER BY action", [projectId]))
-      .resolves.toMatchObject({ rows: [{ action: "transport.port.applied", count: 2 }, { action: "transport.port.rolled_back", count: 1 }] });
+      .resolves.toMatchObject({ rows: [{ action: "transport.port.applied", count: 3 }, { action: "transport.port.rolled_back", count: 2 }] });
   });
 });
 

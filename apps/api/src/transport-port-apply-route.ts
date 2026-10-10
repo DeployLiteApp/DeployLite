@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest, preHandlerAsyncHookHandler } from "fastify";
 import { deploymentSchema, transportPortApplyReceiptSchema, transportPortPreviewRequestSchema, transportPortRollbackRequestSchema,
-  trustedPriorExecutionReceiptSchema, type ProjectControlAuthorityV1, type TransportPortApplyReceiptV1, type TransportPortBindingV1, type TransportPortIntentV1 } from "@deploylite/contracts";
+  trustedPriorExecutionReceiptSchema, type ProjectControlAuthorityV1, type TransportPortApplyReceiptV1, type TransportPortBindingV1, type TransportPortIntentV1,
+  type TransportPortTransferV1 } from "@deploylite/contracts";
 import { createControlCommand, digestControlInput, IdempotencyConflictError, PolicyEvaluator, TransportPortPlanError,
   createTransportPortPlan, type AuditRepository, type ControlCommand, type ControlGrantRepository, type DeploymentRepository,
   type PreparedTransportPortApplyCommand, type ProjectRepository, type ProjectUpdateControlRepository, type TransportPortApplyCompletionStore,
@@ -19,6 +20,7 @@ type Options = Readonly<{ prefix: string; projects: ProjectRepository; deploymen
 const identity = /^[A-Za-z0-9_-]{1,200}$/;
 const paramsSchema = z.object({ projectId: z.string().regex(identity) }).strict();
 const keySchema = z.string().regex(identity);
+const sortBindings = (rows: TransportPortBindingV1[]) => [...rows].sort((left, right) => left.protocol.localeCompare(right.protocol) || left.publishedPort - right.publishedPort);
 function authorityFor(command: ControlCommand, projectId: string): ProjectControlAuthorityV1 | null {
   const authority = command.projectExecutionAuthority;
   if (!authority || command.action !== "project.update" || command.scope.kind !== "project" || command.scope.projectId !== projectId
@@ -26,10 +28,13 @@ function authorityFor(command: ControlCommand, projectId: string): ProjectContro
   return structuredClone(authority);
 }
 function matchesReceipt(receipt: TransportPortApplyReceiptV1, route: TransportPortIntentV1, operation: "apply" | "rollback", revisionId: string | null,
-  commandId: string, correlationId: string): boolean {
+  commandId: string, correlationId: string, portTransfer?: TransportPortTransferV1): boolean {
   return receipt.commandId === commandId && receipt.correlationId === correlationId && receipt.projectId === route.projectId
     && receipt.deploymentId === route.deploymentId && receipt.protocol === route.protocol && receipt.publishedPort === route.publishedPort
-    && receipt.targetPort === route.targetPort && receipt.operation === operation && receipt.rollbackRevisionId === revisionId;
+    && receipt.targetPort === route.targetPort && receipt.operation === operation && receipt.rollbackRevisionId === revisionId
+    && (portTransfer === undefined ? receipt.portTransfer === undefined : receipt.state === "failed" ? receipt.portTransfer === undefined
+      : receipt.portTransfer?.sourceDeploymentId === portTransfer.sourceDeploymentId
+        && receipt.portTransfer.sourceContainerId !== portTransfer.sourceContainerId);
 }
 function storedReceipt(command: ControlCommand, route?: TransportPortIntentV1, operation?: "apply" | "rollback", revisionId?: string | null): TransportPortApplyReceiptV1 | null {
   if (command.status !== "completed") return null;
@@ -99,6 +104,7 @@ export function registerTransportPortApplyRoutes(app: FastifyInstance, options: 
     try { currentClaims = await claims.listClaims(); } catch { return unavailable("claim-state-unavailable"); }
     let route: TransportPortIntentV1 | null = null, plan: TransportPortPlanV1 | null = null, rollbackRevisionId: string | null = null;
     let currentContainerId: string | null = null, bindings: TransportPortBindingV1[] | null = null, previousBindings: TransportPortBindingV1[] | null = null;
+    let portTransfer: TransportPortTransferV1 | undefined;
     if (command?.status === "dispatching") {
       try {
         const reservation = await store.findTransportPortReservation(command.id);
@@ -107,6 +113,7 @@ export function registerTransportPortApplyRoutes(app: FastifyInstance, options: 
           || reservation.route.targetPort !== (body.data as z.infer<typeof transportPortPreviewRequestSchema>).targetPort)) return reply.code(409).send(options.error(request, "IDEMPOTENCY_CONFLICT", "Port input differs from its durable command."));
         route = reservation.route; plan = reservation.plan; rollbackRevisionId = reservation.rollbackRevisionId;
         currentContainerId = reservation.currentContainerId; bindings = reservation.bindings; previousBindings = reservation.previousBindings;
+        portTransfer = reservation.portTransfer;
       } catch { return unavailable("reservation-invalid"); }
     } else if (operation === "apply") {
       const apply = body.data as z.infer<typeof transportPortPreviewRequestSchema>;
@@ -160,13 +167,44 @@ export function registerTransportPortApplyRoutes(app: FastifyInstance, options: 
         return unavailable("claim-state-invalid");
       }
     }
-    if (plan.action === "retarget" && plan.previous?.deploymentId !== route.deploymentId) {
-      if (!await audit(`transport.port.${operation}.rejected`, { reason: "cross-deployment-port-transition" })) return unavailable("audit-unavailable");
-      return reply.code(409).send(options.error(request, "TRANSPORT_PORT_DEPLOYMENT_TRANSITION_UNSUPPORTED",
-        "Move this port after the target deployment is active on the same deployment identity."));
+    if (plan.action === "retarget" && plan.previous?.deploymentId !== route.deploymentId && !portTransfer) {
+      const sourceDeploymentId = plan.previous?.deploymentId;
+      if (!sourceDeploymentId || sourceDeploymentId === route.deploymentId) return unavailable("port-source-invalid");
+      let rawSource;
+      try { rawSource = await options.deployments.findById(sourceDeploymentId); } catch { return unavailable("source-deployment-storage-unavailable"); }
+      const parsedSource = deploymentSchema.safeParse(rawSource);
+      if (!parsedSource.success) return unavailable("source-state-invalid");
+      const source = parsedSource.data, sourceProof = trustedPriorExecutionReceiptSchema.safeParse(source.executionReceipt);
+      const sourceEffectiveImage = source.stopTarget?.effectiveImage;
+      const sourceVerified = source.projectId === projectId && source.status === "succeeded" && source.finishedAt !== null
+        && source.agentId === execution.agentId && source.snapshotHash !== undefined && source.snapshotOriginId !== undefined
+        && sourceProof.success && sourceEffectiveImage !== undefined && sourceProof.data.deploymentId === source.id
+        && sourceProof.data.projectId === projectId && sourceProof.data.runtimeHost === source.agentId
+        && sourceProof.data.snapshotHash === source.snapshotHash && sourceProof.data.snapshotOriginId === source.snapshotOriginId
+        && sourceProof.data.candidateId === source.stopTarget?.candidateId
+        && sourceProof.data.effectiveImageDigest === sourceEffectiveImage.split("@")[1];
+      if (!sourceVerified || !sourceProof.success || !sourceEffectiveImage) return reply.code(409).send(options.error(request,
+        "TRANSPORT_PORT_SOURCE_UNVERIFIED", "The current port owner lacks a matching trusted execution receipt."));
+      const sourcePreviousBindings = sortBindings(currentClaims.filter(claim => claim.projectId === projectId && claim.deploymentId === sourceDeploymentId)
+        .map(claim => ({ protocol: claim.protocol, publishedPort: claim.publishedPort, targetPort: claim.targetPort })));
+      const sourceKey = `${protocol}:${publishedPort}`;
+      const sourceBinding = sourcePreviousBindings.find(binding => `${binding.protocol}:${binding.publishedPort}` === sourceKey);
+      if (!sourceBinding || sourceBinding.targetPort !== plan.previous?.targetPort) return unavailable("source-claim-state-stale");
+      let sourceRuntimeState;
+      try { sourceRuntimeState = await store.findTransportPortRuntimeState(projectId, sourceDeploymentId); }
+      catch { return unavailable("source-runtime-port-state-invalid"); }
+      if (!sourceRuntimeState || sourceRuntimeState.projectId !== projectId || sourceRuntimeState.deploymentId !== sourceDeploymentId
+        || JSON.stringify(sortBindings(sourceRuntimeState.bindings)) !== JSON.stringify(sourcePreviousBindings)) {
+        return reply.code(409).send(options.error(request, "TRANSPORT_PORT_SOURCE_STATE_STALE", "The current port owner runtime state is unavailable or stale."));
+      }
+      const sourceBindings = sourcePreviousBindings.filter(binding => `${binding.protocol}:${binding.publishedPort}` !== sourceKey);
+      if (sourceBindings.length > 128) return unavailable("source-binding-limit-exceeded");
+      portTransfer = { sourceDeploymentId, sourceContainerId: sourceRuntimeState.containerId, sourcePreviousBindings, sourceBindings,
+        sourceExecutionReceipt: sourceProof.data, sourceEffectiveImage };
+    } else if (plan.action !== "retarget" || plan.previous?.deploymentId === route.deploymentId) {
+      if (portTransfer) return unavailable("unexpected-port-transfer-reservation");
     }
 
-    const sortBindings = (rows: TransportPortBindingV1[]) => [...rows].sort((left, right) => left.protocol.localeCompare(right.protocol) || left.publishedPort - right.publishedPort);
     if (!bindings || !previousBindings || !currentContainerId) {
       previousBindings = sortBindings(currentClaims.filter(claim => claim.projectId === projectId && claim.deploymentId === route!.deploymentId)
         .map(claim => ({ protocol: claim.protocol, publishedPort: claim.publishedPort, targetPort: claim.targetPort })));
@@ -190,7 +228,8 @@ export function registerTransportPortApplyRoutes(app: FastifyInstance, options: 
       if (!await audit(`transport.port.${operation}.rejected`, { reason: "binding-limit-exceeded", deploymentId: route.deploymentId })) return unavailable("audit-unavailable");
       return reply.code(409).send(options.error(request, "TRANSPORT_PORT_BINDING_LIMIT", "The deployment already has the maximum supported number of transport bindings."));
     }
-    const stableInput = { route, executionReceipt: proof.data, effectiveImage, operation, rollbackRevisionId };
+    const stableInput = { route, executionReceipt: proof.data, effectiveImage, operation, rollbackRevisionId,
+      ...(portTransfer ? { portTransfer } : {}) };
     let tentative: ControlCommand;
     try { tentative = { ...createControlCommand({ actorId: auth.user.id, action: "project.update", scope: { kind: "project", projectId },
       input: stableInput, idempotencyKey: key, correlationId: context.correlationId,
@@ -215,10 +254,11 @@ export function registerTransportPortApplyRoutes(app: FastifyInstance, options: 
     }
 
     const preparedBase: PreparedTransportPortApplyCommand = { command, route, bindings, previousBindings, currentContainerId, executionReceipt: proof.data,
-      effectiveImage, operation, rollbackRevisionId, agentId: execution.agentId };
+      ...(portTransfer ? { portTransfer } : {}), effectiveImage, operation, rollbackRevisionId, agentId: execution.agentId };
     let authority = authorityFor(command, projectId);
     try {
-      await store.reserveTransportPortApply({ command, route, plan, operation, rollbackRevisionId, currentContainerId, bindings, previousBindings });
+      await store.reserveTransportPortApply({ command, route, plan, operation, rollbackRevisionId, currentContainerId, bindings, previousBindings,
+        ...(portTransfer ? { portTransfer } : {}) });
       if (command.status === "eligible") {
         const claimed = await execution.controls.claimProjectUpdate(command);
         command = claimed.command;
@@ -247,16 +287,17 @@ export function registerTransportPortApplyRoutes(app: FastifyInstance, options: 
           }
         }
       }
-      if (!matchesReceipt(terminal, route, operation, rollbackRevisionId, command.id, command.correlationId) || terminal.agentId !== execution.agentId
+      if (!matchesReceipt(terminal, route, operation, rollbackRevisionId, command.id, command.correlationId, portTransfer) || terminal.agentId !== execution.agentId
         || terminal.inputDigest !== command.inputDigest) throw new Error("transport-port-receipt-invalid");
       const auditAction = terminal.state === "failed" ? operation === "rollback" ? "transport.port.rollback.failed" : "transport.port.apply.failed"
         : operation === "rollback" ? "transport.port.rolled_back" : "transport.port.applied";
       const auditInput = { actorUserId: auth.user.id, action: auditAction, targetType: "project", targetId: projectId,
         requestId: context.requestId, correlationId: command.correlationId,
         metadata: { projectId, protocol, publishedPort, targetPort: route.targetPort, deploymentId: route.deploymentId,
+          ...(portTransfer ? { sourceDeploymentId: portTransfer.sourceDeploymentId } : {}),
           agentId: execution.agentId, commandId: command.id, state: terminal.state, failureReason: terminal.failureReason } };
       const completed = await store.completeTransportPortApply({ command, authority, route, plan, operation, rollbackRevisionId, currentContainerId,
-        bindings, previousBindings, receipt: terminal, audit: auditInput });
+        bindings, previousBindings, ...(portTransfer ? { portTransfer } : {}), receipt: terminal, audit: auditInput });
       const revision = await store.findTransportPortRevisionByCommand(command.id);
       if (terminal.state !== "failed" && plan.action !== "no-op" && !revision) return unavailable("transport-port-revision-missing");
       return reply.code(200).send(options.ok(request, { command: completed, operation, route, receipt: terminal, applied: terminal.state !== "failed",

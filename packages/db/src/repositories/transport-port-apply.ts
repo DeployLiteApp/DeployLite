@@ -1,6 +1,7 @@
 import { and, desc, eq, ne, or, sql } from "drizzle-orm";
 import { projectControlAuthoritySchema, protocolPayloadFingerprint, transportPortApplyReceiptSchema, transportPortIntentSchema,
-  transportPortBindingSchema, transportPortRevisionSchema, transportPortRuntimeStateSchema, type TransportPortRevisionV1 } from "@deploylite/contracts";
+  transportPortBindingSchema, transportPortRevisionSchema, transportPortRuntimeStateSchema, transportPortTransferSchema,
+  type TransportPortRevisionV1, type TransportPortTransferV1 } from "@deploylite/contracts";
 import { validateProjectUpdateAuthority, type ControlCommand, type TransportPortApplyCompletionInput, type TransportPortApplyCompletionStore,
   type TransportPortApplyReservationV1, type TransportPortClaimReader, type TransportPortPlanV1, type TransportPortRuntimeState } from "@deploylite/domain";
 import type { DeployLiteDb } from "../client.js";
@@ -98,25 +99,42 @@ export class DbTransportPortApplyStore implements TransportPortClaimReader, Tran
     if (!row) return null;
     const route = transportPortIntentSchema.safeParse(row.route), plan = storedPlan(row.plan);
     const bindings = parseBindings(row.bindings), previousBindings = parseBindings(row.previousBindings);
+    const parsedTransfer = row.portTransfer === null ? null : transportPortTransferSchema.safeParse(row.portTransfer);
+    const portTransfer = parsedTransfer && parsedTransfer.success ? parsedTransfer.data : undefined;
     if (!route.success || !plan || !bindings || !previousBindings || !/^[a-f0-9]{64}$/.test(row.currentContainerId)
+      || row.portTransfer !== null && !portTransfer
       || !matchesRouteBinding(bindings, route.data) || plan.route.projectId !== route.data.projectId || plan.route.deploymentId !== route.data.deploymentId
       || plan.route.protocol !== route.data.protocol || plan.route.publishedPort !== route.data.publishedPort
+      || (plan.action === "retarget" && plan.previous?.deploymentId !== route.data.deploymentId) !== Boolean(portTransfer)
+      || (portTransfer && (portTransfer.sourceDeploymentId !== plan.previous?.deploymentId
+        || portTransfer.sourceBindings.some(binding => binding.protocol === route.data.protocol && binding.publishedPort === route.data.publishedPort)
+        || !portTransfer.sourcePreviousBindings.some(binding => binding.protocol === route.data.protocol && binding.publishedPort === route.data.publishedPort
+          && binding.targetPort === plan.previous?.targetPort)))
       || (row.operation !== "apply" && row.operation !== "rollback") || (row.operation === "apply") !== (row.rollbackRevisionId === null)) {
       throw new TransportPortStoreError("stored-binding-invalid");
     }
     return { commandId: row.commandId, route: route.data, plan, operation: row.operation, rollbackRevisionId: row.rollbackRevisionId,
-      currentContainerId: row.currentContainerId, bindings, previousBindings };
+      currentContainerId: row.currentContainerId, bindings, previousBindings, ...(portTransfer ? { portTransfer } : {}) };
   }
 
   async reserveTransportPortApply(input: Readonly<{ command: ControlCommand; route: import("@deploylite/contracts").TransportPortIntentV1; plan: TransportPortPlanV1;
     operation: "apply" | "rollback"; rollbackRevisionId: string | null; currentContainerId: string;
-    bindings: import("@deploylite/contracts").TransportPortBindingV1[]; previousBindings: import("@deploylite/contracts").TransportPortBindingV1[] }>): Promise<void> {
+    bindings: import("@deploylite/contracts").TransportPortBindingV1[]; previousBindings: import("@deploylite/contracts").TransportPortBindingV1[];
+    portTransfer?: TransportPortTransferV1 }>): Promise<void> {
     const route = transportPortIntentSchema.safeParse(input.route);
     const bindings = parseBindings(input.bindings), previousBindings = parseBindings(input.previousBindings);
+    const transfer = input.portTransfer && transportPortTransferSchema.safeParse(input.portTransfer);
+    const portTransfer = transfer?.success ? transfer.data : undefined;
     if (!route.success || input.plan.route.projectId !== route.data.projectId || input.plan.route.deploymentId !== route.data.deploymentId
       || input.plan.route.protocol !== route.data.protocol || input.plan.route.publishedPort !== route.data.publishedPort
       || input.plan.route.targetPort !== route.data.targetPort || (input.operation === "apply") !== (input.rollbackRevisionId === null)
       || !/^[a-f0-9]{64}$/.test(input.currentContainerId) || !bindings || !previousBindings || !matchesRouteBinding(bindings, route.data)
+      || input.portTransfer !== undefined && !portTransfer
+      || (input.plan.action === "retarget" && input.plan.previous?.deploymentId !== route.data.deploymentId) !== Boolean(portTransfer)
+      || (portTransfer && (portTransfer.sourceDeploymentId !== input.plan.previous?.deploymentId
+        || portTransfer.sourceBindings.some(binding => binding.protocol === route.data.protocol && binding.publishedPort === route.data.publishedPort)
+        || !portTransfer.sourcePreviousBindings.some(binding => binding.protocol === route.data.protocol && binding.publishedPort === route.data.publishedPort
+          && binding.targetPort === input.plan.previous?.targetPort)))
       || (input.operation === "rollback" && input.plan.action !== "retarget") || input.command.action !== "project.update"
       || input.command.scope.kind !== "project" || input.command.scope.projectId !== route.data.projectId
       || !["eligible", "dispatching"].includes(input.command.status)) throw new TransportPortStoreError("completion-rejected");
@@ -130,7 +148,8 @@ export class DbTransportPortApplyStore implements TransportPortClaimReader, Tran
           || protocolPayloadFingerprint(reservation.plan) !== protocolPayloadFingerprint(input.plan) || reservation.operation !== input.operation
           || reservation.rollbackRevisionId !== input.rollbackRevisionId || reservation.currentContainerId !== input.currentContainerId
           || protocolPayloadFingerprint(reservation.bindings) !== protocolPayloadFingerprint(bindings)
-          || protocolPayloadFingerprint(reservation.previousBindings) !== protocolPayloadFingerprint(previousBindings)) throw new TransportPortStoreError("completion-rejected");
+          || protocolPayloadFingerprint(reservation.previousBindings) !== protocolPayloadFingerprint(previousBindings)
+          || protocolPayloadFingerprint(reservation.portTransfer) !== protocolPayloadFingerprint(portTransfer ?? null)) throw new TransportPortStoreError("completion-rejected");
         return;
       }
       if (reservation) throw new TransportPortStoreError("port-conflict");
@@ -165,6 +184,23 @@ export class DbTransportPortApplyStore implements TransportPortClaimReader, Tran
       if (protocolPayloadFingerprint([...expectedBindings.values()].sort((a, b) => a.protocol.localeCompare(b.protocol) || a.publishedPort - b.publishedPort))
         !== protocolPayloadFingerprint(bindings)) throw new TransportPortStoreError("stale-plan");
 
+      if (portTransfer) {
+        const sourceClaims = await tx.select().from(transportPortClaims).where(and(eq(transportPortClaims.projectId, route.data.projectId),
+          eq(transportPortClaims.deploymentId, portTransfer.sourceDeploymentId))).for("update");
+        const storedSource = parseBindings(sourceClaims.map(claim => ({ protocol: claim.protocol, publishedPort: claim.publishedPort, targetPort: claim.targetPort })));
+        const sortedSource = portTransfer.sourcePreviousBindings.slice().sort((a, b) => a.protocol.localeCompare(b.protocol) || a.publishedPort - b.publishedPort);
+        const expectedSource = sortedSource.filter(binding => !(binding.protocol === route.data.protocol && binding.publishedPort === route.data.publishedPort));
+        const [sourceState] = await tx.select().from(transportPortRuntimeStates).where(and(eq(transportPortRuntimeStates.projectId, route.data.projectId),
+          eq(transportPortRuntimeStates.deploymentId, portTransfer.sourceDeploymentId))).limit(1).for("update");
+        const sourceStateBindings = sourceState ? parseBindings(sourceState.bindings) : null;
+        if (!storedSource || protocolPayloadFingerprint(storedSource.slice().sort((a, b) => a.protocol.localeCompare(b.protocol) || a.publishedPort - b.publishedPort))
+          !== protocolPayloadFingerprint(sortedSource) || !sourceState || sourceState.containerId !== portTransfer.sourceContainerId
+          || !sourceStateBindings || protocolPayloadFingerprint(sourceStateBindings.slice().sort((a, b) => a.protocol.localeCompare(b.protocol) || a.publishedPort - b.publishedPort))
+          !== protocolPayloadFingerprint(sortedSource) || protocolPayloadFingerprint(portTransfer.sourceBindings) !== protocolPayloadFingerprint(expectedSource)) {
+          throw new TransportPortStoreError("stale-plan");
+        }
+      }
+
       if (input.operation === "rollback") {
         const [target] = await tx.select().from(transportPortRevisions).where(and(eq(transportPortRevisions.id, input.rollbackRevisionId!),
           eq(transportPortRevisions.projectId, route.data.projectId), eq(transportPortRevisions.protocol, route.data.protocol),
@@ -182,6 +218,7 @@ export class DbTransportPortApplyStore implements TransportPortClaimReader, Tran
       await tx.insert(transportPortReservations).values({ protocol: route.data.protocol, publishedPort: route.data.publishedPort,
         projectId: route.data.projectId, commandId: input.command.id, route: route.data, plan: input.plan,
         currentContainerId: input.currentContainerId, bindings, previousBindings,
+        portTransfer: portTransfer ?? null,
         operation: input.operation, rollbackRevisionId: input.rollbackRevisionId });
     });
   }
@@ -197,6 +234,8 @@ export class DbTransportPortApplyStore implements TransportPortClaimReader, Tran
   async completeTransportPortApply(input: TransportPortApplyCompletionInput): Promise<ControlCommand> {
     const route = transportPortIntentSchema.safeParse(input.route), receipt = transportPortApplyReceiptSchema.safeParse(input.receipt), authority = projectControlAuthoritySchema.safeParse(input.authority);
     const bindings = parseBindings(input.bindings), previousBindings = parseBindings(input.previousBindings);
+    const transfer = input.portTransfer && transportPortTransferSchema.safeParse(input.portTransfer);
+    const portTransfer = transfer?.success ? transfer.data : undefined;
     if (!route.success || !receipt.success || !authority.success || input.command.action !== "project.update" || input.command.scope.kind !== "project"
       || input.command.scope.projectId !== route.data.projectId || input.command.id !== authority.data.commandId
       || input.command.inputDigest !== authority.data.inputDigest || authority.data.projectId !== route.data.projectId
@@ -204,11 +243,20 @@ export class DbTransportPortApplyStore implements TransportPortClaimReader, Tran
       || input.plan.route.protocol !== route.data.protocol || input.plan.route.publishedPort !== route.data.publishedPort
       || input.plan.route.targetPort !== route.data.targetPort || (input.operation === "apply") !== (input.rollbackRevisionId === null)
       || !/^[a-f0-9]{64}$/.test(input.currentContainerId) || !bindings || !previousBindings || !matchesRouteBinding(bindings, route.data)
+      || input.portTransfer !== undefined && !portTransfer
+      || (input.plan.action === "retarget" && input.plan.previous?.deploymentId !== route.data.deploymentId) !== Boolean(portTransfer)
+      || (portTransfer && (portTransfer.sourceDeploymentId !== input.plan.previous?.deploymentId
+        || portTransfer.sourceBindings.some(binding => binding.protocol === route.data.protocol && binding.publishedPort === route.data.publishedPort)
+        || !portTransfer.sourcePreviousBindings.some(binding => binding.protocol === route.data.protocol && binding.publishedPort === route.data.publishedPort
+          && binding.targetPort === input.plan.previous?.targetPort)))
       || (input.operation === "rollback" && input.plan.action !== "retarget")
       || receipt.data.commandId !== input.command.id || receipt.data.projectId !== route.data.projectId || receipt.data.deploymentId !== route.data.deploymentId
       || receipt.data.protocol !== route.data.protocol || receipt.data.publishedPort !== route.data.publishedPort || receipt.data.targetPort !== route.data.targetPort
       || receipt.data.operation !== input.operation || receipt.data.rollbackRevisionId !== input.rollbackRevisionId
       || receipt.data.inputDigest !== input.command.inputDigest || receipt.data.agentId !== input.audit.metadata?.agentId
+      || (portTransfer === undefined ? receipt.data.portTransfer !== undefined : receipt.data.state === "failed" ? receipt.data.portTransfer !== undefined
+        : receipt.data.portTransfer?.sourceDeploymentId !== portTransfer.sourceDeploymentId
+          || receipt.data.portTransfer.sourceContainerId === portTransfer.sourceContainerId)
       || input.audit.action !== (receipt.data.state === "failed" ? input.operation === "rollback" ? "transport.port.rollback.failed" : "transport.port.apply.failed"
         : input.operation === "rollback" ? "transport.port.rolled_back" : "transport.port.applied")
       || input.audit.actorUserId !== input.command.actorId || input.audit.targetType !== "project" || input.audit.targetId !== route.data.projectId
@@ -241,7 +289,8 @@ export class DbTransportPortApplyStore implements TransportPortClaimReader, Tran
         || protocolPayloadFingerprint(reservation.plan) !== protocolPayloadFingerprint(input.plan)
         || reservation.operation !== input.operation || reservation.rollbackRevisionId !== input.rollbackRevisionId
         || reservation.currentContainerId !== input.currentContainerId || protocolPayloadFingerprint(reservation.bindings) !== protocolPayloadFingerprint(bindings)
-        || protocolPayloadFingerprint(reservation.previousBindings) !== protocolPayloadFingerprint(previousBindings)) throw new TransportPortStoreError("completion-rejected");
+        || protocolPayloadFingerprint(reservation.previousBindings) !== protocolPayloadFingerprint(previousBindings)
+        || protocolPayloadFingerprint(reservation.portTransfer) !== protocolPayloadFingerprint(portTransfer ?? null)) throw new TransportPortStoreError("completion-rejected");
 
       let revision: TransportPortRevisionV1 | null = null;
       if (receipt.data.state !== "failed") {
@@ -266,6 +315,23 @@ export class DbTransportPortApplyStore implements TransportPortClaimReader, Tran
           const runtimeBindings = parseBindings(runtimeStateRow.bindings);
           if (runtimeStateRow.containerId !== input.currentContainerId || !runtimeBindings
             || protocolPayloadFingerprint(runtimeBindings) !== protocolPayloadFingerprint(sortedPrevious)) throw new TransportPortStoreError("stale-plan");
+        }
+        let sourceBindingsAfterTransfer: import("@deploylite/contracts").TransportPortBindingV1[] | null = null;
+        if (portTransfer) {
+          const sourceClaims = await tx.select().from(transportPortClaims).where(and(eq(transportPortClaims.projectId, route.data.projectId),
+            eq(transportPortClaims.deploymentId, portTransfer.sourceDeploymentId))).for("update");
+          const storedSource = parseBindings(sourceClaims.map(claim => ({ protocol: claim.protocol, publishedPort: claim.publishedPort, targetPort: claim.targetPort })));
+          const sortedSource = portTransfer.sourcePreviousBindings.slice().sort((a, b) => a.protocol.localeCompare(b.protocol) || a.publishedPort - b.publishedPort);
+          sourceBindingsAfterTransfer = sortedSource.filter(binding => !(binding.protocol === route.data.protocol && binding.publishedPort === route.data.publishedPort));
+          const [sourceState] = await tx.select().from(transportPortRuntimeStates).where(and(eq(transportPortRuntimeStates.projectId, route.data.projectId),
+            eq(transportPortRuntimeStates.deploymentId, portTransfer.sourceDeploymentId))).limit(1).for("update");
+          const sourceStateBindings = sourceState ? parseBindings(sourceState.bindings) : null;
+          if (!storedSource || protocolPayloadFingerprint(storedSource.slice().sort((a, b) => a.protocol.localeCompare(b.protocol) || a.publishedPort - b.publishedPort))
+            !== protocolPayloadFingerprint(sortedSource) || !sourceState || sourceState.containerId !== portTransfer.sourceContainerId
+            || !sourceStateBindings || protocolPayloadFingerprint(sourceStateBindings.slice().sort((a, b) => a.protocol.localeCompare(b.protocol) || a.publishedPort - b.publishedPort))
+            !== protocolPayloadFingerprint(sortedSource) || protocolPayloadFingerprint(portTransfer.sourceBindings) !== protocolPayloadFingerprint(sourceBindingsAfterTransfer)) {
+            throw new TransportPortStoreError("stale-plan");
+          }
         }
         if (input.operation === "rollback") {
           const [target] = await tx.select().from(transportPortRevisions).where(and(eq(transportPortRevisions.id, input.rollbackRevisionId!),
@@ -300,6 +366,11 @@ export class DbTransportPortApplyStore implements TransportPortClaimReader, Tran
           containerId: receipt.data.containerId!, bindings, commandId: input.command.id, updatedAt: new Date() })
           .onConflictDoUpdate({ target: [transportPortRuntimeStates.projectId, transportPortRuntimeStates.deploymentId],
             set: { containerId: receipt.data.containerId!, bindings, commandId: input.command.id, updatedAt: new Date() } });
+        if (portTransfer && sourceBindingsAfterTransfer) await tx.insert(transportPortRuntimeStates).values({ projectId: route.data.projectId,
+          deploymentId: portTransfer.sourceDeploymentId, containerId: receipt.data.portTransfer!.sourceContainerId,
+          bindings: sourceBindingsAfterTransfer, commandId: input.command.id, updatedAt: new Date() })
+          .onConflictDoUpdate({ target: [transportPortRuntimeStates.projectId, transportPortRuntimeStates.deploymentId],
+            set: { containerId: receipt.data.portTransfer!.sourceContainerId, bindings: sourceBindingsAfterTransfer, commandId: input.command.id, updatedAt: new Date() } });
       }
       const [completed] = await tx.update(controlCommands).set({ status: "completed", result: receipt.data, updatedAt: new Date() })
         .where(and(eq(controlCommands.id, input.command.id), eq(controlCommands.status, "dispatching"))).returning();

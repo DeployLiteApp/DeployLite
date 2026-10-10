@@ -1,5 +1,5 @@
 import { signAgentTransport } from "@deploylite/config";
-import { TRANSPORT_PORT_APPLY_CAPABILITY, transportPortApplyAgentCommandSchema, transportPortApplyReceiptSchema,
+import { TRANSPORT_PORT_APPLY_CAPABILITY, TRANSPORT_PORT_TRANSFER_CAPABILITY, transportPortApplyAgentCommandSchema, transportPortApplyReceiptSchema,
   trustedPriorExecutionReceiptSchema, type TransportPortIntentV1 } from "@deploylite/contracts";
 import { claimProjectUpdateAuthority, createControlCommand } from "@deploylite/domain";
 import { describe, expect, it, vi } from "vitest";
@@ -13,6 +13,42 @@ const executionReceipt = trustedPriorExecutionReceiptSchema.parse({ schemaVersio
   container: `deploylite-active-${deploymentId}`, containerId: "c".repeat(64), hostPort: 43000, containerPort: 3000, network: null });
 
 describe("agent replay for Docker TCP/UDP apply", () => {
+  it("binds a cross-deployment port transfer to a second trusted source receipt", async () => {
+    const sourceDeploymentId = "deployment-source";
+    const sourceEffectiveImage = `registry.example.com/team/source@sha256:${"d".repeat(64)}`;
+    const sourceExecutionReceipt = trustedPriorExecutionReceiptSchema.parse({ schemaVersion: 1,
+      candidateId: `${sourceDeploymentId}:candidate:source-command`, deploymentId: sourceDeploymentId, projectId,
+      snapshotOriginId: sourceDeploymentId, snapshotHash: "e".repeat(64), effectiveImageDigest: `sha256:${"d".repeat(64)}`,
+      runtimeHost: agentId, container: `deploylite-active-${sourceDeploymentId}`, containerId: "f".repeat(64),
+      hostPort: 43001, containerPort: 3000, network: null });
+    const portTransfer = { sourceDeploymentId, sourceContainerId: "a".repeat(64), sourceBindings: [],
+      sourcePreviousBindings: [{ protocol: route.protocol, publishedPort: route.publishedPort, targetPort: route.targetPort }],
+      sourceExecutionReceipt, sourceEffectiveImage };
+    const input = { route, executionReceipt, effectiveImage, operation: "apply" as const, rollbackRevisionId: null, portTransfer };
+    const now = Date.now(), control = { ...createControlCommand({ actorId: "actor-1", action: "project.update", scope: { kind: "project", projectId },
+      input, idempotencyKey: "port-transfer-1", correlationId: "correlation-transfer-1", expiresAt: new Date(now + 30_000) }), status: "eligible" as const };
+    const authority = claimProjectUpdateAuthority([control], control, now)!;
+    const command = transportPortApplyAgentCommandSchema.safeParse({ schemaVersion: 1, action: "transport.port.apply", agentId,
+      commandId: control.id, projectId, idempotencyKey: control.idempotencyKey, inputDigest: control.inputDigest,
+      operation: "apply", rollbackRevisionId: null, route, currentContainerId: executionReceipt.containerId,
+      bindings: [{ protocol: route.protocol, publishedPort: route.publishedPort, targetPort: route.targetPort }], previousBindings: [],
+      executionReceipt, effectiveImage, portTransfer, requiredCapabilities: [TRANSPORT_PORT_APPLY_CAPABILITY, TRANSPORT_PORT_TRANSFER_CAPABILITY], authority,
+      lease: authority.projectLease, context: { requestId: "request-transfer", correlationId: control.correlationId },
+      timeoutMs: 30_000, cancellationRequested: false });
+    expect(command.success).toBe(true);
+    if (!command.success) return;
+    expect(command.data.portTransfer?.sourceExecutionReceipt.deploymentId).toBe(sourceDeploymentId);
+    expect(transportPortApplyAgentCommandSchema.safeParse({ ...command.data, portTransfer: { ...portTransfer,
+      sourceExecutionReceipt: { ...sourceExecutionReceipt, projectId: "foreign-project" } } }).success).toBe(false);
+    const executor = { execute: vi.fn() };
+    const receiver = new AuthenticatedAgentCommandReceiver({ agentId, trustKey, capabilities: [TRANSPORT_PORT_APPLY_CAPABILITY],
+      dispatcher: { dispatch: async () => { throw new Error("unused"); } }, transportPortApply: executor,
+      replayStore: { claim: vi.fn(), wait: vi.fn(), complete: vi.fn(), release: vi.fn() } as never });
+    const signature = signAgentTransport(JSON.stringify(command.data), trustKey);
+    await expect(receiver.receive(command.data, signature)).rejects.toThrow(/capability/);
+    expect(executor.execute).not.toHaveBeenCalled();
+  });
+
   it("returns the durable terminal receipt on retry without repeating container replacement", async () => {
     const operation = "apply" as const, rollbackRevisionId = null;
     const input = { route, executionReceipt, effectiveImage, operation, rollbackRevisionId };

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { CanonicalRole, ConfirmationClassification, ControlCommandStatus, ControlPlaneAction, ControlPlaneScope, Deployment, DeploymentRollbackCommandResult, DeploymentRedeployCommandResult, DeploymentStopCommandResult, DeploymentExecutionAuthorityV1, ComposeResourceCleanupExecutionReceiptV1, ComposeRevisionSaveCommandResult, ProjectControlAuthorityV1, DomainRouteApplyReceiptV1, DomainRouteApplyAgentCommandV1, DomainRouteIntentV1, DomainRouteRevisionV1, TransportPortApplyReceiptV1, TransportPortApplyAgentCommandV1, TransportPortIntentV1, TransportPortRevisionV1, TransportPortBindingV1, TransportPortRuntimeStateV1 } from "@deploylite/contracts";
+import type { CanonicalRole, ConfirmationClassification, ControlCommandStatus, ControlPlaneAction, ControlPlaneScope, Deployment, DeploymentRollbackCommandResult, DeploymentRedeployCommandResult, DeploymentStopCommandResult, DeploymentExecutionAuthorityV1, ComposeResourceCleanupExecutionReceiptV1, ComposeRevisionSaveCommandResult, ProjectControlAuthorityV1, DomainRouteApplyReceiptV1, DomainRouteApplyAgentCommandV1, DomainRouteIntentV1, DomainRouteRevisionV1, TransportPortApplyReceiptV1, TransportPortApplyAgentCommandV1, TransportPortIntentV1, TransportPortRevisionV1, TransportPortBindingV1, TransportPortRuntimeStateV1, TransportPortTransferV1 } from "@deploylite/contracts";
 import type { DomainRoutePlanV1 } from "./domain-route-plan.js";
 import type { TransportPortPlanV1 } from "./transport-port-plan.js";
 
@@ -121,6 +121,7 @@ export type TransportPortApplyCompletionInput = Readonly<{
   currentContainerId: string;
   bindings: TransportPortApplyAgentCommandV1["bindings"];
   previousBindings: TransportPortBindingV1[];
+  portTransfer?: TransportPortTransferV1;
   operation: "apply" | "rollback";
   rollbackRevisionId: string | null;
   receipt: TransportPortApplyReceiptV1;
@@ -135,6 +136,7 @@ export type TransportPortApplyReservationV1 = Readonly<{
   currentContainerId: string;
   bindings: TransportPortApplyAgentCommandV1["bindings"];
   previousBindings: TransportPortBindingV1[];
+  portTransfer?: TransportPortTransferV1;
 }>;
 export type TransportPortRuntimeState = TransportPortRuntimeStateV1;
 export type PreparedTransportPortApplyCommand = Readonly<{
@@ -142,6 +144,7 @@ export type PreparedTransportPortApplyCommand = Readonly<{
   route: TransportPortIntentV1;
   bindings: TransportPortApplyAgentCommandV1["bindings"];
   previousBindings: TransportPortBindingV1[];
+  portTransfer?: TransportPortTransferV1;
   currentContainerId: string;
   executionReceipt: TransportPortApplyAgentCommandV1["executionReceipt"];
   effectiveImage: string;
@@ -157,7 +160,7 @@ export type TransportPortApplyCompletionStore = Readonly<{
   findTransportPortReservation(commandId: string): Promise<TransportPortApplyReservationV1 | null>;
   reserveTransportPortApply(input: Readonly<{ command: ControlCommand; route: TransportPortIntentV1; plan: TransportPortPlanV1;
     operation: "apply" | "rollback"; rollbackRevisionId: string | null; currentContainerId: string;
-    bindings: TransportPortApplyAgentCommandV1["bindings"]; previousBindings: TransportPortBindingV1[] }>): Promise<void>;
+    bindings: TransportPortApplyAgentCommandV1["bindings"]; previousBindings: TransportPortBindingV1[]; portTransfer?: TransportPortTransferV1 }>): Promise<void>;
   releaseTransportPortApply(commandId: string, protocol: TransportPortIntentV1["protocol"], publishedPort: number): Promise<void>;
   completeTransportPortApply(input: TransportPortApplyCompletionInput): Promise<ControlCommand>;
 }>;

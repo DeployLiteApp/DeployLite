@@ -4,7 +4,7 @@ import { agentReceiptQuerySchema, agentCachedReceiptSchema, type AgentReceiptQue
 import { awaitAbortable, composeResourceAttachmentExecutionDigest, composeVolumeAttachmentExecutionDigest, composeVolumeBackupExecutionDigest, digestComposeResourceObservation, validateDockerImageSnapshot, type ComposeResourceInspector, type DockerImageExecutionReceiptV1, type DeploymentAuthorityValidation, type PriorDockerImageExecutionReceiptV1 } from "@deploylite/domain";
 import { DOMAIN_ROUTE_APPLY_CAPABILITY, DOMAIN_ROUTE_APPLY_RECEIPT_PATH, domainRouteApplyAgentCommandSchema, domainRouteApplyCachedReceiptSchema,
   domainRouteApplyReceiptQuerySchema, domainRouteApplyReceiptSchema, type DomainRouteApplyAgentCommandV1, type DomainRouteApplyReceiptV1 } from "@deploylite/contracts";
-import { TRANSPORT_PORT_APPLY_CAPABILITY, TRANSPORT_PORT_APPLY_PATH, TRANSPORT_PORT_APPLY_RECEIPT_PATH,
+import { TRANSPORT_PORT_APPLY_CAPABILITY, TRANSPORT_PORT_TRANSFER_CAPABILITY, TRANSPORT_PORT_APPLY_PATH, TRANSPORT_PORT_APPLY_RECEIPT_PATH,
   transportPortApplyAgentCommandSchema, transportPortApplyCachedReceiptSchema, transportPortApplyReceiptQuerySchema,
   transportPortApplyReceiptSchema, type TransportPortApplyAgentCommandV1, type TransportPortApplyReceiptQueryV1,
   type TransportPortApplyReceiptV1 } from "@deploylite/contracts";
@@ -37,7 +37,8 @@ export class AuthenticatedAgentCommandReceiver {
       && (capability !== COMPOSE_VOLUME_ATTACHMENT_CAPABILITY || Boolean(options.volumeAttachment))
       && (capability !== COMPOSE_RESOURCE_CLEANUP_CAPABILITY || Boolean(options.resourceCleanup))
       && (capability !== DOMAIN_ROUTE_APPLY_CAPABILITY || Boolean(options.domainRouteApply))
-      && (capability !== TRANSPORT_PORT_APPLY_CAPABILITY || Boolean(options.transportPortApply)));
+      && (capability !== TRANSPORT_PORT_APPLY_CAPABILITY || Boolean(options.transportPortApply))
+      && (capability !== TRANSPORT_PORT_TRANSFER_CAPABILITY || Boolean(options.transportPortApply)));
     this.#options = { ...options, capabilities };
   }
   hasDurableReplayStore(): boolean { return this.#options.replayStore.durable === true; }
@@ -112,7 +113,8 @@ export class AuthenticatedAgentCommandReceiver {
     const text = JSON.stringify(body);
     if (!this.verifyRequest(`POST ${TRANSPORT_PORT_APPLY_RECEIPT_PATH}\n${text}`, signature)) throw new Error("agent authentication failed");
     const query = transportPortApplyReceiptQuerySchema.parse(structuredClone(body));
-    if (query.agentId !== this.#options.agentId || !this.#options.capabilities.includes(TRANSPORT_PORT_APPLY_CAPABILITY)) throw new Error("agent cache scope rejected");
+    if (query.agentId !== this.#options.agentId || !this.#options.capabilities.includes(TRANSPORT_PORT_APPLY_CAPABILITY)
+      || query.portTransfer !== undefined && !this.#options.capabilities.includes(TRANSPORT_PORT_TRANSFER_CAPABILITY)) throw new Error("agent cache scope rejected");
     const fingerprint = this.transportPortApplyFingerprint(query);
     const raw = await this.lookupReplay(query.commandId, fingerprint, query.timeoutMs, signal);
     const receipt = raw === null ? null : transportPortApplyReceiptSchema.parse(raw);
@@ -353,12 +355,16 @@ export class AuthenticatedAgentCommandReceiver {
   private async receiveTransportPortApply(body: unknown, signal?: AbortSignal): Promise<TransportPortApplyReceiptV1> {
     const command = transportPortApplyAgentCommandSchema.parse(structuredClone(body));
     if (!this.#options.transportPortApply || !this.#options.capabilities.includes(TRANSPORT_PORT_APPLY_CAPABILITY)
-      || command.requiredCapabilities.length !== 1 || command.requiredCapabilities[0] !== TRANSPORT_PORT_APPLY_CAPABILITY) throw new CapabilityError(TRANSPORT_PORT_APPLY_CAPABILITY);
+      || (command.portTransfer === undefined && (command.requiredCapabilities.length !== 1 || command.requiredCapabilities[0] !== TRANSPORT_PORT_APPLY_CAPABILITY))
+      || (command.portTransfer !== undefined && (command.requiredCapabilities.length !== 2
+        || command.requiredCapabilities[0] !== TRANSPORT_PORT_APPLY_CAPABILITY || command.requiredCapabilities[1] !== TRANSPORT_PORT_TRANSFER_CAPABILITY
+        || !this.#options.capabilities.includes(TRANSPORT_PORT_TRANSFER_CAPABILITY)))) throw new CapabilityError(command.portTransfer ? TRANSPORT_PORT_TRANSFER_CAPABILITY : TRANSPORT_PORT_APPLY_CAPABILITY);
     if (command.agentId !== this.#options.agentId || command.lease.projectId !== command.projectId
       || command.authority.projectId !== command.projectId || command.authority.commandId !== command.commandId
       || command.authority.inputDigest !== command.inputDigest || protocolPayloadFingerprint(command.lease) !== protocolPayloadFingerprint(command.authority.projectLease)
       || command.inputDigest !== digestControlInput({ route: command.route, executionReceipt: command.executionReceipt,
-        effectiveImage: command.effectiveImage, operation: command.operation, rollbackRevisionId: command.rollbackRevisionId })) {
+        effectiveImage: command.effectiveImage, operation: command.operation, rollbackRevisionId: command.rollbackRevisionId,
+        ...(command.portTransfer ? { portTransfer: command.portTransfer } : {}) })) {
       throw new FenceError("Transport port project authority or input digest rejected");
     }
     const fingerprint = this.transportPortApplyFingerprint(command);
@@ -556,6 +562,7 @@ export class AuthenticatedAgentCommandReceiver {
     return protocolPayloadFingerprint({ action: value.action, agentId: value.agentId, commandId: value.commandId, projectId: value.projectId,
       operation: value.operation, rollbackRevisionId: value.rollbackRevisionId, idempotencyKey: value.idempotencyKey, inputDigest: value.inputDigest,
       route: value.route, currentContainerId: value.currentContainerId, bindings: value.bindings, previousBindings: value.previousBindings,
+      ...(value.portTransfer ? { portTransfer: value.portTransfer } : {}),
       executionReceipt: value.executionReceipt, effectiveImage: value.effectiveImage,
       correlationId: value.context.correlationId, authority: value.authority, lease: value.lease });
   }
@@ -564,7 +571,10 @@ export class AuthenticatedAgentCommandReceiver {
       && receipt.inputDigest === value.inputDigest && receipt.correlationId === value.context.correlationId
       && receipt.deploymentId === value.route.deploymentId && receipt.protocol === value.route.protocol
       && receipt.publishedPort === value.route.publishedPort && receipt.targetPort === value.route.targetPort
-      && receipt.operation === value.operation && receipt.rollbackRevisionId === value.rollbackRevisionId;
+      && receipt.operation === value.operation && receipt.rollbackRevisionId === value.rollbackRevisionId
+      && (value.portTransfer === undefined ? receipt.portTransfer === undefined : receipt.state === "failed" ? receipt.portTransfer === undefined
+        : receipt.portTransfer?.sourceDeploymentId === value.portTransfer.sourceDeploymentId
+          && receipt.portTransfer.sourceContainerId !== value.portTransfer.sourceContainerId);
   }
   private matchesDomainRouteApplyReceipt(value: DomainRouteApplyAgentCommandV1 | import("@deploylite/contracts").DomainRouteApplyReceiptQueryV1,
     receipt: DomainRouteApplyReceiptV1): boolean {

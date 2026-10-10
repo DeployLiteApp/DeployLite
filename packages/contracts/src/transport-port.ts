@@ -66,11 +66,19 @@ export const transportPortApplyReceiptSchema = z.object({
   projectId: identity, protocol: transportPortProtocolSchema, publishedPort: port, targetPort: port,
   deploymentId: id, operation: z.enum(["apply", "rollback"]), rollbackRevisionId: id.nullable(),
   inputDigest: digest, correlationId: id, containerId: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+  portTransfer: z.object({ sourceDeploymentId: id, sourceContainerId: digest, retainedPriorContainerIds: z.array(digest).max(2) }).strict().optional(),
   state: z.enum(["created", "updated", "unchanged", "failed"]), observedAt: z.number().int().nonnegative(),
   failureReason: z.enum(["target-unavailable", "port-conflict", "docker-unavailable", "restart-failed", "canceled"]).nullable(), redacted: z.literal(true)
 }).strict().superRefine((receipt, issue) => {
   if (receipt.state === "failed" && receipt.failureReason === null) issue.addIssue({ code: z.ZodIssueCode.custom, path: ["failureReason"], message: "Failed transport receipt requires a bounded reason" });
   if (receipt.state !== "failed" && (receipt.containerId === null || receipt.failureReason !== null)) issue.addIssue({ code: z.ZodIssueCode.custom, message: "Successful transport receipts require a verified container identity" });
+  if (receipt.portTransfer && (receipt.state === "failed" || receipt.portTransfer.sourceDeploymentId === receipt.deploymentId
+    || receipt.portTransfer.sourceContainerId === receipt.containerId
+    || new Set(receipt.portTransfer.retainedPriorContainerIds).size !== receipt.portTransfer.retainedPriorContainerIds.length
+    || receipt.portTransfer.retainedPriorContainerIds.includes(receipt.portTransfer.sourceContainerId)
+    || (receipt.containerId !== null && receipt.portTransfer.retainedPriorContainerIds.includes(receipt.containerId)))) {
+    issue.addIssue({ code: z.ZodIssueCode.custom, path: ["portTransfer"], message: "Successful transfer receipt requires two distinct deployment containers" });
+  }
 });
 
 /** Last verified physical container state after a successful transport-port apply. */

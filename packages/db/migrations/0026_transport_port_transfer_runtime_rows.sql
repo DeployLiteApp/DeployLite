@@ -1,0 +1,5 @@
+ALTER TABLE transport_port_runtime_states
+  DROP CONSTRAINT IF EXISTS transport_port_runtime_states_command_id_key;
+
+ALTER TABLE transport_port_runtime_states
+  DROP CONSTRAINT IF EXISTS transport_port_runtime_states_command_id_unique;
