@@ -8,7 +8,7 @@ import {approvedManagedDatabaseProfileSchema, InMemoryCapabilityRegistry} from "
 import {ensureManagedDatabaseCredentials, materializeManagedDatabaseRuntime, managedDatabaseRuntimeExecutionDigest, type EncryptedEnvSecretValueRecord} from "@deploylite/domain";
 import {DockerProcessRunner, DockerProcessError} from "./docker-process-runner.js";
 import type {DockerCliRunner} from "./docker-cli-image-transport.js";
-import {createManagedDatabaseRuntime} from "./docker-managed-database-runtime.js";
+import {createConfiguredManagedDatabaseRuntime} from "./managed-database-runtime-config.js";
 import {createManagedDatabaseDockerInspector} from "./docker-managed-database-inspection.js";
 import {createManagedDatabaseResourceMaterializer, type ManagedDatabaseFreshResources} from "./docker-managed-database-resources.js";
 import {createManagedDatabaseReadinessVerifier} from "./docker-managed-database-readiness.js";
@@ -107,7 +107,8 @@ for (const engine of engines) {
                 requiredCapabilities:["database.runtime.v1"],authority:{schemaVersion:1,projectId:request.projectId,commandId,action:"project.update",inputDigest,projectLease:lease},lease,
                 context:{requestId:commandId,correlationId:commandId},timeoutMs:60000,cancellationRequested:false,
                 sealedEnvironment:sealAgentSecretEnvelope(runtime.environment,trustKey,{agentId,commandId,inputDigest,projectId:request.projectId})};
-            const executor = createManagedDatabaseRuntime({...shared,trustKey,profiles:scope.profiles,capabilities:new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1"])});
+            const executor = createConfiguredManagedDatabaseRuntime(JSON.stringify({profiles:scope.profiles,limits}), {...shared,trustKey});
+            if (!executor) throw new Error("Missing configured native executor.");
             const receipt = await executor.apply(command,authority,signal);
             expect(receipt).toMatchObject({engine,status:"ready",health:"passed",storage:"verified",redacted:true});
             if (!receipt.imageId || !receipt.containerId) throw new Error("Ready original daemon identity required.");
