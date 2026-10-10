@@ -1419,7 +1419,8 @@ async function physicalCase(id: string, exercise: (fixture: PhysicalFixture) => 
   }
 }
 
-describe.skipIf(process.env.DEPLOYLITE_DOCKER_INTEGRATION !== "1").sequential("physical Docker → signed receiver → API completion", () => {
+// Unit collection retains all 74 recorded guards; the required P2 partition executes all 13 original physical cases.
+if (process.env.DEPLOYLITE_DOCKER_INTEGRATION === "1") describe.sequential("physical Docker → signed receiver → API completion", () => {
   it("INITIAL_B_C_PROOF_REPLAY_STOP", async () => physicalCase("INITIAL_B_C_PROOF_REPLAY_STOP", async (f) => {
     const A = await f.initial(), B = await f.replacement(A, "A-to-B");
     expect((await f.observe(A, false)).running).toBe(false);
