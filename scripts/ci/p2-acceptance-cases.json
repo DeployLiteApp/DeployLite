@@ -1148,7 +1148,8 @@
     "packages/domain/src/managed-database-credentials.test.ts",
     "packages/db/src/repositories/managed-database-credentials.ts",
     "packages/db/src/repositories/managed-database-credentials.test.ts",
-    "packages/db/src/managed-database-credentials-postgres.cases.ts"
+    "packages/db/src/managed-database-credentials-postgres.cases.ts",
+    "apps/agent/src/infrastructure/docker/docker-redaction-integration.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
