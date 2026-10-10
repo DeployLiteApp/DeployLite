@@ -90,12 +90,12 @@ function fixture(claims: unknown[] = [], authorized = true, rollbackTarget: unkn
       return structuredClone(completed);
     })
   };
-  const dispatch = vi.fn(async (prepared: { command: ControlCommand; route: { projectId: string; deploymentId: string; domain: string } }): Promise<DomainRouteApplyReceiptV1> =>
+  const dispatch = vi.fn(async (prepared: { command: ControlCommand; route: { projectId: string; deploymentId: string; domain: string }; executionReceipt: typeof trustedReceipt }): Promise<DomainRouteApplyReceiptV1> =>
     domainRouteApplyReceiptSchema.parse({
       schemaVersion: 1, action: "domain.route.apply", agentId, commandId: prepared.command.id, projectId: prepared.route.projectId,
       domain: prepared.route.domain, deploymentId: prepared.route.deploymentId, inputDigest: prepared.command.inputDigest,
       correlationId: prepared.command.correlationId, networkName: `deploylite-project-${"d".repeat(24)}`, networkId: "e".repeat(64),
-      targetContainerId: trustedReceipt.containerId, traefikContainerId: "f".repeat(64),
+      targetContainerId: prepared.executionReceipt.containerId, traefikContainerId: "f".repeat(64),
       fileName: `domain-route-${"1".repeat(24)}.yml`, contentDigest: "2".repeat(64), state: "created", observedAt: Date.now(),
       failureReason: null, redacted: true
     }));
@@ -204,4 +204,30 @@ it.each([
 ])("rejects invalid durable replacement identity before dispatch", async state => {
  const f = fixture([], true, undefined, state);
  expect((await f.post()).statusCode).toBe(503); expect(f.dispatch).not.toHaveBeenCalled();
+});
+
+ it.each([trustedReceipt.containerId, "e".repeat(64)])("replays a completed domain apply after a transport replacement from %s", async initialContainerId => {
+ const state = {projectId, deploymentId, containerId: initialContainerId, bindings: []};
+ const f = fixture([], true, undefined, state);
+ expect((await f.post()).statusCode).toBe(200);
+ state.containerId = "d".repeat(64);
+ const retry = await f.post();
+ expect(retry.statusCode, retry.body).toBe(200);
+ expect(retry.json().data.idempotent).toBe(true);
+ expect(f.dispatch).toHaveBeenCalledOnce();
+ });
+
+it("rejects changed route and rollback intent when replaying a completed apply", async () => {
+ const state = {projectId, deploymentId, containerId: trustedReceipt.containerId, bindings: []};
+ const f = fixture([], true, undefined, state);
+ expect((await f.post()).statusCode).toBe(200);
+ state.containerId = "d".repeat(64);
+ const changed = await f.app.inject({method: "POST", url: `/api/v1/projects/${projectId}/domains/apply`,
+ headers: {"x-control-idempotency-key": "apply-1"}, payload: {domain: "other.example.test", deploymentId}});
+ expect(changed.statusCode).toBe(409);
+ expect(changed.json().error.code).toBe("IDEMPOTENCY_CONFLICT");
+ const rollback = await f.postRollback("apply-1");
+ expect(rollback.statusCode).toBe(409);
+ expect(rollback.json().error.code).toBe("IDEMPOTENCY_CONFLICT");
+ expect(f.dispatch).toHaveBeenCalledOnce();
 });

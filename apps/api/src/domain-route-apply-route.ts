@@ -141,7 +141,18 @@ export function registerDomainRouteApplyRoute(app: FastifyInstance, options: Opt
       if (!await auditFailure("domain.route.apply.rejected", "target-receipt-unverified")) return unavailable("audit-unavailable");
       return reply.code(409).send(options.error(request, "DOMAIN_ROUTE_TARGET_UNVERIFIED", "Route target lacks a matching trusted execution receipt."));
     }
-    try { receipt.data = await currentDomainReceipt(receipt.data, options); } catch { return unavailable("runtime-port-state-invalid"); }
+    let command: ControlCommand | null;
+    try { command = await execution.controls.findProjectUpdateByIdempotency(auth.user.id, projectId, idempotencyKey.data); }
+    catch { return unavailable("command-storage-unavailable"); }
+    if (command?.status === "completed") {
+      // Replay binds the original execution identity, not a later transport replacement.
+      // The digest check below still rejects a different route, proof, or operation.
+      const terminal = domainRouteApplyReceiptSchema.safeParse(command.result);
+      if (!terminal.success) return unavailable("terminal-receipt-invalid");
+      if (terminal.data.targetContainerId !== null) receipt.data = { ...receipt.data, containerId: terminal.data.targetContainerId };
+    } else {
+      try { receipt.data = await currentDomainReceipt(receipt.data, options); } catch { return unavailable("runtime-port-state-invalid"); }
+    }
     const route = { schemaVersion: 1 as const, projectId, deploymentId: deployment.id, domain: body.data.domain } satisfies DomainRouteIntentV1;
 
     let tentative: ControlCommand;
@@ -152,7 +163,6 @@ export function registerDomainRouteApplyRoute(app: FastifyInstance, options: Opt
     } catch { return unavailable("command-preparation-failed"); }
     const preparedBase: PreparedDomainRouteApplyCommand = { command: tentative, route, executionReceipt: receipt.data, effectiveImage, agentId: execution.agentId };
 
-    let command = await execution.controls.findProjectUpdateByIdempotency(auth.user.id, projectId, idempotencyKey.data);
     if (command && command.inputDigest !== tentative.inputDigest) {
       if (!await auditFailure("domain.route.apply.rejected", "idempotency-conflict")) return unavailable("audit-unavailable");
       return reply.code(409).send(options.error(request, "IDEMPOTENCY_CONFLICT", "Idempotency key was already used with different route input."));
