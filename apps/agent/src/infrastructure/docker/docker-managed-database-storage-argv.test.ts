@@ -71,3 +71,7 @@ it("binds the initializer to the existing global Compose consumer proof",()=>{
 it("prevents Docker copy-up from changing the proven fresh volume before permission checks",()=>{
  const argv=buildManagedDatabaseStorageInitializationArgv(fixture("postgres"));expect(argv[argv.indexOf("--mount")+1]).toContain(",volume-nocopy");
 });
+
+it("disables inherited image healthchecks on the permission helper",()=>{
+ const argv=buildManagedDatabaseStorageInitializationArgv(fixture("postgres"));expect(argv).toContain("--no-healthcheck");
+});
