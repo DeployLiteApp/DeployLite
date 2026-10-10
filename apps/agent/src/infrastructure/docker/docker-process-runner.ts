@@ -59,6 +59,7 @@ function redactDockerProtocolOutput(value: string, argv: readonly string[]): str
       }
       if (format === MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT && path.length === 1) {
         if (key === "name" && /^\/dl-[a-f0-9]{32}-database(?:-init)?$/.test(nested)) return nested;
+        if (key === "networkMode" && /^dl-[a-f0-9]{32}-net-[a-z][a-z0-9_-]{0,62}$/.test(nested)) return nested;
         if (key === "planDigest" && /^[a-f0-9]{64}$/.test(nested)) return nested;
         if (key === "environmentFingerprint" && /^[a-f0-9]{32}$/.test(nested)) return nested;
       }
