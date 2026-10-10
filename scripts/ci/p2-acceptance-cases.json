@@ -3,7 +3,7 @@
   "purpose": "Expected evidence only; this manifest neither authorizes runtime nor claims PASS",
   "suites": {
     "db": {
-      "count": 67,
+      "count": 69,
       "allowSkipped": false,
       "cases": [
         {
@@ -407,6 +407,18 @@
           "title": "corroborates the actual redacted project-update completion audit for canonical archive IDs",
           "file": "packages/db/src/backup-inventory-postgres.integration-cases.ts",
           "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance persists one encrypted database credential bundle through concurrent creation and a new pool",
+          "title": "persists one encrypted database credential bundle through concurrent creation and a new pool",
+          "file": "packages/db/src/managed-database-credentials-postgres.cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance keeps generated database credentials unchanged on stale profiles and refuses unauthorized creation",
+          "title": "keeps generated database credentials unchanged on stale profiles and refuses unauthorized creation",
+          "file": "packages/db/src/managed-database-credentials-postgres.cases.ts",
+          "physicalRestart": false
         }
       ],
       "sourceFiles": [
@@ -425,7 +437,13 @@
         "packages/db/src/backup-inventory-postgres.integration-cases.ts",
         "packages/db/src/repositories/backup-inventory.ts",
         "packages/db/migrations/0027_backup_inventory.sql",
-        "packages/domain/src/backup-inventory.ts"
+        "packages/domain/src/backup-inventory.ts",
+        "packages/contracts/src/managed-database-profile.ts",
+        "packages/domain/src/managed-database-credentials.ts",
+        "packages/domain/src/managed-database-credentials.test.ts",
+        "packages/db/src/repositories/managed-database-credentials.ts",
+        "packages/db/src/repositories/managed-database-credentials.test.ts",
+        "packages/db/src/managed-database-credentials-postgres.cases.ts"
       ]
     },
     "api": {
@@ -1125,7 +1143,12 @@
     "apps/api/src/backup-retention-preview-api.test.ts",
     "packages/contracts/src/managed-database-profile.ts",
     "packages/domain/src/managed-database-profile.ts",
-    "packages/domain/src/managed-database-profile.test.ts"
+    "packages/domain/src/managed-database-profile.test.ts",
+    "packages/domain/src/managed-database-credentials.ts",
+    "packages/domain/src/managed-database-credentials.test.ts",
+    "packages/db/src/repositories/managed-database-credentials.ts",
+    "packages/db/src/repositories/managed-database-credentials.test.ts",
+    "packages/db/src/managed-database-credentials-postgres.cases.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,

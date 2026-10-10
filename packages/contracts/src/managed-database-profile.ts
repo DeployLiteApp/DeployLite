@@ -19,3 +19,9 @@ export const approvedManagedDatabaseProfileSchema = z.object({
 }).strict();
 export type ManagedDatabaseEngineV1 = z.infer<typeof managedDatabaseEngineSchema>;
 export type ApprovedManagedDatabaseProfileV1 = z.infer<typeof approvedManagedDatabaseProfileSchema>;
+
+/** Private encrypted payload grammar; never a request, receipt or response payload. */
+export const managedDatabaseCredentialBundleSchema = z.object({
+  schemaVersion:z.literal(1),projectId:identity,databaseId:databaseKey,engine:managedDatabaseEngineSchema,profileId:identity,
+  planDigest:z.string().regex(/^[a-f0-9]{64}$/),credentials:z.record(z.string().regex(/^[A-Z_][A-Z0-9_]{0,127}$/),z.string().regex(/^[a-f0-9]{64}$/))
+}).strict();

@@ -1,3 +1,4 @@
+import { defineManagedDatabaseCredentialCases } from "./managed-database-credentials-postgres.cases.js";
 import { redactSecrets } from "@deploylite/config";
 import { DbControlCommandRepository } from "./repositories/control-plane.js";
 import { randomUUID } from "node:crypto";
@@ -41,6 +42,7 @@ async function count(projectId: string) {
     if (pool) await closeDbPool(pool);
     if (maintenance) { try { if (databaseName) await maintenance.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`); } finally { await maintenance.end(); } }
   }, 30_000);
+  defineManagedDatabaseCredentialCases(() => pool, () => databaseUrl);
   it("persists corroborated inventory across a new PostgreSQL pool lifecycle", async () => {
     const f = await seed(), original = await store().recordAuthenticatedReceipt(f.receipt);
     const fresh = createDbPool(databaseUrl, {max: 1});
