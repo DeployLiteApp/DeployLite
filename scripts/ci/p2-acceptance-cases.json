@@ -1192,7 +1192,9 @@
     "scripts/ci/test-scopes.test.mjs",
     "packages/db/vitest.config.ts",
     "apps/api/vitest.config.ts",
-    "apps/agent/vitest.config.ts"
+    "apps/agent/vitest.config.ts",
+    "scripts/ci/unit-report-acceptance.mjs",
+    "scripts/ci/unit-report-acceptance.test.mjs"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,

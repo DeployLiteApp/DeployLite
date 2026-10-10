@@ -520,7 +520,7 @@ async function confirmedPostgresRedeploy(app: FastifyInstance, cookie: string, s
 }
 
 function requireIntegrationDatabaseUrl(): string {
-  if (!integrationEnabled) throw new Error("Explicit PostgreSQL test partition required");
+  if (!integrationEnabled) throw new Error("Explicit PostgreSQL integration partition required");
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
     throw new Error("DATABASE_URL must be set when DEPLOYLITE_API_POSTGRES_INTEGRATION=1.");

@@ -139,3 +139,5 @@ Intermediate #400 exactc491dd0 CI38082085026 has7/7 successful jobs,0skipped job
 Rollback is not permission to remove mandatory tests: preserve all case bodies and gates. The collection helper/configs may be replaced only with another execution path that runs all required cases and refuses incomplete evidence. No whole-P5 acceptance or main merge is granted by this preparation.
 
 - Explicit partition full Node24 pnpm check exits0 (`/tmp/deploylite-explicit-test-scopes-check.log`):8 unit projects,2564 passed,0skipped. Includes preserved local S1 WIP14 cases; published scope-only head will contain2550 existing unit cases. Node scope5/5 and Python baseline57/57+P3hosted7/7 pass with0skips. This certifies unit execution only; physical PostgreSQL/Docker partitions on the scope-corrected exact head remain mandatory and pending.
+
+The quality job now produces a JSON report for every configured unit workspace and rejects any skipped, failed, missing, empty or inconsistent execution. Unit-report guard: seven rejection assertions observed RED, one complete-report characterization; GREEN8/8, zero skipped. Every physical partition remains mandatory independently.
