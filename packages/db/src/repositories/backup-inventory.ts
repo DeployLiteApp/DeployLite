@@ -1,7 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { composeVolumeBackupReceiptSchema } from "@deploylite/contracts";
 import { BackupInventoryEvidenceError, digestControlInput, prepareBackupInventoryRecord,
-  type BackupInventoryReader, type BackupInventoryRecord } from "@deploylite/domain";
+  type BackupInventoryReader, type BackupInventoryWriter, type BackupInventoryRecord } from "@deploylite/domain";
 import type { DeployLiteDb } from "../client.js";
 import { auditEvents, backupInventory, controlCommands } from "../schema.js";
 
@@ -10,7 +10,7 @@ const scope = (projectId: string, volumeKey: string, destinationId: string) => a
   eq(backupInventory.projectId, projectId), eq(backupInventory.volumeKey, volumeKey), eq(backupInventory.destinationId, destinationId));
 
 /** Only called after server-side transport authentication; never accepts HTTP inventory input. */
-export class DbBackupInventoryStore implements BackupInventoryReader {
+export class DbBackupInventoryStore implements BackupInventoryReader, BackupInventoryWriter {
   constructor(private readonly db: DeployLiteDb, private readonly expectedAgentId: string, private readonly clock = Date.now) {}
   available() { return true; }
 

@@ -1,3 +1,5 @@
+import { redactSecrets } from "@deploylite/config";
+import { DbControlCommandRepository } from "./repositories/control-plane.js";
 import { randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import pg from "pg";
@@ -10,7 +12,7 @@ const configured = enabled ? process.env.DATABASE_URL : undefined;
 if (enabled && !configured) throw new Error("DATABASE_URL must be set when DEPLOYLITE_DB_INTEGRATION=1.");
 let maintenance: pg.Client, pool: pg.Pool, databaseName: string, databaseUrl: string;
 const store = (connection = pool) => new DbBackupInventoryStore(createDbClient(connection), "agent-1");
-async function seed(projectId = randomUUID(), archiveId = randomUUID()) {
+async function seed(projectId = randomUUID(), archiveId: string = randomUUID()) {
   const actorId = randomUUID(), commandId = randomUUID(), correlationId = randomUUID(), auditId = randomUUID();
   await pool.query("INSERT INTO users(id,email,email_normalized,password_hash,role_id) SELECT $1,$2,$2,'fixture',id FROM roles WHERE name='admin'", [actorId, `${actorId}@example.test`]);
   await pool.query("INSERT INTO projects(id,name,repo_url,default_branch) VALUES($1,'P5 fixture','https://example.test/repo','main') ON CONFLICT DO NOTHING", [projectId]);
@@ -19,7 +21,7 @@ async function seed(projectId = randomUUID(), archiveId = randomUUID()) {
   const metadata = Object.fromEntries(["projectId", "commandId", "inputDigest", "volumeKey", "destinationId", "archiveId", "archiveBytes", "entries", "archiveSha256", "manifestSha256", "consistency", "status"].map(key => [key, receipt[key as keyof typeof receipt]]));
   const createdAt = new Date(Date.now() - 1000);
   await pool.query("INSERT INTO audit_events(id,actor_user_id,action,target_type,target_id,request_id,correlation_id,metadata,created_at) VALUES($1,$2,'compose.volume.backup.executed','project',$3,$7,$4,$5,$6)", [auditId, actorId, projectId, correlationId, metadata, createdAt, auditId]);
-  return {receipt, createdAt, auditId};
+  return {receipt, createdAt, auditId, actorId, metadata};
 }
 async function count(projectId: string) {
   return (await pool.query("SELECT count(*)::int AS count FROM backup_inventory WHERE project_id=$1", [projectId])).rows[0].count;
@@ -67,6 +69,22 @@ async function count(projectId: string) {
     const competing = await seed(f.receipt.projectId, f.receipt.archiveId);
     await expect(store().recordAuthenticatedReceipt(competing.receipt)).rejects.toThrow("cannot be accepted safely");
     expect(await store().list(f.receipt.projectId, "data", "local-1")).toEqual([original]);
+    expect(await count(f.receipt.projectId)).toBe(1);
+  });
+  it("corroborates the actual redacted project-update completion audit for canonical archive IDs", async () => {
+    const f = await seed();
+    f.receipt.archiveId = "backup_0123456789abcdef0123456789abcdef";
+    f.metadata.archiveId = f.receipt.archiveId;
+    await pool.query("DELETE FROM audit_events WHERE id=$1", [f.auditId]);
+    await pool.query("UPDATE control_commands SET status='eligible' WHERE id=$1", [f.receipt.commandId]);
+    const controls = new DbControlCommandRepository(createDbClient(pool));
+    const command = await controls.findProjectUpdateByIdempotency(f.actorId, f.receipt.projectId, f.receipt.commandId);
+    const claimed = await controls.claimProjectUpdate(command!);
+    await controls.completeProjectUpdate(claimed.command, claimed.authority!, {actorUserId: f.actorId,
+      action: "compose.volume.backup.executed", targetType: "project", targetId: f.receipt.projectId,
+      requestId: randomUUID(), correlationId: f.receipt.correlationId, metadata: f.metadata});
+    expect(redactSecrets(f.metadata).archiveId).toBe(f.receipt.archiveId);
+    expect((await store().recordAuthenticatedReceipt(f.receipt)).receipt.archiveId).toBe(f.receipt.archiveId);
     expect(await count(f.receipt.projectId)).toBe(1);
   });
   it("enforces SQL receipt binding and keeps reads isolated to the complete scope", async () => {

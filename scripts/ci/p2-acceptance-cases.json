@@ -3,7 +3,7 @@
   "purpose": "Expected evidence only; this manifest neither authorizes runtime nor claims PASS",
   "suites": {
     "db": {
-      "count": 66,
+      "count": 67,
       "allowSkipped": false,
       "cases": [
         {
@@ -399,6 +399,12 @@
         {
           "fullName": "P5 backup inventory durable PostgreSQL acceptance enforces SQL receipt binding and keeps reads isolated to the complete scope",
           "title": "enforces SQL receipt binding and keeps reads isolated to the complete scope",
+          "file": "packages/db/src/backup-inventory-postgres.integration-cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance corroborates the actual redacted project-update completion audit for canonical archive IDs",
+          "title": "corroborates the actual redacted project-update completion audit for canonical archive IDs",
           "file": "packages/db/src/backup-inventory-postgres.integration-cases.ts",
           "physicalRestart": false
         }
@@ -1109,7 +1115,8 @@
     "packages/db/src/backup-inventory-postgres.integration-cases.ts",
     "packages/db/src/backup-inventory.test.ts",
     "packages/domain/src/backup-inventory.ts",
-    "packages/domain/src/backup-inventory.test.ts"
+    "packages/domain/src/backup-inventory.test.ts",
+    "apps/api/src/backup-inventory-wiring.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
