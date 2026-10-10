@@ -254,7 +254,7 @@ class ProspectivePhysicalGuards(unittest.TestCase):
     def test_every_baseline_dependency_must_execute_successfully_including_p3(self):
         workflow=(Path(__file__).parents[2]/".github/workflows/baseline.yml").read_text()
         gate=workflow.split("  baseline-gate:\n",1)[1]
-        jobs=["quality", "postgres-integration", "compose-and-supply-chain", "p2-docker-acceptance", "p3-docker-acceptance", "p4-transport-acceptance"]
+        jobs=["quality", "postgres-integration", "compose-and-supply-chain", "p2-docker-acceptance", "p3-docker-acceptance", "p4-transport-acceptance", "p5-native-database-acceptance"]
         self.assertIn("p3-docker-acceptance", gate.split("    steps:",1)[0])
         self.assertIn("needs.p3-docker-acceptance.result == 'success'", gate)
         self.assertIn("--check p3-docker-acceptance:pass", gate)

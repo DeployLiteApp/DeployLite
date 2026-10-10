@@ -53,4 +53,15 @@ class NativeContextTests(unittest.TestCase):
         invalid["profiles"]["mysql"]["image"] = "docker.io/library/mysql:latest"
         for value in [{**manifest,"fixtureOnly":False}, {**manifest,"profiles":{}}, invalid]:
             with self.assertRaises(RuntimeError): module.validate_profiles(value)
-if __name__ == "__main__": unittest.main()
+
+
+class ReportAdmission(unittest.TestCase):
+    def test_native_report_requires_all_five_executed_cases(self):
+        report = {"numTotalTests":5,"numPassedTests":5,"numFailedTests":0,"numPendingTests":0,"success":True,"testResults":[{"assertionResults":[{"fullName":"native five-engine physical " + engine + " startup and persistence","status":"passed"} for engine in module.ENGINES]}]}
+        module.validate_report(report)
+        for mutation in ({"numPendingTests":1},{"numPassedTests":4},{"numFailedTests":1},{"success":False},{"testResults":[]}):
+            with self.assertRaises(RuntimeError):
+                module.validate_report({**report,**mutation})
+
+if __name__ == "__main__":
+    unittest.main()

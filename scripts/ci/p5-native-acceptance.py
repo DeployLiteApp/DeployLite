@@ -71,6 +71,38 @@ def capture(env):
     os.chmod(path, 0o600)
     print("Captured exact isolated native fixture scope; no Docker effect performed.")
 
+def validate_report(report):
+    require(report.get("success") is True and all(report.get(key) == count for key,count in
+            (("numTotalTests",5),("numPassedTests",5),("numFailedTests",0),("numPendingTests",0))), "five_executed_passing_cases_required")
+    cases = [case for suite in report.get("testResults",[]) for case in suite.get("assertionResults",[])]
+    expected = {"native five-engine physical " + engine + " startup and persistence" for engine in ENGINES}
+    require(len(cases) == 5 and {case.get("fullName") for case in cases} == expected and all(case.get("status") == "passed" for case in cases), "exact_five_native_titles_required")
+
+def verify(env):
+    require(sys.platform == "linux", "hosted_linux_required")
+    context = native_context(env)
+    directory = Path(env["RUNNER_TEMP"]) / "deploylite-p5-native-evidence"
+    binding = json.loads((directory / "binding.json").read_text())
+    require(all(binding.get(key) == value for key,value in context.items()), "original_run_source_binding_required")
+    for name,digest in binding["sourceHashes"].items():
+        require(hashlib.sha256((ROOT/name).read_bytes()).hexdigest() == digest, "unchanged_source_required")
+    report = json.loads((directory / "native.json").read_text())
+    validate_report(report)
+    acceptance = json.loads((directory / "acceptance.json").read_text())
+    require(acceptance.get("status") == "passed" and all(acceptance.get(key) == binding[key] for key in ("commit","runId","runAttempt","nonce")), "original_native_acceptance_required")
+    require(set(acceptance.get("engines",{})) == set(ENGINES), "all_native_engines_required")
+    for engine,item in acceptance["engines"].items():
+        result = item.get("result",{})
+        receipt = result.get("receipt",{})
+        require(item.get("cleanup") == "verified" and all(result.get(key) == "passed" for key in ("authenticatedProbe","restart","persistence")), "native_persistence_cleanup_required")
+        require(type(result.get("uid")) is int and 0 < result["uid"] <= 4294967294 and receipt.get("engine") == engine and receipt.get("status") == "ready"
+                and receipt.get("health") == "passed" and receipt.get("storage") == "verified" and receipt.get("redacted") is True, "ready_nonroot_native_receipt_required")
+        require(re.fullmatch(r"[a-f0-9]{64}",receipt.get("containerId","")) and re.fullmatch(r"sha256:[a-f0-9]{64}",receipt.get("imageId","")), "original_native_identity_required")
+    proof = {"schemaVersion":1,**context,"nonce":binding["nonce"],"status":"verified","cases":5,
+             "artifactHashes":{name:hashlib.sha256((directory/name).read_bytes()).hexdigest() for name in ("binding.json","native.json","acceptance.json")}}
+    (directory / "verified.json").write_text(json.dumps(proof,indent=2)+"\n")
+    print("Verified five executed native startup/persistence cases and scoped cleanup.")
+
 if __name__ == "__main__":
-    require(len(sys.argv) == 2 and sys.argv[1] == "capture", "capture_only")
-    capture(dict(os.environ))
+    require(len(sys.argv) == 2 and sys.argv[1] in ("capture","verify"), "explicit_fixture_operation_required")
+    (capture if sys.argv[1] == "capture" else verify)(dict(os.environ))
