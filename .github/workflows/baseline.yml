@@ -364,7 +364,6 @@ jobs:
       DOCKER_CONTEXT: ''
       DOCKER_TLS_VERIFY: ''
       DOCKER_CERT_PATH: ''
-      DOCKER_CONFIG: ${{ runner.temp }}/deploylite-p5-native-empty-docker-config
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -375,7 +374,10 @@ jobs:
         with: { node-version: 24.20.0, cache: pnpm }
       - run: corepack enable && pnpm install --frozen-lockfile
       - name: Bind the exact private disposable five-engine fixture
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/deploylite-p5-native-empty-docker-config
         run: |
+          printf 'DOCKER_CONFIG=%s\n' "$DOCKER_CONFIG" >> "$GITHUB_ENV"
           mkdir -m 700 "$DOCKER_CONFIG"
           python3 scripts/ci/p5-native-acceptance.test.py
           python3 scripts/ci/p5-native-acceptance.py capture
