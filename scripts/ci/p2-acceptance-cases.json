@@ -1194,7 +1194,11 @@
     "scripts/ci/unit-report-acceptance.test.mjs",
     "apps/agent/vitest.config.ts",
     "apps/api/vitest.config.ts",
-    "packages/db/vitest.config.ts"
+    "packages/db/vitest.config.ts",
+    "apps/agent/src/infrastructure/docker/docker-managed-database-process-identity.ts",
+    "apps/agent/src/infrastructure/docker/docker-managed-database-process-identity.test.ts",
+    "apps/agent/src/infrastructure/docker/docker-managed-database-readiness.ts",
+    "apps/agent/src/infrastructure/docker/docker-managed-database-readiness.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
