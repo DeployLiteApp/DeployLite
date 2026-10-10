@@ -12,6 +12,7 @@ import { registerComposeVolumeAttachmentExecutionRoute, type ComposeVolumeAttach
 import { registerComposeVolumeBackupPlanRoute, type ComposeVolumeBackupPlanAccess } from "./compose-volume-backup-plan-route.js";
 import { registerComposeVolumeBackupExecutionRoute, type ComposeVolumeBackupExecutionAccess } from "./compose-volume-backup-execution-route.js";
 import { registerRegistryRoutes } from "./registry-routes.js";
+import { registerBackupRetentionPreviewRoute, type BackupRetentionPreviewAccess } from "./backup-retention-preview-route.js";
 import { registerDomainRoutePreviewRoute } from "./domain-route-preview-route.js";
 import { registerTransportPortPreviewRoute } from "./transport-port-preview-route.js";
 import { registerTransportPortApplyRoutes, type TransportPortApplyExecutionAccess } from "./transport-port-apply-route.js";
@@ -212,6 +213,7 @@ type BuildApiAppOptions = {
   composeVolumeAttachmentExecutions?: ReadonlyMap<string, ComposeVolumeAttachmentExecutionAccess>;
   composeVolumeBackupPlans?: ReadonlyMap<string, ComposeVolumeBackupPlanAccess>;
   composeVolumeBackupExecutions?: ReadonlyMap<string, ComposeVolumeBackupExecutionAccess>;
+  backupRetentionPreviews?: ReadonlyMap<string, BackupRetentionPreviewAccess>;
   composeResourceCleanupPlans?: ReadonlyMap<string, ComposeResourceCleanupAccess>;
   composeResourceCleanupExecutions?: ReadonlyMap<string, ComposeResourceCleanupExecutionAccess>;
   domainRouteApplyExecutions?: ReadonlyMap<string, DomainRouteApplyExecutionAccess>;
@@ -1289,7 +1291,8 @@ function registerCoreHooks(app: FastifyInstance, corsOrigin: string | null): voi
 }
 
 function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapters: AuthAdapters, authConfig: AuthConfig, confirmedDeleteEnabled: boolean, imagePolicy: ImageReferencePolicyV1, resourceAccess?: ReadonlyMap<string, ComposeResourceInspectionAccess>, backupPlans?: ReadonlyMap<string, ComposeVolumeBackupPlanAccess>, cleanupPlans?: ReadonlyMap<string, ComposeResourceCleanupAccess>, backupExecutions?: ReadonlyMap<string, ComposeVolumeBackupExecutionAccess>, attachmentExecutions?: ReadonlyMap<string, ComposeNetworkAttachmentExecutionAccess>, cleanupExecutions?: ReadonlyMap<string, ComposeResourceCleanupExecutionAccess>, volumeAttachmentExecutions?: ReadonlyMap<string, ComposeVolumeAttachmentExecutionAccess>, domainRouteApplyExecutions?: ReadonlyMap<string, DomainRouteApplyExecutionAccess>, transportPortApplyExecutions?: ReadonlyMap<string, TransportPortApplyExecutionAccess>,
-  backupInventoryFactory?: ApiRepositories["backupInventoryForAgent"]): void {
+  backupInventoryFactory?: ApiRepositories["backupInventoryForAgent"],
+  backupRetentionPreviews?: ReadonlyMap<string, BackupRetentionPreviewAccess>): void {
   const requireAuth = createAuthPreHandler(adapters, authConfig);
   const requireMutationRole = createRolePreHandler(adapters, ["admin", "operator"]);
   const requireAdminRole = createRolePreHandler(adapters, ["admin"]);
@@ -1313,6 +1316,7 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
   registerComposeResourceCleanupRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, cleanup: cleanupPlans,
     execution: cleanupExecutions, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerComposeVolumeBackupPlanRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, planning: backupPlans, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
+  registerBackupRetentionPreviewRoute(app, {prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, access: backupRetentionPreviews, inventoryFactory: backupInventoryFactory, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope});
   registerComposeVolumeBackupExecutionRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, planning: backupPlans, execution: backupExecutions, inventoryFactory: backupInventoryFactory, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   // Audit history is an operator/admin concern. Read-only sessions are denied
   // by design so a passive role cannot enumerate every project + key change.
@@ -2344,7 +2348,7 @@ export async function buildApiApp(options: BuildApiAppOptions = {}): Promise<Fas
     ? new Map([...(configuredResourceRuntime ? (composeResourceCleanupExecutions?.keys() ?? []) : composeResourceInspection.keys())]
       .map(projectId => [projectId, { store: repositories.composeResourceCleanupStore!, confirmationTtlMs: 60_000 }] as const))
     : undefined);
-  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE, options.imagePolicy ?? { policyVersion: "deployment-v1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }, composeResourceInspection, options.composeVolumeBackupPlans, cleanupPlans, options.composeVolumeBackupExecutions, composeNetworkAttachmentExecutions, composeResourceCleanupExecutions, composeVolumeAttachmentExecutions, domainRouteApplyExecutions, transportPortApplyExecutions, repositories.backupInventoryForAgent);
+  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE, options.imagePolicy ?? { policyVersion: "deployment-v1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }, composeResourceInspection, options.composeVolumeBackupPlans, cleanupPlans, options.composeVolumeBackupExecutions, composeNetworkAttachmentExecutions, composeResourceCleanupExecutions, composeVolumeAttachmentExecutions, domainRouteApplyExecutions, transportPortApplyExecutions, repositories.backupInventoryForAgent, options.backupRetentionPreviews);
   app.addHook("onClose", () => {
     repositories.state.deployRunner.cancelTimers();
   });
