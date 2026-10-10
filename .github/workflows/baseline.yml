@@ -382,8 +382,9 @@ jobs:
           python3 scripts/ci/p5-native-acceptance.test.py
           python3 scripts/ci/p5-native-acceptance.py capture
       - name: Execute all five native startup and persistent restart cases
-        run: pnpm --filter @deploylite/agent test src/infrastructure/docker/docker-managed-database-native.physical.test.ts --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/deploylite-p5-native-evidence/native.json"
+        run: pnpm --filter @deploylite/agent exec vitest run --allowOnly=false --config vitest.config.ts src/infrastructure/docker/docker-managed-database-native.physical.test.ts --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/deploylite-p5-native-evidence/native.json"
       - name: Refuse every omitted, skipped or incomplete native case
+        if: always()
         run: python3 scripts/ci/p5-native-acceptance.py verify
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
