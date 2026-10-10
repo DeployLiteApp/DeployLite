@@ -3,7 +3,7 @@
   "purpose": "Expected evidence only; this manifest neither authorizes runtime nor claims PASS",
   "suites": {
     "db": {
-      "count": 58,
+      "count": 61,
       "allowSkipped": false,
       "cases": [
         {
@@ -353,12 +353,39 @@
           "title": "persists cleanup admission across clients and atomically recovers concurrent commit replies",
           "file": "packages/db/src/postgres.integration.test.ts",
           "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration atomically persists domain route revisions and replays an authorized rollback without detaching its certificate",
+          "title": "atomically persists domain route revisions and replays an authorized rollback without detaching its certificate",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration atomically persists TCP/UDP reservation, apply revisions, active container state, and rollback",
+          "title": "atomically persists TCP/UDP reservation, apply revisions, active container state, and rollback",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "PostgreSQL auth foundation integration durably isolates encrypted registry records and rotates to public across repository instances",
+          "title": "durably isolates encrypted registry records and rotates to public across repository instances",
+          "file": "packages/db/src/postgres.integration.test.ts",
+          "physicalRestart": false
         }
       ],
       "sourceFiles": [
         "packages/db/src/execution-postgres.integration-cases.ts",
         "packages/db/src/postgres.integration.test.ts",
-        "packages/db/migrations/0018_deployment_rollback_command.sql"
+        "packages/db/src/repositories/domain-routes.ts",
+        "packages/db/src/schema.ts",
+        "packages/domain/src/control-plane.ts",
+        "packages/contracts/src/domain-route.ts",
+        "packages/db/migrations/0018_deployment_rollback_command.sql",
+        "packages/db/migrations/0021_domain_route_reservations.sql",
+        "packages/db/migrations/0022_domain_route_revisions.sql",
+        "packages/db/src/repositories/env-secret-values.ts",
+        "packages/config/src/crypto.ts",
+        "packages/contracts/src/registry-configuration.ts"
       ]
     },
     "api": {
@@ -971,6 +998,7 @@
   },
   "sourceFiles": [
     ".github/workflows/baseline.yml",
+    "infra/acme-test/compose.yml",
     "apps/agent/src/agent-transport.ts",
     "apps/agent/src/deployment-dispatcher.ts",
     "apps/agent/src/index.ts",
@@ -979,11 +1007,16 @@
     "apps/agent/src/infrastructure/docker/docker-process-runner.ts",
     "apps/api/src/agent-transport.ts",
     "apps/api/src/app.ts",
+    "apps/api/src/domain-route-apply-route.ts",
     "apps/api/src/deployment-docker.integration.test.ts",
     "apps/api/src/postgres.integration.test.ts",
     "packages/config/src/index.ts",
     "packages/contracts/src/deployment-contract/agent-transport.ts",
+    "packages/contracts/src/deployment-contract/domain-route-apply.ts",
+    "packages/contracts/src/deployment-contract/prior-execution-receipt.ts",
+    "packages/contracts/src/deployment-contract/project-control-authority.ts",
     "packages/contracts/src/deployment-contract/snapshot-plan.ts",
+    "packages/contracts/src/domain-route.ts",
     "packages/contracts/src/index.ts",
     "packages/db/migrations/0000_auth_postgres_foundation.sql",
     "packages/db/migrations/0001_real_product_deploy_flow.sql",
@@ -1003,19 +1036,24 @@
     "packages/db/migrations/0015_trusted_prior_execution_receipt.sql",
     "packages/db/migrations/0016_repeated_deployment_snapshot_hash.sql",
     "packages/db/migrations/0017_control_execution_authority.sql",
+    "packages/db/migrations/0021_domain_route_reservations.sql",
+    "packages/db/migrations/0022_domain_route_revisions.sql",
     "packages/db/src/execution-postgres.integration-cases.ts",
     "packages/db/src/postgres.integration.test.ts",
     "packages/db/src/repositories/agent-replay.ts",
     "packages/db/src/repositories/control-plane.ts",
     "packages/db/src/repositories/deployment-data.ts",
     "packages/db/src/repositories/execution-completion.ts",
+    "packages/db/src/repositories/domain-routes.ts",
     "packages/db/src/schema.ts",
     "packages/domain/src/control-plane.ts",
     "packages/domain/src/deployment-contract/deployment-authority.ts",
     "packages/domain/src/deployment-contract/docker-image-executor.ts",
     "packages/domain/src/deployment-contract/execution-completion.ts",
     "packages/domain/src/deployment-contract/execution-memory-state.ts",
+    "packages/domain/src/domain-route-plan.ts",
     "packages/domain/src/index.ts",
+    "scripts/compose.test.sh",
     "scripts/ci/p2-acceptance-cases.json",
     "scripts/ci/p2-physical-acceptance.py",
     "scripts/ci/p2-physical-acceptance.test.py",
@@ -1028,7 +1066,10 @@
     "scripts/testing/p2-fixture/base-image.json",
     "scripts/testing/p2-fixture/h/version",
     "scripts/testing/p2-fixture/healthz",
-    "packages/db/migrations/0018_deployment_rollback_command.sql"
+    "packages/db/migrations/0018_deployment_rollback_command.sql",
+    "packages/db/src/repositories/env-secret-values.ts",
+    "packages/config/src/crypto.ts",
+    "packages/contracts/src/registry-configuration.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,

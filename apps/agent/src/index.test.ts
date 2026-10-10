@@ -387,3 +387,9 @@ describe("SafeRuntimeExecutor", () => {
     expect(runner.rollback).toHaveBeenCalledTimes(1);
   });
 });
+
+it("never materializes reserved registry credentials into application env files", () => {
+  const registry = encrypted("DEPLOYLITE_REGISTRY_" + "A".repeat(64), '{"password":"registry-canary"}');
+  const app = encrypted("APP_TOKEN", "app-fixture");
+  expect(buildDeployEnvFile([registry, app], cipher).contents).toBe("APP_TOKEN=app-fixture\n");
+});

@@ -13,11 +13,21 @@ printf 'DEPLOYLITE_AGENT_ID=%s\nDEPLOYLITE_AGENT_TRUST_KEY=%s\n' 'agent_contract
 export DEPLOYLITE_AGENT_ID=agent_contract DEPLOYLITE_AGENT_TRUST_KEY=transport_contract_key_123
 base_rendered="$(docker compose -f "$ROOT_DIR/infra/vps/compose.yml" config --no-interpolate)"
 rendered="$(docker compose -f "$ROOT_DIR/infra/vps/compose.yml" -f "$ROOT_DIR/infra/vps/compose.tls.yml" config --no-interpolate)"
+acme_test_compose="$(<"$ROOT_DIR/infra/acme-test/compose.yml")"
 merged_rendered="$(docker compose --env-file "$runtime_env" -f "$ROOT_DIR/infra/vps/compose.yml" -f "$ROOT_DIR/infra/vps/compose.tls.yml" --profile bootstrap config)"
 migrate_environment="$(printf '%s\n' "$merged_rendered" | awk '/^  migrate:$/,/^  api:$/')"
 api_environment="$(printf '%s\n' "$merged_rendered" | awk '/^  api:$/ {on=1} on {if ($0 ~ /^  [a-z][a-z-]*:$/ && $0 !~ /^  api:$/) exit; print}')"
 
 contains() { [[ "$rendered" == *"$1"* ]] || { printf 'missing: %s\n' "$1"; return 1; }; }
+for acme_test_port in \
+  "127.0.0.1:\${PEBBLE_API_PORT:-51400}:14000" \
+  "127.0.0.1:\${PEBBLE_MGMT_PORT:-51500}:15000" \
+  "127.0.0.1:\${TRAEFIK_TLS_PORT:-54443}:443"; do
+  [[ "$acme_test_compose" == *"$acme_test_port"* ]] || {
+    printf 'ACME harness ports must bind to loopback: %s\n' "$acme_test_port"
+    exit 1
+  }
+done
 [[ "$base_rendered" == *'traefik:v3.6.7'* ]] || { printf 'base Compose must pin Traefik v3.6.7 for Docker API compatibility\n'; exit 1; }
 contains "DEPLOYLITE_CORS_ORIGIN: https://\${DEPLOYLITE_PUBLIC_HOST:-deploylite.invalid}"
 contains 'profiles:'
@@ -40,7 +50,7 @@ contains 'deploylite-bootstrap-marker'
 contains 'DEPLOYLITE_SESSION_COOKIE_SECURE: "true"'
 contains 'image: deploylite-agent:local'
 contains 'DEPLOYLITE_AGENT_URL: http://agent:3002'
-contains 'DEPLOYLITE_COMPOSE_RESOURCE_PROJECT_AGENTS_JSON: ${DEPLOYLITE_COMPOSE_RESOURCE_PROJECT_AGENTS_JSON:-}'
+contains "DEPLOYLITE_COMPOSE_RESOURCE_PROJECT_AGENTS_JSON: \${DEPLOYLITE_COMPOSE_RESOURCE_PROJECT_AGENTS_JSON:-}"
 contains 'agent_internal: '
 contains 'required: false'
 contains 'target: /var/run/docker.sock'

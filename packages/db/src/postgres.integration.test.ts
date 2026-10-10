@@ -1,3 +1,5 @@
+import { createEnvSecretCipher, registryCredentialKey } from "@deploylite/config";
+import { DbEnvSecretValueRepository } from "./repositories/env-secret-values.js";
 import "./execution-postgres.integration-cases.js";
 import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
@@ -10,10 +12,14 @@ import { assertEnvMetadataHasNoValueColumns, toEnvVariableMetadataInsert } from 
 import { DbAuthUserRepository, DbRoleRepository, DbSessionRepository } from "./repositories/auth.js";
 import { DbAgentRepository, DbDeploymentRepository, DbProjectRepository } from "./repositories/deployment-data.js";
 import { DbControlCommandRepository, DbControlGrantRepository } from "./repositories/control-plane.js";
+import { DbTransportPortApplyStore } from "./repositories/transport-port-apply.js";
 import { DbAgentReplayStore } from "./repositories/agent-replay.js";
 import { DbComposeResourceCleanupStore } from "./repositories/compose-resource-cleanup.js";
-import { IdempotencyConflictError, createConfirmation, createControlCommand, digestControlInput } from "@deploylite/domain";
-import { createDeploymentSnapshot, createSourceIntent } from "@deploylite/contracts";
+import { DbDomainRouteClaimReader } from "./repositories/domain-routes.js";
+import { IdempotencyConflictError, createConfirmation, createControlCommand, createDomainRoutePlan, createTransportPortPlan, digestControlInput, domainRouteNetworkName } from "@deploylite/domain";
+import { createDeploymentSnapshot, createSourceIntent, domainRouteIntentSchema, transportPortApplyReceiptSchema, transportPortIntentSchema,
+  trustedPriorExecutionReceiptSchema, type DomainRouteApplyReceiptV1, type TransportPortApplyReceiptV1, type TransportPortBindingV1,
+  type TransportPortTransferV1 } from "@deploylite/contracts";
 import { createComposePreview, type PreparedComposeResourceCleanup } from "@deploylite/domain";
 import type { ComposeResourceCleanupConfirmationViewV1, ComposeResourceCleanupInput } from "@deploylite/contracts";
 
@@ -338,6 +344,213 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
     await expect(client.query("SELECT id FROM control_commands WHERE id = $1", [rolledBackId])).resolves.toMatchObject({ rowCount: 0 });
   });
 
+  it("atomically persists domain route revisions and replays an authorized rollback without detaching its certificate", async () => {
+    const client = requirePool();
+    const adminRole = (await client.query<{ id: string }>("SELECT id FROM roles WHERE name = 'admin'")).rows[0];
+    if (!adminRole) throw new Error("Canonical admin role was not seeded");
+
+    const actorId = randomUUID();
+    const projectId = randomUUID();
+    const deploymentId = randomUUID();
+    const agentRowId = randomUUID();
+    const now = new Date().toISOString();
+    const agentId = `route-agent-${randomUUID()}`;
+    const route = domainRouteIntentSchema.parse({
+      schemaVersion: 1,
+      projectId,
+      deploymentId,
+      domain: `route-${projectId.slice(0, 8)}.integration.test`
+    });
+
+    await client.query("INSERT INTO users (id, email, email_normalized, password_hash, role_id) VALUES ($1, $2, $2, $3, $4)", [
+      actorId, `${actorId}@example.test`, "hash", adminRole.id
+    ]);
+    await new DbAgentRepository(requireDb()).save({
+      id: agentRowId,
+      name: "Route integration agent",
+      endpoint: "https://route-agent.integration.test",
+      status: "online",
+      lastHeartbeatAt: now,
+      resourceSnapshot: null
+    });
+    await requireDbProjectRepository().save({
+      id: projectId,
+      name: "Route integration project",
+      repoUrl: "https://github.com/example/deploylite-route-integration",
+      defaultBranch: "main",
+      buildCommand: null,
+      runCommand: "node server.js",
+      port: 3000,
+      description: null,
+      imageTag: null
+    });
+    await requireDbDeploymentRepository().save({
+      id: deploymentId,
+      projectId,
+      agentId: agentRowId,
+      status: "succeeded",
+      commitSha: "abcdef1234567",
+      startedAt: now,
+      finishedAt: now
+    });
+
+    const command = {
+      ...createControlCommand({
+        actorId,
+        action: "project.update",
+        scope: { kind: "project", projectId },
+        input: { domainRoute: route },
+        idempotencyKey: "domain-route-apply-pg",
+        correlationId: "corr-domain-route-apply-pg"
+      }),
+      status: "eligible" as const
+    };
+    const commandRepo = new DbControlCommandRepository(requireDb());
+    await commandRepo.resolve(command);
+    const claimed = await commandRepo.claimProjectUpdate(command);
+    expect(claimed.claimed).toBe(true);
+    if (!claimed.authority) throw new Error("Project update authority was not claimed");
+
+    const routeStore = new DbDomainRouteClaimReader(requireDb());
+    const plan = createDomainRoutePlan({ desired: route, currentClaims: await routeStore.listClaims() });
+    expect(plan.action).toBe("create");
+    await routeStore.reserveDomainRouteApply({ command: claimed.command, route, plan, operation: "apply", rollbackRevisionId: null });
+
+    const receipt: DomainRouteApplyReceiptV1 = {
+      schemaVersion: 1,
+      action: "domain.route.apply",
+      agentId,
+      commandId: command.id,
+      projectId,
+      domain: route.domain,
+      deploymentId,
+      inputDigest: command.inputDigest,
+      correlationId: command.correlationId,
+      networkName: domainRouteNetworkName(projectId),
+      networkId: "a".repeat(64),
+      targetContainerId: "b".repeat(64),
+      traefikContainerId: "c".repeat(64),
+      fileName: `domain-route-${createHash("sha256").update(projectId).digest("hex").slice(0, 24)}.yml`,
+      contentDigest: "d".repeat(64),
+      state: "created",
+      observedAt: Date.now(),
+      failureReason: null,
+      redacted: true
+    };
+    const completion = {
+      command: claimed.command,
+      authority: claimed.authority,
+      route,
+      plan,
+      operation: "apply" as const,
+      rollbackRevisionId: null,
+      receipt,
+      audit: {
+        actorUserId: actorId,
+        action: "domain.route.applied",
+        targetType: "project",
+        targetId: projectId,
+        requestId: "req-domain-route-apply-pg",
+        correlationId: command.correlationId,
+        metadata: { agentId }
+      }
+    };
+
+    await expect(routeStore.completeDomainRouteApply(completion)).resolves.toMatchObject({ status: "completed", result: receipt });
+    await expect(routeStore.completeDomainRouteApply(completion)).resolves.toMatchObject({ status: "completed", result: receipt });
+    await expect(client.query("SELECT project_id, hostname, deployment_id, status, metadata FROM domains WHERE hostname = $1", [route.domain])).resolves.toMatchObject({
+      rows: [expect.objectContaining({ project_id: projectId, hostname: route.domain, deployment_id: deploymentId, status: "active", metadata: expect.objectContaining({ commandId: command.id, networkName: domainRouteNetworkName(projectId) }) })]
+    });
+    await expect(client.query("SELECT status, result FROM control_commands WHERE id = $1", [command.id])).resolves.toMatchObject({
+      rows: [{ status: "completed", result: receipt }]
+    });
+    await expect(client.query("SELECT outcome, correlation_id FROM control_command_audits WHERE command_id = $1", [command.id])).resolves.toMatchObject({
+      rowCount: 1,
+      rows: [{ outcome: "completed", correlation_id: command.correlationId }]
+    });
+    await expect(client.query("SELECT action, request_id, correlation_id, metadata FROM audit_events WHERE target_id = $1 AND action = 'domain.route.applied'", [projectId])).resolves.toMatchObject({
+      rowCount: 1,
+      rows: [expect.objectContaining({ request_id: "req-domain-route-apply-pg", correlation_id: command.correlationId, metadata: expect.objectContaining({ commandId: command.id, agentId }) })]
+    });
+    await expect(client.query("SELECT hostname FROM domain_route_reservations WHERE hostname = $1", [route.domain])).resolves.toMatchObject({ rowCount: 0, rows: [] });
+
+    const firstRevision = await routeStore.findDomainRouteRevisionByCommand(command.id);
+    expect(firstRevision).toMatchObject({ operation: "apply", deploymentId, revisionNumber: 1, commandId: command.id });
+    const domainRow = (await client.query<{ id: string }>("SELECT id FROM domains WHERE hostname = $1", [route.domain])).rows[0];
+    if (!domainRow) throw new Error("Applied domain row was not persisted");
+    const certificateId = randomUUID();
+    await client.query("INSERT INTO certificates (id, domain_id, provider, status, not_before, not_after, metadata) VALUES ($1, $2, 'acme-metadata-only', 'issued', now(), now() + interval '1 day', $3::jsonb)",
+      [certificateId, domainRow.id, JSON.stringify({ issuer: "metadata-only" })]);
+
+    const secondDeploymentId = randomUUID();
+    await requireDbDeploymentRepository().save({
+      id: secondDeploymentId, projectId, agentId: agentRowId, status: "succeeded", commitSha: "bcdefa1234567", startedAt: now, finishedAt: now
+    });
+    const secondRoute = { ...route, deploymentId: secondDeploymentId };
+    const secondCommand = {
+      ...createControlCommand({ actorId, action: "project.update", scope: { kind: "project", projectId },
+        input: { domainRoute: secondRoute }, idempotencyKey: "domain-route-retarget-pg", correlationId: "corr-domain-route-retarget-pg" }),
+      status: "eligible" as const
+    };
+    await commandRepo.resolve(secondCommand);
+    const secondClaimed = await commandRepo.claimProjectUpdate(secondCommand);
+    if (!secondClaimed.authority) throw new Error("Retarget project update authority was not claimed");
+    const secondPlan = createDomainRoutePlan({ desired: secondRoute, currentClaims: await routeStore.listClaims() });
+    expect(secondPlan).toMatchObject({ action: "retarget", previousDeploymentId: deploymentId });
+    await routeStore.reserveDomainRouteApply({ command: secondClaimed.command, route: secondRoute, plan: secondPlan,
+      operation: "apply", rollbackRevisionId: null });
+    const secondReceipt: DomainRouteApplyReceiptV1 = { ...receipt, commandId: secondCommand.id, deploymentId: secondDeploymentId,
+      inputDigest: secondCommand.inputDigest, correlationId: secondCommand.correlationId, state: "updated", contentDigest: "e".repeat(64),
+      targetContainerId: "1".repeat(64) };
+    const secondCompletion = { command: secondClaimed.command, authority: secondClaimed.authority, route: secondRoute, plan: secondPlan,
+      operation: "apply" as const, rollbackRevisionId: null, receipt: secondReceipt,
+      audit: { actorUserId: actorId, action: "domain.route.applied", targetType: "project", targetId: projectId,
+        requestId: "req-domain-route-retarget-pg", correlationId: secondCommand.correlationId, metadata: { agentId } } };
+    await expect(routeStore.completeDomainRouteApply(secondCompletion)).resolves.toMatchObject({ status: "completed", result: secondReceipt });
+    await expect(client.query("SELECT deployment_id FROM domains WHERE id = $1", [domainRow.id])).resolves.toMatchObject({ rows: [{ deployment_id: secondDeploymentId }] });
+
+    const rollbackTarget = await routeStore.findRollbackTarget(projectId, route.domain);
+    expect(rollbackTarget).toMatchObject({ id: firstRevision?.id, deploymentId, revisionNumber: 1 });
+    const rollbackRoute = { ...route, deploymentId };
+    const rollbackCommand = {
+      ...createControlCommand({ actorId, action: "project.update", scope: { kind: "project", projectId },
+        input: { operation: "rollback", domain: route.domain }, idempotencyKey: "domain-route-rollback-pg", correlationId: "corr-domain-route-rollback-pg" }),
+      status: "eligible" as const
+    };
+    await commandRepo.resolve(rollbackCommand);
+    const rollbackClaimed = await commandRepo.claimProjectUpdate(rollbackCommand);
+    if (!rollbackClaimed.authority) throw new Error("Rollback project update authority was not claimed");
+    const rollbackPlan = createDomainRoutePlan({ desired: rollbackRoute, currentClaims: await routeStore.listClaims() });
+    expect(rollbackPlan).toMatchObject({ action: "retarget", previousDeploymentId: secondDeploymentId });
+    await routeStore.reserveDomainRouteApply({ command: rollbackClaimed.command, route: rollbackRoute, plan: rollbackPlan,
+      operation: "rollback", rollbackRevisionId: firstRevision!.id });
+    const rollbackReceipt: DomainRouteApplyReceiptV1 = { ...receipt, commandId: rollbackCommand.id, deploymentId,
+      inputDigest: rollbackCommand.inputDigest, correlationId: rollbackCommand.correlationId, state: "updated", contentDigest: "f".repeat(64) };
+    const rollbackCompletion = { command: rollbackClaimed.command, authority: rollbackClaimed.authority, route: rollbackRoute, plan: rollbackPlan,
+      operation: "rollback" as const, rollbackRevisionId: firstRevision!.id, receipt: rollbackReceipt,
+      audit: { actorUserId: actorId, action: "domain.route.rolled_back", targetType: "project", targetId: projectId,
+        requestId: "req-domain-route-rollback-pg", correlationId: rollbackCommand.correlationId, metadata: { agentId } } };
+    await expect(routeStore.completeDomainRouteApply(rollbackCompletion)).resolves.toMatchObject({ status: "completed", result: rollbackReceipt });
+    await expect(routeStore.completeDomainRouteApply(rollbackCompletion)).resolves.toMatchObject({ status: "completed", result: rollbackReceipt });
+    const rollbackRevision = await routeStore.findDomainRouteRevisionByCommand(rollbackCommand.id);
+    expect(rollbackRevision).toMatchObject({ operation: "rollback", deploymentId, rollbackRevisionId: firstRevision?.id, revisionNumber: 3 });
+    await expect(client.query("SELECT deployment_id FROM domains WHERE id = $1", [domainRow.id])).resolves.toMatchObject({ rows: [{ deployment_id: deploymentId }] });
+    await expect(client.query("SELECT domain_id, provider, status, metadata FROM certificates WHERE id = $1", [certificateId])).resolves.toMatchObject({
+      rows: [{ domain_id: domainRow.id, provider: "acme-metadata-only", status: "issued", metadata: { issuer: "metadata-only" } }]
+    });
+    await expect(client.query("SELECT operation, evidence FROM domain_route_revisions WHERE domain_id = $1 ORDER BY revision_number", [domainRow.id])).resolves.toMatchObject({
+      rowCount: 3,
+      rows: [
+        { operation: "apply", evidence: { state: "created", contentDigest: "d".repeat(64), observedAt: receipt.observedAt, redacted: true } },
+        { operation: "apply", evidence: { state: "updated", contentDigest: "e".repeat(64), observedAt: secondReceipt.observedAt, redacted: true } },
+        { operation: "rollback", evidence: { state: "updated", contentDigest: "f".repeat(64), observedAt: rollbackReceipt.observedAt, redacted: true } }
+      ]
+    });
+    await expect(client.query("SELECT action, correlation_id FROM audit_events WHERE target_id = $1 AND action = 'domain.route.rolled_back'", [projectId])).resolves.toMatchObject({
+      rowCount: 1, rows: [{ action: "domain.route.rolled_back", correlation_id: rollbackCommand.correlationId }]
+    });
+  });
+
   it("loads only persisted actor/action grants and fails closed for absent or cross-project scopes", async () => {
     const client = requirePool();
     const role = (await client.query<{ id: string }>("SELECT id FROM roles WHERE name = 'operator'")).rows[0];
@@ -531,6 +744,117 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
     await expect(client.query("SELECT count(*)::int AS count FROM audit_events WHERE target_id = $1 AND action = 'compose.resource.cleanup.admitted'", [projectId]))
       .resolves.toMatchObject({ rows: [{ count: 1 }] });
   });
+
+  it("atomically persists TCP/UDP reservation, apply revisions, active container state, and rollback", async () => {
+    const client = requirePool(), database = requireDb(), actorId = randomUUID(), projectId = randomUUID(), deploymentId = randomUUID(), targetDeploymentId = randomUUID(), agentId = randomUUID();
+    const adminRole = (await client.query<{ id: string }>("SELECT id FROM roles WHERE name = 'admin'")).rows.at(0);
+    if (!adminRole) throw new Error("Canonical admin role was not seeded");
+    await client.query("INSERT INTO users (id, email, email_normalized, password_hash, role_id) VALUES ($1, $2, $2, $3, $4)",
+      [actorId, `${actorId}@example.test`, "hash", adminRole.id]);
+    await requireDbAgentRepository().save({ id: agentId, name: "Transport integration agent", endpoint: "https://transport-agent.integration.test",
+      status: "online", lastHeartbeatAt: new Date().toISOString(), resourceSnapshot: null });
+    await requireDbProjectRepository().save({ id: projectId, name: "Transport integration project",
+      repoUrl: "https://github.com/example/deploylite-transport-integration", defaultBranch: "main", buildCommand: null,
+      runCommand: "node server.js", port: 3000, description: null, imageTag: null });
+    await requireDbDeploymentRepository().save({ id: deploymentId, projectId, agentId, status: "succeeded", commitSha: "abcdef1234567",
+      startedAt: new Date().toISOString(), finishedAt: new Date().toISOString() });
+    await requireDbDeploymentRepository().save({ id: targetDeploymentId, projectId, agentId, status: "succeeded", commitSha: "abcdef7654321",
+      startedAt: new Date().toISOString(), finishedAt: new Date().toISOString() });
+
+    const publishedPort = 31_000 + Math.floor(Math.random() * 10_000), protocol = "udp" as const;
+    const store = new DbTransportPortApplyStore(database), commandRepo = new DbControlCommandRepository(database);
+    const makeBinding = (targetPort: number): TransportPortBindingV1 => ({ protocol, publishedPort, targetPort });
+    const image1 = `registry.example.com/team/source@sha256:${"a".repeat(64)}`, image2 = `registry.example.com/team/target@sha256:${"b".repeat(64)}`;
+    const makeProof = (id: string, image: string, containerId: string) => trustedPriorExecutionReceiptSchema.parse({ schemaVersion: 1,
+      candidateId: `${id}:candidate:trusted-command`, deploymentId: id, projectId, snapshotOriginId: id, snapshotHash: "c".repeat(64),
+      effectiveImageDigest: image.split("@")[1], runtimeHost: agentId, container: `deploylite-active-${id}`, containerId,
+      hostPort: id === deploymentId ? 43000 : 43001, containerPort: 3000, network: null });
+    const proof1 = makeProof(deploymentId, image1, "a".repeat(64)), proof2 = makeProof(targetDeploymentId, image2, "b".repeat(64));
+    const execute = async (targetPort: number, operation: "apply" | "rollback", rollbackRevisionId: string | null,
+      currentContainerId: string, previousBindings: TransportPortBindingV1[], nextContainerId: string, targetId = deploymentId,
+      portTransfer?: TransportPortTransferV1, nextSourceContainerId = "e".repeat(64)) => {
+      const route = transportPortIntentSchema.parse({ schemaVersion: 1, projectId, deploymentId: targetId, protocol, publishedPort, targetPort });
+      const currentClaims = await store.listClaims(), plan = createTransportPortPlan({ desired: route, currentClaims });
+      const command = { ...createControlCommand({ actorId, action: "project.update", scope: { kind: "project", projectId },
+        input: { route, operation, rollbackRevisionId, ...(portTransfer ? { portTransfer } : {}) }, idempotencyKey: `transport-${operation}-${targetPort}-${randomUUID()}`,
+        correlationId: `corr-transport-${operation}-${targetPort}-${randomUUID()}`, expiresAt: new Date(Date.now() + 60_000) }), status: "eligible" as const };
+      await commandRepo.resolve(command);
+      const claimed = await commandRepo.claimProjectUpdate(command);
+      expect(claimed.claimed).toBe(true);
+      if (!claimed.authority) throw new Error("Project update authority was not claimed for transport apply");
+      const bindings = [makeBinding(targetPort)];
+      await store.reserveTransportPortApply({ command: claimed.command, route, plan, operation, rollbackRevisionId,
+        currentContainerId, bindings, previousBindings, ...(portTransfer ? { portTransfer } : {}) });
+      const receipt: TransportPortApplyReceiptV1 = transportPortApplyReceiptSchema.parse({ schemaVersion: 1,
+        action: "transport.port.apply", agentId, commandId: command.id, projectId, protocol, publishedPort, targetPort,
+        deploymentId: targetId, operation, rollbackRevisionId, inputDigest: command.inputDigest, correlationId: command.correlationId, containerId: nextContainerId,
+        ...(portTransfer ? { portTransfer: { sourceDeploymentId: portTransfer.sourceDeploymentId, sourceContainerId: nextSourceContainerId, retainedPriorContainerIds: [] } } : {}),
+        state: "updated", observedAt: Date.now(), failureReason: null, redacted: true });
+      const completion = { command: claimed.command, authority: claimed.authority, route, plan, currentContainerId, bindings, previousBindings,
+        ...(portTransfer ? { portTransfer } : {}), operation, rollbackRevisionId, receipt, audit: { actorUserId: actorId,
+          action: operation === "rollback" ? "transport.port.rolled_back" : "transport.port.applied", targetType: "project", targetId: projectId,
+          requestId: `request-${command.id}`, correlationId: command.correlationId, metadata: { agentId } } };
+      const completed = await store.completeTransportPortApply(completion);
+      expect(completed).toMatchObject({ status: "completed", result: receipt });
+      await expect(store.completeTransportPortApply(completion)).resolves.toMatchObject({ status: "completed", result: receipt });
+      return { receipt, revision: await store.findTransportPortRevisionByCommand(command.id) };
+    };
+
+    const initial = await execute(25565, "apply", null, "a".repeat(64), [], "b".repeat(64));
+    expect(initial.revision).toMatchObject({ operation: "apply", revisionNumber: 1, targetPort: 25565 });
+    const changed = await execute(25566, "apply", null, "b".repeat(64), [makeBinding(25565)], "c".repeat(64));
+    expect(changed.revision).toMatchObject({ operation: "apply", revisionNumber: 2, targetPort: 25566 });
+    const rollbackTarget = await store.findRollbackTarget(projectId, protocol, publishedPort);
+    expect(rollbackTarget).toMatchObject({ id: initial.revision?.id, deploymentId, targetPort: 25565 });
+    const rolledBack = await execute(25565, "rollback", rollbackTarget!.id, "c".repeat(64), [makeBinding(25566)], "d".repeat(64));
+    expect(rolledBack.revision).toMatchObject({ operation: "rollback", revisionNumber: 3, rollbackRevisionId: initial.revision?.id });
+    const outbound = { sourceDeploymentId: deploymentId, sourceContainerId: "d".repeat(64), sourceBindings: [],
+      sourcePreviousBindings: [makeBinding(25565)], sourceExecutionReceipt: proof1, sourceEffectiveImage: image1 } satisfies TransportPortTransferV1;
+    const transferred = await execute(25567, "apply", null, "b".repeat(64), [], "c".repeat(64), targetDeploymentId, outbound, "f".repeat(64));
+    expect(transferred.revision).toMatchObject({ operation: "apply", revisionNumber: 4, deploymentId: targetDeploymentId, targetPort: 25567 });
+    await expect(store.findTransportPortRuntimeState(projectId, deploymentId)).resolves.toEqual({ projectId, deploymentId,
+      containerId: "f".repeat(64), bindings: [] });
+    await expect(store.findTransportPortRuntimeState(projectId, targetDeploymentId)).resolves.toEqual({ projectId, deploymentId: targetDeploymentId,
+      containerId: "c".repeat(64), bindings: [makeBinding(25567)] });
+    const transferRollbackTarget = await store.findRollbackTarget(projectId, protocol, publishedPort);
+    expect(transferRollbackTarget).toMatchObject({ deploymentId, targetPort: 25565 });
+    const inbound = { sourceDeploymentId: targetDeploymentId, sourceContainerId: "c".repeat(64), sourceBindings: [],
+      sourcePreviousBindings: [makeBinding(25567)], sourceExecutionReceipt: proof2, sourceEffectiveImage: image2 } satisfies TransportPortTransferV1;
+    const transferredBack = await execute(25565, "rollback", transferRollbackTarget!.id, "f".repeat(64), [], "1".repeat(64), deploymentId, inbound, "2".repeat(64));
+    expect(transferredBack.revision).toMatchObject({ operation: "rollback", revisionNumber: 5, rollbackRevisionId: transferRollbackTarget!.id });
+    await expect(store.findTransportPortRuntimeState(projectId, deploymentId)).resolves.toEqual({ projectId, deploymentId,
+      containerId: "1".repeat(64), bindings: [makeBinding(25565)] });
+    await expect(store.findTransportPortRuntimeState(projectId, targetDeploymentId)).resolves.toEqual({ projectId, deploymentId: targetDeploymentId,
+      containerId: "2".repeat(64), bindings: [] });
+    await expect(client.query("SELECT target_port FROM transport_port_claims WHERE protocol = $1 AND published_port = $2", [protocol, publishedPort]))
+      .resolves.toMatchObject({ rows: [{ target_port: 25565 }] });
+    await expect(client.query("SELECT count(*)::int AS count FROM transport_port_reservations WHERE protocol = $1 AND published_port = $2", [protocol, publishedPort]))
+      .resolves.toMatchObject({ rows: [{ count: 0 }] });
+    await expect(client.query("SELECT count(*)::int AS count FROM transport_port_revisions WHERE project_id = $1 AND protocol = $2 AND published_port = $3", [projectId, protocol, publishedPort]))
+      .resolves.toMatchObject({ rows: [{ count: 5 }] });
+    await expect(client.query("SELECT action, count(*)::int AS count FROM audit_events WHERE target_id = $1 AND action IN ('transport.port.applied', 'transport.port.rolled_back') GROUP BY action ORDER BY action", [projectId]))
+      .resolves.toMatchObject({ rows: [{ action: "transport.port.applied", count: 3 }, { action: "transport.port.rolled_back", count: 2 }] });
+  });
+
+  it("durably isolates encrypted registry records and rotates to public across repository instances", async () => {
+    const projectId = randomUUID(), foreign = randomUUID(), host = "registry.example.com", key = registryCredentialKey(host);
+    await requireDbProjectRepository().save({id: projectId, name: "Registry fixture", repoUrl: "https://github.com/example/fixture", defaultBranch: "main", buildCommand: null, runCommand: null, port: null, description: null, imageTag: null});
+    const cipher = createEnvSecretCipher(Buffer.alloc(32, 9)), password = "disposable-registry-canary";
+    const plaintext = JSON.stringify({registryHost: host, username: "fixture", password});
+    const input = (value: string) => ({projectId, key, scope: "project" as const, encryptedValue: Buffer.from(cipher.encrypt(value), "base64"), valueFingerprint: cipher.fingerprint(value), keyVersion: 1});
+    await new DbEnvSecretValueRepository(requireDb()).upsert(input(plaintext));
+    const reader = new DbEnvSecretValueRepository(requireDb());
+    const rows = await reader.listEncryptedByProject(projectId); expect(rows).toHaveLength(1);
+    expect(cipher.decrypt(Buffer.from(rows[0]!.encryptedValue).toString("base64"))).toBe(plaintext);
+    expect(Buffer.from(rows[0]!.encryptedValue).toString()).not.toContain(password);
+    expect(JSON.stringify(await reader.listByProject(projectId))).not.toContain(password);
+    expect(await reader.listEncryptedByProject(foreign)).toEqual([]);
+    const publicValue = JSON.stringify({registryHost: host}); await reader.upsert(input(publicValue));
+    const rotated = await new DbEnvSecretValueRepository(requireDb()).listEncryptedByProject(projectId);
+    expect(rotated).toHaveLength(1); expect(cipher.decrypt(Buffer.from(rotated[0]!.encryptedValue).toString("base64"))).toBe(publicValue);
+    expect(rotated[0]!.valueFingerprint).toBe(cipher.fingerprint(publicValue));
+  });
+
 });
 
 function requirePool(): pg.Pool {

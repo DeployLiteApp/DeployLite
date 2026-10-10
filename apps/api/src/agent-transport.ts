@@ -2,8 +2,11 @@ import { sealAgentSecretEnvelope, signAgentTransport, validateAgentTransportKey 
 import { COMPOSE_RESOURCE_CLEANUP_CAPABILITY, COMPOSE_RESOURCE_CLEANUP_PATH, COMPOSE_RESOURCE_CLEANUP_RECEIPT_PATH,
   composeResourceCleanupAgentCommandSchema, composeResourceCleanupCachedReceiptSchema, composeResourceCleanupExecutionReceiptSchema,
   composeResourceCleanupReceiptQuerySchema, type ComposeResourceCleanupExecutionReceiptV1 } from "@deploylite/contracts";
+import { DOMAIN_ROUTE_APPLY_CAPABILITY, DOMAIN_ROUTE_APPLY_PATH, DOMAIN_ROUTE_APPLY_RECEIPT_PATH, domainRouteApplyAgentCommandSchema,
+  domainRouteApplyCachedReceiptSchema, domainRouteApplyReceiptQuerySchema, domainRouteApplyReceiptSchema,
+  type DomainRouteApplyReceiptV1, type DomainRouteApplyReceiptQueryV1 } from "@deploylite/contracts";
 import { agentCachedReceiptSchema, agentReceiptQuerySchema, type AgentReceiptQuery, agentCapabilityHandshakeSchema, agentExecutionReceiptSchema, composeNetworkAttachmentAgentCommandSchema, composeNetworkAttachmentCachedReceiptSchema, composeNetworkAttachmentReceiptQuerySchema, composeNetworkAttachmentReceiptSchema, COMPOSE_NETWORK_ATTACHMENT_CAPABILITY, COMPOSE_NETWORK_ATTACHMENT_PATH, composeVolumeAttachmentAgentCommandSchema, composeVolumeAttachmentCachedReceiptSchema, composeVolumeAttachmentReceiptQuerySchema, composeVolumeAttachmentReceiptSchema, COMPOSE_VOLUME_ATTACHMENT_CAPABILITY, COMPOSE_VOLUME_ATTACHMENT_PATH, COMPOSE_VOLUME_ATTACHMENT_RECEIPT_PATH, composeVolumeBackupAgentCommandSchema, composeVolumeBackupCachedReceiptSchema, composeVolumeBackupReceiptQuerySchema, composeVolumeBackupReceiptSchema, COMPOSE_VOLUME_BACKUP_CAPABILITY, COMPOSE_VOLUME_BACKUP_PATH, COMPOSE_VOLUME_BACKUP_RECEIPT_PATH, deploymentStopAgentReceiptSchema, dockerImageExecutionReceiptSchema, promotionPolicySchema, type AgentExecutionCommand, type AgentReplacementV1, type ComposeNetworkAttachmentReceiptV1, type ComposeVolumeAttachmentReceiptV1, type ComposeVolumeAttachmentExecutionRequestV1, type ComposeVolumeBackupAgentCommandV1, type ComposeVolumeBackupReceiptV1, type DeploymentExecutionAuthorityV1, type DeploymentSnapshotV1, type LeaseV1, type ProjectControlAuthorityV1, TransportCanceledError, TransportError, TransportTimeoutError } from "@deploylite/contracts";
-import { awaitAbortable, type DockerImageExecutionReceiptV1, type PreparedComposeAttachmentCommand, type ControlCommand } from "@deploylite/domain";
+import { awaitAbortable, type DockerImageExecutionReceiptV1, type PreparedComposeAttachmentCommand, type PreparedDomainRouteApplyCommand, type ControlCommand } from "@deploylite/domain";
 import type { PreparedComposeResourceCleanupCommand } from "./compose-resource-cleanup-route.js";
 
 export type AgentTransportOptions = Readonly<{ endpoint: string; trustKey: string; agentId: string; allowInsecureInternal?: boolean; fetch?: typeof globalThis.fetch; timeoutMs?: number; now?: () => number }>;
@@ -18,6 +21,28 @@ const preDispatchRejections = new WeakSet<object>();
 export function isAgentPreDispatchRejection(error: unknown): boolean { return typeof error === "object" && error !== null && preDispatchRejections.has(error); }
 
 function beforeDispatch<T extends Error>(error: T): T { preDispatchRejections.add(error); return error; }
+export function markAgentPreDispatchRejection<T extends Error>(error: T): T { return beforeDispatch(error); }
+
+function buildDomainRouteApplyAgentCommand(prepared: PreparedDomainRouteApplyCommand, authority: ProjectControlAuthorityV1,
+  context: Pick<AgentDispatchContext, "requestId" | "correlationId">, timeoutMs: number) {
+  const { command } = prepared;
+  if (command.action !== "project.update" || command.scope.kind !== "project" || command.scope.projectId !== prepared.route.projectId
+    || authority.projectId !== prepared.route.projectId || authority.commandId !== command.id || authority.inputDigest !== command.inputDigest
+    || context.correlationId !== command.correlationId) throw new TransportError("domain route project update scope rejected");
+  return domainRouteApplyAgentCommandSchema.parse({ schemaVersion: 1, action: "domain.route.apply", agentId: prepared.agentId,
+    commandId: command.id, projectId: prepared.route.projectId, idempotencyKey: command.idempotencyKey, inputDigest: command.inputDigest,
+    route: prepared.route, executionReceipt: prepared.executionReceipt, effectiveImage: prepared.effectiveImage,
+    requiredCapabilities: [DOMAIN_ROUTE_APPLY_CAPABILITY], authority, lease: authority.projectLease,
+    context: { requestId: context.requestId, correlationId: context.correlationId }, timeoutMs, cancellationRequested: false });
+}
+
+function matchesDomainRouteApplyReceipt(command: ReturnType<typeof buildDomainRouteApplyAgentCommand> | DomainRouteApplyReceiptQueryV1,
+  receipt: DomainRouteApplyReceiptV1): boolean {
+  return receipt.action === "domain.route.apply" && receipt.agentId === command.agentId && receipt.commandId === command.commandId
+    && receipt.projectId === command.projectId && receipt.inputDigest === command.inputDigest
+    && receipt.correlationId === command.context.correlationId && receipt.domain === command.route.domain
+    && receipt.deploymentId === command.route.deploymentId;
+}
 
 export class AuthenticatedAgentDeploymentTransport {
   readonly #options: AgentTransportOptions; readonly #fetch: typeof globalThis.fetch;
@@ -110,6 +135,54 @@ export class AuthenticatedAgentDeploymentTransport {
       || receipt.runtimeName !== query.runtimeName || receipt.service !== query.service || receipt.attachmentAction !== query.attachmentAction
       || receipt.containerId !== query.containerId)) throw new TransportError("agent cached network receipt scope rejected");
     return receipt;
+  }
+
+  async dispatchDomainRouteApply(prepared: PreparedDomainRouteApplyCommand, authority: ProjectControlAuthorityV1,
+    context: Pick<AgentDispatchContext, "requestId" | "correlationId" | "signal">): Promise<DomainRouteApplyReceiptV1> {
+    if (!this.available()) throw beforeDispatch(new TransportError("agent transport is not configured"));
+    if (prepared.agentId !== this.#options.agentId) throw beforeDispatch(new TransportError("domain route agent identity mismatch"));
+    const timeoutMs = this.#options.timeoutMs ?? 30_000;
+    let body;
+    try { body = buildDomainRouteApplyAgentCommand(prepared, authority, context, timeoutMs); }
+    catch (error) { throw beforeDispatch(error instanceof Error ? error : new TransportError("domain route command is invalid")); }
+    return this.operate(timeoutMs, context.signal, async (signal, sent) => {
+      const handshakeSignature = signAgentTransport("GET /capabilities", this.#options.trustKey);
+      const handshakeResponse = await awaitAbortable(() => this.#fetch(`${this.#options.endpoint.replace(/\/$/, "")}/capabilities`, {
+        headers: { "x-deploylite-signature": handshakeSignature }, signal }), signal);
+      const binding = handshakeResponse.headers.get("x-deploylite-request-signature");
+      if (!handshakeResponse.ok || binding !== handshakeSignature) throw new TransportError("capability_unavailable");
+      const handshake = agentCapabilityHandshakeSchema.parse(await awaitAbortable(() => handshakeResponse.json(), signal));
+      if (handshake.agentId !== this.#options.agentId || !handshake.capabilities.includes(DOMAIN_ROUTE_APPLY_CAPABILITY)) throw new TransportError("capability_unavailable");
+      const payload = JSON.stringify(body); sent();
+      const response = await awaitAbortable(() => this.#fetch(`${this.#options.endpoint.replace(/\/$/, "")}${DOMAIN_ROUTE_APPLY_PATH}`, {
+        method: "POST", headers: { "content-type": "application/json", "x-deploylite-signature": signAgentTransport(payload, this.#options.trustKey) }, body: payload, signal }), signal);
+      if (!response.ok) throw new TransportError(`agent transport returned HTTP ${response.status}`);
+      const receipt = domainRouteApplyReceiptSchema.parse(await awaitAbortable(() => response.json(), signal));
+      if (!matchesDomainRouteApplyReceipt(body, receipt)) throw new TransportError("domain route receipt identity mismatch");
+      return receipt;
+    });
+  }
+
+  async readDomainRouteApplyReceipt(prepared: PreparedDomainRouteApplyCommand, authority: ProjectControlAuthorityV1,
+    context: Pick<AgentDispatchContext, "requestId" | "correlationId" | "signal">): Promise<DomainRouteApplyReceiptV1 | null> {
+    if (!this.available() || prepared.agentId !== this.#options.agentId) throw new TransportError("agent transport is not configured");
+    const timeoutMs = this.#options.timeoutMs ?? 30_000;
+    const command = buildDomainRouteApplyAgentCommand(prepared, authority, context, timeoutMs);
+    const query: DomainRouteApplyReceiptQueryV1 = domainRouteApplyReceiptQuerySchema.parse(Object.fromEntries(
+      Object.entries(command).filter(([field]) => field !== "cancellationRequested")));
+    const payload = JSON.stringify(query);
+    const cached = await this.operate(timeoutMs, context.signal, async (signal, sent) => {
+      sent();
+      const response = await awaitAbortable(() => this.#fetch(`${this.#options.endpoint.replace(/\/$/, "")}${DOMAIN_ROUTE_APPLY_RECEIPT_PATH}`, {
+        method: "POST", headers: { "content-type": "application/json", "x-deploylite-signature": signAgentTransport(`POST ${DOMAIN_ROUTE_APPLY_RECEIPT_PATH}\n${payload}`, this.#options.trustKey) },
+        body: payload, signal }), signal);
+      if (!response.ok) throw new TransportError(`agent cache returned HTTP ${response.status}`);
+      return domainRouteApplyCachedReceiptSchema.parse(await awaitAbortable(() => response.json(), signal));
+    });
+    if (cached.agentId !== this.#options.agentId || cached.commandId !== query.commandId || cached.correlationId !== query.context.correlationId)
+      throw new TransportError("agent cached domain route identity mismatch");
+    if (cached.receipt && !matchesDomainRouteApplyReceipt(query, cached.receipt)) throw new TransportError("agent cached domain route scope rejected");
+    return cached.receipt;
   }
 
   async dispatchComposeResourceCleanup(command: PreparedComposeResourceCleanupCommand, signal?: AbortSignal): Promise<ComposeResourceCleanupExecutionReceiptV1> {

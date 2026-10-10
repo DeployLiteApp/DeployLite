@@ -1,6 +1,6 @@
 import type { TrustedPriorExecutionReceiptV1, DeploymentExecutionAuthorityV1, ComposePreviewV1, ProjectControlAuthorityV1 } from "@deploylite/contracts";
 import { sql } from "drizzle-orm";
-import { boolean, check, customType, foreignKey, index, integer, jsonb, pgTable, smallint, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, customType, foreignKey, index, integer, jsonb, pgTable, primaryKey, smallint, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 
 const bytea = customType<{ data: Buffer; notNull: false; default: false }>({
   dataType() {
@@ -154,6 +154,7 @@ export const deployments = pgTable(
   (table) => [
     index("deployments_project_id_idx").on(table.projectId),
     index("deployments_agent_id_idx").on(table.agentId),
+    uniqueIndex("deployments_id_project_id_unique").on(table.id, table.projectId),
     index("deployments_snapshot_hash_idx").on(table.snapshotHash).where(sql`${table.snapshotHash} is not null`),
     check("deployments_status_valid", sql`${table.status} in ('queued', 'running', 'succeeded', 'failed', 'canceled')`)
   ]
@@ -324,16 +325,156 @@ export const domains = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
     hostname: text("hostname").notNull(),
+    deploymentId: uuid("deployment_id").references(() => deployments.id, { onDelete: "set null", onUpdate: "cascade" }),
     status: text("status").notNull().default("pending"),
     metadata: jsonObject("metadata"),
     ...timestamps
   },
   (table) => [
     uniqueIndex("domains_hostname_unique").on(table.hostname),
+    uniqueIndex("domains_id_project_hostname_unique").on(table.id, table.projectId, table.hostname),
+    index("domains_deployment_id_idx").on(table.deploymentId),
     index("domains_project_id_idx").on(table.projectId),
     check("domains_status_valid", sql`${table.status} in ('pending', 'active', 'failed', 'disabled')`)
   ]
 );
+
+export const domainRouteRevisions = pgTable("domain_route_revisions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  domainId: uuid("domain_id").notNull(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
+  hostname: text("hostname").notNull(),
+  deploymentId: uuid("deployment_id").notNull().references(() => deployments.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  revisionNumber: integer("revision_number").notNull(),
+  operation: text("operation").notNull(),
+  commandId: uuid("command_id").references(() => controlCommands.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  rollbackRevisionId: uuid("rollback_revision_id").references((): AnyPgColumn => domainRouteRevisions.id, { onDelete: "cascade", onUpdate: "cascade" }),
+  createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null", onUpdate: "cascade" }),
+  correlationId: text("correlation_id"),
+  evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+}, (table) => [
+  foreignKey({ name: "domain_route_revisions_domain_fk", columns: [table.domainId, table.projectId, table.hostname],
+    foreignColumns: [domains.id, domains.projectId, domains.hostname] }).onDelete("cascade").onUpdate("cascade"),
+  uniqueIndex("domain_route_revisions_domain_number_unique").on(table.domainId, table.revisionNumber),
+  uniqueIndex("domain_route_revisions_command_unique").on(table.commandId).where(sql`${table.commandId} is not null`),
+  index("domain_route_revisions_project_hostname_idx").on(table.projectId, table.hostname, table.revisionNumber),
+  check("domain_route_revisions_number_positive", sql`${table.revisionNumber} > 0`),
+  check("domain_route_revisions_operation_valid", sql`${table.operation} in ('baseline', 'apply', 'rollback')`),
+  check("domain_route_revisions_evidence_redacted", sql`(jsonb_typeof(${table.evidence}) = 'object' and ${table.evidence}->'redacted' = 'true'::jsonb and (${table.evidence} - 'state' - 'contentDigest' - 'observedAt' - 'redacted') = '{}'::jsonb) is true`),
+  check("domain_route_revisions_operation_binding", sql`(${table.operation} = 'baseline' and ${table.commandId} is null and ${table.rollbackRevisionId} is null) or (${table.operation} = 'apply' and ${table.commandId} is not null and ${table.rollbackRevisionId} is null) or (${table.operation} = 'rollback' and ${table.commandId} is not null and ${table.rollbackRevisionId} is not null)`)
+]);
+export type DomainRouteRevisionRow = typeof domainRouteRevisions.$inferSelect;
+
+export const domainRouteReservations = pgTable("domain_route_reservations", {
+  hostname: text("hostname").primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  commandId: uuid("command_id").notNull().unique().references(() => controlCommands.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  route: jsonb("route").$type<Record<string, unknown>>().notNull(),
+  plan: jsonb("plan").$type<Record<string, unknown>>().notNull(),
+  operation: text("operation").notNull().default("apply"),
+  rollbackRevisionId: uuid("rollback_revision_id").references(() => domainRouteRevisions.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+}, (table) => [
+  index("domain_route_reservations_project_idx").on(table.projectId),
+  check("domain_route_reservations_route_scope", sql`(${table.route}->>'domain' = ${table.hostname} and ${table.route}->>'projectId' = ${table.projectId}::text and ${table.plan}->'route' = ${table.route}) is true`),
+  check("domain_route_reservations_plan_action_valid", sql`${table.plan}->>'action' in ('create', 'attach', 'retarget', 'no-op')`),
+  check("domain_route_reservations_operation_valid", sql`(${table.operation} = 'apply' and ${table.rollbackRevisionId} is null) or (${table.operation} = 'rollback' and ${table.rollbackRevisionId} is not null)`)
+]);
+
+export const transportPortClaims = pgTable("transport_port_claims", {
+  protocol: text("protocol").notNull(),
+  publishedPort: integer("published_port").notNull(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  deploymentId: uuid("deployment_id"),
+  targetPort: integer("target_port").notNull(),
+  ...timestamps
+}, (table) => [
+  primaryKey({ name: "transport_port_claims_protocol_published_port_pk", columns: [table.protocol, table.publishedPort] }),
+  foreignKey({ name: "transport_port_claims_deployment_project_fk", columns: [table.deploymentId, table.projectId], foreignColumns: [deployments.id, deployments.projectId] })
+    .onDelete("restrict").onUpdate("cascade"),
+  index("transport_port_claims_project_idx").on(table.projectId),
+  index("transport_port_claims_deployment_project_idx").on(table.deploymentId, table.projectId),
+  check("transport_port_claims_protocol_valid", sql`${table.protocol} in ('tcp', 'udp')`),
+  check("transport_port_claims_published_port_valid", sql`${table.publishedPort} between 1 and 65535`),
+  check("transport_port_claims_target_port_valid", sql`${table.targetPort} between 1 and 65535`)
+]);
+export type TransportPortClaimRow = typeof transportPortClaims.$inferSelect;
+
+export const transportPortRevisions = pgTable("transport_port_revisions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  protocol: text("protocol").notNull(),
+  publishedPort: integer("published_port").notNull(),
+  deploymentId: uuid("deployment_id").notNull(),
+  targetPort: integer("target_port").notNull(),
+  revisionNumber: integer("revision_number").notNull(),
+  operation: text("operation").notNull(),
+  commandId: uuid("command_id").notNull().references(() => controlCommands.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  rollbackRevisionId: uuid("rollback_revision_id").references((): AnyPgColumn => transportPortRevisions.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null", onUpdate: "cascade" }),
+  correlationId: text("correlation_id").notNull(),
+  evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+}, (table) => [
+  foreignKey({ name: "transport_port_revisions_deployment_project_fk", columns: [table.deploymentId, table.projectId],
+    foreignColumns: [deployments.id, deployments.projectId] }).onDelete("restrict").onUpdate("cascade"),
+  uniqueIndex("transport_port_revisions_key_number_unique").on(table.protocol, table.publishedPort, table.revisionNumber),
+  uniqueIndex("transport_port_revisions_command_unique").on(table.commandId),
+  index("transport_port_revisions_project_key_idx").on(table.projectId, table.protocol, table.publishedPort, table.revisionNumber),
+  check("transport_port_revisions_protocol_valid", sql`${table.protocol} in ('tcp', 'udp')`),
+  check("transport_port_revisions_published_port_valid", sql`${table.publishedPort} between 1 and 65535`),
+  check("transport_port_revisions_target_port_valid", sql`${table.targetPort} between 1 and 65535`),
+  check("transport_port_revisions_number_positive", sql`${table.revisionNumber} > 0`),
+  check("transport_port_revisions_operation_valid", sql`${table.operation} in ('apply', 'rollback')`),
+  check("transport_port_revisions_evidence_redacted", sql`(jsonb_typeof(${table.evidence}) = 'object' and ${table.evidence}->'redacted' = 'true'::jsonb and (${table.evidence} - 'state' - 'observedAt' - 'redacted') = '{}'::jsonb) is true`),
+  check("transport_port_revisions_operation_binding", sql`(${table.operation} = 'apply' and ${table.rollbackRevisionId} is null) or (${table.operation} = 'rollback' and ${table.rollbackRevisionId} is not null)`)
+]);
+export type TransportPortRevisionRow = typeof transportPortRevisions.$inferSelect;
+
+export const transportPortRuntimeStates = pgTable("transport_port_runtime_states", {
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  deploymentId: uuid("deployment_id").notNull(),
+  containerId: text("container_id").notNull(),
+  bindings: jsonb("bindings").$type<Record<string, unknown>[]>().notNull(),
+  commandId: uuid("command_id").notNull().references(() => controlCommands.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+}, (table) => [
+  primaryKey({ name: "transport_port_runtime_states_project_deployment_pk", columns: [table.projectId, table.deploymentId] }),
+  foreignKey({ name: "transport_port_runtime_states_deployment_project_fk", columns: [table.deploymentId, table.projectId],
+    foreignColumns: [deployments.id, deployments.projectId] }).onDelete("restrict").onUpdate("cascade"),
+  index("transport_port_runtime_states_project_updated_idx").on(table.projectId, table.updatedAt),
+  check("transport_port_runtime_states_container_id_valid", sql`${table.containerId} ~ '^[a-f0-9]{64}$'`),
+  check("transport_port_runtime_states_bindings_array", sql`jsonb_typeof(${table.bindings}) = 'array'`)
+]);
+export type TransportPortRuntimeStateRow = typeof transportPortRuntimeStates.$inferSelect;
+
+export const transportPortReservations = pgTable("transport_port_reservations", {
+  protocol: text("protocol").notNull(),
+  publishedPort: integer("published_port").notNull(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  commandId: uuid("command_id").notNull().unique().references(() => controlCommands.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  route: jsonb("route").$type<Record<string, unknown>>().notNull(),
+  plan: jsonb("plan").$type<Record<string, unknown>>().notNull(),
+  currentContainerId: text("current_container_id").notNull(),
+  bindings: jsonb("bindings").$type<Record<string, unknown>[]>().notNull(),
+  previousBindings: jsonb("previous_bindings").$type<Record<string, unknown>[]>().notNull(),
+  portTransfer: jsonb("port_transfer").$type<Record<string, unknown> | null>(),
+  operation: text("operation").notNull().default("apply"),
+  rollbackRevisionId: uuid("rollback_revision_id").references(() => transportPortRevisions.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+}, (table) => [
+  primaryKey({ name: "transport_port_reservations_key_pk", columns: [table.protocol, table.publishedPort] }),
+  index("transport_port_reservations_project_idx").on(table.projectId),
+  check("transport_port_reservations_protocol_valid", sql`${table.protocol} in ('tcp', 'udp')`),
+  check("transport_port_reservations_published_port_valid", sql`${table.publishedPort} between 1 and 65535`),
+  check("transport_port_reservations_container_id_valid", sql`${table.currentContainerId} ~ '^[a-f0-9]{64}$'`),
+  check("transport_port_reservations_bindings_array", sql`jsonb_typeof(${table.bindings}) = 'array' and jsonb_typeof(${table.previousBindings}) = 'array'`),
+  check("transport_port_reservations_transfer_object", sql`${table.portTransfer} is null or jsonb_typeof(${table.portTransfer}) = 'object'`),
+  check("transport_port_reservations_route_scope", sql`(${table.route}->>'protocol' = ${table.protocol} and (${table.route}->>'publishedPort')::integer = ${table.publishedPort} and ${table.route}->>'projectId' = ${table.projectId}::text and ${table.plan}->'route' = ${table.route}) is true`),
+  check("transport_port_reservations_plan_action_valid", sql`${table.plan}->>'action' in ('create', 'attach', 'no-op', 'retarget')`),
+  check("transport_port_reservations_operation_valid", sql`(${table.operation} = 'apply' and ${table.rollbackRevisionId} is null) or (${table.operation} = 'rollback' and ${table.rollbackRevisionId} is not null)`)
+]);
 
 export const certificates = pgTable(
   "certificates",

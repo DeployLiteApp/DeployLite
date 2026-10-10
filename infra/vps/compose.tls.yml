@@ -7,12 +7,20 @@ services:
       - --entrypoints.websecure.address=:443
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
       - --certificatesresolvers.le.acme.tlschallenge=true
       - --certificatesresolvers.le.acme.email=${DEPLOYLITE_ACME_EMAIL}
       - --certificatesresolvers.le.acme.storage=/acme/acme.json
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - traefik-acme:/acme
+      - traefik-dynamic:/etc/traefik/dynamic:ro
+  agent:
+    environment:
+      DEPLOYLITE_TRAEFIK_DYNAMIC_DIR: /var/lib/deploylite/traefik-dynamic
+    volumes:
+      - traefik-dynamic:/var/lib/deploylite/traefik-dynamic
   api:
     labels:
       - traefik.enable=true
@@ -32,3 +40,4 @@ services:
 
 volumes:
   traefik-acme:
+  traefik-dynamic:

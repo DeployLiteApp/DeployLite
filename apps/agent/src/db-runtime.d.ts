@@ -7,6 +7,13 @@ declare module "@deploylite/db" {
     validateInitialExecution(projectId: string, executionId: string, binding: import("@deploylite/domain").InitialExecutionBinding): Promise<void>;
     validateDeploymentAuthority(authority: import("@deploylite/contracts").DeploymentExecutionAuthorityV1, now?: number): Promise<void>;
   }
+  export class DbEnvSecretValueRepository {
+    constructor(db: unknown);
+    listByProject: import("@deploylite/domain").EnvSecretValueRepository["listByProject"];
+    listEncryptedByProject: import("@deploylite/domain").EnvSecretValueRepository["listEncryptedByProject"];
+    upsert: import("@deploylite/domain").EnvSecretValueRepository["upsert"];
+    remove: import("@deploylite/domain").EnvSecretValueRepository["remove"];
+  }
   export class DbAgentReplayStore {
     readonly durable: true;
     constructor(db: unknown, owner: string);

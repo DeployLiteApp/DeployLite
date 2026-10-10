@@ -175,3 +175,8 @@ export function verifyAgentTransport(payload: string, signature: string | undefi
   let expected: string; try { expected = signAgentTransport(payload, trustKey); } catch { return false; }
   return expected.length === signature.length && timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
 }
+
+export const REGISTRY_SECRET_PREFIX = 'DEPLOYLITE_REGISTRY_';
+export function registryCredentialKey(host: string): string {
+  return REGISTRY_SECRET_PREFIX + createHash('sha256').update(host).digest('hex').toUpperCase();
+}

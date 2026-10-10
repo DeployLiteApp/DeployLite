@@ -9,7 +9,8 @@ import {
   type EnvSecretCipher
 } from "@deploylite/config";
 import { randomUUID } from "node:crypto";
-import { agentHeartbeatSchema, COMPOSE_RESOURCE_CLEANUP_CAPABILITY, COMPOSE_RESOURCE_INSPECTION_CAPABILITY, COMPOSE_VOLUME_ATTACHMENT_CAPABILITY, COMPOSE_VOLUME_BACKUP_CAPABILITY, InMemoryCapabilityRegistry, resourceSnapshotSchema, type AgentHeartbeat } from "@deploylite/contracts";
+import { isAbsolute } from "node:path";
+import { agentHeartbeatSchema, COMPOSE_RESOURCE_CLEANUP_CAPABILITY, COMPOSE_RESOURCE_INSPECTION_CAPABILITY, COMPOSE_VOLUME_ATTACHMENT_CAPABILITY, COMPOSE_VOLUME_BACKUP_CAPABILITY, DOMAIN_ROUTE_APPLY_CAPABILITY, TRANSPORT_PORT_APPLY_CAPABILITY, TRANSPORT_PORT_TRANSFER_CAPABILITY, InMemoryCapabilityRegistry, resourceSnapshotSchema, type AgentHeartbeat } from "@deploylite/contracts";
 import { z } from "zod";
 import { DigestDeploymentDispatcher } from "./deployment-dispatcher.js";
 import { AuthenticatedAgentCommandReceiver } from "./agent-transport.js";
@@ -18,11 +19,14 @@ import { createDockerComposeResourceInspector } from "./infrastructure/docker/do
 import { createDockerComposeNetworkAttachmentExecutor } from "./infrastructure/docker/docker-compose-network-attachment.js";
 import { createDockerComposeVolumeAttachmentExecutor } from "./infrastructure/docker/docker-compose-volume-attachment.js";
 import { createDockerComposeVolumeReplacementDriver } from "./infrastructure/docker/docker-compose-volume-replacement-driver.js";
+import { createRuntimeTransportPortExecutor } from "./infrastructure/docker/docker-transport-port-executor.js";
 import { COMPOSE_VOLUME_ATTACHMENT_ENABLED_ENV, parseComposeVolumeAttachmentEnabled } from "./infrastructure/docker/compose-volume-attachment-config.js";
 import { createDockerComposeVolumeBackupExecutor, createLocalDirectoryComposeVolumeBackupSource } from "./infrastructure/docker/docker-compose-volume-backup.js";
 import { parseComposeVolumeBackupRuntimeConfig, COMPOSE_VOLUME_BACKUP_CONFIG_ENV } from "./infrastructure/docker/compose-volume-backup-config.js";
 import { parseComposeResourceCleanupEnabled, COMPOSE_RESOURCE_CLEANUP_ENABLED_ENV } from "./infrastructure/docker/compose-resource-cleanup-config.js";
 import { createDockerComposeResourceCleanupExecutor } from "./infrastructure/docker/docker-compose-resource-cleanup.js";
+import { TraefikDomainRouteFileStore } from "./infrastructure/traefik/traefik-domain-route-file-store.js";
+import { createTraefikDomainRouteExecutor } from "./infrastructure/traefik/traefik-domain-route-executor.js";
 
 export const safeCommandEnvelopeSchema = z.object({
   commandId: z.string().min(1),
@@ -115,16 +119,22 @@ export { AuthenticatedAgentCommandReceiver, createAgentExecutionHandler } from "
 export { startAgentServer } from "./server.js";
 export type { AgentReplayStore } from "./agent-transport.js";
 export type { AgentServerOptions } from "./server.js";
+export { TraefikDomainRouteFileStore, TraefikDomainRouteFileStoreError } from "./infrastructure/traefik/traefik-domain-route-file-store.js";
+export type { TraefikDomainRouteApplyInput, TraefikDomainRouteApplyResult } from "./infrastructure/traefik/traefik-domain-route-file-store.js";
+export { DomainRouteTargetInspectionError, inspectDomainRouteTarget } from "./infrastructure/traefik/traefik-domain-route-target.js";
+export type { DomainRouteTargetInspection } from "./infrastructure/traefik/traefik-domain-route-target.js";
 
 export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
   const { parseDeployLiteEnv } = await import("@deploylite/config");
-  const { createDbClient, createDbPool, closeDbPool, DbAgentReplayStore, DbControlCommandRepository } = await import("@deploylite/db");
+  const { createDbClient, createDbPool, closeDbPool, DbAgentReplayStore, DbControlCommandRepository, DbEnvSecretValueRepository } = await import("@deploylite/db");
   const { InMemoryProtocolTransport } = await import("@deploylite/domain");
   const parsed = parseDeployLiteEnv(env);
   if (parsed.NODE_ENV === "production" && !parsed.DATABASE_URL) throw new Error("agent durable database is required");
   if (!parsed.DEPLOYLITE_AGENT_ID || !parsed.DEPLOYLITE_AGENT_TRUST_KEY || !parsed.DATABASE_URL) throw new Error("agent runtime configuration is incomplete");
   const volumeAttachmentEnabled = parseComposeVolumeAttachmentEnabled(env[COMPOSE_VOLUME_ATTACHMENT_ENABLED_ENV], parsed.NODE_ENV);
   const resourceCleanupEnabled = parseComposeResourceCleanupEnabled(env[COMPOSE_RESOURCE_CLEANUP_ENABLED_ENV], parsed.NODE_ENV);
+  const traefikDynamicDir = env.DEPLOYLITE_TRAEFIK_DYNAMIC_DIR?.trim();
+  if (traefikDynamicDir && !isAbsolute(traefikDynamicDir)) throw new Error("DEPLOYLITE_TRAEFIK_DYNAMIC_DIR must be an absolute path.");
   const pool = createDbPool(parsed.DATABASE_URL); const db = createDbClient(pool);
   const replayStore = new DbAgentReplayStore(db, `${parsed.DEPLOYLITE_AGENT_ID}:${process.pid}:${randomUUID()}`);
   const authorityValidator = new DbControlCommandRepository(db);
@@ -132,7 +142,10 @@ export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
   const temporaryHostPort = env.DEPLOYLITE_AGENT_TEMPORARY_HOST_PORT === undefined ? undefined : Number(env.DEPLOYLITE_AGENT_TEMPORARY_HOST_PORT);
   if (temporaryHostPort !== undefined && (!Number.isInteger(temporaryHostPort) || temporaryHostPort < 1024 || temporaryHostPort > 65535 || temporaryHostPort === 3000)) { await closeDbPool(pool); throw new Error("agent temporary host port is unsafe"); }
   const protocol = new InMemoryProtocolTransport({ clock: { now: Date.now }, leasePolicy: { ttlMs: 30_000 }, retryPolicy: { maxAttempts: 1, deadlineMs: 30_000, backoffMs: () => 0 }, capabilities: ["deploy.execute"] });
-  const runner = new (await import("./infrastructure/docker/docker-process-runner.js")).DockerProcessRunner();
+  const nativeRunner = new (await import("./infrastructure/docker/docker-process-runner.js")).DockerProcessRunner();
+  const registryCipher = env.DEPLOYLITE_SECRET_KEY ? createEnvSecretCipher(loadEnvSecretKey(env.DEPLOYLITE_SECRET_KEY)) : undefined;
+  const runner = (await import("./infrastructure/docker/docker-registry-runner.js")).createRegistryDockerRunner({ runner: nativeRunner,
+    secrets: new DbEnvSecretValueRepository(db), cipher: registryCipher, trustedHosts: ["docker.io", "ghcr.io", "registry.example.com"] });
   const dispatcher = new DigestDeploymentDispatcher({ protocol, runner, temporaryHostPort, promotionPolicy, trustedHosts: ["docker.io", "ghcr.io", "registry.example.com"], allowedNetworks: ["deploylite-agent"] });
   if (!dispatcher.available()) { await closeDbPool(pool); throw new Error("agent dispatcher is unavailable"); }
   const volumeBackupConfig = parseComposeVolumeBackupRuntimeConfig(env[COMPOSE_VOLUME_BACKUP_CONFIG_ENV]);
@@ -151,9 +164,13 @@ export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
     driver: createDockerComposeVolumeReplacementDriver({ runner, owner: "deploylite" }) }) : undefined;
   const resourceCleanup = resourceCleanupEnabled ? createDockerComposeResourceCleanupExecutor({ runner, inspector: composeInspector, owner: "deploylite",
     agentId: parsed.DEPLOYLITE_AGENT_ID, imagePolicy, capabilities: composeRegistry }) : undefined;
+  const domainRouteApply = traefikDynamicDir ? createTraefikDomainRouteExecutor({ runner, traefikContainerId: env.DEPLOYLITE_TRAEFIK_CONTAINER_ID,
+    fileStore: new TraefikDomainRouteFileStore(traefikDynamicDir), agentId: parsed.DEPLOYLITE_AGENT_ID }) : undefined;
+  const domainRouteCapabilities = domainRouteApply ? [DOMAIN_ROUTE_APPLY_CAPABILITY] : [];
+  const transportPortApply = createRuntimeTransportPortExecutor({ runner, agentId: parsed.DEPLOYLITE_AGENT_ID, allowedNetworks: ["deploylite-agent"] });
   const receiver = new AuthenticatedAgentCommandReceiver({ agentId: parsed.DEPLOYLITE_AGENT_ID, trustKey: parsed.DEPLOYLITE_AGENT_TRUST_KEY,
-    capabilities: ["deploy.execute", "deployment.stop", ...composeCapabilities], dispatcher, stopDispatcher: dispatcher, networkAttachment,
-    resourceInspector: composeInspector, ...(volumeBackup ? { volumeBackup } : {}), ...(volumeAttachment ? { volumeAttachment } : {}), ...(resourceCleanup ? { resourceCleanup } : {}), authorityValidator, replayStore: replayStore as never });
+    capabilities: ["deploy.execute", "deployment.stop", ...composeCapabilities, ...domainRouteCapabilities, TRANSPORT_PORT_APPLY_CAPABILITY, TRANSPORT_PORT_TRANSFER_CAPABILITY], dispatcher, stopDispatcher: dispatcher, networkAttachment, ...(domainRouteApply ? { domainRouteApply } : {}),
+    transportPortApply, resourceInspector: composeInspector, ...(volumeBackup ? { volumeBackup } : {}), ...(volumeAttachment ? { volumeAttachment } : {}), ...(resourceCleanup ? { resourceCleanup } : {}), authorityValidator, replayStore: replayStore as never });
   const server = await startAgentServer({ host: parsed.DEPLOYLITE_AGENT_HOST, port: parsed.DEPLOYLITE_AGENT_PORT, receiver, replayStore: replayStore as never, production: parsed.NODE_ENV === "production" });
   const close = async () => { await server.close(); await closeDbPool(pool); };
   process.once("SIGINT", close); process.once("SIGTERM", close);
@@ -229,6 +246,7 @@ export function buildDeployEnvFile(records: EncryptedEnvRecord[], cipher: EnvSec
   });
   const lines: string[] = [];
   for (const record of sorted) {
+    if (record.key.startsWith("DEPLOYLITE_REGISTRY_")) continue;
     if (!Buffer.isBuffer(record.encryptedValue) || record.encryptedValue.length === 0) {
       throw new EnvSecretCipherError(`record ${record.key} is missing an encryptedValue buffer`);
     }

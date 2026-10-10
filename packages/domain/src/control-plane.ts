@@ -1,11 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { CanonicalRole, ConfirmationClassification, ControlCommandStatus, ControlPlaneAction, ControlPlaneScope, Deployment, DeploymentRollbackCommandResult, DeploymentRedeployCommandResult, DeploymentStopCommandResult, DeploymentExecutionAuthorityV1, ComposeResourceCleanupExecutionReceiptV1, ComposeRevisionSaveCommandResult, ProjectControlAuthorityV1 } from "@deploylite/contracts";
+import type { CanonicalRole, ConfirmationClassification, ControlCommandStatus, ControlPlaneAction, ControlPlaneScope, Deployment, DeploymentRollbackCommandResult, DeploymentRedeployCommandResult, DeploymentStopCommandResult, DeploymentExecutionAuthorityV1, ComposeResourceCleanupExecutionReceiptV1, ComposeRevisionSaveCommandResult, ProjectControlAuthorityV1, DomainRouteApplyReceiptV1, DomainRouteApplyAgentCommandV1, DomainRouteIntentV1, DomainRouteRevisionV1, TransportPortApplyReceiptV1, TransportPortApplyAgentCommandV1, TransportPortIntentV1, TransportPortRevisionV1, TransportPortBindingV1, TransportPortRuntimeStateV1, TransportPortTransferV1 } from "@deploylite/contracts";
+import type { DomainRoutePlanV1 } from "./domain-route-plan.js";
+import type { TransportPortPlanV1 } from "./transport-port-plan.js";
 
 export type ControlGrant = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope };
 export type ControlGrantRepository = { listForActor(actorId: string): Promise<ControlGrant[]> };
 export type PolicyRequest = { actorId: string; role: CanonicalRole; action: ControlPlaneAction; scope: ControlPlaneScope; correlationId: string; grants: ControlGrant[] };
 export type PolicyDecision = { allowed: true; grantId: string; correlationId: string } | { allowed: false; code: "FORBIDDEN" | "ROLE_DENIED" | "SCOPE_DENIED"; correlationId: string };
-export type ControlCommand = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; idempotencyKey: string; correlationId: string; status: ControlCommandStatus; expiresAt: Date; result?: DeploymentStopCommandResult | DeploymentRedeployCommandResult | DeploymentRollbackCommandResult | ComposeRevisionSaveCommandResult | ComposeResourceCleanupExecutionReceiptV1; executionAuthority?: DeploymentExecutionAuthorityV1; projectExecutionAuthority?: ProjectControlAuthorityV1 };
+export type ControlCommand = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; idempotencyKey: string; correlationId: string; status: ControlCommandStatus; expiresAt: Date; result?: DeploymentStopCommandResult | DeploymentRedeployCommandResult | DeploymentRollbackCommandResult | ComposeRevisionSaveCommandResult | ComposeResourceCleanupExecutionReceiptV1 | (DomainRouteApplyReceiptV1 & { status?: "completed" }) | (TransportPortApplyReceiptV1 & { status?: "completed" }); executionAuthority?: DeploymentExecutionAuthorityV1; projectExecutionAuthority?: ProjectControlAuthorityV1 };
 export type ControlConfirmation = { id: string; commandId: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; classification: ConfirmationClassification; expiresAt: Date; consumedAt: Date | null };
 export type ConfirmationOutcome = { command: ControlCommand; accepted: boolean; reason: string | null };
 export type ConfirmedProjectDeleteInput = { command: ControlCommand; confirmation: ControlConfirmation; projectId: string; requestId: string; now?: Date };
@@ -77,6 +79,91 @@ export type ProjectUpdateControlRepository = ControlCommandRepository & {
   validateProjectUpdateAuthority(authority: ProjectControlAuthorityV1, now?: number): Promise<void>;
   completeProjectUpdate(command: ControlCommand, authority: ProjectControlAuthorityV1, audit: Readonly<{ actorUserId?: string | null; action: string; targetType: string; targetId: string; requestId: string; correlationId: string; metadata?: Record<string, unknown> }>): Promise<ControlCommand>;
 };
+export type DomainRouteApplyCompletionInput = Readonly<{
+  command: ControlCommand;
+  authority: ProjectControlAuthorityV1;
+  route: DomainRouteIntentV1;
+  plan: DomainRoutePlanV1;
+  operation: "apply" | "rollback";
+  rollbackRevisionId: string | null;
+  receipt: DomainRouteApplyReceiptV1;
+  audit: Readonly<{ actorUserId?: string | null; action: string; targetType: string; targetId: string; requestId: string; correlationId: string; metadata?: Record<string, unknown> }>;
+}>;
+export type DomainRouteApplyReservationV1 = Readonly<{
+  commandId: string;
+  route: DomainRouteIntentV1;
+  plan: DomainRoutePlanV1;
+  operation: "apply" | "rollback";
+  rollbackRevisionId: string | null;
+}>;
+export type PreparedDomainRouteApplyCommand = Readonly<{
+  command: ControlCommand;
+  route: DomainRouteIntentV1;
+  executionReceipt: DomainRouteApplyAgentCommandV1["executionReceipt"];
+  effectiveImage: string;
+  agentId: string;
+}>;
+export type DomainRouteApplyCompletionStore = Readonly<{
+  available(): boolean;
+  findRollbackTarget(projectId: string, domain: string): Promise<DomainRouteRevisionV1 | null>;
+  findDomainRouteRevisionByCommand(commandId: string): Promise<DomainRouteRevisionV1 | null>;
+  findDomainRouteReservation(commandId: string): Promise<DomainRouteApplyReservationV1 | null>;
+  reserveDomainRouteApply(input: Readonly<{ command: ControlCommand; route: DomainRouteIntentV1; plan: DomainRoutePlanV1;
+    operation: "apply" | "rollback"; rollbackRevisionId: string | null }>): Promise<void>;
+  releaseDomainRouteApply(commandId: string, hostname: string): Promise<void>;
+  completeDomainRouteApply(input: DomainRouteApplyCompletionInput): Promise<ControlCommand>;
+}>;
+export type TransportPortApplyCompletionInput = Readonly<{
+  command: ControlCommand;
+  authority: ProjectControlAuthorityV1;
+  route: TransportPortIntentV1;
+  plan: TransportPortPlanV1;
+  currentContainerId: string;
+  bindings: TransportPortApplyAgentCommandV1["bindings"];
+  previousBindings: TransportPortBindingV1[];
+  portTransfer?: TransportPortTransferV1;
+  operation: "apply" | "rollback";
+  rollbackRevisionId: string | null;
+  receipt: TransportPortApplyReceiptV1;
+  audit: Readonly<{ actorUserId?: string | null; action: string; targetType: string; targetId: string; requestId: string; correlationId: string; metadata?: Record<string, unknown> }>;
+}>;
+export type TransportPortApplyReservationV1 = Readonly<{
+  commandId: string;
+  route: TransportPortIntentV1;
+  plan: TransportPortPlanV1;
+  operation: "apply" | "rollback";
+  rollbackRevisionId: string | null;
+  currentContainerId: string;
+  bindings: TransportPortApplyAgentCommandV1["bindings"];
+  previousBindings: TransportPortBindingV1[];
+  portTransfer?: TransportPortTransferV1;
+}>;
+export type TransportPortRuntimeState = TransportPortRuntimeStateV1;
+export type PreparedTransportPortApplyCommand = Readonly<{
+  command: ControlCommand;
+  route: TransportPortIntentV1;
+  bindings: TransportPortApplyAgentCommandV1["bindings"];
+  previousBindings: TransportPortBindingV1[];
+  portTransfer?: TransportPortTransferV1;
+  currentContainerId: string;
+  executionReceipt: TransportPortApplyAgentCommandV1["executionReceipt"];
+  effectiveImage: string;
+  operation: "apply" | "rollback";
+  rollbackRevisionId: string | null;
+  agentId: string;
+}>;
+export type TransportPortApplyCompletionStore = Readonly<{
+  available(): boolean;
+  findRollbackTarget(projectId: string, protocol: TransportPortIntentV1["protocol"], publishedPort: number): Promise<TransportPortRevisionV1 | null>;
+  findTransportPortRevisionByCommand(commandId: string): Promise<TransportPortRevisionV1 | null>;
+  findTransportPortRuntimeState(projectId: string, deploymentId: string): Promise<TransportPortRuntimeState | null>;
+  findTransportPortReservation(commandId: string): Promise<TransportPortApplyReservationV1 | null>;
+  reserveTransportPortApply(input: Readonly<{ command: ControlCommand; route: TransportPortIntentV1; plan: TransportPortPlanV1;
+    operation: "apply" | "rollback"; rollbackRevisionId: string | null; currentContainerId: string;
+    bindings: TransportPortApplyAgentCommandV1["bindings"]; previousBindings: TransportPortBindingV1[]; portTransfer?: TransportPortTransferV1 }>): Promise<void>;
+  releaseTransportPortApply(commandId: string, protocol: TransportPortIntentV1["protocol"], publishedPort: number): Promise<void>;
+  completeTransportPortApply(input: TransportPortApplyCompletionInput): Promise<ControlCommand>;
+}>;
 export type ControlConfirmationRepository = {
   bind(confirmation: ControlConfirmation): Promise<void>;
   consume(command: ControlCommand, confirmation: ControlConfirmation, now?: Date): Promise<ConfirmationOutcome>;

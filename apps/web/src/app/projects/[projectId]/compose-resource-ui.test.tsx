@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { useLayoutEffect } from "react";
+import { ComposeResourcePanel } from "./compose-resource-panel";
 import { act,cleanup,fireEvent,render,screen } from "@testing-library/react";
 import { afterEach,describe,expect,it,vi } from "vitest";
 import type { ComposeAttachmentPreviewV1,ComposeNetworkAttachmentReceiptV1,ComposePreviewV1,ComposeResourceInspectionInput,ComposeResourceInspectionViewV1 } from "@deploylite/contracts";
@@ -156,4 +158,11 @@ describe("deliberate read-only project resource UI",()=>{
     await act(async()=>{resolve(wrap("preview",proposed));});await screen.findByText("Attachment preview ready. No runtime change was made.");
     f.fetchImpl.mockResolvedValueOnce(new Response("private",{status:503}));fireEvent.click(screen.getByRole("button",{name:"Inspect resource"}));await screen.findByRole("alert");expect(screen.queryByRole("heading",{name:"Observed resource use"})).toBeNull();expect(screen.queryByText("Attachment preview ready. No runtime change was made.")).toBeNull();
   });
+});
+
+it("does not cancel an inspection started before the mount passive effect", async () => {
+ const fetchImpl=vi.fn<typeof fetch>().mockResolvedValue(new Response("unavailable",{status:503}));vi.stubGlobal("fetch",fetchImpl);
+ function EarlyInspection(){useLayoutEffect(()=>{screen.getByRole("button",{name:"Inspect resource"}).click();},[]);return <ComposeResourcePanel {...props} document={document} preview={preview} onCleanupLockChange={()=>{}}/>;}
+ await act(async()=>{render(<EarlyInspection/>);});expect(fetchImpl).toHaveBeenCalledOnce();expect(fetchImpl.mock.calls[0]![1]?.signal?.aborted).toBe(false);
+ expect((await screen.findByRole("alert")).textContent).toContain("not available");
 });

@@ -7,8 +7,8 @@ services:
     environment:
       PEBBLE_VA_NOSLEEP: "1"
     ports:
-      - "${PEBBLE_API_PORT:-51400}:14000"
-      - "${PEBBLE_MGMT_PORT:-51500}:15000"
+      - "127.0.0.1:${PEBBLE_API_PORT:-51400}:14000"
+      - "127.0.0.1:${PEBBLE_MGMT_PORT:-51500}:15000"
     volumes:
       - ./pebble-config.json:/test/pebble-config.json:ro
     networks: [acme]
@@ -27,7 +27,7 @@ services:
       - --certificatesresolvers.pebble.acme.cacertificates=/run/test-ca/pebble.minica.pem
       - --log.level=INFO
     ports:
-      - "${TRAEFIK_TLS_PORT:-54443}:443"
+      - "127.0.0.1:${TRAEFIK_TLS_PORT:-54443}:443"
     volumes:
       - ${ACME_TEST_DIR}/acme.json:/acme/acme.json
       - ${ACME_TEST_DIR}/pebble.minica.pem:/run/test-ca/pebble.minica.pem:ro

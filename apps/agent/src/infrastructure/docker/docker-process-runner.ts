@@ -2,10 +2,11 @@ import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { redactSecrets } from "@deploylite/config";
 
 import { buildDockerActiveIdentityInspectArgv, buildDockerImageIdentityInspectArgv, buildDockerLifecycleInspectArgv,
-  buildDockerOwnedStopLookupArgv, buildDockerOwnershipInspectArgv, buildDockerRestoreInspectArgv,
+  buildDockerOwnedStopLookupArgv, buildDockerOwnershipInspectArgv, buildDockerRestoreInspectArgv, buildDockerTransportPortInspectArgv,
   buildDockerStopOwnershipInspectArgv } from "./docker-cli-argv.js";
 
 import { COMPOSE_INSPECTION_FORMATS, COMPOSE_REPLACEMENT_CANDIDATE_INSPECT_FORMAT } from "./docker-compose-resource-argv.js";
+import { DOMAIN_ROUTE_TRAEFIK_IMAGE, DOMAIN_ROUTE_CONTAINER_INSPECT_FORMAT, DOMAIN_ROUTE_NETWORK_INSPECT_FORMAT, DOMAIN_ROUTE_TRAEFIK_INSPECT_FORMAT } from "../traefik/traefik-domain-route-argv.js";
 
 const DOCKER_ID = /^(?:sha256:)?[0-9a-f]{64}$/;
 const DOCKER_IMAGE = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[1-9][0-9]{0,4})?\/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[0-9a-f]{64}$/;
@@ -14,10 +15,11 @@ const protocolFormats = new Set([
   ...COMPOSE_INSPECTION_FORMATS,
   ...[buildDockerImageIdentityInspectArgv(protocolSample.effectiveImage), buildDockerLifecycleInspectArgv("probe"),
     buildDockerOwnershipInspectArgv("probe"), buildDockerRestoreInspectArgv("probe"),
-    buildDockerStopOwnershipInspectArgv("0".repeat(64)), buildDockerOwnedStopLookupArgv(protocolSample),
+    buildDockerStopOwnershipInspectArgv("0".repeat(64)), buildDockerOwnedStopLookupArgv(protocolSample), buildDockerTransportPortInspectArgv("probe"),
     buildDockerActiveIdentityInspectArgv({ candidate: { ...protocolSample, runtimePort: 8080, networkName: "probe" },
       projectId: "probe", owner: "probe", containerName: "probe", hostPort: 49170, containerPort: 8080, allowedNetworks: ["probe"], networkName: "probe" })
   ].map((argv) => argv[argv.indexOf("--format") + 1]!),
+  DOMAIN_ROUTE_NETWORK_INSPECT_FORMAT, DOMAIN_ROUTE_TRAEFIK_INSPECT_FORMAT, DOMAIN_ROUTE_CONTAINER_INSPECT_FORMAT,
   "{{.ID}}", "{{.ID}}|{{.Status}}",
   '{"id":{{json .ID}},"os":{{json .OSType}},"architecture":{{json .Architecture}},"cpu":{{json .NCPU}},"memory":{{json .MemTotal}}}',
   '{"id":{{json .Id}},"os":{{json .Os}},"arch":{{json .Architecture}},"repoDigests":{{json .RepoDigests}},"healthType":{{if .Config.Healthcheck}}{{if .Config.Healthcheck.Test}}{{json (index .Config.Healthcheck.Test 0)}}{{else}}null{{end}}{{else}}null{{end}},"healthInterval":{{if .Config.Healthcheck}}{{json .Config.Healthcheck.Interval}}{{else}}0{{end}}}',
@@ -50,6 +52,7 @@ function redactDockerProtocolOutput(value: string, argv: readonly string[]): str
       if (/^[a-f0-9]{64}$/.test(nested) && composeFormat && path.length === 1
         && (["composeConfigDigest", "composeEnvironmentDigest"].includes(key)
           || candidateFormat && ["configDigest", "environmentDigest"].includes(key)) && format!.includes(`"${key}":`)) return nested;
+      if (format === DOMAIN_ROUTE_TRAEFIK_INSPECT_FORMAT && path.length === 1 && key === "image" && nested === DOMAIN_ROUTE_TRAEFIK_IMAGE) return nested;
       if (DOCKER_IMAGE.test(nested) && ((path.length === 1 && ["image", "effectiveImage"].includes(key) && format!.includes(`"${key}":`)) || (path.length === 2 && path[0] === "repoDigests" && format!.includes(".RepoDigests")))) return nested;
       return redactDockerDiagnostic(nested);
     }
