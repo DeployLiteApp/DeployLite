@@ -56,7 +56,8 @@ def require(ok, message):
 def approved_main_event(env):
     event = env.get("GITHUB_EVENT_NAME")
     if event == "pull_request":
-        return env.get("GITHUB_BASE_REF") == "main"
+        # Explicit 2026-10-10 no-omissions instruction covers internal stacked PRs.
+        return bool(env.get("GITHUB_BASE_REF"))
     if event == "push":
         return env.get("GITHUB_REF") == "refs/heads/main"
     return False
