@@ -15,6 +15,7 @@ export function ComposeResourcePanel({projectId,apiBaseUrl,document,preview,onCl
   const [pending,setPending]=useState<"inspection"|"attachment"|"apply"|null>(null),[error,setError]=useState("");
   const [applyReceipt,setApplyReceipt]=useState<ComposeNetworkAttachmentReceiptV1|null>(null);
   const [cleanupLocked,setCleanupLocked]=useState(false);
+  const context=JSON.stringify([projectId,apiBaseUrl,document,preview.configDigest]),initializedContext=useRef(context);
   const version=useRef(0),request=useRef<AbortController|null>(null),applyKey=useRef<{fingerprint:string;value:string}|null>(null);
   const handleCleanupLockChange=useCallback((locked:boolean)=>{setCleanupLocked(locked);onCleanupLockChange(locked);},[onCleanupLockChange]);
   const resource=resources.find(r=>`${r.kind}:${r.key}`===selection),selectedService=preview.services.find(s=>s.name===service);
@@ -23,7 +24,8 @@ export function ComposeResourcePanel({projectId,apiBaseUrl,document,preview,onCl
   const running=inspection?.containers.some(c=>(c.service===service||c.attached)&&c.running)??false;
   function invalidate(clearInspection:boolean){version.current++;request.current?.abort();request.current=null;applyKey.current=null;setPending(null);setError("");setAttachment(null);setApplyReceipt(null);if(clearInspection)setInspection(null);}
   useEffect(()=>{
-    invalidate(true);setSelection(first?`${first.kind}:${first.key}`:"");setService(preview.services[0]?.name??"");
+    // Initial state already reflects this context; do not abort an interaction started before passive effects.
+    if(initializedContext.current!==context){initializedContext.current=context;invalidate(true);setSelection(first?`${first.kind}:${first.key}`:"");setService(preview.services[0]?.name??"");}
     return()=>{version.current++;request.current?.abort();request.current=null;onCleanupLockChange(false);};
   },[projectId,apiBaseUrl,document,preview.configDigest]);
   async function inspect(){
