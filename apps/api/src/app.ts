@@ -1296,7 +1296,7 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
     applyStore: state.transportPortApplyStore, executions: transportPortApplyExecutions, grants: state.controlGrants, audit: adapters.audit,
     requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerDomainRouteApplyRoute(app, { prefix: API_PREFIX, projects: state.projects, deployments: state.deployments, claims: state.domainRouteClaims,
-    applyStore: state.domainRouteApplyStore, executions: domainRouteApplyExecutions, grants: state.controlGrants, audit: adapters.audit,
+    applyStore: state.domainRouteApplyStore, transportRuntime: state.transportPortApplyStore, executions: domainRouteApplyExecutions, grants: state.controlGrants, audit: adapters.audit,
     requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerComposeRevisionReadRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, revisions: state.composeRevisionReads, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerComposeRevisionSaveRoutes(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, revisions: state.composeRevisionSaves, imagePolicy, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });

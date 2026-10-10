@@ -34,5 +34,5 @@ DEPLOYLITE_P4_PHYSICAL=1 DEPLOYLITE_P4_FIXTURE_IMAGE="$fixture_image" \
   --reporter=default --reporter=json --outputFile="$receipt_dir/transport.json"
 node - "$receipt_dir/transport.json" <<'JS'
 const fs=require('node:fs'); const report=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
-if(report.numPassedTests!==2 || report.numFailedTests!==0 || report.numPendingTests!==0) throw new Error('Physical acceptance incomplete');
+if(report.numPassedTests!==3 || report.numFailedTests!==0 || report.numPendingTests!==0) throw new Error('Physical acceptance incomplete');
 JS

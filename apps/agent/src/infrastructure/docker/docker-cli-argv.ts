@@ -79,7 +79,10 @@ const TRANSPORT_PORT_INSPECT_FORMAT = [
   '"deploymentId":{{json (index .Config.Labels "com.deploylite.deployment")}},',
   '"candidateId":{{json (index .Config.Labels "com.deploylite.candidate")}},',
   '"effectiveImage":{{json (index .Config.Labels "com.deploylite.image")}},',
-  '"hostBindings":{{json .HostConfig.PortBindings}},"networkMode":{{json .HostConfig.NetworkMode}}}'
+  '"hostBindings":{{json .HostConfig.PortBindings}},"networkMode":{{json .HostConfig.NetworkMode}},"networks":{ ',
+  '{{$separator := ""}}{{range $name, $attachment := .NetworkSettings.Networks}}',
+  '{{$separator}}{{json $name}}:{"networkId":{{json $attachment.NetworkID}}}',
+  '{{$separator = ","}}{{end}}}}'
 ].join("");
 export function buildDockerTransportPortInspectArgv(containerName: string): readonly string[] {
   assertContainerName(containerName, "container name");

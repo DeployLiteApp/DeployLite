@@ -19,7 +19,7 @@ import { createDockerComposeResourceInspector } from "./infrastructure/docker/do
 import { createDockerComposeNetworkAttachmentExecutor } from "./infrastructure/docker/docker-compose-network-attachment.js";
 import { createDockerComposeVolumeAttachmentExecutor } from "./infrastructure/docker/docker-compose-volume-attachment.js";
 import { createDockerComposeVolumeReplacementDriver } from "./infrastructure/docker/docker-compose-volume-replacement-driver.js";
-import { DockerTransportPortExecutor } from "./infrastructure/docker/docker-transport-port-executor.js";
+import { createRuntimeTransportPortExecutor } from "./infrastructure/docker/docker-transport-port-executor.js";
 import { COMPOSE_VOLUME_ATTACHMENT_ENABLED_ENV, parseComposeVolumeAttachmentEnabled } from "./infrastructure/docker/compose-volume-attachment-config.js";
 import { createDockerComposeVolumeBackupExecutor, createLocalDirectoryComposeVolumeBackupSource } from "./infrastructure/docker/docker-compose-volume-backup.js";
 import { parseComposeVolumeBackupRuntimeConfig, COMPOSE_VOLUME_BACKUP_CONFIG_ENV } from "./infrastructure/docker/compose-volume-backup-config.js";
@@ -164,10 +164,10 @@ export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
     driver: createDockerComposeVolumeReplacementDriver({ runner, owner: "deploylite" }) }) : undefined;
   const resourceCleanup = resourceCleanupEnabled ? createDockerComposeResourceCleanupExecutor({ runner, inspector: composeInspector, owner: "deploylite",
     agentId: parsed.DEPLOYLITE_AGENT_ID, imagePolicy, capabilities: composeRegistry }) : undefined;
-  const domainRouteApply = traefikDynamicDir ? createTraefikDomainRouteExecutor({ runner,
+  const domainRouteApply = traefikDynamicDir ? createTraefikDomainRouteExecutor({ runner, traefikContainerId: env.DEPLOYLITE_TRAEFIK_CONTAINER_ID,
     fileStore: new TraefikDomainRouteFileStore(traefikDynamicDir), agentId: parsed.DEPLOYLITE_AGENT_ID }) : undefined;
   const domainRouteCapabilities = domainRouteApply ? [DOMAIN_ROUTE_APPLY_CAPABILITY] : [];
-  const transportPortApply = new DockerTransportPortExecutor({ runner, agentId: parsed.DEPLOYLITE_AGENT_ID, owner: "deploylite", allowedNetworks: ["deploylite-agent"] });
+  const transportPortApply = createRuntimeTransportPortExecutor({ runner, agentId: parsed.DEPLOYLITE_AGENT_ID, allowedNetworks: ["deploylite-agent"] });
   const receiver = new AuthenticatedAgentCommandReceiver({ agentId: parsed.DEPLOYLITE_AGENT_ID, trustKey: parsed.DEPLOYLITE_AGENT_TRUST_KEY,
     capabilities: ["deploy.execute", "deployment.stop", ...composeCapabilities, ...domainRouteCapabilities, TRANSPORT_PORT_APPLY_CAPABILITY, TRANSPORT_PORT_TRANSFER_CAPABILITY], dispatcher, stopDispatcher: dispatcher, networkAttachment, ...(domainRouteApply ? { domainRouteApply } : {}),
     transportPortApply, resourceInspector: composeInspector, ...(volumeBackup ? { volumeBackup } : {}), ...(volumeAttachment ? { volumeAttachment } : {}), ...(resourceCleanup ? { resourceCleanup } : {}), authorityValidator, replayStore: replayStore as never });

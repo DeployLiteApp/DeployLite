@@ -1,3 +1,4 @@
+export const DOMAIN_ROUTE_TRAEFIK_IMAGE = "traefik:v3.6.7@sha256:a9890c898f379c1905ee5b28342f6b408dc863f08db2dab20e46c267d1ff463a";
 import { buildDockerActiveIdentityInspectArgv, buildDockerImageIdentityInspectArgv } from "../docker/docker-cli-argv.js";
 
 const identity = /^[A-Za-z0-9_-]{1,200}$/;
@@ -9,7 +10,7 @@ export const DOMAIN_ROUTE_TRAEFIK_INSPECT_FORMAT = "{\"id\":{{json .Id}},\"name\
 export const DOMAIN_ROUTE_CONTAINER_INSPECT_FORMAT = "{\"id\":{{json .Id}},\"name\":{{json .Name}},\"owner\":{{json (index .Config.Labels \"com.deploylite.owner\")}},\"project\":{{json (index .Config.Labels \"com.deploylite.project\")}},\"deployment\":{{json (index .Config.Labels \"com.deploylite.deployment\")}},\"state\":{{json .State.Status}}}";
 
 export function buildDomainRouteTraefikLookupArgv(): readonly string[] {
-  return Object.freeze(["docker", "container", "ls", "--all", "--filter", "label=com.docker.compose.project=deploylite",
+  return Object.freeze(["docker", "container", "ls", "--all", "--no-trunc", "--filter", "label=com.docker.compose.project=deploylite",
     "--filter", "label=com.docker.compose.service=traefik", "--format", "{{.ID}}"]);
 }
 

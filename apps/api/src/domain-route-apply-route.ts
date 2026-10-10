@@ -1,12 +1,12 @@
 import type { FastifyInstance, FastifyRequest, preHandlerAsyncHookHandler } from "fastify";
 import { z } from "zod";
 import { deploymentSchema, domainRouteApplyReceiptSchema, domainRoutePreviewRequestSchema, DOMAIN_ROUTE_APPLY_CAPABILITY,
-  domainRouteRollbackRequestSchema, trustedPriorExecutionReceiptSchema, type DomainRouteApplyReceiptV1, type DomainRouteIntentV1,
+  domainRouteRollbackRequestSchema, transportPortRuntimeStateSchema, trustedPriorExecutionReceiptSchema, type DomainRouteApplyReceiptV1, type DomainRouteIntentV1,
   type ProjectControlAuthorityV1 } from "@deploylite/contracts";
 import { createControlCommand, digestControlInput, DomainRoutePlanError, IdempotencyConflictError, PolicyEvaluator,
   createDomainRoutePlan, type AuditRepository, type ControlGrantRepository, type ControlCommand, type DomainRouteApplyCompletionStore,
   type DomainRouteClaimReader, type DomainRoutePlanV1, type DeploymentRepository, type PreparedDomainRouteApplyCommand,
-  type ProjectRepository, type ProjectUpdateControlRepository } from "@deploylite/domain";
+  type TransportPortApplyCompletionStore, type ProjectRepository, type ProjectUpdateControlRepository } from "@deploylite/domain";
 import { isAgentPreDispatchRejection } from "./agent-transport.js";
 
 export type DomainRouteApplyAgentTransport = Readonly<{
@@ -22,6 +22,7 @@ type Request = FastifyRequest & { auth?: { user: { id: string; role: import("@de
 type Options = Readonly<{
   prefix: string; projects: ProjectRepository; deployments: DeploymentRepository; grants: ControlGrantRepository; audit: AuditRepository;
   claims?: DomainRouteClaimReader; applyStore?: DomainRouteApplyCompletionStore;
+  transportRuntime?: Pick<TransportPortApplyCompletionStore, "available" | "findTransportPortRuntimeState">;
   executions?: ReadonlyMap<string, DomainRouteApplyExecutionAccess>;
   requireAuth: preHandlerAsyncHookHandler; requireRole: preHandlerAsyncHookHandler;
   ok(request: unknown, data: unknown): unknown; error(request: unknown, code: string, message: string): unknown;
@@ -53,6 +54,16 @@ function storedReceipt(command: ControlCommand, prepared: PreparedDomainRouteApp
   const receipt = domainRouteApplyReceiptSchema.safeParse(command.result);
   if (!receipt.success) throw new Error("route-receipt-invalid");
   return validateTerminalReceipt(receipt.data, prepared);
+}
+
+async function currentDomainReceipt(receipt: import("@deploylite/contracts").TrustedPriorExecutionReceiptV1, options: Options) {
+  if (!options.transportRuntime) return receipt;
+  if (!options.transportRuntime.available()) throw new Error("Runtime storage unavailable");
+  const row = await options.transportRuntime.findTransportPortRuntimeState(receipt.projectId, receipt.deploymentId);
+  if (!row) return receipt;
+  const state = transportPortRuntimeStateSchema.parse(row);
+  if (state.projectId !== receipt.projectId || state.deploymentId !== receipt.deploymentId) throw new Error("Runtime identity mismatch");
+  return trustedPriorExecutionReceiptSchema.parse({...receipt, containerId: state.containerId});
 }
 
 export function registerDomainRouteApplyRoute(app: FastifyInstance, options: Options): void {
@@ -130,6 +141,7 @@ export function registerDomainRouteApplyRoute(app: FastifyInstance, options: Opt
       if (!await auditFailure("domain.route.apply.rejected", "target-receipt-unverified")) return unavailable("audit-unavailable");
       return reply.code(409).send(options.error(request, "DOMAIN_ROUTE_TARGET_UNVERIFIED", "Route target lacks a matching trusted execution receipt."));
     }
+    try { receipt.data = await currentDomainReceipt(receipt.data, options); } catch { return unavailable("runtime-port-state-invalid"); }
     const route = { schemaVersion: 1 as const, projectId, deploymentId: deployment.id, domain: body.data.domain } satisfies DomainRouteIntentV1;
 
     let tentative: ControlCommand;
@@ -353,6 +365,7 @@ function registerDomainRouteRollbackRoute(app: FastifyInstance, options: Options
       return reply.code(409).send(options.error(request, "DOMAIN_ROUTE_TARGET_UNVERIFIED", "The prior route target lacks a matching trusted execution receipt."));
     }
 
+    try { trusted.data = await currentDomainReceipt(trusted.data, options); } catch { return unavailable("runtime-port-state-invalid"); }
     let plan = storedPlan;
     if (!plan) {
       try {

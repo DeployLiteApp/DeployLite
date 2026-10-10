@@ -6,7 +6,7 @@ import { DockerProcessError } from "../docker/docker-process-runner.js";
 import type { DockerCliRunner } from "../docker/docker-cli-image-transport.js";
 import { inspectDomainRouteTarget, DomainRouteTargetInspectionError } from "./traefik-domain-route-target.js";
 import { TraefikDomainRouteFileStore, TraefikDomainRouteFileStoreError } from "./traefik-domain-route-file-store.js";
-import { buildDomainRouteNetworkConnectArgv, buildDomainRouteNetworkCreateArgv, buildDomainRouteNetworkInspectArgv,
+import { DOMAIN_ROUTE_TRAEFIK_IMAGE, buildDomainRouteNetworkConnectArgv, buildDomainRouteNetworkCreateArgv, buildDomainRouteNetworkInspectArgv,
   buildDomainRouteTraefikInspectArgv, buildDomainRouteTraefikLookupArgv, buildDomainRouteContainerInspectArgv } from "./traefik-domain-route-argv.js";
 import type { RuntimeExecutionAuthority } from "../../agent-transport.js";
 
@@ -19,6 +19,7 @@ export type TraefikDomainRouteExecutorOptions = Readonly<{
   fileStore: TraefikDomainRouteFileStore;
   agentId: string;
   now?: () => number;
+  traefikContainerId?: string;
 }>;
 
 export class TraefikDomainRouteExecutorError extends Error {
@@ -40,7 +41,7 @@ const networkViewSchema = z.object({ id: objectId, name: z.string(), driver: z.s
   project: z.string().nullable(), kind: z.string().nullable(), containers: z.record(z.object({ Name: z.string() }).passthrough()).nullable() }).strict();
 const traefikViewSchema = z.object({ id: objectId, name: z.string(), project: z.string(), service: z.string(), image: z.string(), state: z.string() }).strict();
 const containerViewSchema = z.object({ id: objectId, name: z.string(), owner: z.string().nullable(), project: z.string().nullable(), deployment: z.string().nullable(), state: z.string() }).strict();
-const traefikImage = "traefik:v3.6.7@sha256:a9890c898f379c1905ee5b28342f6b408dc863f08db2dab20e46c267d1ff463a";
+const traefikImage = DOMAIN_ROUTE_TRAEFIK_IMAGE;
 
 function normalizeNetwork(raw: unknown): NetworkView {
   const parsed = networkViewSchema.parse(raw);
@@ -71,12 +72,13 @@ async function assertAuthority(authority: RuntimeExecutionAuthority): Promise<vo
 
 export function createTraefikDomainRouteExecutor(options: TraefikDomainRouteExecutorOptions): DomainRouteAgentExecutor {
   const now = options.now ?? Date.now;
+  if (options.traefikContainerId !== undefined && !objectId.safeParse(options.traefikContainerId).success) throw new TraefikDomainRouteExecutorError("traefik-unavailable");
   const observeNetwork = async (name: string, signal: AbortSignal): Promise<NetworkView | null> => {
     try { return normalizeNetwork(JSON.parse(await commandOutput(options.runner, buildDomainRouteNetworkInspectArgv(name), signal))); }
     catch (error) { if (missingNetwork(error)) return null; throw error; }
   };
   const inspectTraefik = async (signal: AbortSignal): Promise<TraefikView> => {
-    const ids = (await commandOutput(options.runner, buildDomainRouteTraefikLookupArgv(), signal)).split("\n").filter(Boolean);
+    const ids = options.traefikContainerId ? [options.traefikContainerId] : (await commandOutput(options.runner, buildDomainRouteTraefikLookupArgv(), signal)).split("\n").filter(Boolean);
     if (ids.length !== 1 || !/^[a-f0-9]{64}$/.test(ids[0]!)) throw new TraefikDomainRouteExecutorError("traefik-unavailable");
     const view = traefikViewSchema.parse(JSON.parse(await commandOutput(options.runner, buildDomainRouteTraefikInspectArgv(ids[0]!), signal)));
     if (view.id !== ids[0] || !/^\/deploylite-traefik-[1-9][0-9]*$/.test(view.name) || view.project !== "deploylite"
@@ -108,7 +110,7 @@ export function createTraefikDomainRouteExecutor(options: TraefikDomainRouteExec
       }
       if (!endpointName.startsWith("deploylite-active-")) throw new TraefikDomainRouteExecutorError("network-conflict");
       const owner = await inspectProjectContainer(id, projectId, signal);
-      if (owner.name !== endpoint.Name) throw new TraefikDomainRouteExecutorError("network-conflict");
+      if (owner.name.replace(/^\//, "") !== endpointName) throw new TraefikDomainRouteExecutorError("network-conflict");
     }
   };
   const ensureConnected = async (networkName: string, containerId: string, signal: AbortSignal, authority: RuntimeExecutionAuthority): Promise<void> => {

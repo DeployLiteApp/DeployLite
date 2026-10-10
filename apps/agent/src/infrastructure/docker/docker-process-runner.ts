@@ -6,7 +6,7 @@ import { buildDockerActiveIdentityInspectArgv, buildDockerImageIdentityInspectAr
   buildDockerStopOwnershipInspectArgv } from "./docker-cli-argv.js";
 
 import { COMPOSE_INSPECTION_FORMATS, COMPOSE_REPLACEMENT_CANDIDATE_INSPECT_FORMAT } from "./docker-compose-resource-argv.js";
-import { DOMAIN_ROUTE_CONTAINER_INSPECT_FORMAT, DOMAIN_ROUTE_NETWORK_INSPECT_FORMAT, DOMAIN_ROUTE_TRAEFIK_INSPECT_FORMAT } from "../traefik/traefik-domain-route-argv.js";
+import { DOMAIN_ROUTE_TRAEFIK_IMAGE, DOMAIN_ROUTE_CONTAINER_INSPECT_FORMAT, DOMAIN_ROUTE_NETWORK_INSPECT_FORMAT, DOMAIN_ROUTE_TRAEFIK_INSPECT_FORMAT } from "../traefik/traefik-domain-route-argv.js";
 
 const DOCKER_ID = /^(?:sha256:)?[0-9a-f]{64}$/;
 const DOCKER_IMAGE = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[1-9][0-9]{0,4})?\/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[0-9a-f]{64}$/;
@@ -52,6 +52,7 @@ function redactDockerProtocolOutput(value: string, argv: readonly string[]): str
       if (/^[a-f0-9]{64}$/.test(nested) && composeFormat && path.length === 1
         && (["composeConfigDigest", "composeEnvironmentDigest"].includes(key)
           || candidateFormat && ["configDigest", "environmentDigest"].includes(key)) && format!.includes(`"${key}":`)) return nested;
+      if (format === DOMAIN_ROUTE_TRAEFIK_INSPECT_FORMAT && path.length === 1 && key === "image" && nested === DOMAIN_ROUTE_TRAEFIK_IMAGE) return nested;
       if (DOCKER_IMAGE.test(nested) && ((path.length === 1 && ["image", "effectiveImage"].includes(key) && format!.includes(`"${key}":`)) || (path.length === 2 && path[0] === "repoDigests" && format!.includes(".RepoDigests")))) return nested;
       return redactDockerDiagnostic(nested);
     }

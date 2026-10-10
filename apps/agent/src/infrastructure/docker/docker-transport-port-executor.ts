@@ -5,19 +5,22 @@ import { buildDockerRemoveArgv, buildDockerRenameArgv, buildDockerStartArgv, bui
   buildDockerTransportPortInspectArgv, buildDockerTransportPortRunArgv } from "./docker-cli-argv.js";
 import type { DockerCliRunner } from "./docker-cli-image-transport.js";
 import type { DockerProcessExit } from "./docker-process-runner.js";
-import { awaitAbortable } from "@deploylite/domain";
+import { awaitAbortable, domainRouteNetworkName } from "@deploylite/domain";
 import { z } from "zod";
+import { buildDomainRouteNetworkInspectArgv } from "../traefik/traefik-domain-route-argv.js";
 
 const inspectSchema = z.object({ id: z.string().regex(/^[a-f0-9]{64}$/), name: z.string(), state: z.enum(["running", "exited", "created"]),
   running: z.boolean(), health: z.string().nullable(), owner: z.string(), projectId: z.string(), deploymentId: z.string(), candidateId: z.string(),
   effectiveImage: z.string(), hostBindings: z.record(z.array(z.object({ HostIp: z.string(), HostPort: z.string() }).strict()).nullable()),
-  networkMode: z.string() }).strict();
+  networkMode: z.string(), networks: z.record(z.object({ networkId: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).optional() }).strict();
 
 export class DockerTransportPortExecutorError extends Error {
   constructor(readonly code: "authority" | "target-unavailable" | "port-conflict" | "docker-unavailable" | "restart-failed" | "canceled") {
     super("Docker transport port apply failed safely."); this.name = "DockerTransportPortExecutorError";
   }
 }
+
+type AttachedDomainNetwork = Readonly<{ name: string; id: string }>;
 
 export type DockerTransportPortExecutorOptions = Readonly<{ runner: DockerCliRunner; agentId: string; owner: string; hostIp?: "0.0.0.0" | "127.0.0.1"; allowedNetworks?: readonly string[]; now?: () => number }>;
 
@@ -92,11 +95,13 @@ export class DockerTransportPortExecutor {
     const previous = expectedBindings(proof.hostPort, proof.containerPort, command.previousBindings, this.options.hostIp ?? "0.0.0.0");
     let parked = false, parkAttempted = false, originalStopped = false, originalStopAttempted = false, wasRunning = false, replacementId: string | null = null;
     let original: z.infer<typeof inspectSchema> | null = null;
+    let domainNetwork: AttachedDomainNetwork | undefined;
     try {
       if (signal.aborted) return failed("canceled");
       await awaitAbortable(() => authority.assertValid(), signal);
       original = await inspect(activeName);
       if (!matchesOwned(original, activeName)) return failed("target-unavailable");
+      domainNetwork = await this.captureDomainNetwork(original!, proof.network, route.projectId, signal, authority);
       const actual = observedBindings(original!.hostBindings);
       if (!actual) return failed("target-unavailable");
       if (actual.join("|") === desired.join("|") && original!.running) {
@@ -134,11 +139,12 @@ export class DockerTransportPortExecutor {
       const created = await this.run(buildDockerTransportPortRunArgv(finalInput), signal, authority, true);
       replacementId = created.stdout.trim();
       if (!/^[a-f0-9]{64}$/.test(replacementId)) throw new DockerTransportPortExecutorError("restart-failed");
+      if (domainNetwork) await this.connectDomainNetwork(domainNetwork, replacementId, route.projectId, signal, authority);
       await this.waitHealthy(activeName, signal, authority);
       const applied = await inspect(activeName);
       if (!applied || applied.owner !== this.options.owner || applied.projectId !== route.projectId || applied.deploymentId !== route.deploymentId
         || applied.candidateId !== proof.candidateId || applied.effectiveImage !== command.effectiveImage || !applied.running
-        || !matchesNetwork(applied.networkMode, proof.network) || applied.health !== "healthy" || observedBindings(applied.hostBindings)?.join("|") !== desired.join("|")) {
+        || !matchesNetwork(applied.networkMode, proof.network) || !this.matchesDomainNetwork(applied, domainNetwork) || applied.health !== "healthy" || observedBindings(applied.hostBindings)?.join("|") !== desired.join("|")) {
         throw new DockerTransportPortExecutorError("restart-failed");
       }
       const parkedOriginal = await inspect(parkedName);
@@ -216,7 +222,7 @@ export class DockerTransportPortExecutor {
     type Service = { deploymentId: string; active: string; parked: string; probe: string; containerId: string; candidateId: string;
       effectiveImage: string; network: string | null; hostPort: number; containerPort: number; before: readonly TransportPortBindingV1[];
       after: readonly TransportPortBindingV1[]; original: z.infer<typeof inspectSchema> | null; wasRunning: boolean; stopAttempted: boolean;
-      parkedState: boolean; parkAttempted: boolean; replacementId?: string };
+      parkedState: boolean; parkAttempted: boolean; replacementId?: string; domainNetwork?: AttachedDomainNetwork };
     const target: Service = { deploymentId: route.deploymentId, active: targetActive, parked: targetParked, probe: targetProbe,
       containerId: command.currentContainerId, candidateId: targetProof.candidateId, effectiveImage: command.effectiveImage, network: targetProof.network,
       hostPort: targetProof.hostPort, containerPort: targetProof.containerPort, before: command.previousBindings, after: command.bindings,
@@ -262,6 +268,7 @@ export class DockerTransportPortExecutor {
         if (!actual || actual.join("|") !== previous(service).join("|") || !service.original.running || service.original.health !== "healthy") {
           return failed("target-unavailable");
         }
+        service.domainNetwork = await this.captureDomainNetwork(service.original, service.network, command.projectId, signal, authority);
         service.wasRunning = service.original.running;
       }
       for (const service of services) {
@@ -293,11 +300,12 @@ export class DockerTransportPortExecutor {
       replacementSourceId = sourceCreated.stdout.trim(); source.replacementId = replacementSourceId;
       if (!/^[a-f0-9]{64}$/.test(replacementSourceId)) throw new DockerTransportPortExecutorError("restart-failed");
       for (const service of services) {
+        if (service.domainNetwork) await this.connectDomainNetwork(service.domainNetwork, service.replacementId!, command.projectId, signal, authority);
         await this.waitHealthy(service.active, signal, authority);
         const applied = await inspect(service.active);
         if (!applied || applied.id !== service.replacementId || applied.owner !== this.options.owner || applied.projectId !== command.projectId
           || applied.deploymentId !== service.deploymentId || applied.candidateId !== service.candidateId || applied.effectiveImage !== service.effectiveImage
-          || !applied.running || !matchesNetwork(applied.networkMode, service.network) || applied.health !== "healthy"
+          || !applied.running || !matchesNetwork(applied.networkMode, service.network) || !this.matchesDomainNetwork(applied, service.domainNetwork) || applied.health !== "healthy"
           || observedBindings(applied.hostBindings)?.join("|") !== desired(service).join("|")) throw new DockerTransportPortExecutorError("restart-failed");
       }
       const retainedPriorContainerIds: string[] = [];
@@ -369,6 +377,34 @@ export class DockerTransportPortExecutor {
     }
   }
 
+  private matchesDomainNetwork(value: z.infer<typeof inspectSchema>, network?: AttachedDomainNetwork): boolean {
+    return network === undefined || value.networks?.[network.name]?.networkId === network.id;
+  }
+
+  private async captureDomainNetwork(value: z.infer<typeof inspectSchema>, primary: string | null, projectId: string,
+    signal: AbortSignal, authority: RuntimeExecutionAuthority): Promise<AttachedDomainNetwork | undefined> {
+    const expected = domainRouteNetworkName(projectId), names = Object.keys(value.networks ?? {});
+    if (names.some(name => name !== (primary ?? "bridge") && name !== expected)) throw new DockerTransportPortExecutorError("target-unavailable");
+    const id = value.networks?.[expected]?.networkId;
+    if (!id) return undefined;
+    const network = { name: expected, id };
+    await this.verifyDomainNetwork(network, projectId, signal, authority);
+    return network;
+  }
+
+  private async verifyDomainNetwork(network: AttachedDomainNetwork, projectId: string, signal: AbortSignal, authority: RuntimeExecutionAuthority): Promise<void> {
+    const result = await this.run(buildDomainRouteNetworkInspectArgv(network.name), signal, authority, false);
+    const observed = JSON.parse(result.stdout) as { id?: string; driver?: string; internal?: boolean; owner?: string; project?: string; kind?: string };
+    if (result.exitCode !== 0 || observed.id !== network.id || observed.driver !== "bridge" || observed.internal !== false
+      || observed.owner !== "deploylite" || observed.project !== projectId || observed.kind !== "domain-route") throw new DockerTransportPortExecutorError("target-unavailable");
+  }
+
+  private async connectDomainNetwork(network: AttachedDomainNetwork, containerId: string, projectId: string,
+    signal: AbortSignal, authority: RuntimeExecutionAuthority): Promise<void> {
+    await this.verifyDomainNetwork(network, projectId, signal, authority);
+    await this.run(["docker", "network", "connect", network.id, containerId], signal, authority, true);
+  }
+
   private receipt(command: TransportPortApplyAgentCommandV1, containerId: string, state: "updated" | "unchanged", failureReason: null): TransportPortApplyReceiptV1 {
     return transportPortApplyReceiptSchema.parse({ schemaVersion: 1, action: "transport.port.apply", agentId: this.options.agentId,
       commandId: command.commandId, projectId: command.projectId, protocol: command.route.protocol, publishedPort: command.route.publishedPort,
@@ -383,7 +419,7 @@ export class DockerTransportPortExecutor {
     const value = safeState(JSON.parse(result.stdout));
     if (!value || value.name !== `/${name}` || value.owner !== this.options.owner || value.projectId !== command.projectId
       || value.deploymentId !== command.route.deploymentId || value.candidateId !== command.executionReceipt.candidateId
-      || value.effectiveImage !== command.effectiveImage || value.networkMode !== (command.executionReceipt.network ?? "default")) return;
+      || value.effectiveImage !== command.effectiveImage || !matchesNetwork(value.networkMode, command.executionReceipt.network)) return;
     await this.run(buildDockerRemoveArgv(name), signal, authority, true);
   }
 
@@ -417,4 +453,9 @@ export class DockerTransportPortExecutor {
     }
     return result;
   }
+}
+
+/** Shares the active image container ownership established by the deployment dispatcher. */
+export function createRuntimeTransportPortExecutor(options: Omit<DockerTransportPortExecutorOptions, "owner">): DockerTransportPortExecutor {
+  return new DockerTransportPortExecutor({ ...options, owner: "deploylite-agent" });
 }

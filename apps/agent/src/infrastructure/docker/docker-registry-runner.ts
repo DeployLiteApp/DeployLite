@@ -10,7 +10,7 @@ type Options = Readonly<{ runner: DockerCliRunner; secrets: EnvSecretValueReposi
 /** Standalone image runs get a project-scoped private auth file; ambient Docker auth is never copied. */
 export function createRegistryDockerRunner(options: Options): DockerCliRunner {
   return { run: async (argv, signal, environment) => {
-    if (argv[0] !== 'docker' || argv[1] !== 'run') return options.runner.run(argv, signal, environment);
+    if (argv[0] !== 'docker' || argv[1] !== 'run' || !argv.includes('--detach') || !argv.some((value, index) => value === '--label' && argv[index + 1]?.startsWith('com.deploylite.candidate='))) return options.runner.run(argv, signal, environment);
     let directory: string | undefined;
     try {
       if (signal.aborted) throw new Error('Canceled');

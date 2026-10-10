@@ -93,7 +93,7 @@ export async function inspectDomainRouteTarget(input: Readonly<{
     if (live.name !== `/deploylite-active-${route.data.deploymentId}` || live.id !== receipt.data.containerId
       || live.owner !== "deploylite-agent" || live.projectId !== route.data.projectId || live.deploymentId !== route.data.deploymentId
       || live.candidateId !== receipt.data.candidateId || live.effectiveImage !== input.effectiveImage || live.imageId !== imageId
-      || live.running !== true || live.health !== "healthy" || live.networkMode !== (receipt.data.network ?? "default")
+      || live.running !== true || live.health !== "healthy" || (receipt.data.network === null ? !["default", "bridge"].includes(live.networkMode) : live.networkMode !== receipt.data.network)
       || networkNames.some(name => !permittedNetworks.has(name)) || (input.requireRouteNetwork !== false && !hasRouteNetwork)
       || networkNames.length < 1 || (input.requireRouteNetwork === false && networkNames.length === 0)
       || hostPortBindings.length !== 1 || hostPortBindings[0]?.HostIp !== "127.0.0.1" || hostPortBindings[0]?.HostPort !== String(receipt.data.hostPort)

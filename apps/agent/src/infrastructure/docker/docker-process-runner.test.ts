@@ -64,3 +64,11 @@ describe("DockerProcessRunner", () => {
     }
   });
 });
+
+it("preserves the exact pinned Traefik image only in its scoped inspection", async () => {
+ const image = "traefik:v3.6.7@sha256:a9890c898f379c1905ee5b28342f6b408dc863f08db2dab20e46c267d1ff463a";
+ const { buildDomainRouteTraefikInspectArgv } = await import("../traefik/traefik-domain-route-argv.js");
+ const fake = fakeProcess(), promise = new DockerProcessRunner({spawn: () => fake.child}).run(buildDomainRouteTraefikInspectArgv("b".repeat(64)), new AbortController().signal);
+ fake.stdout.on.mock.calls[0]![1](JSON.stringify({image})); fake.events.get("close")!(0,null);
+ expect(JSON.parse((await promise).stdout).image).toBe(image);
+});

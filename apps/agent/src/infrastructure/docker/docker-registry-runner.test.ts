@@ -6,7 +6,7 @@ import { InMemoryEnvSecretValueRepository } from '@deploylite/domain';
 import { createHash } from 'node:crypto';
 import { createRegistryDockerRunner } from './docker-registry-runner.js';
 const image = 'registry.example.com/app@sha256:' + 'a'.repeat(64);
-const argv = ['docker', 'run', '--detach', '--label', 'com.deploylite.project=project-1', image];
+const argv = ['docker', 'run', '--detach', '--label', 'com.deploylite.candidate=dep:candidate:cmd', '--label', 'com.deploylite.project=project-1', image];
 const key = 'DEPLOYLITE_REGISTRY_' + createHash('sha256').update('registry.example.com').digest('hex').toUpperCase();
 async function fixture() {
   const secrets = new InMemoryEnvSecretValueRepository(), cipher = createEnvSecretCipher(Buffer.alloc(32, 7));
@@ -36,7 +36,7 @@ it('isolates public registries from ambient authentication and other project cre
 it('rejects untrusted images and missing project binding before invoking Docker', async () => {
   const f = await fixture(); const runner = { run: vi.fn() };
   const adapter = createRegistryDockerRunner({ ...f, runner, trustedHosts: ['registry.example.com'] });
-  await expect(adapter.run(['docker', 'run', image], new AbortController().signal)).rejects.toThrow();
+  await expect(adapter.run(['docker', 'run', '--detach', '--label', 'com.deploylite.candidate=dep:candidate:cmd', image], new AbortController().signal)).rejects.toThrow();
   await expect(adapter.run(argv.map(s => s.replace('registry.example.com', 'foreign.example.com')), new AbortController().signal)).rejects.toThrow(); expect(runner.run).not.toHaveBeenCalled();
 });
 it('redacts native credential output and removes temporary config even when native runner fails', async () => {
@@ -46,4 +46,11 @@ it('redacts native credential output and removes temporary config even when nati
   const adapter = createRegistryDockerRunner({ ...f, runner, trustedHosts: ['registry.example.com'] });
   await expect(adapter.run(argv, new AbortController().signal)).rejects.toThrow('Registry image execution failed safely.');
   await expect(access(directory)).rejects.toThrow();
+});
+
+it('leaves already validated non-candidate helper runs in their existing adapter boundary', async () => {
+  const f = await fixture(); const helper = ['docker', 'run', '--rm', '--label', 'com.deploylite.project=project-1', 'helper-fixture', 'true'];
+  const runner = { run: vi.fn(async (_args: readonly string[]) => ({ exitCode: 0, signal: null, stdout: 'helper-result', stderr: '' })) };
+  const result = await createRegistryDockerRunner({ ...f, runner, trustedHosts: ['registry.example.com'] }).run(helper, new AbortController().signal);
+  expect(result.stdout).toBe('helper-result'); expect(runner.run.mock.calls[0]?.[0]).toEqual(helper);
 });

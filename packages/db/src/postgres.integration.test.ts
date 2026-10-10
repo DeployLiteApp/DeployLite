@@ -1,3 +1,5 @@
+import { createEnvSecretCipher, registryCredentialKey } from "@deploylite/config";
+import { DbEnvSecretValueRepository } from "./repositories/env-secret-values.js";
 import "./execution-postgres.integration-cases.js";
 import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
@@ -833,6 +835,26 @@ describeIntegration("PostgreSQL auth foundation integration", () => {
     await expect(client.query("SELECT action, count(*)::int AS count FROM audit_events WHERE target_id = $1 AND action IN ('transport.port.applied', 'transport.port.rolled_back') GROUP BY action ORDER BY action", [projectId]))
       .resolves.toMatchObject({ rows: [{ action: "transport.port.applied", count: 3 }, { action: "transport.port.rolled_back", count: 2 }] });
   });
+
+  it("durably isolates encrypted registry records and rotates to public across repository instances", async () => {
+    const projectId = randomUUID(), foreign = randomUUID(), host = "registry.example.com", key = registryCredentialKey(host);
+    await requireDbProjectRepository().save({id: projectId, name: "Registry fixture", repoUrl: "https://github.com/example/fixture", defaultBranch: "main", buildCommand: null, runCommand: null, port: null, description: null, imageTag: null});
+    const cipher = createEnvSecretCipher(Buffer.alloc(32, 9)), password = "disposable-registry-canary";
+    const plaintext = JSON.stringify({registryHost: host, username: "fixture", password});
+    const input = (value: string) => ({projectId, key, scope: "project" as const, encryptedValue: Buffer.from(cipher.encrypt(value), "base64"), valueFingerprint: cipher.fingerprint(value), keyVersion: 1});
+    await new DbEnvSecretValueRepository(requireDb()).upsert(input(plaintext));
+    const reader = new DbEnvSecretValueRepository(requireDb());
+    const rows = await reader.listEncryptedByProject(projectId); expect(rows).toHaveLength(1);
+    expect(cipher.decrypt(Buffer.from(rows[0]!.encryptedValue).toString("base64"))).toBe(plaintext);
+    expect(Buffer.from(rows[0]!.encryptedValue).toString()).not.toContain(password);
+    expect(JSON.stringify(await reader.listByProject(projectId))).not.toContain(password);
+    expect(await reader.listEncryptedByProject(foreign)).toEqual([]);
+    const publicValue = JSON.stringify({registryHost: host}); await reader.upsert(input(publicValue));
+    const rotated = await new DbEnvSecretValueRepository(requireDb()).listEncryptedByProject(projectId);
+    expect(rotated).toHaveLength(1); expect(cipher.decrypt(Buffer.from(rotated[0]!.encryptedValue).toString("base64"))).toBe(publicValue);
+    expect(rotated[0]!.valueFingerprint).toBe(cipher.fingerprint(publicValue));
+  });
+
 });
 
 function requirePool(): pg.Pool {

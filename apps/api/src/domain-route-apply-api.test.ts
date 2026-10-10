@@ -27,7 +27,7 @@ function fixture(claims: unknown[] = [], authorized = true, rollbackTarget: unkn
   schemaVersion: 1, id: "revision-a", projectId, domain, deploymentId, revisionNumber: 1, operation: "baseline",
   rollbackRevisionId: null, commandId: null, correlationId: null, createdAt: "2026-10-08T00:00:00.000Z",
   evidence: { state: "baseline", contentDigest: null, observedAt: null, redacted: true }
-}) {
+}, runtimeState: unknown = null) {
   const commandById = new Map<string, ControlCommand>();
   const commandIdByKey = new Map<string, string>();
   const reservations = new Map<string, { commandId: string; route: unknown; plan: DomainRoutePlanV1; operation: "apply" | "rollback"; rollbackRevisionId: string | null }>();
@@ -109,7 +109,7 @@ function fixture(claims: unknown[] = [], authorized = true, rollbackTarget: unkn
   };
   const app = Fastify() as any;
   registerDomainRouteApplyRoute(app, { prefix: "/api/v1", projects: { findById: vi.fn(async () => project) } as never,
-    deployments: { findById: vi.fn(async () => deployment) } as never, claims: claimsReader as never, applyStore: store as never,
+    deployments: { findById: vi.fn(async () => deployment) } as never, claims: claimsReader as never, applyStore: store as never, transportRuntime: { available: () => true, findTransportPortRuntimeState: async () => runtimeState } as never,
     executions: new Map([[projectId, { controls: controls as never, transport, commandTtlMs: 30_000, agentId }]]),
     grants: { listForActor: vi.fn(async (actorId: string) => authorized ? [{ id: "grant-1", actorId, action: "project.update", scope: { kind: "project", projectId } }] : []) } as never,
     audit: audit as never, requireAuth, requireRole: (async () => {}) as preHandlerAsyncHookHandler,
@@ -189,4 +189,19 @@ describe("project domain route apply API", () => {
     expect(f.store.findRollbackTarget).not.toHaveBeenCalled();
     expect(f.dispatch).not.toHaveBeenCalled();
   });
+});
+
+it("binds subsequent domain apply to the durable transport replacement identity", async () => {
+ const current = "d".repeat(64), f = fixture([], true, undefined, {projectId, deploymentId, containerId: current, bindings: []});
+ expect((await f.post()).statusCode).toBe(200);
+ expect((f.dispatch.mock.calls[0]![0] as any).executionReceipt.containerId).toBe(current);
+});
+
+it.each([
+ {projectId: "foreign", deploymentId, containerId: "d".repeat(64), bindings: []},
+ {projectId, deploymentId: "foreign", containerId: "d".repeat(64), bindings: []},
+ {projectId, deploymentId, containerId: "invalid", bindings: []}
+])("rejects invalid durable replacement identity before dispatch", async state => {
+ const f = fixture([], true, undefined, state);
+ expect((await f.post()).statusCode).toBe(503); expect(f.dispatch).not.toHaveBeenCalled();
 });
