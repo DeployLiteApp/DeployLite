@@ -47,7 +47,7 @@ function probe(engine:typeof engines[number], write:boolean) {
         return `MYSQL_PWD="$${prefix}_PASSWORD" ${binary} --host 127.0.0.1 --user "$${prefix}_USER" --database "$${prefix}_DATABASE" --batch --skip-column-names --execute "${sql}"`;
     }
     if (engine === "mongodb") return `mongosh --quiet --host 127.0.0.1 --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval '${write ? 'db.getSiblingDB(process.env.MONGO_INITDB_DATABASE).p5_probe.updateOne({_id:"probe"},{$set:{value:"p5-persistent-value"}},{upsert:true})' : 'print(db.getSiblingDB(process.env.MONGO_INITDB_DATABASE).p5_probe.findOne({_id:"probe"}).value)'}'`;
-    return `REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli --no-auth-warning --host 127.0.0.1 ${write ? "SET p5_probe p5-persistent-value" : "GET p5_probe"}`;
+    return `REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli --no-auth-warning -h 127.0.0.1 ${write ? "SET p5_probe p5-persistent-value" : "GET p5_probe"}`;
 }
 for (const engine of engines) {
     it(`native five-engine physical ${engine} startup and persistence`, async () => {
