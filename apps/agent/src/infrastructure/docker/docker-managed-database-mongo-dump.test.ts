@@ -4,7 +4,7 @@ import {expect,it,vi} from "vitest";
 import {buildMongoNativeDumpArgv,MONGO_BACKUP_LOCK_SCRIPT,MONGO_BACKUP_UNLOCK_SCRIPT} from "./docker-managed-database-mongo-dump.js";
 function fixture(asyncConnection=false){
  let count=0,id="a".repeat(24);const printed:string[]=[];
- const runCommand=vi.fn(async(command:Record<string,unknown>)=>{
+ const runCommand=vi.fn(async(command:Record<string,unknown>):Promise<Record<string,unknown>>=>{
   if(command.hello)return {ok:1,isWritablePrimary:true,topologyVersion:{processId:{toHexString:()=>id}}};
   if(command.currentOp)return {ok:1,fsyncLock:count>0};
   if(command.fsync)return {ok:1,lockCount:++count};
@@ -78,4 +78,9 @@ it("does not retry shell cleanup after failed acknowledgement emitted a partial 
 
 it.each([["acquire",MONGO_BACKUP_LOCK_SCRIPT],["cleanup",MONGO_BACKUP_UNLOCK_SCRIPT]])("parses the %s CLI input as an ECMAScript script before shell rewriting",(_phase,script)=>{
  expect(()=>new Script(script)).not.toThrow();
+});
+
+it.each([{hello:{ok:0},code:33},{hello:{ok:1,isWritablePrimary:false},code:34},{hello:{ok:1,isWritablePrimary:true,setName:"private"},code:35},{hello:{ok:1,isWritablePrimary:true},code:36}])("refuses invalid server identity with bounded substage $code before lock effects",async({hello,code})=>{
+ const f=fixture(),base=f.runCommand.getMockImplementation()!;f.runCommand.mockImplementation(async v=>v.hello?hello:base(v));
+ await expect(f.execute(MONGO_BACKUP_LOCK_SCRIPT)).rejects.toThrow("Mongo dump refused.");expect(f.quit).toHaveBeenCalledWith(code);expect(f.runCommand.mock.calls.some(([v])=>v.fsync||v.fsyncUnlock)).toBe(false);
 });

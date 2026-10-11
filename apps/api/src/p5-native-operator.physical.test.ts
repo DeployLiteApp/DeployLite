@@ -109,7 +109,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
             prefix=Buffer.concat([prefix,chunk.subarray(0,4096-prefix.length)]);
             captureError=nativeCaptureErrorKind(prefix);
             if(captureError!=="unknown")prefix=Buffer.alloc(0);
-          });child.once("close",(code,signal)=>{captureExit={code,signal};if(code!==0)captureFailure=code===21?"connection":code===22?"identity":code===23?"preexisting-lock":code===24?"acquisition":code===25?"acknowledgement":code===26?"dump":code===27?"cleanup":code===28?"token":code===29?"clock":code===31?"shell":"unknown";});return child;}}).runBinaryToSink(...args);}}}}:{})})!;
+          });child.once("close",(code,signal)=>{captureExit={code,signal};if(code!==0)captureFailure=code===21?"connection":(code===22||(code!==null&&code>=32&&code<=36))?"identity":code===23?"preexisting-lock":code===24?"acquisition":code===25?"acknowledgement":code===26?"dump":code===27?"cleanup":code===28?"token":code===29?"clock":code===31?"shell":"unknown";});return child;}}).runBinaryToSink(...args);}}}}:{})})!;
   const stopExecutor = native.stop ? {stop:native.stop} : undefined;
   const startExecutor = native.start ? {start:native.start} : undefined;
   if (!startExecutor) throw new Error("Explicit native start required.");
