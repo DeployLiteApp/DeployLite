@@ -17,10 +17,10 @@ import {lstatSync, readFileSync, writeFileSync} from "node:fs";
 import {resolve} from "node:path";
 import type {FastifyInstance} from "fastify";
 import {AuthenticatedAgentCommandReceiver, startAgentServer} from "@deploylite/agent";
-import {managedDatabaseDeleteReceiptQuerySchema, managedDatabaseDeleteReceiptSchema, MANAGED_DATABASE_DELETE_PATH, MANAGED_DATABASE_DELETE_RECEIPT_PATH, approvedManagedDatabaseProfileSchema, InMemoryCapabilityRegistry, managedDatabaseRuntimeReceiptSchema, managedDatabaseStopReceiptSchema, managedDatabaseStartReceiptSchema,
+import {managedDatabaseBackupReceiptSchema, managedDatabaseDeleteReceiptQuerySchema, managedDatabaseDeleteReceiptSchema, MANAGED_DATABASE_DELETE_PATH, MANAGED_DATABASE_DELETE_RECEIPT_PATH, approvedManagedDatabaseProfileSchema, InMemoryCapabilityRegistry, managedDatabaseRuntimeReceiptSchema, managedDatabaseStopReceiptSchema, managedDatabaseStartReceiptSchema,
   MANAGED_DATABASE_STOP_PATH, MANAGED_DATABASE_START_PATH, MANAGED_DATABASE_HEALTH_PATH, managedDatabaseHealthObservationSchema, MANAGED_DATABASE_METRICS_PATH, managedDatabaseMetricsObservationSchema, MANAGED_DATABASE_LOGS_PATH, managedDatabaseLogsObservationSchema, type ManagedDatabaseEngineV1} from "@deploylite/contracts";
 import {DbAgentReplayStore, DbBackupInventoryStore, DbControlCommandRepository, DbProjectRepository} from "@deploylite/db";
-import {planManagedDatabaseProfile,type ControlCommand,managedDatabaseDeleteExecutionDigest,managedDatabaseDeleteReceiptMatches,createControlCommand, managedDatabaseNativeImagePolicy} from "@deploylite/domain";
+import {prepareVerifiedManagedDatabaseRestoreConfirmation, managedDatabaseRestoreExecutionDigest, evaluateConfirmation, planManagedDatabaseProfile,type ControlCommand,managedDatabaseDeleteExecutionDigest,managedDatabaseDeleteReceiptMatches,createControlCommand, managedDatabaseNativeImagePolicy} from "@deploylite/domain";
 import {buildApiApp} from "./app.js";
 import {openDatabaseBrowser} from "./testing/p5-browser-fixture.js";
 import {openOperatorSession} from "./testing/p5-operator-session.js";
@@ -322,6 +322,21 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
         verifyArchive,inventory:()=>new DbBackupInventoryStore(db.db,agentId),verify:()=>verifier.verify(input,pinned!,authority,signal),decode:bytes=>restoreNativeRedisFixture({bytes,containerId:originalContainerId,uid:ready.uid,signal}),
         signal,captures:()=>backupCaptures,maxBytes:backupMaxBytes,originalContainerId,uid:ready.uid,stoppedSource:true});
     }
+    if (!nativeBackup) throw new Error("Original native backup proof required.");
+    const restoreBackup=managedDatabaseBackupReceiptSchema.parse(nativeBackup.receipt);
+    const restoreSelection={...preparation,projectId,databaseId,originalReceipt:receipt,originalReplayFingerprint,
+      archiveId:restoreBackup.archiveId,destinationId:restoreBackup.destinationId,expectedArchiveSha256:restoreBackup.archiveSha256,
+      expectedManifestSha256:restoreBackup.manifestSha256,maxBytes:backupMaxBytes};
+    const commandsBeforeRestoreIntent=(await db.pool.query("SELECT id,status,input_digest FROM control_commands ORDER BY id")).rows;
+    const restoreIntent=await prepareVerifiedManagedDatabaseRestoreConfirmation({selection:restoreSelection,actorId,
+      idempotencyKey:"fixture_restore_intent_"+engine,correlationId:"fixture-restore-intent-"+engine,commandTtlMs:10000},
+      {expectedAgentId:agentId,inventory:new DbBackupInventoryStore(db.db,agentId),archive:archiveVerifier,clock:{now:Date.now},maxDurationMs:5000},signal);
+    expect(restoreIntent.command).toMatchObject({actorId,status:"pending_confirmation",action:"project.update",scope:{kind:"project",projectId},inputDigest:managedDatabaseRestoreExecutionDigest(restoreIntent.preparation)});
+    expect(restoreIntent.preparation.backupReceipt).toEqual(restoreBackup);
+    expect(evaluateConfirmation(restoreIntent.command,restoreIntent.confirmation)).toEqual({eligible:true});
+    expect(restoreIntent.confirmation.consumedAt).toBeNull();expect(restoreIntent.command).not.toHaveProperty("projectExecutionAuthority");
+    expect((await db.pool.query("SELECT id,status,input_digest FROM control_commands ORDER BY id")).rows).toEqual(commandsBeforeRestoreIntent);
+    nativeBackup.restorePreparation="passed";
     const inventoryAfterStart = await recoveredInventory(stopped,originalStopReplayFingerprint);
     const runningAfterStart=await currentHealth("running");expect(healthDispatches).toBe(3);
     const runningMetricsAfterStart=await currentMetrics("running");expect(metricsDispatches).toBe(3);expect(statsDispatches).toBe(2);

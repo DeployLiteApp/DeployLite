@@ -1,4 +1,5 @@
-import {expect,it} from "vitest";
+import {prepareVerifiedManagedDatabaseRestoreConfirmation} from "./managed-database-verified-restore.js";
+import {expect,it,vi} from "vitest";
 import {managedDatabaseRuntimeExecutionDigest} from "./managed-database-runtime-binding.js";
 import {managedDatabaseBackupExecutionDigest,managedDatabaseBackupSourceDigest} from "./managed-database-backup-binding.js";
 import {composeRuntimeResourceName} from "./compose-preview.js";
@@ -46,4 +47,61 @@ it("refuses archive changes between inventory observations",async()=>{
  const f=fixture(),{backupReceipt,...source}=f.preparation;let reads=0;
  const selection={...source,archiveId:backupReceipt.archiveId,destinationId:backupReceipt.destinationId,expectedArchiveSha256:backupReceipt.archiveSha256,expectedManifestSha256:backupReceipt.manifestSha256};
  await expect(selectManagedDatabaseRestoreInventory(selection,{expectedAgentId:"agent-a",clock:{now:()=>3000},inventory:{available:()=>true,list:async()=>[{schemaVersion:1,receipt:{...backupReceipt,archiveSha256:reads++===0?backupReceipt.archiveSha256:"0".repeat(64)},createdAtMs:2000}] as any}})).rejects.toThrow();
+});
+
+function verifiedFixture(engine:typeof engines[number]="postgres") {
+ const f=fixture(engine),{backupReceipt,...source}=f.preparation;
+ const selection={...source,archiveId:backupReceipt.archiveId,destinationId:backupReceipt.destinationId,expectedArchiveSha256:backupReceipt.archiveSha256,expectedManifestSha256:backupReceipt.manifestSha256};
+ const record={schemaVersion:1 as const,receipt:backupReceipt,createdAtMs:2000};
+ const view={archiveId:backupReceipt.archiveId,archiveBytes:backupReceipt.archiveBytes,archiveSha256:backupReceipt.archiveSha256,manifestSha256:backupReceipt.manifestSha256,format:backupReceipt.format,integrity:"verified",redacted:true};
+ const ports={expectedAgentId:"agent-a",inventory:{available:()=>true,list:vi.fn(async()=>[record] as any)},archive:{verify:vi.fn(async(_preparation:unknown,_signal:AbortSignal)=>({...view}))},clock:{now:()=>3000},maxDurationMs:1000};
+ const request={selection,actorId:f.input.actorId,idempotencyKey:f.input.idempotencyKey,correlationId:f.input.correlationId,commandTtlMs:f.input.commandTtlMs};
+ return {...f,selection,record,view,ports,request};
+}
+it.each(engines)("prepares verified %s intent after fresh archive and inventory observations",async engine=>{
+ const f=verifiedFixture(engine),result=await prepareVerifiedManagedDatabaseRestoreConfirmation(f.request,f.ports);
+ expect(result.preparation).toEqual(f.preparation);expect(result.command).toMatchObject({status:"pending_confirmation",inputDigest:digestControlInput(managedDatabaseRestoreExecutionBinding(f.preparation)),expiresAt:new Date(13000)});
+ expect(result.confirmation).toMatchObject({commandId:result.command.id,classification:"destructive",consumedAt:null});
+ expect(f.ports.inventory.list).toHaveBeenCalledTimes(4);expect(f.ports.archive.verify).toHaveBeenCalledTimes(2);
+ for(const call of f.ports.archive.verify.mock.calls){expect(call[0]).toEqual(f.preparation);expect(call[1]).toBeInstanceOf(AbortSignal);}
+ expect(result).not.toHaveProperty("projectExecutionAuthority");expect(result.command).not.toHaveProperty("projectExecutionAuthority");
+});
+it.each([{archiveSha256:"0".repeat(64)},{manifestSha256:"0".repeat(64)},{archiveId:"backup_"+"0".repeat(32)},{archiveBytes:1},{format:"volume-tar"},{integrity:"pending"},{redacted:false},{privatePath:"private-fixture"}])("rejects detached archive observation before confirmation $integrity",async patch=>{
+ const f=verifiedFixture();f.ports.archive.verify.mockImplementation(async()=>({...f.view,...patch}) as any);
+ await expect(prepareVerifiedManagedDatabaseRestoreConfirmation(f.request,f.ports)).rejects.toThrow("Verified database restore confirmation is unavailable.");
+ expect(f.ports.inventory.list).toHaveBeenCalledTimes(2);
+});
+it("rejects a selected archive that changes during private verification",async()=>{
+ const f=verifiedFixture();f.ports.archive.verify.mockImplementation(async()=>{f.record.receipt.archiveSha256="0".repeat(64);return {...f.view};});
+ await expect(prepareVerifiedManagedDatabaseRestoreConfirmation(f.request,f.ports)).rejects.toThrow("Verified database restore confirmation is unavailable.");expect(f.ports.archive.verify).toHaveBeenCalledTimes(1);
+});
+it("rejects a second integrity refusal after fresh inventory without reflecting private diagnostics",async()=>{
+ const f=verifiedFixture();f.ports.archive.verify.mockResolvedValueOnce({...f.view});f.ports.archive.verify.mockImplementation(async()=>{throw new Error("private-password-fixture");});
+ await expect(prepareVerifiedManagedDatabaseRestoreConfirmation(f.request,f.ports)).rejects.toThrow("Verified database restore confirmation is unavailable.");expect(f.ports.inventory.list).toHaveBeenCalledTimes(4);
+});
+it("rejects getters and extra symbols without evaluating private observation accessors",async()=>{
+ const f=verifiedFixture(),getter=vi.fn(()=>"private-fixture"),view={...f.view};Object.defineProperty(view,"archiveSha256",{get:getter});f.ports.archive.verify.mockResolvedValue(view);
+ await expect(prepareVerifiedManagedDatabaseRestoreConfirmation(f.request,f.ports)).rejects.toThrow("Verified database restore confirmation is unavailable.");expect(getter).not.toHaveBeenCalled();
+ const g=verifiedFixture();g.ports.archive.verify.mockResolvedValue({...g.view,[Symbol("private")]:"private-fixture"});await expect(prepareVerifiedManagedDatabaseRestoreConfirmation(g.request,g.ports)).rejects.toThrow("Verified database restore confirmation is unavailable.");
+});
+it("bounds a never-settling inventory read and propagates cancellation to the archive reader",async()=>{
+ const f=verifiedFixture();f.ports.inventory.list.mockImplementation(()=>new Promise(()=>{}));
+ await expect(prepareVerifiedManagedDatabaseRestoreConfirmation(f.request,{...f.ports,maxDurationMs:10})).rejects.toThrow("Verified database restore confirmation is unavailable.");expect(f.ports.archive.verify).not.toHaveBeenCalled();
+ const g=verifiedFixture(),controller=new AbortController();g.ports.archive.verify.mockImplementation(async(_preparation,signal)=>{expect(signal.aborted).toBe(false);controller.abort();return {...g.view};});
+ await expect(prepareVerifiedManagedDatabaseRestoreConfirmation(g.request,g.ports,controller.signal)).rejects.toThrow("Verified database restore confirmation is unavailable.");expect(g.ports.archive.verify.mock.calls[0]![1].aborted).toBe(true);
+},2000);
+it.each([0,60001,1.2])("refuses unusable workflow deadline %s before any reads",async maxDurationMs=>{
+ const f=verifiedFixture();await expect(prepareVerifiedManagedDatabaseRestoreConfirmation(f.request,{...f.ports,maxDurationMs})).rejects.toThrow("Verified database restore confirmation is unavailable.");expect(f.ports.inventory.list).not.toHaveBeenCalled();
+});
+it("rejects a replaced archive port during preparation",async()=>{
+ const f=verifiedFixture();f.ports.archive.verify.mockImplementation(async()=>{f.ports.archive.verify=vi.fn(async(_preparation:unknown,_signal:AbortSignal)=>({...f.view}));return {...f.view};});
+ await expect(prepareVerifiedManagedDatabaseRestoreConfirmation(f.request,f.ports)).rejects.toThrow("Verified database restore confirmation is unavailable.");
+});
+it("rejects a cancelled input before reading inventory",async()=>{
+ const f=verifiedFixture(),signal=new AbortController();signal.abort();await expect(prepareVerifiedManagedDatabaseRestoreConfirmation(f.request,f.ports,signal.signal)).rejects.toThrow("Verified database restore confirmation is unavailable.");expect(f.ports.inventory.list).not.toHaveBeenCalled();
+});
+
+it("refuses an intent whose own short expiry elapses before it can be returned",async()=>{
+ const f=verifiedFixture();let now=3000;f.ports.clock.now=()=>now++;
+ await expect(prepareVerifiedManagedDatabaseRestoreConfirmation({...f.request,commandTtlMs:1},f.ports)).rejects.toThrow("Verified database restore confirmation is unavailable.");
 });

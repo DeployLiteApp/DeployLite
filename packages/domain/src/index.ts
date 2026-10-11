@@ -473,3 +473,5 @@ export * from "./managed-database-delete-binding.js";
 export * from "./managed-database-backup-binding.js";
 
 export * from "./managed-database-restore-binding.js";
+
+export * from "./managed-database-verified-restore.js";
