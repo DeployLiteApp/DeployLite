@@ -168,3 +168,19 @@ it("preserves authenticated native backup cache access with a zero fresh-capture
  const result=await createConfiguredManagedDatabaseApi({...f.input,backupInventory:()=>writer});
  expect(result.backupExecutions.get("project-a")).toMatchObject({maxBytes:0,inventory:writer});expect(writer.recordAuthenticatedReceipt).not.toHaveBeenCalled();
 });
+
+it("configures readonly restore preparation only with explicit backup budget, inventory and durable protection",async()=>{
+ const f=fixture();Object.assign(f.parsed.configuration.limits,{backupMaxBytes:2097152});Object.assign(f.controls,{findProjectUpdateById:vi.fn(async()=>null),resolveProjectUpdateConfirmation:vi.fn(async()=>null)});
+ const inventory={available:()=>true,list:vi.fn(async()=>[]),recordAuthenticatedReceipt:vi.fn()},protection={protect:vi.fn()},restoreProtection=vi.fn(()=>protection);
+ const configured=await createConfiguredManagedDatabaseApi({...f.input,backupInventory:()=>inventory,restoreProtection});
+ expect(configured).toHaveProperty("restorePreparations",expect.any(Map));expect([...configured.restorePreparations.keys()]).toEqual(["project-a","project-b"]);
+ expect(configured.restorePreparations.get("project-a")).toMatchObject({controls:f.controls,inventory,protection,agentId:"agent-a",deadlineMs:60000,commandTtlMs:60000});
+ expect(restoreProtection).toHaveBeenCalledWith("agent-a");expect(protection.protect).not.toHaveBeenCalled();expect(inventory.list).not.toHaveBeenCalled();expect(f.controls.claimProjectUpdate).not.toHaveBeenCalled();expect(f.secrets.find).not.toHaveBeenCalled();
+});
+it("withholds configured restore when protection or original nonce reader is absent",async()=>{
+ const f=fixture();Object.assign(f.parsed.configuration.limits,{backupMaxBytes:2097152});Object.assign(f.controls,{findProjectUpdateById:vi.fn(async()=>null)});
+ const inventory={available:()=>true,list:vi.fn(async()=>[]),recordAuthenticatedReceipt:vi.fn()},protection={protect:vi.fn()};
+ expect(await createConfiguredManagedDatabaseApi({...f.input,backupInventory:()=>inventory,restoreProtection:()=>protection})).toHaveProperty("restorePreparations",new Map());
+ Object.assign(f.controls,{resolveProjectUpdateConfirmation:vi.fn(async()=>null)});
+ expect(await createConfiguredManagedDatabaseApi({...f.input,backupInventory:()=>inventory})).toHaveProperty("restorePreparations",new Map());expect(protection.protect).not.toHaveBeenCalled();
+});

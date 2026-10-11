@@ -6,7 +6,7 @@ import type {ManagedDatabaseDeleteOriginsAccess} from "./managed-database-delete
 export type ManagedDatabaseRestorePreparationAccess = ManagedDatabaseDeleteOriginsAccess & Readonly<{
  inventory: BackupInventoryReader;
  protection:Readonly<{protect(preparation:unknown,command:ControlCommand,confirmation:ControlConfirmation):Promise<void>}>;
- archive: Readonly<{verify(preparation:unknown,signal:AbortSignal):Promise<unknown>}>;
+ archive: Readonly<{verify(preparation:unknown,signal:AbortSignal,context?:Readonly<{requestId:string;correlationId:string}>):Promise<unknown>}>;
  now():number;
  commandTtlMs:number;
 }>;
@@ -56,7 +56,7 @@ export async function prepareManagedDatabaseRestore(
    idempotencyKey:request.idempotencyKey,correlationId:request.context.correlationId,commandTtlMs:options.commandTtlMs},
    {expectedAgentId:options.agentId,maxDurationMs:options.deadlineMs,clock:{now},
     inventory:{available:()=>{current();return available.call(options.inventory);},list:async(...args)=>{await fence();const rows=await bounded(()=>list.call(options.inventory,...args));await fence();return rows;}},
-    archive:{verify:async(preparation,signal)=>{await fence();const view=await bounded(()=>verify.call(options.archive,preparation,signal));await fence();return view;}}},controller.signal));await fence();
+    archive:{verify:async(preparation,signal)=>{await fence();const view=await bounded(()=>verify.call(options.archive,preparation,signal,{...request.context}));await fence();return view;}}},controller.signal));await fence();
   const digest=managedDatabaseRestoreExecutionDigest(selected.preparation);
   const validate=(raw:ControlCommand)=>{
    const command=structuredClone(raw);
