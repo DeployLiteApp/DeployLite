@@ -19,7 +19,7 @@ it.each(["postgres","mysql","mariadb","mongodb","redis"] as const)("stops only t
     const f=fixture(engine), original=structuredClone(f.original);
     await expect(f.stopper.stop(f.input,f.original,f.authority,new AbortController().signal)).resolves.toEqual({containerId});
     expect(f.events).toEqual(["authority","original-running","authority","stop","original-stopped","authority"]);
-    expect(f.runner.run).toHaveBeenCalledWith(["docker","stop","--time","10",containerId],expect.any(AbortSignal));
+    expect(f.runner.run).toHaveBeenCalledWith(["docker","stop","--timeout","10",containerId],expect.any(AbortSignal));
     expect(f.verifier.verifyStopped).toHaveBeenCalledWith(f.input,original,f.authority,expect.any(AbortSignal));
     expect(f.original).toEqual(original);
 });
@@ -75,7 +75,7 @@ it("snapshots caller identity/resources and explicit limits before asynchronous 
     });
     await f.stopper.stop(f.input,f.original,f.authority,new AbortController().signal);
     expect(f.verifier.verifyStopped).toHaveBeenCalledWith(input,original,f.authority,expect.any(AbortSignal));
-    expect(f.runner.run).toHaveBeenCalledWith(["docker","stop","--time","10",containerId],expect.any(AbortSignal));
+    expect(f.runner.run).toHaveBeenCalledWith(["docker","stop","--timeout","10",containerId],expect.any(AbortSignal));
 });
 it("expires before stop and rejects invalid operator bounds",async()=>{
     const f=fixture();let now=1000;
@@ -85,4 +85,12 @@ it("expires before stop and rejects invalid operator bounds",async()=>{
     expect(f.runner.run).not.toHaveBeenCalled();
     for(const patch of [{deadlineMs:0},{deadlineMs:60001},{maxOutputBytes:0},{stopGraceSeconds:0},{stopGraceSeconds:31}])
         expect(()=>createManagedDatabaseDaemonStopper({...f.options,limits:{...f.options.limits,...patch}})).toThrow();
+});
+
+it("uses the canonical timeout flag without deprecated reply contamination", async () => {
+    const f = fixture();
+    f.runner.run.mockImplementation(async argv => ({exitCode:0,signal:null,
+        stdout: argv[2] === "--timeout" ? containerId + "\n" : "Flag --time has been deprecated, use --timeout instead\n" + containerId + "\n", stderr:""}));
+    await expect(f.stopper.stop(f.input,f.original,f.authority,new AbortController().signal)).resolves.toEqual({containerId});
+    expect(f.runner.run).toHaveBeenCalledWith(["docker","stop","--timeout","10",containerId],expect.any(AbortSignal));
 });

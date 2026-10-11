@@ -37,7 +37,7 @@ export function createManagedDatabaseDaemonStopper(supplied: Readonly<{
             const admitted = await call(() => options.verifier.verifyRunning(input, original, authority, controller.signal));
             if (admitted.containerId !== input.containerId || !Number.isSafeInteger(admitted.uid) || admitted.uid < 1 || admitted.uid > 4294967294) fail();
             await call(() => authority.assertValid());
-            const stopped = await call(() => options.runner.run(Object.freeze(["docker", "stop", "--time", String(limits.stopGraceSeconds), input.containerId]), controller.signal));
+            const stopped = await call(() => options.runner.run(Object.freeze(["docker", "stop", "--timeout", String(limits.stopGraceSeconds), input.containerId]), controller.signal));
             if (stopped.exitCode !== 0 || stopped.signal !== null
                 || Buffer.byteLength(stopped.stdout) + Buffer.byteLength(stopped.stderr) > limits.maxOutputBytes
                 || !new RegExp("^" + input.containerId + "\\n?$").test(stopped.stdout)) fail();
