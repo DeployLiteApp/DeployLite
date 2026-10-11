@@ -848,3 +848,12 @@ Existing signed API/PostgreSQL/native Docker lifecycle now requires three GET in
 Mandatory verifier rejects legacy proof without inventory recovery and binds exact public preparation/connection/receipt/fingerprints, three distinct request windows and actual reopen/source-use/no-effects/audit flags. Two new behavior tests observed RED (missing proof accepted; five valid new engine proofs rejected); three rejection groups characterize negative boundaries. All26Pythonproof tests PASS with old cases retained. Local physical execution prohibited; actual hosted outcomes pending. Rollback removes only new fixture/read-proof/verifier additions, preserving existing suites and runtime resources/history. WholeP5 open.
 
 Inventory-recovery fixture finalsource: complete Node24 pnpmcheck exits0 with3260unit across8projects plus26proof/12native/12admission Python guards PASS. New actual five-engine recovery/source-use remains pending hosted exact-head execution.
+
+
+### H1 copy/download of current redacted logs — 2026-10-11
+
+The live log view now copies/downloads only its currently displayed filtered public text, without new runtime reads. Download uses UTF8 plain text, a neutral filename and immediate object-URL/anchor cleanup. Empty or rejected observations disable export; clipboard rejection remains generic. Source/view changes withhold stale asynchronous copy feedback. Existing pause/search/date/line controls and scoped bounded telemetry remain unchanged.
+
+Three prospective DOM assertions RED precede11panelPASS; inventory/Workbench/SDK regressions yield30focalPASS/webtypesPASS. Download contents and cleanup are asserted; all clipboard/objectURL/anchor effects are simulated and restored between cases. No local services or actual clipboard/download side effect. Full/exact-head pending. Rollback removes optional export controls/helpers/tests only, preserving original live observations and runtime sources. WholeH1/P5 open.
+
+Log-export finalsource: complete Node24 pnpmcheck exits0 with3263unit across8projects. Base4791c29290/run38127847491 owner9gates3256unit/allmandatoryexistingphysical0omissions/278global24P3284operator hashes/restartcleanup. New inventory-recovery proof on481 remains pending.
