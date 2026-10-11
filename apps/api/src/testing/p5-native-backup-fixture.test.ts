@@ -15,18 +15,15 @@ async function fixture() {
   const archive=join(root,receipt.archiveId);await mkdir(archive,{mode:0o700});await writeFile(join(archive,"archive.bin"),bytes,{mode:0o600});await writeFile(join(archive,"manifest.json"),manifest,{mode:0o600});
   let calls=0;
   const call=vi.fn(async()=>{const data={receipt,command:{id:receipt.commandId},backupCreated:true,idempotent:calls++>0};return {statusCode:200,body:JSON.stringify({data}),json:()=>({data})};});
-  const run=vi.fn(async(_argv:readonly string[])=>({stdout:"p5-persistent-value",stderr:"",exitCode:0,signal:null}));
+  const run=vi.fn(async(_bytes:Buffer)=>{});
   const records=[{schemaVersion:1 as const,receipt,createdAtMs:2000}];
-  const input={call,reopen:vi.fn(async()=>{}),inventory:()=>({list:async()=>records}) as any,verify:vi.fn(async()=>({uid:999})),runner:{run},signal:new AbortController().signal,captures:()=>1,maxBytes:2097152,originalContainerId:receipt.containerId,uid:999};
+  const input={call,reopen:vi.fn(async()=>{}),inventory:()=>({list:async()=>records}) as any,verify:vi.fn(async()=>({uid:999})),decode:run,signal:new AbortController().signal,captures:()=>1,maxBytes:2097152,originalContainerId:receipt.containerId,uid:999};
   return {dump,input,run,directory:archive,copied:"/tmp/dl-native-backup-"+receipt.commandId+".gz"};
 }
-it("gives only the copied private archive to the corroborated daemon UID before decoding",async()=>{
+it("gives private bytes only to the corroborated non-root decoder",async()=>{
  const f=await fixture();await f.dump.prove(f.input);
- const argv=f.run.mock.calls.map(call=>call[0]);
- expect(argv).toContainEqual(["docker","exec","--user","0",f.input.originalContainerId,"chown","999",f.copied]);
- expect(argv.findIndex(row=>row.includes("chown"))).toBeLessThan(argv.findIndex(row=>row.includes("bash")));
- expect(argv.at(-1)).toEqual(["docker","exec","--user","0",f.input.originalContainerId,"rm","--",f.copied]);
- await f.dump.close();
+ expect(f.run).toHaveBeenCalledTimes(1);expect(f.run.mock.calls[0]![0]).toBeInstanceOf(Buffer);
+ expect(f.input.verify).toHaveBeenCalledTimes(2);await f.dump.close();
 });
 it("refuses a missing or root decoder UID before API or Docker effects",async()=>{
  for(const uid of [undefined,0,-1,1.2,4294967295]){const f=await fixture();
@@ -34,10 +31,10 @@ it("refuses a missing or root decoder UID before API or Docker effects",async()=
  }
 });
 
-it("reports the bounded failing stage and still removes only its copied archive",async()=>{
- const f=await fixture();f.run.mockImplementation(async argv=>{if(argv.includes("bash"))throw new Error("password=fake-private");return {stdout:"",stderr:"",exitCode:0,signal:null};});
- await expect(f.dump.prove(f.input)).rejects.toThrow("Private native dump fixture failed at decode.");
- expect(f.run.mock.calls.at(-1)![0]).toEqual(["docker","exec","--user","0",f.input.originalContainerId,"rm","--",f.copied]);await f.dump.close();
+it("bounds a failing restore without reflecting private diagnostics",async()=>{
+ const f=await fixture();f.run.mockImplementation(async()=>{throw new Error("password=fake-private");});
+ await expect(f.dump.prove(f.input)).rejects.toThrow("Private native dump fixture failed at restore.");
+ await f.dump.close();
 });
 it.each(["archive.bin","manifest.json"])("rejects changed private %s using a bounded error without reflecting bytes",async file=>{
  const f=await fixture();f.input.reopen.mockImplementation(async()=>{await writeFile(join(f.directory,file),Buffer.from("private-fixture-data"));});

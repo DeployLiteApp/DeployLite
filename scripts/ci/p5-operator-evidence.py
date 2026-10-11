@@ -170,10 +170,10 @@ def validate_confirmed_deletion(result,profile):
 
 def validate_native_backup(result, profile):
     proof=result.get("nativeBackup")
-    exact(proof,{"receipt","maxBytes","captures","signedHttp","formatValidated","seededRow","inventoryReopen","replay","privateFiles","cleanup"},"complete_actual_native_dump_required")
+    exact(proof,{"receipt","maxBytes","captures","signedHttp","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup"},"complete_actual_native_dump_required")
     native.require(profile["engine"]=="postgres" and type(proof["captures"]) is int and proof["captures"]==1
         and type(proof["maxBytes"]) is int and proof["maxBytes"]==2097152
-        and all(proof[key]=="passed" for key in ("signedHttp","formatValidated","seededRow","inventoryReopen","replay","privateFiles","cleanup")),"executed_private_postgres_dump_required")
+        and all(proof[key]=="passed" for key in ("signedHttp","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup")),"executed_private_postgres_dump_required")
     receipt,ready=proof["receipt"],result["receipt"]
     shared={"schemaVersion","projectId","databaseId","engine","agentId","planDigest","environmentFingerprint","containerId","imageId","volumeName","networkName","networkId","volumeCreatedAt","storage","redacted"}
     exact(receipt,shared|{"action","commandId","originalCommandId","profileId","inputDigest","correlationId","volumeKey","observedAt","destinationId","sourceDigest","format","consistency","status","archiveId","archiveBytes","archiveSha256","manifestSha256","idempotent"},"strict_native_dump_receipt_required")

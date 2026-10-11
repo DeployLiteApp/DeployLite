@@ -364,7 +364,7 @@ def add_native_backup(result,profile):
         inputDigest=digest({**source,"action":"project.update","scope":{"kind":"project","projectId":ready["projectId"]},"operation":"database.runtime.backup","destinationId":"private-native","maxBytes":2097152}),
         correlationId="backup-correlation",volumeKey="db-orders",observedAt=1500,destinationId="private-native",sourceDigest=digest(source),format="postgres-custom-gzip",consistency="native-snapshot",
         status="created",archiveId="backup_"+hashlib.sha256((ready["projectId"]+"\0"+"66666666-6666-4666-8666-666666666666"+"\0private-native").encode()).hexdigest()[:32],archiveBytes=512,archiveSha256="2"*64,manifestSha256="3"*64,idempotent=False)
-    proof={"receipt":receipt,"maxBytes":2097152,"captures":1,**{key:"passed" for key in ("signedHttp","formatValidated","seededRow","inventoryReopen","replay","privateFiles","cleanup")}}
+    proof={"receipt":receipt,"maxBytes":2097152,"captures":1,**{key:"passed" for key in ("signedHttp","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup")}}
     result["nativeBackup"]=proof
     return result,profile
 
@@ -381,7 +381,7 @@ class NativeBackupProof(unittest.TestCase):
             with self.assertRaises(RuntimeError):module.validate_native_backup(changed,profile)
     def test_refuses_omitted_or_reexecuted_capture(self):
         result,profile=native_backup_fixture()
-        for patch in ({"captures":2},{"captures":True},{"formatValidated":"skipped"},{"seededRow":"pending"},{"cleanup":"unknown"},{"privatePath":"private"}):
+        for patch in ({"captures":2},{"captures":True},{"formatValidated":"skipped"},{"seededRow":"pending"},{"restoredData":"pending"},{"restoreCleanup":"pending"},{"cleanup":"unknown"},{"privatePath":"private"}):
             changed=copy.deepcopy(result);changed["nativeBackup"].update(patch)
             with self.assertRaises(RuntimeError):module.validate_native_backup(changed,profile)
     def test_refuses_detached_receipt_or_oversized_archive(self):
