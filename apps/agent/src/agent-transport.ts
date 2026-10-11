@@ -1,3 +1,5 @@
+import {MANAGED_DATABASE_LOGS_CAPABILITY, MANAGED_DATABASE_LOGS_PATH, managedDatabaseLogsObservationSchema, type ManagedDatabaseLogsAgentQueryV1, type ManagedDatabaseLogsObservationV1} from "@deploylite/contracts";
+import {managedDatabaseLogsSourceBinding, managedDatabaseLogsObservationMatches} from "@deploylite/domain";
 import {MANAGED_DATABASE_METRICS_CAPABILITY,MANAGED_DATABASE_METRICS_PATH,managedDatabaseMetricsObservationSchema,type ManagedDatabaseMetricsAgentQueryV1,type ManagedDatabaseMetricsObservationV1} from "@deploylite/contracts";
 import {managedDatabaseMetricsSourceBinding,managedDatabaseMetricsObservationMatches} from "@deploylite/domain";
 import {MANAGED_DATABASE_HEALTH_CAPABILITY,MANAGED_DATABASE_HEALTH_PATH,managedDatabaseHealthObservationSchema,type ManagedDatabaseHealthAgentQueryV1,type ManagedDatabaseHealthObservationV1} from "@deploylite/contracts";
@@ -41,12 +43,13 @@ export type AgentComposeVolumeAttachmentExecutor = { execute(command: ComposeVol
 export type AgentComposeResourceCleanupExecutor = { execute(command: ComposeResourceCleanupAgentCommandV1, signal: AbortSignal): Promise<ComposeResourceCleanupExecutionReceiptV1> };
 export type AgentDomainRouteApplyExecutor = { execute(command: DomainRouteApplyAgentCommandV1, authority: RuntimeExecutionAuthority, signal: AbortSignal): Promise<DomainRouteApplyReceiptV1> };
 export type AgentTransportPortApplyExecutor = { execute(command: TransportPortApplyAgentCommandV1, authority: RuntimeExecutionAuthority, signal: AbortSignal): Promise<TransportPortApplyReceiptV1> };
+export type AgentManagedDatabaseLogsReader = {observe(query: ManagedDatabaseLogsAgentQueryV1, authority: RuntimeExecutionAuthority, signal: AbortSignal): Promise<ManagedDatabaseLogsObservationV1>};
 export type AgentManagedDatabaseMetricsReader = {observe(query:ManagedDatabaseMetricsAgentQueryV1,authority:RuntimeExecutionAuthority,signal:AbortSignal):Promise<ManagedDatabaseMetricsObservationV1>};
 export type AgentManagedDatabaseHealthReader = {observe(query:ManagedDatabaseHealthAgentQueryV1,authority:RuntimeExecutionAuthority,signal:AbortSignal):Promise<ManagedDatabaseHealthObservationV1>};
 export type AgentManagedDatabaseStartExecutor = {start(command:ManagedDatabaseStartAgentCommandV1,authority:RuntimeExecutionAuthority,signal:AbortSignal):Promise<ManagedDatabaseStartReceiptV1>};
 export type AgentManagedDatabaseStopExecutor = {stop(command:ManagedDatabaseStopAgentCommandV1,authority:RuntimeExecutionAuthority,signal:AbortSignal):Promise<ManagedDatabaseStopReceiptV1>};
 export type AgentManagedDatabaseRuntimeExecutor = {apply(command: ManagedDatabaseRuntimeAgentCommandV1, authority: RuntimeExecutionAuthority, signal: AbortSignal): Promise<ManagedDatabaseRuntimeReceiptV1>};
-export type AgentCommandReceiverOptions = Readonly<{ agentId: string; trustKey: string; capabilities: readonly string[]; dispatcher: AgentCommandDispatcher; stopDispatcher?: AgentStopDispatcher; networkAttachment?: AgentNetworkAttachmentExecutor; volumeBackup?: AgentVolumeBackupExecutor; volumeAttachment?: AgentComposeVolumeAttachmentExecutor; resourceCleanup?: AgentComposeResourceCleanupExecutor; domainRouteApply?: AgentDomainRouteApplyExecutor; transportPortApply?: AgentTransportPortApplyExecutor; managedDatabaseRuntime?: AgentManagedDatabaseRuntimeExecutor; managedDatabaseStop?: AgentManagedDatabaseStopExecutor; managedDatabaseStart?: AgentManagedDatabaseStartExecutor; managedDatabaseHealth?: AgentManagedDatabaseHealthReader; managedDatabaseMetrics?: AgentManagedDatabaseMetricsReader; resourceInspector?: ComposeResourceInspector; replayStore: AgentReplayStore; authorityValidator?: DeploymentAuthorityValidation; now?: () => number }>;
+export type AgentCommandReceiverOptions = Readonly<{ agentId: string; trustKey: string; capabilities: readonly string[]; dispatcher: AgentCommandDispatcher; stopDispatcher?: AgentStopDispatcher; networkAttachment?: AgentNetworkAttachmentExecutor; volumeBackup?: AgentVolumeBackupExecutor; volumeAttachment?: AgentComposeVolumeAttachmentExecutor; resourceCleanup?: AgentComposeResourceCleanupExecutor; domainRouteApply?: AgentDomainRouteApplyExecutor; transportPortApply?: AgentTransportPortApplyExecutor; managedDatabaseRuntime?: AgentManagedDatabaseRuntimeExecutor; managedDatabaseStop?: AgentManagedDatabaseStopExecutor; managedDatabaseStart?: AgentManagedDatabaseStartExecutor; managedDatabaseHealth?: AgentManagedDatabaseHealthReader; managedDatabaseMetrics?: AgentManagedDatabaseMetricsReader; managedDatabaseLogs?: AgentManagedDatabaseLogsReader; resourceInspector?: ComposeResourceInspector; replayStore: AgentReplayStore; authorityValidator?: DeploymentAuthorityValidation; now?: () => number }>;
 
 export class AuthenticatedAgentCommandReceiver {
   readonly #options: AgentCommandReceiverOptions;
@@ -55,6 +58,7 @@ export class AuthenticatedAgentCommandReceiver {
     validateAgentTransportKey(options.trustKey);
     const capabilities = options.capabilities.filter(capability => (capability !== MANAGED_DATABASE_RUNTIME_CAPABILITY || Boolean(options.managedDatabaseRuntime && options.replayStore.durable === true && options.replayStore.lookup))
       && (capability !== MANAGED_DATABASE_HEALTH_CAPABILITY || Boolean(options.managedDatabaseHealth && options.replayStore.durable === true && typeof options.replayStore.lookupByFingerprintDigest === "function"))
+      && (capability !== MANAGED_DATABASE_LOGS_CAPABILITY || Boolean(options.managedDatabaseLogs && options.replayStore.durable === true && typeof options.replayStore.lookupByFingerprintDigest === "function"))
       && (capability !== MANAGED_DATABASE_METRICS_CAPABILITY || Boolean(options.managedDatabaseMetrics && options.replayStore.durable === true && typeof options.replayStore.lookupByFingerprintDigest === "function"))
       && (capability !== MANAGED_DATABASE_START_CAPABILITY || Boolean(options.managedDatabaseStart && options.replayStore.durable === true && options.replayStore.lookup && options.replayStore.lookupByFingerprintDigest))
       && (capability !== MANAGED_DATABASE_STOP_CAPABILITY || Boolean(options.managedDatabaseStop && options.replayStore.durable === true && options.replayStore.lookup && options.replayStore.lookupByFingerprintDigest))
@@ -187,6 +191,39 @@ export class AuthenticatedAgentCommandReceiver {
     if (receipt && !this.matchesResourceCleanupReceipt(query, receipt)) throw new Error("agent cached resource cleanup scope rejected");
     return composeResourceCleanupCachedReceiptSchema.parse({ schemaVersion: 1, action: "compose.resource.cleanup", agentId: this.#options.agentId,
       commandId: query.commandId, correlationId: query.context.correlationId, receipt });
+  }
+  async observeManagedDatabaseLogs(body: unknown, signature: string | undefined, signal?: AbortSignal): Promise<ManagedDatabaseLogsObservationV1> {
+    if (signal?.aborted) throw new TransportCanceledError();
+    if (!this.verifyRequest(`POST ${MANAGED_DATABASE_LOGS_PATH}\n${JSON.stringify(body)}`, signature)) throw new Error("agent authentication failed");
+    const query = managedDatabaseLogsSourceBinding(structuredClone(body));
+    const reader = this.#options.managedDatabaseLogs, observe = reader?.observe;
+    const store = this.#options.replayStore, lookup = store.lookupByFingerprintDigest;
+    const start = (this.#options.now ?? Date.now)(), deadline = start + query.timeoutMs;
+    const controller = new AbortController(), cancel = () => controller.abort(new TransportCanceledError());
+    const current = () => {
+      const now = (this.#options.now ?? Date.now)();
+      if (controller.signal.aborted || signal?.aborted || !Number.isSafeInteger(start) || start < query.originalReceipt.observedAt
+        || !Number.isSafeInteger(deadline) || !Number.isSafeInteger(now) || now < start || now >= deadline
+        || query.selection.since !== undefined && Date.parse(query.selection.since) > start
+        || query.agentId !== this.#options.agentId || !reader || !observe || reader.observe !== observe
+        || this.#options.managedDatabaseLogs !== reader || store.durable !== true || !lookup || store.lookupByFingerprintDigest !== lookup
+        || !this.#options.capabilities.includes(MANAGED_DATABASE_LOGS_CAPABILITY)) throw new Error("Database logs source is unavailable.");
+      return now;
+    };
+    signal?.addEventListener("abort", cancel, {once: true}); if (signal?.aborted) cancel();
+    const timer = setTimeout(() => controller.abort(new TransportTimeoutError()), query.timeoutMs);
+    try {
+      current();
+      const cached = await awaitAbortable(() => lookup!.call(store, query.originalReceipt.commandId, query.originalReplayFingerprint), controller.signal);
+      current();
+      const original = managedDatabaseRuntimeReceiptSchema.parse(cached);
+      if (protocolPayloadFingerprint(original) !== protocolPayloadFingerprint(query.originalReceipt)) throw new Error("detached");
+      const authority: RuntimeExecutionAuthority = {assertValid: async () => {current();}};
+      const observation = managedDatabaseLogsObservationSchema.parse(await awaitAbortable(() => observe!.call(reader!, structuredClone(query), authority, controller.signal), controller.signal));
+      if (!managedDatabaseLogsObservationMatches(query, observation, start, current())) throw new Error("detached");
+      return observation;
+    } catch {throw new Error("Database logs source is unavailable.");}
+    finally {clearTimeout(timer); signal?.removeEventListener("abort", cancel);}
   }
   async observeManagedDatabaseMetrics(body: unknown, signature: string | undefined, signal?: AbortSignal): Promise<ManagedDatabaseMetricsObservationV1> {
     if (signal?.aborted) throw new TransportCanceledError();
