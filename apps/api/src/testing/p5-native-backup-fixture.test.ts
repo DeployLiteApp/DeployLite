@@ -58,3 +58,8 @@ it("requires Mongo archive magic, restored equality and resumed writers",async()
 it("withholds Mongo proof if writes remain locked without private diagnostics",async()=>{
  const f=await fixture("mongodb");f.input.writerProbe.mockRejectedValue(new Error("password=fake-private"));await expect(f.dump.prove(f.input)).rejects.toThrow("Native Mongo writers did not resume.");await f.dump.close();
 });
+
+it("reports only an allowlisted capture stage when the authenticated backup fails",async()=>{
+ const f=await fixture();f.input.call.mockResolvedValue({statusCode:503,body:"private-output",json:()=>({data:{}})} as any);
+ await expect(f.dump.prove({...f.input,captureFailure:()=>"acquisition" as const})).rejects.toThrow("Private native capture failed at acquisition.");await f.dump.close();
+});

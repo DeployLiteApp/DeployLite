@@ -25,9 +25,12 @@ export function nativeDumpFixture(root:string) {
       uid:number;
       writerProbe?():Promise<void>;
       stoppedSource?:boolean;
+      captureFailure?():"before-capture"|"connection"|"identity"|"preexisting-lock"|"acquisition"|"acknowledgement"|"dump"|"cleanup"|"unknown";
     }>) {
       if(!Number.isSafeInteger(input.uid)||input.uid<1||input.uid>4294967294)throw new Error("Corroborated non-root decoder required.");
-      const first=await input.call();expect(first.statusCode).toBe(200);
+      const first=await input.call();
+      if(first.statusCode!==200){const stage=input.captureFailure?.();if(stage&&["before-capture","connection","identity","preexisting-lock","acquisition","acknowledgement","dump","cleanup","unknown"].includes(stage))throw new Error("Private native capture failed at "+stage+".");}
+      expect(first.statusCode).toBe(200);
       const data=first.json().data,receipt=managedDatabaseBackupReceiptSchema.parse(data.receipt);
       expect(data).toMatchObject({backupCreated:true,idempotent:false});
       const sql=receipt.engine==="mysql"||receipt.engine==="mariadb",redis=receipt.engine==="redis",mongo=receipt.engine==="mongodb";

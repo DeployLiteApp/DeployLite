@@ -13,8 +13,10 @@ function fixture(){
  });
  const Mongo=function(){return {getDB:()=>({runCommand})};};
  const process={env:{MONGO_INITDB_ROOT_USERNAME:"root",MONGO_INITDB_ROOT_PASSWORD:"b".repeat(64),DEPLOYLITE_MONGO_BACKUP_PROCESS_ID:id}};
- const execute=(script:string)=>new AsyncFunction("Mongo","process","print","quit",script)(Mongo,process,(value:string)=>printed.push(value),()=>{throw new Error("Mongo dump refused.");});
- return {execute,runCommand,printed,process,getCount:()=>count,setCount:(value:number)=>{count=value;},replace:()=>{id="c".repeat(24);}};
+ const print=vi.fn((value:string)=>{printed.push(value);return Promise.resolve();});
+ const quit=vi.fn((_code:number)=>{throw new Error("Mongo dump refused.");});
+ const execute=(script:string)=>new AsyncFunction("Mongo","process","print","quit",script)(Mongo,process,print,quit);
+ return {print,quit,execute,runCommand,printed,process,getCount:()=>count,setCount:(value:number)=>{count=value;},replace:()=>{id="c".repeat(24);}};
 }
 it("balances exactly one freshly acknowledged lock on the same standalone process",async()=>{
  const f=fixture();await f.execute(MONGO_BACKUP_LOCK_SCRIPT);expect(f.printed).toEqual(["a".repeat(24)]);expect(f.getCount()).toBe(1);
@@ -47,4 +49,13 @@ it("refuses an insufficient authority deadline before acquiring any lock",()=>{
  const injected=`date(){ printf '%s\\n' '${now}'; }; mongosh(){ printf 'live-effect\\n' >&2; printf '%s\\n' '${"a".repeat(24)}'; }; `;
  const result=spawnSync("bash",["-c",injected+script],{encoding:"utf8",timeout:2000});
  expect(result.status).not.toBe(0);expect(result.stderr).not.toContain("live-effect");
+});
+
+it("identifies a preexisting lock with a fixed safe exit code and no private diagnostics",async()=>{
+ const f=fixture();f.setCount(1);await expect(f.execute(MONGO_BACKUP_LOCK_SCRIPT)).rejects.toThrow("Mongo dump refused.");expect(f.quit).toHaveBeenCalledWith(23);
+});
+
+it("releases its confirmed increment when asynchronous acknowledgement output fails",async()=>{
+ const f=fixture(),failure=Promise.reject(new Error("private-print-fault"));void failure.catch(()=>{});f.print.mockReturnValueOnce(failure);
+ await expect(f.execute(MONGO_BACKUP_LOCK_SCRIPT)).rejects.toThrow("Mongo dump refused.");expect(f.getCount()).toBe(0);expect(f.runCommand.mock.calls.filter(([v])=>v.fsyncUnlock)).toHaveLength(1);
 });
