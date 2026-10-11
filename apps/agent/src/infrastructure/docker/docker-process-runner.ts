@@ -127,15 +127,15 @@ const defaultSpawn: SpawnProcess = (file, args, options) => nodeSpawn(file, args
 export class DockerBinaryProcessError extends Error {
   constructor(readonly kind: DockerProcessError["kind"]) { super(`docker binary process ${kind}`); this.name = "DockerBinaryProcessError"; }
 }
-export type DockerProcessRunnerOptions = Readonly<{ spawn?: SpawnProcess; timeoutMs?: number; maxOutputBytes?: number }>;
+export type DockerProcessRunnerOptions = Readonly<{ spawn?: SpawnProcess; timeoutMs?: number; maxOutputBytes?: number; maxBinaryBytes?: number }>;
 export class DockerProcessRunner {
-  readonly #spawn: SpawnProcess; readonly #timeoutMs: number; readonly #maxOutputBytes: number;
-  constructor(options: DockerProcessRunnerOptions = {}) { this.#spawn = options.spawn ?? defaultSpawn; this.#timeoutMs = options.timeoutMs ?? 30_000; this.#maxOutputBytes = options.maxOutputBytes ?? 64 * 1024; }
+  readonly #spawn: SpawnProcess; readonly #timeoutMs: number; readonly #maxOutputBytes: number; readonly #maxBinaryBytes: number;
+  constructor(options: DockerProcessRunnerOptions = {}) { this.#spawn = options.spawn ?? defaultSpawn; this.#timeoutMs = options.timeoutMs ?? 30_000; this.#maxOutputBytes = options.maxOutputBytes ?? 64 * 1024; this.#maxBinaryBytes = options.maxBinaryBytes ?? this.#maxOutputBytes; }
   /** Private archive bytes go only to the caller-owned sink; diagnostics never enter the result. */
   runBinaryToSink(argv: readonly string[], signal: AbortSignal, sink: (bytes: Uint8Array) => Promise<void>): Promise<Readonly<{ bytes: number; sha256: string }>> {
     if (signal.aborted) return Promise.reject(new DockerBinaryProcessError("canceled"));
     if (!argv.length || argv.some(part => typeof part !== "string" || part.includes("\u0000")) || typeof sink !== "function"
-      || !Number.isSafeInteger(this.#maxOutputBytes) || this.#maxOutputBytes < 1 || !Number.isSafeInteger(this.#timeoutMs) || this.#timeoutMs < 1)
+      || !Number.isSafeInteger(this.#maxOutputBytes) || this.#maxOutputBytes < 1 || !Number.isSafeInteger(this.#maxBinaryBytes) || this.#maxBinaryBytes < 1 || !Number.isSafeInteger(this.#timeoutMs) || this.#timeoutMs < 1)
       return Promise.reject(new DockerBinaryProcessError("failed"));
     return new Promise((resolve, reject) => {
       let child: SpawnedProcess;
@@ -155,7 +155,7 @@ export class DockerProcessRunner {
       child.stdout?.on("data", (chunk: unknown) => {
         if (settled) return;
         if (!Buffer.isBuffer(chunk)) { fail("failed"); return; }
-        if (chunk.length > this.#maxOutputBytes - bytes) { fail("output-limit"); return; }
+        if (chunk.length > this.#maxBinaryBytes - bytes) { fail("output-limit"); return; }
         bytes += chunk.length; const copy = Buffer.from(chunk); child.stdout!.pause();
         writes = writes.then(async () => {
           if (settled) return; hash.update(copy); await sink(copy);

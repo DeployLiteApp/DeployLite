@@ -10,6 +10,7 @@ export const managedDatabaseRuntimeConfigurationSchema = z.object({
     cpus: z.number().min(0.1).max(2),
     memoryBytes: z.number().int().min(64 * 1024 * 1024).max(4 * 1024 * 1024 * 1024),
     pidsLimit: z.number().int().min(16).max(1024),
+    backupMaxBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
     stopGraceSeconds: z.number().int().min(1).max(30).optional()
   }).strict()
 }).strict();

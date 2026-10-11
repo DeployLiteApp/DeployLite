@@ -50,7 +50,8 @@ export function registerManagedDatabaseBackupRoute(app: FastifyInstance, options
         if (!planning || !planning.store.available() || !destination || !parsedDestination.success
           || destination.owner !== "deploylite" || destination.projectId !== preparation.projectId || destination.agentId !== execution.agentId
           || destination.destinationId !== preparation.destinationId || preparation.maxBytes > destination.maxBytes
-          || execution.deadlineMs > destination.maxDurationMs) throw new Error("unavailable");
+          || execution.deadlineMs > destination.maxDurationMs
+          || (execution.maxBytes !== undefined && (!Number.isSafeInteger(execution.maxBytes) || execution.maxBytes < preparation.maxBytes))) throw new Error("unavailable");
         const destinationDigest = digestControlInput(parsedDestination.data);
         if (plan.planDigest !== preparation.planDigest || plan.profileId !== preparation.profileId) throw new Error("stale");
         privateCurrent = () => {

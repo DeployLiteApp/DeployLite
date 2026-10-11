@@ -7,7 +7,7 @@ import { type ManagedDatabaseBackupAgentTransport, type PreparedManagedDatabaseB
 import type { ManagedDatabaseRuntimeAgentTransport } from "./managed-database-runtime-transport.js";
 export type ManagedDatabaseBackupAccess = Readonly<{
   controls: ProjectUpdateControlRepository; originalTransport: ManagedDatabaseRuntimeAgentTransport; transport: ManagedDatabaseBackupAgentTransport; agentId: string;
-  inventory: BackupInventoryWriter; now(): number; commandTtlMs: number; deadlineMs: number;
+  inventory: BackupInventoryWriter; maxBytes?: number; now(): number; commandTtlMs: number; deadlineMs: number;
 }>;
 export type ManagedDatabaseBackupInput = Readonly<{
   preparation: ReturnType<typeof managedDatabaseBackupPreparationSchema.parse>; actorId: string; idempotencyKey: string;

@@ -55,3 +55,9 @@ it("accepts only explicit bounded stop grace and never supplies a stop default",
     expect(parseManagedDatabaseRuntimeConfiguration(JSON.stringify({...f,limits:{...f.limits,stopGraceSeconds:10}}))!.limits).toHaveProperty("stopGraceSeconds",10);
     for(const grace of [0,31,1.5,"10",null])expect(()=>parseManagedDatabaseRuntimeConfiguration(JSON.stringify({...f,limits:{...f.limits,stopGraceSeconds:grace}}))).toThrow();
 });
+it("retains only an explicit positive native archive budget without adding a backup default",()=>{
+ const f=configuration();expect(parseManagedDatabaseRuntimeConfiguration(JSON.stringify(f))!.limits).not.toHaveProperty("backupMaxBytes");
+ const configured={...f,limits:{...f.limits,backupMaxBytes:2*1024*1024}};
+ expect(parseManagedDatabaseRuntimeConfiguration(JSON.stringify(configured))!.limits).toHaveProperty("backupMaxBytes",2*1024*1024);
+ for(const value of [0,-1,1.5,"1024",null,Number.MAX_SAFE_INTEGER+1])expect(()=>parseManagedDatabaseRuntimeConfiguration(JSON.stringify({...f,limits:{...f.limits,backupMaxBytes:value}}))).toThrow();
+});

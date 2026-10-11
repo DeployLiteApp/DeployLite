@@ -3,7 +3,7 @@ import {EventEmitter} from "node:events";
 import {PassThrough} from "node:stream";
 import {expect,it,vi} from "vitest";
 import {DockerProcessRunner,type SpawnedProcess} from "./docker-process-runner.js";
-function fixture(options:{maxOutputBytes?:number;timeoutMs?:number}={}){
+function fixture(options:{maxOutputBytes?:number;maxBinaryBytes?:number;timeoutMs?:number}={}){
  const child=Object.assign(new EventEmitter(),{stdout:new PassThrough(),stderr:new PassThrough(),kill:vi.fn()});
  const spawn=vi.fn(()=>child as unknown as SpawnedProcess),runner=new DockerProcessRunner({...options,spawn});
  const chunks:Buffer[]=[],signal=new AbortController();
@@ -74,4 +74,16 @@ it("uses generic binary errors for spawn exceptions, signal exit and stream erro
 it("refuses invalid budgets and NUL argv before touching the injected process",async()=>{
  for(const options of [{timeoutMs:0},{maxOutputBytes:0},{maxOutputBytes:NaN}]){const f=fixture(options);await expect(f.runner.runBinaryToSink(["docker"],f.signal.signal,f.sink)).rejects.toMatchObject({kind:"failed"});expect(f.spawn).not.toHaveBeenCalled();}
  const f=fixture();await expect(f.runner.runBinaryToSink(["docker","bad\u0000argument"],f.signal.signal,f.sink)).rejects.toMatchObject({kind:"failed"});expect(f.spawn).not.toHaveBeenCalled();
+});
+it("keeps an explicit archive byte budget separate from the original text output bound",async()=>{
+ const f=fixture({maxOutputBytes:2,maxBinaryBytes:4}),pending=f.runner.runBinaryToSink(["docker"],f.signal.signal,f.sink);
+ f.child.stdout.end(Buffer.from([0,255,128]));f.child.emit("close",0,null);expect((await pending).bytes).toBe(3);
+});
+it("rejects archive output over the smaller explicit binary budget before private delivery",async()=>{
+ const f=fixture({maxOutputBytes:4,maxBinaryBytes:1}),pending=f.runner.runBinaryToSink(["docker"],f.signal.signal,f.sink);
+ f.child.stdout.end(Buffer.from([0,255]));f.child.emit("close",0,null);await expect(pending).rejects.toMatchObject({kind:"output-limit"});expect(f.chunks).toEqual([]);
+});
+it("rejects a malformed explicit binary budget before the process exists",async()=>{
+ const f=fixture({maxBinaryBytes:0}),pending=f.runner.runBinaryToSink(["docker"],f.signal.signal,f.sink);
+ f.child.stdout.end(Buffer.from([255]));f.child.emit("close",0,null);await expect(pending).rejects.toMatchObject({kind:"failed"});expect(f.spawn).not.toHaveBeenCalled();
 });

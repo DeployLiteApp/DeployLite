@@ -5,6 +5,7 @@ const harness = vi.hoisted(() => ({
   pool: vi.fn(() => ({ end: vi.fn(async () => {}) })),
   closePool: vi.fn(async () => {}),
   startServer: vi.fn(async (_options: unknown) => ({ close: vi.fn(async () => {}) })),
+  binaryRun: vi.fn(async () => { throw new Error("Unexpected private binary capture"); }),
   run: vi.fn(async () => { throw new Error("Unexpected Docker access"); })
 }));
 vi.mock("@deploylite/db", () => ({
@@ -28,7 +29,7 @@ vi.mock("./deployment-dispatcher.js", () => ({
   }
 }));
 vi.mock("./infrastructure/docker/docker-process-runner.js", () => ({
-  DockerProcessRunner: class { run = harness.run; }
+  DockerProcessRunner: class { run = harness.run; runBinaryToSink=harness.binaryRun; }
 }));
 import { startAgentRuntime } from "./index.js";
 import type { AgentServerOptions } from "./server.js";
@@ -131,4 +132,19 @@ it("advertises readonly retained logs only with explicit native configuration an
 it("offers confirmed deletion only with explicit bounded STOP configuration and durable authority readers",async()=>{
  const f=configuration(),enabled=await startAgentRuntime(environment(JSON.stringify({...f,limits:{...f.limits,stopGraceSeconds:10}})));expect(receiver().capabilities).toContain("database.runtime.delete.v1");expect(harness.run).not.toHaveBeenCalled();await enabled.close();
  const disabled=await startAgentRuntime(environment(JSON.stringify(f)));expect(receiver().capabilities).not.toContain("database.runtime.delete.v1");expect(harness.run).not.toHaveBeenCalled();await disabled.close();
+});
+it("activates signed native backup only with explicit budget, private destinations and durable original replay",async()=>{
+ const {MANAGED_DATABASE_BACKUP_CAPABILITY}=await import("@deploylite/contracts");const config=configuration();Object.assign(config.limits,{backupMaxBytes:2*1024*1024});
+ const env={...environment(JSON.stringify(config)),DEPLOYLITE_COMPOSE_VOLUME_BACKUP_ROOTS:JSON.stringify({sourceRoots:{native:"/fixture/data"},destinations:{"private-a":"/fixture/backups"}})};
+ const runtime=await startAgentRuntime(env);try{expect(receiver().capabilities).toContain(MANAGED_DATABASE_BACKUP_CAPABILITY);expect(harness.run).not.toHaveBeenCalled();expect(harness.binaryRun).not.toHaveBeenCalled();}finally{await runtime.close();}
+});
+it("rejects explicit native backup activation without private destinations before resources",async()=>{
+ const config=configuration();Object.assign(config.limits,{backupMaxBytes:2*1024*1024});
+ await expect(startAgentRuntime(environment(JSON.stringify(config)))).rejects.toThrow("Database runtime configuration is invalid.");
+ expect(harness.pool).not.toHaveBeenCalled();expect(harness.startServer).not.toHaveBeenCalled();expect(harness.binaryRun).not.toHaveBeenCalled();
+});
+it("does not infer native backup activation from existing Compose private destinations",async()=>{
+ const {MANAGED_DATABASE_BACKUP_CAPABILITY}=await import("@deploylite/contracts");
+ const env={...environment(JSON.stringify(configuration())),DEPLOYLITE_COMPOSE_VOLUME_BACKUP_ROOTS:JSON.stringify({sourceRoots:{native:"/fixture/data"},destinations:{"private-a":"/fixture/backups"}})};
+ const runtime=await startAgentRuntime(env);try{expect(receiver().capabilities).not.toContain(MANAGED_DATABASE_BACKUP_CAPABILITY);expect(harness.binaryRun).not.toHaveBeenCalled();}finally{await runtime.close();}
 });
