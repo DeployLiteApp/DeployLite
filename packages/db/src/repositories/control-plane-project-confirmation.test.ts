@@ -3,31 +3,46 @@ import type {Pool} from "pg";
 import {expect,it} from "vitest";
 import {createControlCommand,createConfirmation} from "@deploylite/domain";
 import {createDbClient} from "../client.js";
-import {controlCommands,controlCommandConfirmations} from "../schema.js";
+import {controlCommands,controlCommandConfirmations,controlCommandAudits} from "../schema.js";
 import {DbControlCommandRepository} from "./control-plane.js";
 function fixture(){
  const command=createControlCommand({actorId:"actor1",action:"project.update",scope:{kind:"project",projectId:"project1"},input:{operation:"ci.confirmation.fixture"},idempotencyKey:"confirm-key",correlationId:"confirm-correlation",expiresAt:new Date(8000)});
  const row:Record<string,any>={id:command.id,actorUserId:command.actorId,action:command.action,scopeKind:"project",scopeKey:"project1",inputDigest:command.inputDigest,idempotencyKey:command.idempotencyKey,correlationId:command.correlationId,status:command.status,result:null,executionAuthority:null,expiresAt:command.expiresAt,createdAt:new Date(0),updatedAt:new Date(0)};
- const confirmations:Record<string,any>[]=[],queries:{text:string;values:unknown[]}[]=[];
+ const audits:Record<string,any>[]=[],related:Record<string,any>[]=[],confirmations:Record<string,any>[]=[],queries:{text:string;values:unknown[]}[]=[];
  const camel=(name:string)=>name.replace(/_([a-z])/g,(_,letter:string)=>letter.toUpperCase());
+ let snapshot:{row:Record<string,any>;confirmations:Record<string,any>[];audits:Record<string,any>[]} | undefined;
+ const storedRows=(table:any,values:Record<string,any>[])=>values.map(value=>Object.keys(getTableColumns(table)).map(key=>value[key]));
+ const matches=(text:string,values:unknown[],value:Record<string,any>)=>[...text.matchAll(/"(?:control_commands|control_command_confirmations)"\."([^"]+)" = \$(\d+)/g)].every(match=>value[camel(match[1]!)]===values[Number(match[2])-1]);
  const client={query:async(query:string|{text:string},values:unknown[]=[])=>{
   const text=typeof query==="string"?query:query.text;queries.push({text,values});
-  if(text.startsWith('insert into "control_command_confirmations"')){
+  if(text.startsWith('insert into "control_command_confirmations"')||text.startsWith('insert into "control_command_audits"')){
    const names=[...text.slice(text.indexOf('(')+1,text.indexOf(')')).matchAll(/"([^"]+)"/g)].map(match=>match[1]!);
    const expressions=text.split(' values (')[1]!.split(')')[0]!.split(', '),stored:Record<string,any>={consumedAt:null,createdAt:new Date(1000)};
    names.forEach((name,index)=>{const parameter=/\$(\d+)/.exec(expressions[index]??"");if(parameter)stored[camel(name)]=values[Number(parameter[1])-1];});
-   if(!confirmations.some(existing=>existing.commandId===stored.commandId))confirmations.push(stored);
+   if(text.includes('"control_command_audits"'))audits.push(stored);
+   else if(!confirmations.some(existing=>existing.commandId===stored.commandId))confirmations.push(stored);
    return {rows:[]};
   }
-  if(text.startsWith('select')&&text.includes('from "control_commands"')){
-   const matches=[...text.matchAll(/"control_commands"\."([^"]+)" = \$(\d+)/g)].every(match=>row[camel(match[1]!) ]===values[Number(match[2])-1]);
-   return {rows:matches?[Object.keys(getTableColumns(controlCommands)).map(key=>row[key])]:[]};
+  if(text.toLowerCase()==="begin")snapshot=structuredClone({row,confirmations,audits});
+  if(text.toLowerCase()==="rollback"&&snapshot){Object.assign(row,snapshot.row);confirmations.splice(0,confirmations.length,...snapshot.confirmations);audits.splice(0,audits.length,...snapshot.audits);}
+  if(text.startsWith('update')){
+   const rows=text.startsWith('update "control_commands"')?[row]:confirmations;
+   const changed=rows.filter(value=>matches(text,values,value));
+   for(const value of changed)for(const match of text.split(' where ')[0]!.matchAll(/"([^"]+)" = \$(\d+)/g)){
+    const raw=values[Number(match[2])-1];value[camel(match[1]!)]=match[1]==="execution_authority"&&typeof raw==="string"?JSON.parse(raw):match[1]!.endsWith("_at")&&typeof raw==="string"?new Date(raw):raw;
+   }
+   return {rows:storedRows(rows===confirmations?controlCommandConfirmations:controlCommands,changed)};
   }
-  if(text.startsWith('select')&&text.includes('from "control_command_confirmations"'))return {rows:confirmations.map(value=>Object.keys(getTableColumns(controlCommandConfirmations)).map(key=>value[key]))};
+  if(text.startsWith('select')&&text.includes('from "control_commands"')){
+   if(text.includes("::jsonb"))return {rows:storedRows(controlCommands,[row,...related])};
+   const matches=[...text.matchAll(/"control_commands"\."([^"]+)" = \$(\d+)/g)].every(match=>row[camel(match[1]!) ]===values[Number(match[2])-1]);
+   return {rows:matches?storedRows(controlCommands,text.includes('"control_commands"."id" =')?[row]:[row,...related]):[]};
+  }
+  if(text.startsWith('select')&&text.includes('from "control_command_confirmations"'))return {rows:storedRows(controlCommandConfirmations,confirmations.filter(value=>matches(text,values,value)))};
   return {rows:[]};
  }};
- const repository=()=>new DbControlCommandRepository(createDbClient(client as unknown as Pool));
- return {command,row,confirmations,queries,repository,seed(){const value=createConfirmation({command,classification:"destructive"});confirmations.push({id:value.id,commandId:value.commandId,actorUserId:value.actorId,action:value.action,scopeKind:"project",scopeKey:"project1",inputDigest:value.inputDigest,classification:value.classification,expiresAt:value.expiresAt,consumedAt:null,createdAt:new Date(1000)});return value;}};
+ const repository=(fault?: (stage:string)=>void)=>new DbControlCommandRepository(createDbClient(client as unknown as Pool),fault);
+ return {command,row,confirmations,audits,related,queries,repository,seed(){const value=createConfirmation({command,classification:"destructive"});confirmations.push({id:value.id,commandId:value.commandId,actorUserId:value.actorId,action:value.action,scopeKind:"project",scopeKey:"project1",inputDigest:value.inputDigest,classification:value.classification,expiresAt:value.expiresAt,consumedAt:null,createdAt:new Date(1000)});return value;}};
 }
 it("persists and recovers one original pending destructive nonce without consuming or issuing authority",async()=>{
  const f=fixture(),first=await f.repository().resolveProjectUpdateConfirmation(f.command,new Date(1000));expect(first).not.toBeNull();
@@ -53,4 +68,37 @@ it("never replaces expired consumed detached ordinary or duplicate stored confir
 });
 it("rejects expired commands and invalid clocks without writes",async()=>{
  for(const now of [new Date(8000),new Date(NaN)]){const f=fixture();expect(await f.repository().resolveProjectUpdateConfirmation(f.command,now)).toBeNull();expect(f.confirmations).toHaveLength(0);}
+});
+
+it("atomically consumes the original nonce and claims one existing project fence with one audit",async()=>{
+ const f=fixture(),nonce=f.seed(),result=await f.repository().claimConfirmedProjectUpdate(f.command,nonce,new Date(1000));
+ expect(result).toMatchObject({accepted:true,claimed:true,reason:null,command:{status:"dispatching"},authority:{commandId:f.command.id,inputDigest:f.command.inputDigest,projectLease:{fence:2,expiresAt:8000}}});
+ expect(f.confirmations[0]!.consumedAt).toEqual(new Date(1000));expect(f.audits).toHaveLength(1);expect(f.audits[0]).toMatchObject({commandId:f.command.id,confirmationId:nonce.id,outcome:"accepted",correlationId:f.command.correlationId});
+ const saved=structuredClone({row:f.row,confirmations:f.confirmations,audits:f.audits});
+ expect(await f.repository().claimConfirmedProjectUpdate(f.command,nonce,new Date(1001))).toMatchObject({accepted:false,claimed:false});
+ expect({row:f.row,confirmations:f.confirmations,audits:f.audits}).toEqual(saved);
+});
+it("retains the same pending nonce when another live project command owns authority",async()=>{
+ const f=fixture(),nonce=f.seed();f.related.push({...f.row,id:"competing",status:"dispatching",expiresAt:new Date(4000)});
+ expect(await f.repository().claimConfirmedProjectUpdate(f.command,nonce,new Date(1000))).toMatchObject({accepted:false,claimed:false});
+ expect(f.row.status).toBe("pending_confirmation");expect(f.confirmations[0]!.consumedAt).toBeNull();expect(f.audits).toHaveLength(0);
+ f.related[0]!.status="completed";expect(await f.repository().claimConfirmedProjectUpdate(f.command,nonce,new Date(1001))).toMatchObject({accepted:true,claimed:true});
+});
+it("rejects detached or expired confirmed claims before any ledger mutation",async()=>{
+ for(const patch of [{actorId:"foreign"},{idempotencyKey:"foreign"},{inputDigest:"0".repeat(64)},{expiresAt:new Date(9000)},{status:"eligible" as const}]){
+  const f=fixture(),nonce=f.seed();expect(await f.repository().claimConfirmedProjectUpdate({...f.command,...patch},nonce,new Date(1000))).toMatchObject({accepted:false,claimed:false});
+  expect(f.row.status).toBe("pending_confirmation");expect(f.confirmations[0]!.consumedAt).toBeNull();expect(f.audits).toHaveLength(0);
+ }
+ for(const patch of [{id:"foreign"},{actorId:"foreign"},{classification:"non-destructive" as const},{inputDigest:"0".repeat(64)},{consumedAt:new Date(999)},{expiresAt:new Date(9000)}]){
+  const f=fixture(),nonce=f.seed();expect(await f.repository().claimConfirmedProjectUpdate(f.command,{...nonce,...patch},new Date(1000))).toMatchObject({accepted:false,claimed:false});
+  expect(f.confirmations[0]!.consumedAt).toBeNull();expect(f.audits).toHaveLength(0);
+ }
+ for(const now of [new Date(8000),new Date(NaN)]){const f=fixture(),nonce=f.seed();expect(await f.repository().claimConfirmedProjectUpdate(f.command,nonce,now)).toMatchObject({accepted:false,claimed:false});expect(f.audits).toHaveLength(0);}
+});
+
+it("rolls back nonce command and audit together when the confirmed authority transaction fails",async()=>{
+ const f=fixture(),nonce=f.seed(),before=structuredClone({row:f.row,confirmations:f.confirmations,audits:f.audits});
+ await expect(f.repository(()=>{throw new Error("injected failure");}).claimConfirmedProjectUpdate(f.command,nonce,new Date(1000))).rejects.toThrow("injected failure");
+ expect({row:f.row,confirmations:f.confirmations,audits:f.audits}).toEqual(before);
+ expect(await f.repository().claimConfirmedProjectUpdate(f.command,nonce,new Date(1001))).toMatchObject({accepted:true,claimed:true});
 });

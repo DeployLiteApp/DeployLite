@@ -101,6 +101,56 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
     });
   }
 
+  /** One original nonce consumption and authority claim; retries cannot renew or redispatch. */
+  async claimConfirmedProjectUpdate(submitted: ControlCommand, supplied: ControlConfirmation, observed = new Date()): Promise<ConfirmationOutcome & { claimed: boolean; authority?: ProjectControlAuthorityV1 }> {
+    const command = structuredClone(submitted), confirmation = structuredClone(supplied), now = new Date(observed);
+    const denied = (current = command, reason = "confirmation_rejected") => ({ command: current, accepted: false, claimed: false, reason });
+    if (command.action !== "project.update" || command.scope.kind !== "project" || command.status !== "pending_confirmation"
+      || command.projectExecutionAuthority || command.executionAuthority || !Number.isFinite(now.getTime()) || now.getTime() < 0
+      || !(command.expiresAt instanceof Date) || !Number.isFinite(command.expiresAt.getTime()) || command.expiresAt <= now
+      || !(confirmation.expiresAt instanceof Date) || !Number.isFinite(confirmation.expiresAt.getTime())) return denied();
+    const projectId = command.scope.projectId;
+    return this.db.transaction(async tx => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`deploylite:execution:${projectId}`}, 0))`);
+      const [row] = await tx.select().from(controlCommands).where(and(eq(controlCommands.id, command.id),
+        eq(controlCommands.actorUserId, command.actorId), eq(controlCommands.action, "project.update"),
+        eq(controlCommands.scopeKind, "project"), eq(controlCommands.scopeKey, projectId))).limit(1).for("update");
+      if (!row) return denied();
+      const current = toCommand(row);
+      if (current.status !== "pending_confirmation" || current.projectExecutionAuthority || current.executionAuthority
+        || current.inputDigest !== command.inputDigest || current.idempotencyKey !== command.idempotencyKey
+        || current.correlationId !== command.correlationId || current.expiresAt.getTime() !== command.expiresAt.getTime()) return denied(current);
+      const storedRows = await tx.select().from(controlCommandConfirmations).where(eq(controlCommandConfirmations.commandId, current.id)).limit(2).for("update");
+      if (storedRows.length !== 1) return denied(current);
+      const stored = storedRows[0]!;
+      if (stored.id !== confirmation.id || stored.scopeKind !== "project" || stored.scopeKey !== projectId
+        || !(stored.expiresAt instanceof Date) || !Number.isFinite(stored.expiresAt.getTime())
+        || stored.expiresAt.getTime() !== confirmation.expiresAt.getTime()) return denied(current);
+      const original: ControlConfirmation = { id: stored.id, commandId: stored.commandId, actorId: stored.actorUserId,
+        action: stored.action as ControlConfirmation["action"], scope: current.scope, inputDigest: stored.inputDigest,
+        classification: stored.classification as ControlConfirmation["classification"], expiresAt: stored.expiresAt, consumedAt: stored.consumedAt };
+      try { evaluateConfirmation(current, confirmation, now); evaluateConfirmation(current, original, now); }
+      catch (error) { if (error instanceof ConfirmationRejectedError) return denied(current); throw error; }
+      const relatedRows = await tx.select().from(controlCommands).where(or(
+        and(eq(controlCommands.scopeKind, "project"), eq(controlCommands.scopeKey, projectId)),
+        and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${projectId}`)));
+      const eligible = { ...current, status: "eligible" as const };
+      const authority = claimProjectUpdateAuthority(relatedRows.map(toCommand), eligible, now.getTime());
+      if (!authority) return denied(current, "project_busy");
+      const [consumed] = await tx.update(controlCommandConfirmations).set({ consumedAt: now }).where(and(
+        eq(controlCommandConfirmations.id, original.id), eq(controlCommandConfirmations.commandId, current.id),
+        isNull(controlCommandConfirmations.consumedAt), gt(controlCommandConfirmations.expiresAt, now))).returning();
+      if (!consumed) throw new Error("Confirmed project update lost its nonce CAS");
+      const [saved] = await tx.update(controlCommands).set({ status: "dispatching", executionAuthority: authority, updatedAt: now }).where(and(
+        eq(controlCommands.id, current.id), eq(controlCommands.status, "pending_confirmation"), isNull(controlCommands.executionAuthority), gt(controlCommands.expiresAt, now))).returning();
+      if (!saved) throw new Error("Confirmed project update lost its command CAS");
+      await tx.insert(controlCommandAudits).values({ commandId: current.id, confirmationId: original.id,
+        correlationId: current.correlationId, outcome: "accepted", reason: null });
+      await this.fault("authority-claimed");
+      return { command: toCommand(saved), accepted: true, claimed: true, authority, reason: null };
+    });
+  }
+
   async bind(confirmation: ControlConfirmation): Promise<void> {
     await this.db.insert(controlCommandConfirmations).values({ id: confirmation.id, commandId: confirmation.commandId, actorUserId: confirmation.actorId, action: confirmation.action, scopeKind: confirmation.scope.kind, scopeKey: scopeKey(confirmation.scope), inputDigest: confirmation.inputDigest, classification: confirmation.classification, expiresAt: confirmation.expiresAt, consumedAt: confirmation.consumedAt });
   }

@@ -881,3 +881,12 @@ Two positive repository assertions observed RED before implementation; five repo
 Prior pure intent #48559ab93e2ce7d171b6936465996ee1b53f98f86c3/run38131347941 owner9/9SUCCESS,3275unit,285global/24P3/291operator exact hashes, mandatory physical suites without skips and restart/cleanup verified. No destructive effect was activated.
 
 Confirmation recovery source checkpoint: complete Node24 pnpmcheck exits0 with3280unit across8projects;31focal/31operatorproof/DBandAPItypesPASS. Hosted concurrent/reopen recovery remains pending; no deletion or phase closure claimed. Source commit4f2c158.
+
+
+### S1 atomic confirmed project authority — 2026-10-11
+
+The unused confirmed-claim port consumes the original destructive project.update nonce and persists the existing dispatching command/authority plus one accepted control audit in a single transaction under the existing project and row locks. Exact pending command identity, actor/action/scope/digest/key/correlation/expiry and stored nonce identity/expiry are mandatory. A busy project preserves the nonce pending; expired/consumed/detached inputs fail without grant/renewal. Replays cannot claim/dispatch again. Fault at the existing authority-claimed injection rolls back command, nonce and audit together. No container effect, new lifecycle/model/table or migration.
+
+Three positive assertions observed RED before implementation (claim, retry after contention, rollback fault). Four new cases plus previous recovery/reader/rollback regressions yield35focalPASS; DB/APItypesPASS. Injected SQL fake was corrected to map timestamps and existing OR project selection without weakening behavior assertions. Existing generic consume/claim semantics remain. Mandatory hosted five-engine proof now exercises a real concurrent claimant, busy fence, injected transaction rollback and post-reopen no-renewal under the same scoped PostgreSQL fixture; all prior runtime/browser proofs remain required. Missing-proof assertion RED then33operator guardsPASS; other rejection groups are characterization. Fullcheck/exact-head hosted confirmation claim pending. Delete transport/executor/source corroboration/retirement/UI and wholeS1/P5 remain open. Rollback removes only the unused confirmed-claim method/interface/tests and its added hosted proof; preserve ledger history, prior tests, encrypted rows and original storage.
+
+Atomic confirmed claim source checkpoint: complete Node24 pnpmcheck exits0 with3284unit across8projects;35focal/33operatorproof/DBandAPItypesPASS. Hosted confirmed claim remains pending.

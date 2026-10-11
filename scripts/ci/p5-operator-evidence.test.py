@@ -72,6 +72,7 @@ def fixture(engine="postgres"):
         proof["selection"] = {"tail":100,**({"since":"1970-01-01T00:00:00.500Z"} if index else {})}
     result["currentLogs"] = current_logs
     result["operator"].update(publicOriginalSelectors="passed",logsDispatches=3,logReads=3,logsSignedHttp="passed",logsNoLedgerWrites="passed",logsExecutorRemoved="passed")
+    result["confirmedClaim"]={"projectId":project,"originalNonce":"passed","uniqueAuthority":"passed","projectBusy":"passed","rollback":"passed","reopen":"passed","noRenewal":"passed","audit":"passed","originalRows":"unchanged","cipher":"unchanged"}
     result["confirmationRecovery"]={"projectId":project,"pending":"passed","unique":"passed","reopen":"passed","unconsumed":"passed","noAuthority":"passed","detachedRejected":"passed","originalRows":"unchanged","cipher":"unchanged"}
     result["browserAcceptance"]={"sourceCommit":"7e4875341dbb8e1afdeff23137403528f3af6382","engine":engine,"projectId":project,"databaseId":"orders","creation":"passed","selection":"passed","reload":"passed","telemetry":"passed","start":"passed","stop":"passed","persistence":"passed","browser":"chromium","context":"isolated","requests":12}
     return with_inventory(result, profile), profile
@@ -290,6 +291,14 @@ class BrowserProofTests(unittest.TestCase):
         result,profile=fixture()
         for patch in ({"pending":"skipped"},{"unique":"pending"},{"reopen":"not-run"},{"unconsumed":"failed"},{"noAuthority":"failed"},{"detachedRejected":"failed"},{"originalRows":"changed"},{"cipher":"changed"},{"projectId":"foreign"},{"nonce":"private"}):
             changed=copy.deepcopy(result);changed["confirmationRecovery"].update(patch)
+            with self.subTest(patch=patch),self.assertRaises(RuntimeError):module.validate_result(changed,profile)
+    def test_requires_executed_atomic_confirmed_claim(self):
+        result,profile=fixture();del result["confirmedClaim"]
+        with self.assertRaises(RuntimeError):module.validate_result(result,profile)
+    def test_rejects_skipped_or_private_confirmed_claim(self):
+        result,profile=fixture()
+        for patch in ({"originalNonce":"skipped"},{"uniqueAuthority":"pending"},{"projectBusy":"not-run"},{"rollback":"failed"},{"reopen":"failed"},{"noRenewal":"failed"},{"audit":"failed"},{"cipher":"changed"},{"projectId":"foreign"},{"confirmationId":"private"}):
+            changed=copy.deepcopy(result);changed["confirmedClaim"].update(patch)
             with self.subTest(patch=patch),self.assertRaises(RuntimeError):module.validate_result(changed,profile)
 if __name__ == "__main__":
     unittest.main()
