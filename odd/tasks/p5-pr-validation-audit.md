@@ -320,3 +320,8 @@ Read-only GitHub inventory covers all 307 returned PRs, including open, merged a
 The same 44 historical PRs still have no available rollup. The earlier 230 quality-log skipped-case observations and #68/#66 unavailable-log gaps remain unresolved. A zero-skipped current rollup does not close those gaps or establish case-level acceptance. Current non-passing checks are retained in the raw receipt; pending or failed checks are not accepted.
 
 Receipts: `/tmp/deploylite-all-pr-audit.json` and `/tmp/deploylite-all-pr-audit-current-summary.json`. AGENTS.md already prohibits skipped/omitted evidence for every old and new PR. Whole historical acceptance and P5 remain open.
+
+
+## Versioned validation policy — 2026-10-11
+
+Readback confirmed the root Mac checkout had the mandatory rule as an uncommitted tracked change, while the active P5 delivery head had no `AGENTS.md`. Preserve that root file and publish only its exact mandatory-validation section as a new tracked `AGENTS.md` in a separate documentary stack unit. CI already refuses incomplete unit/physical evidence and requires every mandatory job to succeed; no suite or expectation changes are made. This applies to all old/new/merged PRs. Historical omissions and missing reports remain unaccepted. Fresh readback of #400 head `e4fa3f59e6fcb3047c6aba506d45c7ddce5b8ec9` still reports7/7SUCCESS0skipped; old `6242c37` remains invalid. Mongo #516 exact `be8e3b1` physical CI is pending and whole P5 is open. Final local Node24 check exits0:3642unit across8projects/build/lint/types; includes10 unpublished restore tests preserved outside this policy unit.
