@@ -945,3 +945,14 @@ Prospective stub run recorded7failed/2passed of9cases; five engine positives, de
 #491 f5ddf309fd1e7087b88f6d6c1fd76d22c30bd2b7/run38134698780 owner9/9SUCCESS,3326unit,0skipped/pending/failed,290global/24P3/296operator source hashes exact, restart/cleanup verified. Original five native and five signed operator/current-source Chromium cases passed. Protocol remains unused; full deletion acceptance and wholeP5 pending.
 
 Confirmed executor source checkpoint: full Node24 pnpmcheck exits0,3335unit across8projects,0pending/failed,9focal/agenttypesPASS. Physical signed deletion still pending; unused source only.
+
+
+### S1 deletion receipt and replay correlation — 2026-10-11
+
+Unused deletion receipt matcher validates strict schemas, canonical source digest, original creation/optional STOP, approval ID, new agent/command/correlation/profile, every original storage identity and observation ordering. Canonical replay binds the confirmation and both source selectors while ignoring only read request ID and timeout. No cache or effect is authorized by these pure selectors.
+
+Prospective stub6failed/1passed: five engine positives with/without STOP plus replay assertion RED.7new cases plus29prior creation-source START/STOP/delete binding assertions yield36PASS; domaintypesPASS. Detachment rejection is characterization, not retrospective RED. Full/exact-head hosted pending. Signed receiver/API/durable retirement/UI and wholeS1/P5 remain open. Rollback removes only unused matcher/fingerprint/test/manifest additions, preserving all prior approvals, receipts, cipher and storage.
+
+Executor #4928cbc692 delivered draft after full3335unit/exit0,9focal/agenttypesPASS. Exact-head hosted remains pending; no physical signed operator deletion acceptance is claimed.
+
+Deletion receipt correlation checkpoint: Node24 pnpmcheck exits0,3342unit across8projects;36focal/domaintypesPASS. Exact-head hosted pending.
