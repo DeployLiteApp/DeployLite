@@ -371,3 +371,10 @@ Twelve prospective assertions observed RED (configuration1, composition/bootstra
 Rollback removes only optional stop configuration/executor/factory/bootstrap capability and new proof/source entries, returning the direct adapter fixture stop while preserving all old assertions, original encrypted/cache/audit/control/storage data and apply semantics.
 
 Configured stop source verification: fullNode24 pnpm check exits0,2778 unit cases across8 projects,zero skipped/failed (`/tmp/deploylite-p5-stop-composition-check.log`); refactor45agent/7domain cases,12Pythonproof guards and agent build/typecheck PASS. Actual new configured physical receipt/digests and complete exact-head CI remain pending; no wholeS1/P5 closure.
+
+
+### S1 authenticated API stop transport — local checkpoint, 2026-10-11
+
+A stop transport uses the existing native endpoint/key/limit admission and signed capability handshake, strict new project authority/preparation and complete original/new receipt matching. Fresh dispatch requires STOP capability and sends no secret envelope/environment, grace/argv or resource mutation options. Read-only recovery signs only its dedicated stop-cache query, permits explicit cache absence and can read an original result after STOP capability removal without dispatch. One configured deadline bounds handshake/fetch/JSON and parent cancellation; pre-dispatch rejection remains distinct from ambiguous post outcomes. No API core/route or configured operator activation is included.
+
+After correcting a fixture import to the existing domain authority helper (initial log preserved),8prospective assertions observed RED→19PASS including11 prior nativeapply transport cases, API typecheck PASS. This local checkpoint preserves the complete focused source while upstream429's original cache selector is corrected; fullNode24/current exact-head hosted evidence remain pending before submission. Rollback removes only the unused stop transport/tests/source entries; preserves existing transport/keys/cache/controls/audit/resources.
