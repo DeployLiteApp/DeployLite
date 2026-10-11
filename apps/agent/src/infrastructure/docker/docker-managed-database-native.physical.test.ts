@@ -11,6 +11,7 @@ import type {DockerCliRunner} from "./docker-cli-image-transport.js";
 import {createConfiguredManagedDatabaseRuntime} from "./managed-database-runtime-config.js";
 import {createManagedDatabaseDockerInspector} from "./docker-managed-database-inspection.js";
 import {createManagedDatabaseResourceMaterializer, type ManagedDatabaseFreshResources} from "./docker-managed-database-resources.js";
+import {createManagedDatabaseDaemonStopper} from "./docker-managed-database-daemon-stop.js";
 import {createManagedDatabaseReadinessVerifier} from "./docker-managed-database-readiness.js";
 import {createManagedDatabaseProcessIdentityReader} from "./docker-managed-database-process-identity.js";
 import {createDockerComposeResourceInspector} from "./docker-compose-resource-inspector.js";
@@ -125,7 +126,9 @@ for (const engine of engines) {
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false)],signal)).stdout.trim()).toBe(marker);
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,connection.hostname)],signal)).stdout.trim()).toBe(marker);
             await verifier.verify(nativeInput,pinned,authority,signal);
-            await runner.run(["docker","stop","--time","10",receipt.containerId],signal);
+            const stopper = createManagedDatabaseDaemonStopper({runner,verifier,clock,limits:{deadlineMs:60000,maxOutputBytes:131072,stopGraceSeconds:10}});
+            const stopped = await stopper.stop(nativeInput,pinned,authority,signal);
+            expect(stopped).toEqual({containerId:receipt.containerId});
             expect((await inspector.inspectContainer(receipt.containerId,signal)).running).toBe(false);
             await resources.verifyFresh({request,profile,commandId},pinned,authority,signal);
             await runner.run(["docker","start",receipt.containerId],signal);
@@ -134,7 +137,7 @@ for (const engine of engines) {
             expect(restarted).toEqual(ready);
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false)],signal)).stdout.trim()).toBe(marker);
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,connection.hostname)],signal)).stdout.trim()).toBe(marker);
-            result = {receipt,original:pinned,uid:ready.uid,internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},authenticatedProbe:"passed",restart:"passed",persistence:"passed"};
+            result = {receipt,original:pinned,uid:ready.uid,daemonStop:{...stopped,status:"passed"},internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},authenticatedProbe:"passed",restart:"passed",persistence:"passed"};
         } catch (error) {
             writeFileSync(resolve(directory,`diagnostic-${engine}.json`),JSON.stringify({engine,lastOperation,lastProjection,processFailure:processFailure ?? null,observation:lastObservation ?? null,composeObservations,expected:{plan:runtime.plan,environmentFingerprint:runtime.environmentFingerprint}},null,2)+"\n",{mode:0o600});
             throw error;

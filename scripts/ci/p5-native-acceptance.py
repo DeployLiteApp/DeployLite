@@ -86,6 +86,12 @@ def validate_internal_connection(result, profile):
     valid_username = username == expected_user if expected_user else isinstance(username,str) and re.fullmatch(r"dl_[a-f0-9]{12}",username)
     require(valid_username, "native_connection_user_required")
 
+def validate_daemon_stop(result):
+    stop, receipt = result.get("daemonStop"), result.get("receipt")
+    require(isinstance(stop,dict) and set(stop) == {"containerId","status"} and isinstance(receipt,dict)
+            and stop.get("status") == "passed" and stop.get("containerId") == receipt.get("containerId")
+            and isinstance(stop.get("containerId"),str) and re.fullmatch(r"[a-f0-9]{64}",stop["containerId"]), "original_native_daemon_stop_required")
+
 def capture(env):
     require(sys.platform == "linux", "hosted_linux_required")
     context = native_context(env)
@@ -136,6 +142,7 @@ def verify(env):
         receipt = result.get("receipt",{})
         validate_resource_receipt(result)
         validate_internal_connection(result, binding["profiles"][engine])
+        validate_daemon_stop(result)
         require(item.get("cleanup") == "verified" and all(result.get(key) == "passed" for key in ("authenticatedProbe","restart","persistence")), "native_persistence_cleanup_required")
         require(type(result.get("uid")) is int and 0 < result["uid"] <= 4294967294 and receipt.get("engine") == engine and receipt.get("status") == "ready"
                 and receipt.get("health") == "passed" and receipt.get("storage") == "verified" and receipt.get("redacted") is True, "ready_nonroot_native_receipt_required")
