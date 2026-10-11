@@ -1250,7 +1250,9 @@
     "scripts/ci/p5-operator-admission.py",
     "scripts/ci/p5-operator-admission.test.py",
     "apps/api/src/testing/p5-operator-session.ts",
-    "apps/api/src/testing/p5-operator-session.test.ts"
+    "apps/api/src/testing/p5-operator-session.test.ts",
+    "scripts/ci/p5-operator-evidence.py",
+    "scripts/ci/p5-operator-evidence.test.py"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
