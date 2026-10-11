@@ -134,3 +134,10 @@ it("rejects native environment mixed with injected logs maps before repositories
   const result = await buildApiApp(options as Parameters<typeof buildApiApp>[0]).then(async app => {await app.close(); return "accepted";}, error => (error as Error).message);
   expect(result).toBe("Database API configuration cannot be combined with injected native maps."); expect(pool).not.toHaveBeenCalled();
 });
+
+it("offers original-nonce preparation only with both private origin and confirmation readers",async()=>{
+ const f=fixture(),without=await createConfiguredManagedDatabaseApi(f.input);expect(without.deletePreparations.size).toBe(0);
+ Object.assign(f.controls,{findProjectUpdateById:vi.fn(async()=>null)});expect((await createConfiguredManagedDatabaseApi(f.input)).deletePreparations.size).toBe(0);
+ Object.assign(f.controls,{resolveProjectUpdateConfirmation:vi.fn(async()=>null)});const configured=await createConfiguredManagedDatabaseApi(f.input);expect([...configured.deletePreparations.keys()]).toEqual(["project-a","project-b"]);
+ expect(configured.deletePreparations.get("project-a")!.controls).toBe(f.controls);expect(configured.deletePreparations.get("project-a")!.originalTransport.available()).toBe(true);expect(f.controls.claimProjectUpdate).not.toHaveBeenCalled();expect(f.secrets.find).not.toHaveBeenCalled();
+});
