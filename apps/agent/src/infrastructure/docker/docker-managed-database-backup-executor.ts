@@ -37,7 +37,7 @@ export function createManagedDatabaseBackupExecutor(supplied:Readonly<{
       const preparation=managedDatabaseBackupPreparationSchema.parse(Object.fromEntries(
         Object.keys(managedDatabaseBackupPreparationSchema.innerType().shape).map(key=>[key,command[key as keyof typeof command]])
       ));
-      if (!["postgres","mysql","mariadb","redis"].includes(command.engine) || command.inputDigest !== managedDatabaseBackupExecutionDigest(preparation)
+      if (!["postgres","mysql","mariadb","mongodb","redis"].includes(command.engine) || command.inputDigest !== managedDatabaseBackupExecutionDigest(preparation)
         || command.maxBytes > options.limits.maxBytes || !options.replayStore.durable
         || typeof options.replayStore.lookupByFingerprintDigest !== "function") fail();
       const original=command.originalReceipt,start=options.clock.now();
@@ -61,7 +61,7 @@ export function createManagedDatabaseBackupExecutor(supplied:Readonly<{
       const {destinationId:_destination,maxBytes:_bytes,...originalPreparation}=preparation;
       const source=buildManagedDatabaseBackupSource(originalPreparation,{agentId:options.agentId,profile,imagePolicy:options.imagePolicy});
       const redis=command.engine==="redis";
-      if(redis?(!options.volumeSource||typeof options.verifier.verifyStopped!=="function"||source.consistencyRequirement!=="all-consumers-stopped"):(!source.argv||!["native-snapshot","global-read-lock"].includes(source.consistencyRequirement)))fail();
+      if(redis?(!options.volumeSource||typeof options.verifier.verifyStopped!=="function"||source.consistencyRequirement!=="all-consumers-stopped"):(!source.argv||!["native-snapshot","global-read-lock","quiesced-writes"].includes(source.consistencyRequirement)))fail();
       const input={request:{schemaVersion:1 as const,projectId:command.projectId,databaseId:command.databaseId,engine:command.engine},profile,
         commandId:original.commandId,imageId:source.imageId,containerId:source.containerId,environmentFingerprint:source.environmentFingerprint};
       const resources={projectId:command.projectId,databaseId:command.databaseId,commandId:original.commandId,planDigest:source.planDigest,

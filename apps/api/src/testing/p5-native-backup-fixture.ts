@@ -30,8 +30,8 @@ export function nativeDumpFixture(root:string) {
       const first=await input.call();expect(first.statusCode).toBe(200);
       const data=first.json().data,receipt=managedDatabaseBackupReceiptSchema.parse(data.receipt);
       expect(data).toMatchObject({backupCreated:true,idempotent:false});
-      const sql=receipt.engine==="mysql"||receipt.engine==="mariadb",redis=receipt.engine==="redis";
-      expect(receipt).toMatchObject({format:redis?"volume-tar":sql?receipt.engine+"-sql-gzip":"postgres-custom-gzip",consistency:redis?"all-consumers-stopped":sql?"global-read-lock":"native-snapshot",status:"created",containerId:input.originalContainerId});
+      const sql=receipt.engine==="mysql"||receipt.engine==="mariadb",redis=receipt.engine==="redis",mongo=receipt.engine==="mongodb";
+      expect(receipt).toMatchObject({format:mongo?"mongodb-archive-gzip":redis?"volume-tar":sql?receipt.engine+"-sql-gzip":"postgres-custom-gzip",consistency:mongo?"quiesced-writes":redis?"all-consumers-stopped":sql?"global-read-lock":"native-snapshot",status:"created",containerId:input.originalContainerId});
       expect(data.command).not.toHaveProperty("projectExecutionAuthority");
       expect(first.body).not.toMatch(/encryptedValue|sealedEnvironment|DATABASE_PASSWORD|privatePath/);
       const directory=join(root,receipt.archiveId),archive=join(directory,"archive.bin"),manifest=join(directory,"manifest.json");
@@ -49,6 +49,10 @@ export function nativeDumpFixture(root:string) {
         expect(contents.includes("p5-persistent-value")&&contents.includes("p5-nontransactional-value")&&contents.includes("MyISAM")&&contents.includes("CREATE TABLE")).toBe(true);
         if(!input.writerProbe)throw new Error("Native SQL writer probe required.");
         try {await input.writerProbe();}catch {throw new Error("Native SQL writers did not resume.");}
+      }else if(mongo){
+        expect(decoded.length>=4&&decoded.readUInt32LE(0)===0x8199e26d).toBe(true);
+        if(!input.writerProbe)throw new Error("Native Mongo writer probe required.");
+        try{await input.writerProbe();}catch{throw new Error("Native Mongo writers did not resume.");}
       }else{
         expect(decoded.subarray(0,5).toString()).toBe("PGDMP");
       }
@@ -63,7 +67,7 @@ export function nativeDumpFixture(root:string) {
       expect(await input.inventory().list(receipt.projectId,receipt.volumeKey,receipt.destinationId)).toEqual(before);
       if(createHash("sha256").update(await readFile(archive)).digest("hex")!==receipt.archiveSha256)throw new Error("Private native archive changed.");
       if(createHash("sha256").update(await readFile(manifest)).digest("hex")!==receipt.manifestSha256)throw new Error("Private native manifest changed.");
-      proof={...(redis?{stoppedSource:"passed",sourceCleanup:"pending"}:{}),...(sql?{writersResumed:"passed"}:{}),restoredData:"passed",restoreCleanup:"passed",receipt,maxBytes:input.maxBytes,captures:input.captures(),signedHttp:"passed",formatValidated:"passed",seededRow:"passed",inventoryReopen:"passed",replay:"passed",privateFiles:"passed",cleanup:"pending"};
+      proof={...(redis?{stoppedSource:"passed",sourceCleanup:"pending"}:{}),...((sql||mongo)?{writersResumed:"passed"}:{}),restoredData:"passed",restoreCleanup:"passed",receipt,maxBytes:input.maxBytes,captures:input.captures(),signedHttp:"passed",formatValidated:"passed",seededRow:"passed",inventoryReopen:"passed",replay:"passed",privateFiles:"passed",cleanup:"pending"};
       return proof;
     },
     async close() {
