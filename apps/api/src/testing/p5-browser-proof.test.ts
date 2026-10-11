@@ -1,5 +1,5 @@
 import {expect,it} from "vitest";
-import {validateBrowserProof,validateDeletionBrowserProof} from "./p5-browser-proof.js";
+import {browserDeletionRecoveryFailure,validateBrowserProof,validateDeletionBrowserProof} from "./p5-browser-proof.js";
 function proof(){return {sourceCommit:"7e4875341dbb8e1afdeff23137403528f3af6382",engine:"postgres",projectId:"project1",databaseId:"orders",creation:"passed",selection:"passed",reload:"passed",telemetry:"passed",start:"passed",stop:"passed",persistence:"passed",browser:"chromium",context:"isolated",requests:12};}
 it.each(["postgres","mysql","mariadb","mongodb","redis"])("accepts complete %s browser evidence",engine=>{expect(validateBrowserProof({...proof(),engine})).toBe(true);});
 it("refuses missing stages, fabricated source, shared browser and unbounded evidence",()=>{
@@ -29,4 +29,12 @@ it("compiles current Workbench CSS including modal stacking before browser accep
  const css=await fixture.buildDatabaseBrowserStyles();
  expect(css).toContain("position: fixed");expect(css).toContain("z-index: 50");
  expect(css).toContain(".left-1\\/2");expect(css).not.toContain('@import "tailwindcss"');
+});
+
+function recoveryObservation(){return {calls:[{key:"original-key",confirmationId:"original-nonce",status:503},{key:"original-key",confirmationId:"original-nonce",status:200}],key:"original-key",confirmationId:"original-nonce",failures:[] as ("request"|"application"|"foreign")[]};}
+it("accepts exactly the original uncertain call and successful recovery without browser failures",()=>{expect(browserDeletionRecoveryFailure(recoveryObservation())).toBeNull();});
+it.each(["count","status","key","confirmation","request","application","foreign"] as const)("classifies refused browser recovery as fixed %s metadata",kind=>{
+ const value=recoveryObservation();if(kind==="count")value.calls.pop();else if(kind==="status")value.calls[1]!.status=503;
+ else if(kind==="key")value.calls[1]!.key="private-key-fixture";else if(kind==="confirmation")value.calls[1]!.confirmationId="private-nonce-fixture";else value.failures.push(kind);
+ expect(browserDeletionRecoveryFailure(value)).toBe(kind);expect(browserDeletionRecoveryFailure(value)).not.toContain("private-");
 });
