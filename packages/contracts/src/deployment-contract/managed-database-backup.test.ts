@@ -37,3 +37,9 @@ it("binds native archive inventory key to the original database without acceptin
   expect(managedDatabaseBackupReceiptSchema.safeParse({...f.receipt,volumeKey:"db-orders"}).success).toBe(true);
   expect(managedDatabaseBackupReceiptSchema.safeParse({...f.receipt,volumeKey:"db-foreign"}).success).toBe(false);
 });
+
+it.each(["mysql","mariadb"] as const)("accepts explicit %s global read lock consistency without changing previous metadata",engine=>{
+ const f=fixture(engine);expect(managedDatabaseBackupReceiptSchema.safeParse({...f.receipt,consistency:"global-read-lock"}).success).toBe(true);
+ expect(managedDatabaseBackupReceiptSchema.safeParse(f.receipt).success).toBe(true);
+ expect(managedDatabaseBackupReceiptSchema.safeParse({...fixture("postgres").receipt,consistency:"global-read-lock"}).success).toBe(false);
+});
