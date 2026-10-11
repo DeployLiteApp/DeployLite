@@ -5,6 +5,7 @@ import {afterEach, expect, it, vi} from "vitest";
 import {readManagedDatabaseInventory, type ManagedDatabaseInventoryEntry} from "@/lib/managed-database-inventory";
 import {startManagedDatabase, stopManagedDatabase} from "@/lib/managed-database-lifecycle";
 import {ManagedDatabaseInventoryPanel} from "./managed-database-inventory-panel";
+vi.mock("./managed-database-delete-control",()=>({ManagedDatabaseDeleteControl:({onDeleted}:{onDeleted():void})=><button onClick={onDeleted}>Fixture delete completion</button>}));
 const observed = vi.hoisted(() => ({state: "running" as "running" | "stopped" | null}));
 vi.mock("@/lib/managed-database-inventory", () => ({readManagedDatabaseInventory: vi.fn()}));
 vi.mock("@/lib/managed-database-lifecycle", () => ({stopManagedDatabase: vi.fn(), startManagedDatabase: vi.fn()}));
@@ -105,4 +106,9 @@ it("prevents overlapping effects and aborts stale control results on unmount", a
   await waitFor(() => expect(stop).toHaveBeenCalledTimes(1)); const signal = stop.mock.calls[0]![1].signal!;
   view.unmount(); expect(signal.aborted).toBe(true); await act(async () => {finish({kind: "ready", preparation: f.startPreparation});});
   expect(start).not.toHaveBeenCalled();
+});
+
+it("reloads and clears the retired selection after explicit delete control completion",async()=>{
+  const f=fixture();read.mockResolvedValueOnce({kind:"ready",databases:[f.entry]}).mockResolvedValue({kind:"ready",databases:[]});
+  render(<ManagedDatabaseInventoryPanel {...f.props}/>);await choose();fireEvent.click(screen.getByRole("button",{name:"Fixture delete completion"}));await screen.findByText("No stored databases.");expect(screen.queryByText("Telemetry for orders")).toBeNull();expect(read).toHaveBeenCalledTimes(2);
 });

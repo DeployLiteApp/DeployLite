@@ -5,7 +5,7 @@ import {pathToFileURL} from "node:url";
 import {resolve} from "node:path";
 import {execFileSync} from "node:child_process";
 import type {FastifyInstance} from "fastify";
-import {validateBrowserProof} from "./p5-browser-proof.js";
+import {validateBrowserProof,validateDeletionBrowserProof} from "./p5-browser-proof.js";
 const root=resolve(import.meta.dirname,"../../../..");
 /** Browser library types are isolated CI tooling, not a production dependency. */
 export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:string;databaseId:string;engine:string;cookie:string;app():FastifyInstance}) {
@@ -23,6 +23,8 @@ export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:s
   alias:{"@":resolve(root,"apps/web/src"),"@deploylite/contracts":resolve(root,"packages/contracts/src/index.ts")},nodePaths:[resolve(root,"apps/web/node_modules")],define:{"process.env.NODE_ENV":'"production"'}});
  const script=bundle.outputFiles[0].text;
  let requests=0,applyResponse:{statusCode:number;json():any}|undefined;
+ let deletionPreparation:{response:typeof applyResponse;key:string}|undefined,deletionRequestStart=0;
+ const deletionCalls:{key:string;confirmationId:string;status:number}[]=[];
  const failures:Error[]=[];
  const server=createServer(async(req,res)=>{
   try{
@@ -37,6 +39,10 @@ export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:s
    if(typeof req.headers['idempotency-key']==='string')headers['idempotency-key']=req.headers['idempotency-key'];
    const response=await input.app().inject({method:req.method as 'GET'|'POST',url:req.url,headers,...(bytes?{payload:JSON.parse(bytes)}:{})});
    if(req.url===prefix+`/${input.databaseId}/runtime/apply`&&response.statusCode===200)applyResponse=response;
+   if(req.url===prefix+`/${input.databaseId}/runtime/delete/prepare`&&response.statusCode===200){
+    if(!headers['idempotency-key'])throw new Error("Original deletion key required.");deletionPreparation={response,key:headers['idempotency-key']};
+   }
+   if(req.url===prefix+`/${input.databaseId}/runtime/delete/apply`)deletionCalls.push({key:headers['idempotency-key']!,confirmationId:JSON.parse(bytes).confirmationId,status:response.statusCode});
    res.writeHead(response.statusCode,{"Content-Type":"application/json"});res.end(response.body);
   }catch{failures.push(new Error("Browser fixture request failed."));res.writeHead(500);res.end('{"error":"Fixture unavailable"}');}
  });
@@ -72,6 +78,23 @@ export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:s
     await page.goto('about:blank');
     const proof={sourceCommit,engine:input.engine,projectId:input.projectId,databaseId:input.databaseId,creation:'passed',selection:'passed',reload:'passed',telemetry:'passed',start:'passed',stop:'passed',persistence:'passed',browser:'chromium',context:'isolated',requests};
     if(failures.length||!validateBrowserProof(proof,sourceCommit))throw new Error("Incomplete browser acceptance.");return proof;
+   },
+   async prepareRemoval(){
+    deletionRequestStart=requests;await page.goto(origin);await selected().click();await enabled('Delete database');await button('Delete database').click();
+    await page.getByRole('dialog',{name:'Delete database'}).waitFor();await page.getByText('Persistent storage and credentials will be retained.',{exact:true}).waitFor();
+    if(!deletionPreparation?.response||failures.length)throw new Error("Original browser preparation required.");return deletionPreparation;
+   },
+   async applyRemovalExpectUnknown(){
+    await button('Confirm deletion').click();await enabled('Retry deletion confirmation');
+    if(deletionCalls.length!==1||deletionCalls[0]!.status!==503||failures.length)throw new Error("One uncertain browser removal required.");
+   },
+   async recoverRemoval(retainedStorage:()=>Promise<void>){
+    await button('Retry deletion confirmation').click();await page.getByText('No stored databases.',{exact:true}).waitFor();
+    await page.reload();await page.getByText('No stored databases.',{exact:true}).waitFor();await retainedStorage();
+    const original=deletionPreparation!.response!.json().data;
+    if(deletionCalls.length!==2||deletionCalls[1]!.status!==200||deletionCalls.some(call=>call.key!==deletionPreparation!.key||call.confirmationId!==original.confirmation.id)||failures.length)throw new Error("Original browser deletion recovery required.");
+    const proof={sourceCommit,engine:input.engine,projectId:input.projectId,databaseId:input.databaseId,browser:'chromium',context:'isolated',preparation:'passed',confirmation:'passed',recovery:'passed',sameOriginalKey:'passed',inventory:'passed',reload:'passed',retainedStorage:'passed',requests:requests-deletionRequestStart};
+    if(!validateDeletionBrowserProof(proof,sourceCommit))throw new Error("Complete destructive browser proof required.");await page.goto('about:blank');return proof;
    },close
   };
  }catch(error){await context?.close();await browser?.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));throw error;}

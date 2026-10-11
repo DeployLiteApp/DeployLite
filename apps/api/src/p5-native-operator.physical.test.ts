@@ -368,7 +368,9 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     endpoint=await startPeer(true);
     const transportOptions={endpoint,agentId,trustKey,timeoutMs:60000,allowInsecureInternal:true};
     app=await build(endpoint,"managed_database_fixture_key_1234567890");
-    const {projectId:_deleteProject,databaseId:_deleteDatabase,...deleteBody}=removalSource,deleteKey=randomUUID();
+    const browserPrepared=await browserFixture.prepareRemoval();
+    const {projectId:_deleteProject,databaseId:_deleteDatabase,...deleteBody}=removalSource,deleteKey=browserPrepared.key;
+    expect(browserPrepared.response!.json().data).toMatchObject({storagePolicy:"retain-original",command:{status:"pending_confirmation"},confirmation:{classification:"destructive",consumedAt:null}});
     const prepareDelete=(correlation:string)=>app!.inject({method:"POST",url:`/api/v1/projects/${projectId}/databases/${databaseId}/runtime/delete/prepare`,headers:{cookie,"idempotency-key":deleteKey,"x-correlation-id":correlation},payload:deleteBody});
     const preparedDelete=await prepareDelete(randomUUID());expect(preparedDelete.statusCode).toBe(200);const deletePublic=preparedDelete.json().data;
     expect(deletePublic).toMatchObject({storagePolicy:"retain-original",command:{status:"pending_confirmation"},confirmation:{classification:"destructive",consumedAt:null}});expect(deletePublic.command).not.toHaveProperty("projectExecutionAuthority");
@@ -390,7 +392,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     let completionFaults=0;const originalTransport=new AuthenticatedManagedDatabaseRuntimeTransport(transportOptions),faultControls=new DbControlCommandRepository(db.db,stage=>{if(stage==="command-completed"){completionFaults++;throw new Error("injected removal completion rollback");}});
     await app.close();app=await build(endpoint,"managed_database_fixture_key_1234567890",new Map([[projectId,{controls:faultControls,transport:fencedDeleteTransport,originalTransport,agentId,deadlineMs:60000,now:Date.now}]]));
     const applyDelete=()=>app!.inject({method:"POST",url:`/api/v1/projects/${projectId}/databases/${databaseId}/runtime/delete/apply`,headers:{cookie,"idempotency-key":deleteKey,"x-correlation-id":randomUUID()},payload:{...deleteBody,confirmationId:approval.id}});
-    expect((await applyDelete()).statusCode).toBe(503);
+    await browserFixture.applyRemovalExpectUnknown();
     expect(completionFaults).toBe(1);if(!issued.query||!issued.command)throw new Error("One issued deletion required.");const deleteQuery=issued.query,deleteCommand={...deleteQuery,cancellationRequested:false};
     const deleted=managedDatabaseDeleteReceiptSchema.parse((await deleteTransport.readReceipt({command:issued.command,input:removalSource,agentId,confirmationId:approval.id},deleteQuery.authority,{...deleteQuery.context,signal}))!);expect(managedDatabaseDeleteReceiptMatches(deleteQuery,deleted)).toBe(true);expect(deleteEffects).toBe(1);
     expect((await runner.run(["docker","container","ls","--all","--no-trunc","--filter",`id=${receipt.containerId}`,"--format","{{.ID}}"],signal)).stdout).toBe("");
@@ -402,7 +404,10 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const recoveredDeleteTransport=new AuthenticatedManagedDatabaseDeleteTransport({...transportOptions,endpoint}),cachedDelete=await recoveredDeleteTransport.readReceipt({command:issued.command,input:removalSource,agentId,confirmationId:approval.id},deleteQuery.authority,{...deleteQuery.context,signal});
     expect(cachedDelete).toEqual(deleted);expect((await sendDelete(deleteCommand)).status).toBe(403);expect(deleteEffects).toBe(1);
     const finalControls=new DbControlCommandRepository(db.db),recoveryAccess={controls:finalControls,transport:recoveredDeleteTransport,originalTransport:new AuthenticatedManagedDatabaseRuntimeTransport({...transportOptions,endpoint}),agentId,deadlineMs:60000,now:Date.now};
-    app=await build(endpoint,"managed_database_fixture_key_1234567890");const recoveredApply=await applyDelete();expect(recoveredApply.statusCode).toBe(200);expect(recoveredApply.json().data).toMatchObject({removed:true,idempotent:true,receipt:deleted});
+    app=await build(endpoint,"managed_database_fixture_key_1234567890");
+    const retained=pinned;if(!retained)throw new Error("Original retained storage required.");
+    const browserDeletion=await browserFixture.recoverRemoval(async()=>{expect(await resources.verifyFresh({request:input.request,profile,commandId:receipt.commandId},retained,authority,signal)).toEqual(retained);expect(await encrypted()).toEqual(cipherRows);expect(deleteEffects).toBe(1);});
+    const recoveredApply=await applyDelete();expect(recoveredApply.statusCode).toBe(200);expect(recoveredApply.json().data).toMatchObject({removed:true,idempotent:true,receipt:deleted});
     const completed=(await finalControls.findProjectUpdateByIdempotency(actorId,projectId,deleteKey))!;expect(completed).toMatchObject({status:"completed",result:deleted});const repeatedApply=await applyDelete();expect(repeatedApply.statusCode).toBe(200);expect(repeatedApply.json().data.receipt).toEqual(deleted);expect(deleteEffects).toBe(1);
     expect((await applyManagedDatabaseDelete({...recoveryAccess,now:()=>deletePending.expiresAt.getTime()+1},applyInput)).command).toEqual(completed);
     expect(await finalControls.findManagedDatabaseRemovals(projectId)).toEqual([completed]);const completedAudits=await completionAudits();expect(completedAudits).toHaveLength(1);expect(completedAudits[0].metadata.receipt.containerId).toBe("[REDACTED]");expect(await deleteNonce()).toEqual(originalConsumed);
@@ -415,7 +420,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
       expect(await originals()).toEqual(originalRows);expect(await encrypted()).toEqual(cipherRows);expect(deleteEffects).toBe(1);
     };
     await retiredInventory();await app.close();app=await build(endpoint,"managed_database_fixture_key_1234567890");await retiredInventory();
-    result!.confirmedDeletion={projectId,receipt:deleted,originalSources:"passed",apiTransport:"passed",prepareControl:"passed",prepareRoute:"passed",applyControl:"passed",applyRoute:"passed",inventoryRetirement:"passed",signatureRejected:"passed",confirmationRejected:"passed",originalNonce:"passed",signedHttp:"passed",effects:deleteEffects,rollback:"passed",cacheOnlyReopen:"passed",executorRemoved:"passed",retirement:"passed",retainedStorage:"passed",audit:"passed",originalRows:"unchanged",cipher:"unchanged"};
+    result!.confirmedDeletion={projectId,receipt:deleted,originalSources:"passed",apiTransport:"passed",prepareControl:"passed",prepareRoute:"passed",applyControl:"passed",applyRoute:"passed",inventoryRetirement:"passed",browserDeletion,signatureRejected:"passed",confirmationRejected:"passed",originalNonce:"passed",signedHttp:"passed",effects:deleteEffects,rollback:"passed",cacheOnlyReopen:"passed",executorRemoved:"passed",retirement:"passed",retainedStorage:"passed",audit:"passed",originalRows:"unchanged",cipher:"unchanged"};
   } finally {
     await browserFixture?.close();
     if (app) await app.close(); if (peer) await peer.close(); vi.unstubAllGlobals();

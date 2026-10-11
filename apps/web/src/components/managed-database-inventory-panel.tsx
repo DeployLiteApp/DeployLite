@@ -2,6 +2,7 @@
 import {useCallback, useEffect, useRef, useState} from "react";
 import {readManagedDatabaseInventory, type ManagedDatabaseInventoryEntry} from "@/lib/managed-database-inventory";
 import {startManagedDatabase, stopManagedDatabase} from "@/lib/managed-database-lifecycle";
+import {ManagedDatabaseDeleteControl} from "./managed-database-delete-control";
 import {ManagedDatabaseTelemetryPanel} from "./managed-database-telemetry-panel";
 import {Button} from "@/components/ui/button";
 import {Card, CardContent, CardHeader, CardTitle} from "@/components/ui/card";
@@ -99,6 +100,9 @@ export function ManagedDatabaseInventoryPanel({projectId, apiBaseUrl, refreshKey
             <Button disabled={busy || (currentState !== "running" && !retryStop)} onClick={() => void control("stop")}>{retryStop ? "Retry stop confirmation" : "Stop database"}</Button>
             <Button disabled={busy || !selected.startPreparation || (currentState !== "stopped" && !retryStart)} onClick={() => void control("start")}>{retryStart ? "Retry start confirmation" : "Start database"}</Button>
           </div>
+          <ManagedDatabaseDeleteControl preparation={selected.source} apiBaseUrl={apiBaseUrl} disabled={busy} onBusyChange={setBusy} onDeleted={()=>{
+            onSelect?onSelect(""):setLocalSelection("");setObservation(null);setManual(value=>value+1);
+          }} />
           <ManagedDatabaseTelemetryPanel key={`${selection}:${telemetryRevision}`} preparation={selected.source} apiBaseUrl={apiBaseUrl} onState={setCurrentState} />
         </> : <p>Runtime controls could not be recovered.</p>}
       </> : null}
