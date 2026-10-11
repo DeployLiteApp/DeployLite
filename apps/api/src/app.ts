@@ -1,3 +1,4 @@
+import { registerManagedDatabaseRuntimePreviewRoute } from "./managed-database-runtime-preview.js";
 import { DbManagedDatabaseCredentialCreationRepository } from "@deploylite/db";
 import type { ManagedDatabaseCredentialCreationRepository } from "@deploylite/domain";
 import { registerManagedDatabaseCredentialRoute, type ManagedDatabaseCredentialConfiguration } from "./managed-database-credentials-route.js";
@@ -1325,6 +1326,7 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
   registerComposeVolumeBackupPlanRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, planning: backupPlans, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerBackupRetentionPreviewRoute(app, {prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, access: backupRetentionPreviews, inventoryFactory: backupInventoryFactory, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope});
   registerManagedDatabaseCredentialRoute(app, {prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, configuration: managedDatabaseCredentials, secrets: databaseCredentialCreation, cipher: state.envSecretCipher, imagePolicy, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope});
+  registerManagedDatabaseRuntimePreviewRoute(app, {prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, configuration: managedDatabaseCredentials, secrets: databaseCredentialCreation, cipher: state.envSecretCipher, imagePolicy, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope});
   registerComposeVolumeBackupExecutionRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, planning: backupPlans, execution: backupExecutions, inventoryFactory: backupInventoryFactory, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   // Audit history is an operator/admin concern. Read-only sessions are denied
   // by design so a passive role cannot enumerate every project + key change.
