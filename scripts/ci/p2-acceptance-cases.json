@@ -1428,7 +1428,9 @@
     "packages/db/src/native-backup-inventory.test.ts",
     "packages/domain/src/native-backup-inventory.test.ts",
     "apps/api/src/managed-database-backup.ts",
-    "apps/api/src/managed-database-backup.test.ts"
+    "apps/api/src/managed-database-backup.test.ts",
+    "apps/api/src/managed-database-backup-route.ts",
+    "apps/api/src/managed-database-backup-route.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
