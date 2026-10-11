@@ -145,7 +145,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const {projectId:_project,databaseId:_database,...preparation} = preview.json().data.preparation;
     const connection = preview.json().data.connection;
     legacyPhase=false;
-    browserFixture=await openDatabaseBrowser({projectId,databaseId,engine,cookie,app:()=>app!});
+    browserFixture=await openDatabaseBrowser({sourceCommit:scope.commit,projectId,databaseId,engine,cookie,app:()=>app!});
     const apply=await browserFixture.create(); legacyPhase=true; expect(apply.statusCode).toBe(200);
     expect(apply.json().data.command.status).toBe("completed");
     const receipt = managedDatabaseRuntimeReceiptSchema.parse(apply.json().data.receipt);

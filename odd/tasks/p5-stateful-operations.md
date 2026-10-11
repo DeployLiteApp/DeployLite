@@ -912,3 +912,12 @@ Confirmed claim #4872fb06c2c6384cc0ccc916c8b4429c73a273dd21e/run38133082441 owne
 Adopted remover component accepted at corrected48399fa3ddd50ef0daa2378f0228fac34e06763c55f/run38133265356 owner9/9SUCCESS,3282unit,0omissions,282global/24P3/288operator hashes match, restart/cleanup verified; all five native daemonRemoval storage-retained proofs passed. Combined confirmed-chain acceptance still pending.
 
 Combined confirmed-chain remover source:83focal/16nativeproof/35operatorproofPASS; complete Node24 pnpmcheck exits0 with3307unit across8projects. Web/contracts diff against exact481 is empty. New combined exact-head hosted proof pending; no complete deletion or P5 closure claimed.
+
+
+### A1/S1 exact current-source browser proof — 2026-10-11
+
+Following verified historical exact481 Chromium acceptance, the same complete five-engine browser fixture now binds its compiled Workbench/contracts and public proof to the exact captured current PR head, so the upcoming delete protocol can be accepted against the source actually executed. Before compilation or browser/server startup, hosted admission, supplied source SHA, expected fixture SHA, checked-out HEAD and unchanged tracked web/contracts must agree. Public browser proof requires that exact supplied SHA; complete hosted acceptance passes binding.commit explicitly. Historical exact481 proof/default unit cases remain retained, but cannot substitute for a newer run. No browser stage, prior native/confirmation case, isolation or runtime grant is removed.
+
+Six new browser assertions observed RED before implementation;12browserproofPASS including all6originalcases. One new aggregate source-detachment assertion RED then36operator guardsPASS, preserving35previous cases. The existing all-engine positive aggregate fixture now supplies its actual binding SHA, rather than a detached historical browser SHA, with all previous scope/cleanup expectations unchanged. APItypesPASS; fullcheck and exact-head current-source browser execution pending. This changes evidence binding only, not operator UI or production behavior. Rollback restores historical exact481 binding in this fixture/validators/tests while preserving all earlier immutable evidence and runtime/storage/history. WholeS1/P5 remains open.
+
+Current-source browser binding source:12browserproof/36operatorproof/APItypesPASS; complete Node24 pnpmcheck exits0 with3313unit across8projects. Hosted current-head Chromium proof remains pending; historical exact481 acceptance remains preserved.
