@@ -49,10 +49,10 @@ export function nativeDumpFixture(root:string) {
         try {await input.writerProbe();}catch {throw new Error("Native SQL writers did not resume.");}
       }else{
         expect(decoded.subarray(0,5).toString()).toBe("PGDMP");
-        await input.verify();
-        try {await input.decode(bytes);}catch {throw new Error("Private native dump fixture failed at restore.");}
-        await input.verify();
       }
+      await input.verify();
+      try {await input.decode(bytes);}catch {throw new Error("Private native dump fixture failed at restore.");}
+      await input.verify();
       const before=await input.inventory().list(receipt.projectId,receipt.volumeKey,receipt.destinationId);expect(before).toHaveLength(1);expect(before[0]!.receipt).toEqual(receipt);
       await input.reopen();
       expect(await input.inventory().list(receipt.projectId,receipt.volumeKey,receipt.destinationId)).toEqual(before);
@@ -61,7 +61,7 @@ export function nativeDumpFixture(root:string) {
       expect(await input.inventory().list(receipt.projectId,receipt.volumeKey,receipt.destinationId)).toEqual(before);
       if(createHash("sha256").update(await readFile(archive)).digest("hex")!==receipt.archiveSha256)throw new Error("Private native archive changed.");
       if(createHash("sha256").update(await readFile(manifest)).digest("hex")!==receipt.manifestSha256)throw new Error("Private native manifest changed.");
-      proof={...(sql?{writersResumed:"passed"}:{restoredData:"passed",restoreCleanup:"passed"}),receipt,maxBytes:input.maxBytes,captures:input.captures(),signedHttp:"passed",formatValidated:"passed",seededRow:"passed",inventoryReopen:"passed",replay:"passed",privateFiles:"passed",cleanup:"pending"};
+      proof={...(sql?{writersResumed:"passed"}:{}),restoredData:"passed",restoreCleanup:"passed",receipt,maxBytes:input.maxBytes,captures:input.captures(),signedHttp:"passed",formatValidated:"passed",seededRow:"passed",inventoryReopen:"passed",replay:"passed",privateFiles:"passed",cleanup:"pending"};
       return proof;
     },
     async close() {

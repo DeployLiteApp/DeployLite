@@ -47,3 +47,7 @@ it("refuses a SQL capture with an invalid authority deadline before process disp
  const f=fixture("mysql"),source=buildManagedDatabaseBackupSource(f.source,f.options);
  for(const deadline of [0,-1,1.2,NaN,Number.MAX_SAFE_INTEGER+1])expect(()=>buildConsistentManagedDatabaseBackupArgv(source,deadline)).toThrow();
 });
+
+it("keeps MariaDB native archive database-neutral for isolated restore",()=>{const f=fixture("mariadb");expect(buildManagedDatabaseBackupSource(f.source,f.options).argv!.at(-1)).not.toContain("--databases");});
+
+it("omits global GTID mutation from scoped MySQL restore archive",()=>{const f=fixture("mysql");expect(buildManagedDatabaseBackupSource(f.source,f.options).argv!.at(-1)).toContain("--set-gtid-purged=OFF");});

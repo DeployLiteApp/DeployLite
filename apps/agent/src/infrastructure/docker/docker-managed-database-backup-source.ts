@@ -2,8 +2,8 @@ import {managedDatabaseHealthPreparationSchema,type ImageReferencePolicyV1} from
 import {planManagedDatabaseProfile,managedDatabaseRuntimeExecutionDigest} from "@deploylite/domain";
 const commands={
  postgres:'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump --format=custom --no-acl --no-owner --host=127.0.0.1 --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --no-password | gzip',
- mysql:'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqldump --default-character-set=utf8mb4 --host=127.0.0.1 --user=root --lock-all-tables --no-tablespaces --quick "$MYSQL_DATABASE" | gzip',
- mariadb:'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" mariadb-dump --host=127.0.0.1 --user=root --lock-all-tables --quick --databases "$MARIADB_DATABASE" | gzip',
+ mysql:'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqldump --default-character-set=utf8mb4 --host=127.0.0.1 --user=root --lock-all-tables --set-gtid-purged=OFF --no-tablespaces --quick "$MYSQL_DATABASE" | gzip',
+ mariadb:'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" mariadb-dump --host=127.0.0.1 --user=root --lock-all-tables --quick "$MARIADB_DATABASE" | gzip',
  mongodb:`[[ "$MONGO_INITDB_ROOT_PASSWORD" =~ ^[a-f0-9]{64}$ ]] && printf 'password: "%s"\\n' "$MONGO_INITDB_ROOT_PASSWORD" | mongodump --config=/dev/stdin --host=127.0.0.1 --username="$MONGO_INITDB_ROOT_USERNAME" --authenticationDatabase=admin --db="$MONGO_INITDB_DATABASE" --archive --gzip`
 } as const;
 const formats={postgres:"postgres-custom-gzip",mysql:"mysql-sql-gzip",mariadb:"mariadb-sql-gzip",mongodb:"mongodb-archive-gzip",redis:"volume-tar"} as const;

@@ -364,7 +364,7 @@ def add_native_backup(result,profile):
         inputDigest=digest({**source,"action":"project.update","scope":{"kind":"project","projectId":ready["projectId"]},"operation":"database.runtime.backup","destinationId":"private-native","maxBytes":2097152}),
         correlationId="backup-correlation",volumeKey="db-orders",observedAt=1500,destinationId="private-native",sourceDigest=digest(source),format="postgres-custom-gzip" if profile["engine"]=="postgres" else profile["engine"]+"-sql-gzip",consistency="native-snapshot" if profile["engine"]=="postgres" else "global-read-lock",
         status="created",archiveId="backup_"+hashlib.sha256((ready["projectId"]+"\0"+"66666666-6666-4666-8666-666666666666"+"\0private-native").encode()).hexdigest()[:32],archiveBytes=512,archiveSha256="2"*64,manifestSha256="3"*64,idempotent=False)
-    proof={"receipt":receipt,"maxBytes":2097152,"captures":1,**{key:"passed" for key in ("signedHttp","formatValidated","seededRow","inventoryReopen","replay","privateFiles","cleanup")}}
+    proof={"receipt":receipt,"maxBytes":2097152,"captures":1,**{key:"passed" for key in ("signedHttp","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup")}}
     if profile["engine"] in ("mysql","mariadb"):proof["writersResumed"]="passed"
     else:proof.update(restoredData="passed",restoreCleanup="passed")
     result["nativeBackup"]=proof

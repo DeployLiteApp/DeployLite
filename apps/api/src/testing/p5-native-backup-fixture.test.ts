@@ -42,7 +42,7 @@ it.each(["archive.bin","manifest.json"])("rejects changed private %s using a bou
 });
 
 it.each(["mysql","mariadb"] as const)("verifies private %s transactional and MyISAM rows and actual writer resume",async engine=>{
- const f=await fixture(engine),proof=await f.dump.prove(f.input);expect(proof.writersResumed).toBe("passed");expect(f.input.writerProbe).toHaveBeenCalledOnce();expect(f.run).not.toHaveBeenCalled();await f.dump.close();
+ const f=await fixture(engine),proof=await f.dump.prove(f.input);expect(proof.writersResumed).toBe("passed");expect(f.input.writerProbe).toHaveBeenCalledOnce();expect(f.run).toHaveBeenCalledOnce();expect(proof).toMatchObject({restoredData:"passed",restoreCleanup:"passed"});await f.dump.close();
 });
 it("withholds SQL proof if the post-dump write probe fails without reflecting private output",async()=>{
  const f=await fixture("mysql");f.input.writerProbe.mockRejectedValue(new Error("password=fake-private"));await expect(f.dump.prove(f.input)).rejects.toThrow("Native SQL writers did not resume.");await f.dump.close();
