@@ -50,16 +50,18 @@ type Evidence = { schemaVersion: 1; status: "PASS" | "FAILED" | "CLEANUP_BLOCKED
   operations: Array<{ operation: string; status: string; receipt?: unknown }>; resources: Owned[]; cleanup: Array<{ kind: string; id: string; verifiedAbsent: boolean }> };
 
 async function privateManifest(): Promise<Manifest> {
+  assert(enabled, "Explicit P3 physical partition required");
   assert.equal(process.env.DEPLOYLITE_P3_DOCKER_RUNTIME_GRANT, "P3_COMPOSE_CI_APPROVED");
   assert.equal(process.env.GITHUB_ACTIONS, "true"); assert.equal(process.env.RUNNER_ENVIRONMENT, "github-hosted");
   assert.equal(process.env.GITHUB_REPOSITORY, "DeployLiteApp/DeployLite"); assert.equal(process.env.GITHUB_JOB, "p3-docker-acceptance");
   assert.equal(process.env.DEPLOYLITE_P3_HEAD_REPOSITORY, "DeployLiteApp/DeployLite");
   if (process.env.GITHUB_EVENT_NAME === "pull_request") {
-    assert.equal(process.env.GITHUB_BASE_REF, "main"); assert(process.env.GITHUB_HEAD_REF);
+    // Jerson authorizes the same disposable P3 fixture for internal stacked PRs.
+    assert(process.env.GITHUB_BASE_REF); assert(process.env.GITHUB_HEAD_REF);
   } else if (process.env.GITHUB_EVENT_NAME === "push") {
     assert.equal(process.env.GITHUB_REF, "refs/heads/main");
   } else {
-    assert.fail("P3 acceptance requires an internal main pull request or main push");
+    assert.fail("P3 acceptance requires an internal pull request or main push");
   }
   assert.equal(process.env.DOCKER_HOST, "unix:///var/run/docker.sock");
   assert(!process.env.DOCKER_CONTEXT && !process.env.DOCKER_TLS_VERIFY && !process.env.DOCKER_CERT_PATH);
@@ -119,7 +121,7 @@ function containerFormat(labels: Record<string, string>) {
   return ["--label", `com.deploylite.owner=${labels.owner}`, "--label", `com.deploylite.project=${labels.project}`];
 }
 
-describe.skipIf(!enabled)("P3 C3-C8 disposable Docker acceptance", () => {
+describe("P3 C3-C8 disposable Docker acceptance", () => {
   it("binds observed ownership, network changes, volume replacement, backup and confirmed cleanup to one exact run", async () => {
     const manifest = await privateManifest(), runId = manifest.runId.replace(/[^a-z0-9-]/gi, "-").toLowerCase(), projectId = `p3c8-${runId}-${manifest.runAttempt}`;
     const owner = "deploylite", agentId = `p3agent-${runId}`, trustKey = randomBytes(32).toString("hex"), session = randomUUID();

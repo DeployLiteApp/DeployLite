@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BASE = "docker.io/library/busybox:1.37.0-musl@sha256:5cec3fc171c87218698e85a52af7087de727372aae264a787b8112901a5b0092"
 REGISTRY = "docker.io/library/registry:3.1.2@sha256:ddf754342cfc8acc51a56d5d0ab6af06826461864460636d8bd5c546dab2a7b8"
 SOURCE_FILES = (
+    "scripts/ci/test-scopes.mjs", "apps/api/vitest.config.ts",
     "apps/agent/src/agent-transport.ts",
     "apps/agent/src/infrastructure/docker/compose-resource-cleanup-config.ts",
     "apps/agent/src/infrastructure/docker/docker-compose-resource-cleanup.ts",
@@ -56,7 +57,8 @@ def require(ok, message):
 def approved_main_event(env):
     event = env.get("GITHUB_EVENT_NAME")
     if event == "pull_request":
-        return env.get("GITHUB_BASE_REF") == "main"
+        # Explicit 2026-10-10 no-omissions instruction covers internal stacked PRs.
+        return bool(env.get("GITHUB_BASE_REF"))
     if event == "push":
         return env.get("GITHUB_REF") == "refs/heads/main"
     return False
