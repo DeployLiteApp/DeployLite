@@ -63,3 +63,15 @@ it("releases its confirmed increment when asynchronous acknowledgement output fa
 it("uses the actual asynchronous shell Mongo connection API without assuming a JavaScript constructor",async()=>{
  const f=fixture(true);await f.execute(MONGO_BACKUP_LOCK_SCRIPT);expect(f.getCount()).toBe(1);await f.execute(MONGO_BACKUP_UNLOCK_SCRIPT);expect(f.getCount()).toBe(0);
 });
+
+it.each([{mode:"clock",expected:29},{mode:"token",expected:28},{mode:"shell",expected:31}])("identifies $mode wrapper failure without private output",({mode,expected})=>{
+ const now=Date.now(),script=buildMongoNativeDumpArgv("a".repeat(64),now+10000).at(-1)!;
+ const injected=`date(){ printf '%s\\n' '${mode==="clock"?"invalid":now}'; }; mongosh(){ ${mode==="shell"?"return 1;":"printf 'invalid-token\\n';"} }; `;
+ const result=spawnSync("bash",["-c",injected+script],{encoding:"utf8",timeout:2000});expect(result.status).toBe(expected);expect(result.stdout).toBe("");
+});
+
+it("does not retry shell cleanup after failed acknowledgement emitted a partial process token",()=>{
+ const now=Date.now(),script=buildMongoNativeDumpArgv("a".repeat(64),now+10000).at(-1)!;
+ const injected=`DEPLOYLITE_MONGO_BACKUP_PROCESS_ID=""; date(){ printf '%s\\n' '${now}'; }; mongosh(){ if test -n "$DEPLOYLITE_MONGO_BACKUP_PROCESS_ID"; then printf 'foreign-unlock-attempt\\n' >&2; return 0; fi; printf '%s\\n' '${"a".repeat(24)}'; return 25; }; `;
+ const result=spawnSync("bash",["-c",injected+script],{encoding:"utf8",timeout:2000});expect(result.status).toBe(25);expect(result.stderr).not.toContain("foreign-unlock-attempt");
+});
