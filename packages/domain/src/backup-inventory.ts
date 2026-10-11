@@ -1,4 +1,4 @@
-import { composeVolumeBackupReceiptSchema } from "@deploylite/contracts";
+import { backupInventoryReceiptSchema } from "@deploylite/contracts";
 
 export class BackupInventoryEvidenceError extends Error {
   constructor() { super("Backup inventory evidence cannot be accepted safely."); this.name = "BackupInventoryEvidenceError"; }
@@ -16,7 +16,7 @@ function reject(): never { throw new BackupInventoryEvidenceError(); }
 export function prepareBackupInventoryRecord(raw: unknown) {
   const input = object(raw);
   if (!input) reject();
-  const parsed = composeVolumeBackupReceiptSchema.safeParse(input.receipt);
+  const parsed = backupInventoryReceiptSchema.safeParse(input.receipt);
   if (!parsed.success) reject();
   const receipt = parsed.data, command = object(input.command), audit = object(input.audit);
   const scope = command && object(command.scope), metadata = audit && object(audit.metadata);
@@ -25,11 +25,16 @@ export function prepareBackupInventoryRecord(raw: unknown) {
     || scope.projectId !== receipt.projectId || command.id !== receipt.commandId
     || command.inputDigest !== receipt.inputDigest || command.correlationId !== receipt.correlationId
     || typeof command.actorId !== "string" || command.actorId.length === 0
-    || audit.actorUserId !== command.actorId || audit.action !== "compose.volume.backup.executed"
+    || audit.actorUserId !== command.actorId || audit.action !== (receipt.action === "database.runtime.backup" ? "database.runtime.backup.executed" : "compose.volume.backup.executed")
     || audit.targetType !== "project" || audit.targetId !== receipt.projectId || audit.correlationId !== receipt.correlationId) reject();
-  const fields = ["projectId", "commandId", "inputDigest", "volumeKey", "destinationId", "archiveId", "archiveBytes", "entries",
+  const fields = ["projectId", "commandId", "inputDigest", "volumeKey", "destinationId", "archiveId", "archiveBytes",
     "archiveSha256", "manifestSha256", "consistency", "status"] as const;
   if (fields.some(field => metadata[field] !== receipt[field])) reject();
+  if (receipt.action === "database.runtime.backup") {
+    const nativeFields = ["databaseId", "engine", "profileId", "originalCommandId", "planDigest", "environmentFingerprint",
+      "containerId", "imageId", "volumeName", "networkName", "networkId", "volumeCreatedAt", "sourceDigest", "format", "storage", "redacted"] as const;
+    if (nativeFields.some(field => metadata[field] !== receipt[field])) reject();
+  } else if (metadata.entries !== receipt.entries) reject();
   const createdAtMs = audit.createdAt instanceof Date ? audit.createdAt.getTime() : NaN;
   if (!Number.isSafeInteger(createdAtMs) || createdAtMs < 0 || !Number.isSafeInteger(input.observedAtMs)
     || typeof input.observedAtMs !== "number" || input.observedAtMs < createdAtMs) reject();
