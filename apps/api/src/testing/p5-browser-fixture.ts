@@ -6,7 +6,7 @@ import {resolve} from "node:path";
 import {readFile} from "node:fs/promises";
 import {execFileSync} from "node:child_process";
 import type {FastifyInstance} from "fastify";
-import {validateBrowserProof,validateDeletionBrowserProof} from "./p5-browser-proof.js";
+import {browserDeletionRecoveryFailure,validateBrowserProof,validateDeletionBrowserProof} from "./p5-browser-proof.js";
 const root=resolve(import.meta.dirname,"../../../..");
 /** Compile the actual application stylesheet with its existing production plugin. */
 export async function buildDatabaseBrowserStyles(){
@@ -100,7 +100,9 @@ export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:s
     await button('Retry deletion confirmation').click();await page.getByText('No stored databases.',{exact:true}).waitFor();
     await page.reload();await page.getByText('No stored databases.',{exact:true}).waitFor();await retainedStorage();
     const original=deletionPreparation!.response!.json().data;
-    if(deletionCalls.length!==2||deletionCalls[1]!.status!==200||deletionCalls.some(call=>call.key!==deletionPreparation!.key||call.confirmationId!==original.confirmation.id)||failures.length)throw new Error("Original browser deletion recovery required.");
+    const failure=browserDeletionRecoveryFailure({calls:deletionCalls,key:deletionPreparation!.key,confirmationId:original.confirmation.id,
+     failures:failures.map(error=>error.message==="Foreign browser request."?"foreign":error.message==="Browser application error."?"application":"request")});
+    if(failure)throw new Error("Original browser deletion recovery required ("+failure+").");
     const proof={sourceCommit,engine:input.engine,projectId:input.projectId,databaseId:input.databaseId,browser:'chromium',context:'isolated',preparation:'passed',confirmation:'passed',recovery:'passed',sameOriginalKey:'passed',inventory:'passed',reload:'passed',retainedStorage:'passed',requests:requests-deletionRequestStart};
     if(!validateDeletionBrowserProof(proof,sourceCommit))throw new Error("Complete destructive browser proof required.");await page.goto('about:blank');return proof;
    },close
