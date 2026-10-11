@@ -1,3 +1,4 @@
+import {applyManagedDatabaseDelete} from "./managed-database-delete-apply.js";
 import {AuthenticatedManagedDatabaseDeleteTransport} from "./managed-database-delete-transport.js";
 import {AuthenticatedManagedDatabaseRuntimeTransport} from "./managed-database-runtime-transport.js";
 import {signAgentTransport, createEnvSecretCipher, loadEnvSecretKey, redactLogMessage} from "@deploylite/config";
@@ -10,7 +11,7 @@ import {AuthenticatedAgentCommandReceiver, startAgentServer} from "@deploylite/a
 import {managedDatabaseDeleteReceiptQuerySchema, managedDatabaseDeleteReceiptSchema, MANAGED_DATABASE_DELETE_PATH, MANAGED_DATABASE_DELETE_RECEIPT_PATH, approvedManagedDatabaseProfileSchema, InMemoryCapabilityRegistry, managedDatabaseRuntimeReceiptSchema, managedDatabaseStopReceiptSchema, managedDatabaseStartReceiptSchema,
   MANAGED_DATABASE_STOP_PATH, MANAGED_DATABASE_START_PATH, MANAGED_DATABASE_HEALTH_PATH, managedDatabaseHealthObservationSchema, MANAGED_DATABASE_METRICS_PATH, managedDatabaseMetricsObservationSchema, MANAGED_DATABASE_LOGS_PATH, managedDatabaseLogsObservationSchema, type ManagedDatabaseEngineV1} from "@deploylite/contracts";
 import {DbAgentReplayStore, DbControlCommandRepository, DbProjectRepository} from "@deploylite/db";
-import {managedDatabaseDeleteExecutionDigest,managedDatabaseDeleteReceiptMatches,createControlCommand, managedDatabaseNativeImagePolicy} from "@deploylite/domain";
+import {planManagedDatabaseProfile,type ControlCommand,managedDatabaseDeleteExecutionDigest,managedDatabaseDeleteReceiptMatches,createControlCommand, managedDatabaseNativeImagePolicy} from "@deploylite/domain";
 import {buildApiApp} from "./app.js";
 import {openDatabaseBrowser} from "./testing/p5-browser-fixture.js";
 import {openOperatorSession} from "./testing/p5-operator-session.js";
@@ -373,27 +374,36 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const recoveredDelete=await prepareDelete(randomUUID());expect(recoveredDelete.statusCode).toBe(200);expect(recoveredDelete.json().data.command).toEqual(deletePublic.command);expect(recoveredDelete.json().data.confirmation).toEqual(deletePublic.confirmation);
     const deletePending=(await recoveredControls.findProjectUpdateByIdempotency(actorId,projectId,deleteKey))!;expect(deletePending).not.toBeNull();
     const approval=(await recoveredControls.resolveProjectUpdateConfirmation(deletePending))!;expect(approval.id).toBe(deletePublic.confirmation.id);expect(approval.consumedAt).toBeNull();expect(deleteEffects).toBe(0);
-    const deleteClaim=await recoveredControls.claimConfirmedProjectUpdate(deletePending,approval!);expect(deleteClaim.claimed).toBe(true);expect(deleteClaim.authority).toBeDefined();
-    const deleteQuery=managedDatabaseDeleteReceiptQuerySchema.parse({...removalSource,action:"database.runtime.delete",operation:"database.runtime.delete",storagePolicy:"retain-original",stopPolicy:"if-running",confirmationId:approval!.id,agentId,commandId:deletePending.id,inputDigest:deleteDigest,idempotencyKey:deletePending.idempotencyKey,requiredCapabilities:["database.runtime.delete.v1"],authority:deleteClaim.authority!,lease:deleteClaim.authority!.projectLease,context:{requestId:randomUUID(),correlationId:deletePending.correlationId},timeoutMs:60000});
-    const deleteCommand={...deleteQuery,cancellationRequested:false},sendDelete=(body:unknown,signature=signAgentTransport(JSON.stringify(body),trustKey))=>fetch(endpoint+MANAGED_DATABASE_DELETE_PATH,{method:"POST",headers:{"content-type":"application/json","x-deploylite-signature":signature},body:JSON.stringify(body)});
-    expect((await sendDelete(deleteCommand,"invalid")).status).toBe(401);const rejectedConfirmation=await sendDelete({...deleteCommand,confirmationId:randomUUID()});expect(rejectedConfirmation.status).toBe(400);expect(await rejectedConfirmation.json()).toEqual({error:"Confirmed project authority is unavailable"});expect(deleteEffects).toBe(0);
-    const deletePrepared={command:deleteClaim.command,input:removalSource,agentId,confirmationId:approval!.id};
-    const deleted=managedDatabaseDeleteReceiptSchema.parse(await new AuthenticatedManagedDatabaseDeleteTransport(transportOptions).dispatch(deletePrepared,deleteClaim.authority!,{...deleteQuery.context,signal}));expect(managedDatabaseDeleteReceiptMatches(deleteQuery,deleted)).toBe(true);expect(deleteEffects).toBe(1);
+    const deleteTransport=new AuthenticatedManagedDatabaseDeleteTransport(transportOptions),issued:{query?:ReturnType<typeof managedDatabaseDeleteReceiptQuerySchema.parse>;command?:ControlCommand}={};
+    const sendDelete=(body:unknown,signature=signAgentTransport(JSON.stringify(body),trustKey))=>fetch(endpoint+MANAGED_DATABASE_DELETE_PATH,{method:"POST",headers:{"content-type":"application/json","x-deploylite-signature":signature},body:JSON.stringify(body)});
+    const fencedDeleteTransport={available:()=>deleteTransport.available(),readReceipt:deleteTransport.readReceipt.bind(deleteTransport),dispatch:async(...args:Parameters<typeof deleteTransport.dispatch>)=>{
+      const [prepared,authority,context]=args;issued.command=prepared.command;
+      issued.query=managedDatabaseDeleteReceiptQuerySchema.parse({...prepared.input,action:"database.runtime.delete",operation:"database.runtime.delete",storagePolicy:"retain-original",stopPolicy:"if-running",confirmationId:prepared.confirmationId,agentId,commandId:prepared.command.id,inputDigest:deleteDigest,idempotencyKey:prepared.command.idempotencyKey,requiredCapabilities:["database.runtime.delete.v1"],authority,lease:authority.projectLease,context:{requestId:context.requestId,correlationId:context.correlationId},timeoutMs:60000});
+      const command={...issued.query,cancellationRequested:false};expect((await sendDelete(command,"invalid")).status).toBe(401);
+      const rejected=await sendDelete({...command,confirmationId:randomUUID()});expect(rejected.status).toBe(400);expect(await rejected.json()).toEqual({error:"Confirmed project authority is unavailable"});expect(deleteEffects).toBe(0);
+      return deleteTransport.dispatch(...args);
+    }};
+    const applyInput={preparation:removalSource,actorId,idempotencyKey:deleteKey,confirmationId:approval.id,context:{requestId:randomUUID(),correlationId:randomUUID()},signal,
+      authorize:async()=>(await db.pool.query("SELECT id FROM control_grants WHERE actor_user_id=$1 AND action='project.update' AND scope_kind='project' AND scope_key=$2",[actorId,projectId])).rows.length===1,current:()=>!signal.aborted,
+      admit:async()=>{const plan=planManagedDatabaseProfile({schemaVersion:1,projectId,databaseId,engine},profile,imagePolicy);expect(plan.planDigest).toBe(removalSource.planDigest);expect(plan.profileId).toBe(removalSource.profileId);}};
+    let completionFaults=0;const originalTransport=new AuthenticatedManagedDatabaseRuntimeTransport(transportOptions),faultControls=new DbControlCommandRepository(db.db,stage=>{if(stage==="command-completed"){completionFaults++;throw new Error("injected removal completion rollback");}});
+    await expect(applyManagedDatabaseDelete({controls:faultControls,transport:fencedDeleteTransport,originalTransport,agentId,deadlineMs:60000,now:Date.now},applyInput)).rejects.toThrow();
+    expect(completionFaults).toBe(1);if(!issued.query||!issued.command)throw new Error("One issued deletion required.");const deleteQuery=issued.query,deleteCommand={...deleteQuery,cancellationRequested:false};
+    const deleted=managedDatabaseDeleteReceiptSchema.parse((await deleteTransport.readReceipt({command:issued.command,input:removalSource,agentId,confirmationId:approval.id},deleteQuery.authority,{...deleteQuery.context,signal}))!);expect(managedDatabaseDeleteReceiptMatches(deleteQuery,deleted)).toBe(true);expect(deleteEffects).toBe(1);
     expect((await runner.run(["docker","container","ls","--all","--no-trunc","--filter",`id=${receipt.containerId}`,"--format","{{.ID}}"],signal)).stdout).toBe("");
     expect(await resources.verifyFresh({request:input.request,profile,commandId:receipt.commandId},pinned,authority,signal)).toEqual(pinned);
-    const completion={command:deleteClaim.command,query:deleteQuery,receipt:deleted,audit:{actorUserId:actorId,action:"database.runtime.removed",targetType:"project",targetId:projectId,requestId:deleteQuery.context.requestId,correlationId:deletePending.correlationId,metadata:{receipt:deleted,redacted:true}}};
     const completionAudits=async()=>(await db.pool.query("SELECT * FROM audit_events WHERE action='database.runtime.removed' AND correlation_id=$1",[deletePending.correlationId])).rows;
-    const deleteNonce=async()=>(await db.pool.query("SELECT * FROM control_command_confirmations WHERE command_id=$1",[deletePending.id])).rows,originalConsumed=await deleteNonce();
-    await expect(new DbControlCommandRepository(db.db,stage=>{if(stage==="command-completed")throw new Error("injected removal completion rollback");}).completeManagedDatabaseDelete(completion)).rejects.toThrow("injected removal completion rollback");
+    const deleteNonce=async()=>(await db.pool.query("SELECT * FROM control_command_confirmations WHERE command_id=$1",[deletePending.id])).rows,originalConsumed=await deleteNonce();expect(originalConsumed).toHaveLength(1);expect(originalConsumed[0].consumed_at).not.toBeNull();
     expect(await completionAudits()).toHaveLength(0);expect((await db.pool.query("SELECT status,result FROM control_commands WHERE id=$1",[deletePending.id])).rows).toEqual([{status:"dispatching",result:null}]);
-    await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(false);
-    const cachedDelete=await new AuthenticatedManagedDatabaseDeleteTransport({...transportOptions,endpoint}).readReceipt(deletePrepared,deleteClaim.authority!,{...deleteQuery.context,signal});
+    await app.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(false);
+    const recoveredDeleteTransport=new AuthenticatedManagedDatabaseDeleteTransport({...transportOptions,endpoint}),cachedDelete=await recoveredDeleteTransport.readReceipt({command:issued.command,input:removalSource,agentId,confirmationId:approval.id},deleteQuery.authority,{...deleteQuery.context,signal});
     expect(cachedDelete).toEqual(deleted);expect((await sendDelete(deleteCommand)).status).toBe(403);expect(deleteEffects).toBe(1);
-    const finalControls=new DbControlCommandRepository(db.db),completed=await finalControls.completeManagedDatabaseDelete({...completion});expect(completed).toMatchObject({status:"completed",result:deleted});
-    expect(await finalControls.completeManagedDatabaseDelete({...completion,now:deletePending.expiresAt.getTime()+1})).toEqual(completed);
+    const finalControls=new DbControlCommandRepository(db.db),recoveryAccess={controls:finalControls,transport:recoveredDeleteTransport,originalTransport:new AuthenticatedManagedDatabaseRuntimeTransport({...transportOptions,endpoint}),agentId,deadlineMs:60000,now:Date.now};
+    const finished=await applyManagedDatabaseDelete(recoveryAccess,applyInput),completed=finished.command;expect(finished.receipt).toEqual(deleted);expect(completed).toMatchObject({status:"completed",result:deleted});
+    expect((await applyManagedDatabaseDelete({...recoveryAccess,now:()=>deletePending.expiresAt.getTime()+1},applyInput)).command).toEqual(completed);
     expect(await finalControls.findManagedDatabaseRemovals(projectId)).toEqual([completed]);const completedAudits=await completionAudits();expect(completedAudits).toHaveLength(1);expect(completedAudits[0].metadata.receipt.containerId).toBe("[REDACTED]");expect(await deleteNonce()).toEqual(originalConsumed);
     expect(await originals()).toEqual(originalRows);expect(await encrypted()).toEqual(cipherRows);
-    result!.confirmedDeletion={projectId,receipt:deleted,originalSources:"passed",apiTransport:"passed",prepareControl:"passed",prepareRoute:"passed",signatureRejected:"passed",confirmationRejected:"passed",originalNonce:"passed",signedHttp:"passed",effects:deleteEffects,rollback:"passed",cacheOnlyReopen:"passed",executorRemoved:"passed",retirement:"passed",retainedStorage:"passed",audit:"passed",originalRows:"unchanged",cipher:"unchanged"};
+    result!.confirmedDeletion={projectId,receipt:deleted,originalSources:"passed",apiTransport:"passed",prepareControl:"passed",prepareRoute:"passed",applyControl:"passed",signatureRejected:"passed",confirmationRejected:"passed",originalNonce:"passed",signedHttp:"passed",effects:deleteEffects,rollback:"passed",cacheOnlyReopen:"passed",executorRemoved:"passed",retirement:"passed",retainedStorage:"passed",audit:"passed",originalRows:"unchanged",cipher:"unchanged"};
   } finally {
     await browserFixture?.close();
     if (app) await app.close(); if (peer) await peer.close(); vi.unstubAllGlobals();
