@@ -81,7 +81,7 @@ export function parseComposeResourceCleanupProjectBindings(value: string | undef
   return parsed.data;
 }
 
-function projectUpdateControls(value: unknown): ProjectUpdateControlRepository | null {
+export function projectUpdateControls(value: unknown): ProjectUpdateControlRepository | null {
   if (typeof value !== "object" || value === null) return null;
   const required = ["resolve", "complete", "findProjectUpdateByIdempotency", "claimProjectUpdate", "validateProjectUpdateAuthority", "completeProjectUpdate"] as const;
   return required.every(method => typeof (value as Record<string, unknown>)[method] === "function")

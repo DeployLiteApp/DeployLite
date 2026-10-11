@@ -127,3 +127,7 @@ it("withholds generic command payloads and fences profile changes during encrypt
   changed.secrets.find.mockImplementation(async () => { changed.profiles.delete("postgres"); return row; });
   expect((await changed.post()).statusCode).toBe(503); expect(changed.transport.dispatch).not.toHaveBeenCalled();
 });
+it("requires configured project admission before fresh materialization or claims", async () => {
+  const f = await fixture(); Object.assign(f.configuration, { projectIds: new Set(["foreign"]) });
+  expect((await f.post()).statusCode).toBe(503); expect(f.secrets.find).not.toHaveBeenCalled(); expect(f.controls.claimProjectUpdate).not.toHaveBeenCalled();
+});

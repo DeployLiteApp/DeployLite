@@ -37,13 +37,14 @@ export function registerManagedDatabaseRuntimeApplyRoute(app: FastifyInstance, o
       let privateCurrent = () => true;
       const current = () => !controller.signal.aborted && options.executions?.get(preparation.projectId) === execution && privateCurrent();
       const environment = async () => {
-        const configuration = options.configuration, cipher = options.cipher, store = configuration?.store ?? options.secrets;
+        const configuration = options.configuration, projectIds = configuration?.projectIds, cipher = options.cipher, store = configuration?.store ?? options.secrets;
         const profile = configuration?.profiles.get(preparation.engine), policy = structuredClone(options.imagePolicy);
-        if (!configuration || !cipher || !store || !profile) throw new Error("unavailable");
+        if (!configuration || (projectIds !== undefined && !projectIds.has(preparation.projectId)) || !cipher || !store || !profile) throw new Error("unavailable");
         const plan = planManagedDatabaseProfile(profileInput, profile, policy);
         if (plan.planDigest !== preparation.planDigest || plan.profileId !== preparation.profileId) throw new Error("stale");
         privateCurrent = () => {
           try { return options.configuration === configuration && options.cipher === cipher && (configuration.store ?? options.secrets) === store
+            && configuration.projectIds === projectIds && (projectIds === undefined || projectIds.has(preparation.projectId))
             && configuration.profiles.get(preparation.engine) === profile
             && planManagedDatabaseProfile(profileInput, profile, options.imagePolicy).planDigest === preparation.planDigest; } catch { return false; }
         };

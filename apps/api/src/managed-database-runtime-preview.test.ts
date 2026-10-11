@@ -101,3 +101,7 @@ it("registers the real API route and requires authentication before preparation"
     expect(response.statusCode).toBe(401);
   } finally { await app.close(); }
 });
+it("requires configured project admission before encrypted preview reads", async () => {
+  const f = await fixture(); Object.assign(f.configuration, { projectIds: new Set(["foreign"]) });
+  expect((await f.post()).statusCode).toBe(503); expect(f.secrets.find).not.toHaveBeenCalled();
+});

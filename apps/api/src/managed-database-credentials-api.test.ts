@@ -47,3 +47,14 @@ it("recovers a lost completion audit through stored credentials without replacin
  const original=[...f.rows.values()][0]!.encryptedValue;f.secrets.createIfAbsent.mockClear();fail=false;
  expect((await f.post()).statusCode).toBe(200);expect(f.secrets.createIfAbsent).not.toHaveBeenCalled();expect([...f.rows.values()][0]!.encryptedValue).toEqual(original);
 });
+it("limits configured credential projects and fences removal during write authorization", async () => {
+  const denied = await fixture(); Object.assign(denied.configuration, { projectIds: new Set(["foreign"]) });
+  expect((await denied.post()).statusCode).toBe(503); expect(denied.secrets.find).not.toHaveBeenCalled(); expect(denied.rows.size).toBe(0);
+  const revoked = await fixture(), projectIds = new Set(["project-1"]); Object.assign(revoked.configuration, { projectIds });
+  revoked.audit.mockImplementation(async () => { projectIds.delete("project-1"); return {} as never; });
+  expect((await revoked.post()).statusCode).toBe(503); expect(revoked.rows.size).toBe(0);
+});
+it("uses the explicitly configured credential store without requiring the fallback repository identity", async () => {
+  const f = await fixture(); Object.assign(f.configuration, { store: { ...f.secrets } });
+  expect((await f.post()).statusCode).toBe(200); expect(f.rows.size).toBe(1);
+});

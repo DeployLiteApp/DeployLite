@@ -4,7 +4,7 @@ import { managedDatabaseProfileRequestSchema, type ApprovedManagedDatabaseProfil
 import type { EnvSecretCipher } from "@deploylite/config";
 import { PolicyEvaluator, awaitAbortable, ensureManagedDatabaseCredentials, planManagedDatabaseProfile,
   type ManagedDatabaseCredentialCreationRepository, type ProjectRepository, type ControlGrantRepository, type AuditRepository } from "@deploylite/domain";
-export type ManagedDatabaseCredentialConfiguration = Readonly<{profiles:ReadonlyMap<ManagedDatabaseEngineV1,ApprovedManagedDatabaseProfileV1>;deadlineMs:number;store?:ManagedDatabaseCredentialCreationRepository}>;
+export type ManagedDatabaseCredentialConfiguration = Readonly<{profiles:ReadonlyMap<ManagedDatabaseEngineV1,ApprovedManagedDatabaseProfileV1>;deadlineMs:number;projectIds?:ReadonlySet<string>;store?:ManagedDatabaseCredentialCreationRepository}>;
 type Options=Readonly<{prefix:string;configuration?:ManagedDatabaseCredentialConfiguration;secrets?:ManagedDatabaseCredentialCreationRepository;cipher?:EnvSecretCipher;
   imagePolicy:ImageReferencePolicyV1;projects:Pick<ProjectRepository,"findById">;grants:Pick<ControlGrantRepository,"listForActor">;audit:Pick<AuditRepository,"append">;
   requireAuth:preHandlerAsyncHookHandler;requireRole:preHandlerAsyncHookHandler;ok(request:unknown,data:unknown):unknown;error(request:unknown,code:string,message:string):unknown}>;
@@ -26,12 +26,12 @@ export function registerManagedDatabaseCredentialRoute(app:FastifyInstance,optio
     try {
       if(!await authorized())return fail(403,"FORBIDDEN");
       const project=await bounded(()=>options.projects.findById(input.projectId));if(!project)return fail(404,"NOT_FOUND");
-      const profile=configuration?.profiles.get(input.engine),secrets=configuration?.store??options.secrets,cipher=options.cipher,configuredStore=configuration?.store;
-      if(project.id!==input.projectId || !configuration || !validDeadline || !profile || !secrets || !cipher)return fail(503,"DATABASE_CREDENTIALS_UNAVAILABLE");
+      const profile=configuration?.profiles.get(input.engine),secrets=configuration?.store??options.secrets,cipher=options.cipher,configuredStore=configuration?.store,projectIds=configuration?.projectIds;
+      if(project.id!==input.projectId || !configuration || !validDeadline || (projectIds!==undefined && !projectIds.has(input.projectId)) || !profile || !secrets || !cipher)return fail(503,"DATABASE_CREDENTIALS_UNAVAILABLE");
       const plan=planManagedDatabaseProfile(input,profile,options.imagePolicy);
       const current=()=>{
         try{return !controller.signal.aborted && options.configuration===configuration && configuration.deadlineMs===deadlineMs
-          && configuration.store===configuredStore && configuration.profiles.get(input.engine)===profile && options.secrets===secrets && options.cipher===cipher
+          && configuration.projectIds===projectIds && (projectIds===undefined || projectIds.has(input.projectId)) && configuration.store===configuredStore && configuration.profiles.get(input.engine)===profile && (configuration.store??options.secrets)===secrets && options.cipher===cipher
           && planManagedDatabaseProfile(input,profile,options.imagePolicy).planDigest===plan.planDigest;}catch{return false;}
       };
       const credentials=await bounded(()=>ensureManagedDatabaseCredentials(input,profile,{imagePolicy:options.imagePolicy,cipher,
