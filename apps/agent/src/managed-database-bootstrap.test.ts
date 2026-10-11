@@ -148,3 +148,10 @@ it("does not infer native backup activation from existing Compose private destin
  const env={...environment(JSON.stringify(configuration())),DEPLOYLITE_COMPOSE_VOLUME_BACKUP_ROOTS:JSON.stringify({sourceRoots:{native:"/fixture/data"},destinations:{"private-a":"/fixture/backups"}})};
  const runtime=await startAgentRuntime(env);try{expect(receiver().capabilities).not.toContain(MANAGED_DATABASE_BACKUP_CAPABILITY);expect(harness.binaryRun).not.toHaveBeenCalled();}finally{await runtime.close();}
 });
+
+it("advertises archive metadata only with explicit native backup budget and private destinations",async()=>{
+ const config=configuration();Object.assign(config.limits,{backupMaxBytes:2097152});
+ const env={...environment(JSON.stringify(config)),DEPLOYLITE_COMPOSE_VOLUME_BACKUP_ROOTS:JSON.stringify({sourceRoots:{native:"/fixture/data"},destinations:{"private-a":"/fixture/backups"}})};
+ const runtime=await startAgentRuntime(env);try{expect(receiver().capabilities).toContain("database.runtime.restore.archive.v1");expect(harness.run).not.toHaveBeenCalled();expect(harness.binaryRun).not.toHaveBeenCalled();}finally{await runtime.close();}
+ const disabled=await startAgentRuntime({...env,DEPLOYLITE_MANAGED_DATABASE_RUNTIME:JSON.stringify(configuration())});try{expect(receiver().capabilities).not.toContain("database.runtime.restore.archive.v1");expect(harness.run).not.toHaveBeenCalled();}finally{await disabled.close();}
+});

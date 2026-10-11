@@ -371,7 +371,7 @@ def add_native_backup(result,profile):
     proof["pendingRestore"]={"commandId":"77777777-7777-4777-8777-777777777777","confirmationId":"88888888-8888-4888-8888-888888888888","actorId":"actor-a",**{key:ready[key] for key in ("projectId","databaseId","engine")},
         "inputDigest":digest({**source,"backupReceipt":receipt,"maxBytes":proof["maxBytes"],"action":"project.update","scope":{"kind":"project","projectId":ready["projectId"]},"operation":"database.runtime.restore"}),
         "idempotencyKey":"fixture_restore_pending_"+profile["engine"],"correlationId":"fixture-restore-pending-"+profile["engine"],"expiresAt":20000,
-        "status":"pending_confirmation","classification":"destructive","consumedAt":None,"reopen":"passed","sameOriginalKey":"passed","sameOriginalNonce":"passed","dispatches":0,"authenticatedApi":"passed","protectedArchive":"passed"}
+        "status":"pending_confirmation","classification":"destructive","consumedAt":None,"reopen":"passed","sameOriginalKey":"passed","sameOriginalNonce":"passed","dispatches":0,"authenticatedApi":"passed","protectedArchive":"passed","signedArchive":"passed"}
     result["nativeBackup"]=proof
     return result,profile
 
@@ -468,6 +468,11 @@ class RestorePreparationApiProof(unittest.TestCase):
 class RestoreProtectionProof(unittest.TestCase):
     def test_refuses_missing_actual_durable_restore_protection(self):
         result,profile=fixture();result["nativeBackup"]["pendingRestore"].pop("protectedArchive",None)
+        with self.assertRaises(RuntimeError):module.validate_native_backup(result,profile)
+
+class RestoreArchiveChannelProof(unittest.TestCase):
+    def test_refuses_missing_actual_signed_archive_channel(self):
+        result,profile=fixture();result["nativeBackup"]["pendingRestore"].pop("signedArchive",None)
         with self.assertRaises(RuntimeError):module.validate_native_backup(result,profile)
 
 if __name__ == "__main__":
