@@ -14,6 +14,7 @@ vi.mock("@deploylite/db", () => ({
   DbAgentReplayStore: class {
     readonly durable = true;
     lookup = vi.fn(async () => null);
+    lookupByFingerprintDigest = vi.fn(async () => null);
     constructor(..._args: unknown[]) {}
   },
   DbControlCommandRepository: class { constructor(..._args: unknown[]) {} },

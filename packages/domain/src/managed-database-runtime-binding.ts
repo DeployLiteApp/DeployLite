@@ -1,3 +1,4 @@
+import {createHash} from "node:crypto";
 import { managedDatabaseRuntimePreparationSchema, managedDatabaseRuntimeReceiptQuerySchema, protocolPayloadFingerprint } from "@deploylite/contracts";
 import { digestControlInput } from "./control-plane.js";
 /** Public immutable preparation only; the existing cipher/envelope carries actual environment values. */
@@ -21,3 +22,6 @@ export function managedDatabaseRuntimeReplayFingerprint(raw: unknown): string {
         databaseId:value.databaseId,engine:value.engine,profileId:value.profileId,planDigest:value.planDigest,environmentFingerprint:value.environmentFingerprint,
         idempotencyKey:value.idempotencyKey,inputDigest:value.inputDigest,correlationId:value.context.correlationId,authority:value.authority,lease:value.lease});
 }
+
+/** Opaque selector for read-only corroboration; existing canonical replay bytes stay unchanged. */
+export function managedDatabaseRuntimeReplayFingerprintDigest(raw:unknown):string {return createHash("sha256").update(managedDatabaseRuntimeReplayFingerprint(raw)).digest("hex");}

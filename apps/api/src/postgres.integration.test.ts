@@ -407,6 +407,7 @@ describeIntegration("DeployLite API PostgreSQL integration", () => {
     const raw = JSON.stringify({ profiles, limits: { deadlineMs: 10000, maxOutputBytes: 131072, maxContainers: 64,
       pollIntervalMs: 100, cpus: 1, memoryBytes: 536870912, pidsLimit: 256 } });
     const approved = domain.parseManagedDatabaseRuntimeConfiguration(raw)!, policy = domain.managedDatabaseNativeImagePolicy();
+    const originalQueries=new Map<string,unknown>();
     let executions = 0, dropped = false;
     const executor = { apply: async (command: import("@deploylite/contracts").ManagedDatabaseRuntimeAgentCommandV1, authority: { assertValid(): Promise<void> }) => {
       await authority.assertValid();
@@ -433,6 +434,7 @@ describeIntegration("DeployLite API PostgreSQL integration", () => {
       }
       const body = JSON.parse(String(init?.body));
       if (String(url).endsWith("/receipt")) return new Response(JSON.stringify(await receiver.readManagedDatabaseRuntimeReceipt(body, signature, init?.signal ?? undefined)));
+      const {sealedEnvironment:_sealed,cancellationRequested:_canceled,...query}=body;originalQueries.set(body.commandId,query);
       const receipt = await receiver.receive(body, signature, init?.signal ?? undefined);
       if (body.engine === "mysql" && !dropped) { dropped = true; throw new Error("synthetic lost native reply after durable completion"); }
       return new Response(JSON.stringify(receipt));
@@ -471,6 +473,15 @@ describeIntegration("DeployLite API PostgreSQL integration", () => {
         const replay = await call(engine, "runtime/apply", prepared.get(engine)); expect(replay.statusCode).toBe(200);
         expect(replay.json().data.idempotent).toBe(true); expect(replay.json().data.receipt).toEqual(originals.get(engine));
       }
+      const cacheReader=new DbAgentReplayStore(requireDb(),"opaque-original-reader"),originalIds=[...originalQueries.keys()];
+      const cacheBefore=(await requirePool().query("SELECT * FROM agent_replay WHERE command_id=ANY($1::text[]) ORDER BY command_id",[originalIds])).rows;
+      for(const [id,query] of originalQueries){
+        const digest=domain.managedDatabaseRuntimeReplayFingerprintDigest(query);
+        expect(digest).toMatch(/^[a-f0-9]{64}$/);
+        expect(await cacheReader.lookupByFingerprintDigest(id,digest)).toEqual([...originals.values()].find(value=>(value as {commandId:string}).commandId===id));
+        await expect(cacheReader.lookupByFingerprintDigest(id,"0".repeat(64))).rejects.toThrow();
+      }
+      expect((await requirePool().query("SELECT * FROM agent_replay WHERE command_id=ANY($1::text[]) ORDER BY command_id",[originalIds])).rows).toEqual(cacheBefore);
       expect(executions).toBe(5);
       expect((await requirePool().query("SELECT id,encrypted_value,value_fingerprint FROM env_secret_values WHERE project_id=$1 ORDER BY id", [projectId])).rows).toEqual(secrets);
       const commands = (await requirePool().query("SELECT status FROM control_commands WHERE actor_user_id=$1 AND action='project.update' AND scope_key=$2", [actorId, projectId])).rows;
