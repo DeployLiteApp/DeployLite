@@ -1449,6 +1449,7 @@
     "packages/contracts/src/deployment-contract/managed-database-restore.ts",
     "packages/domain/src/managed-database-restore-binding.ts",
     "packages/domain/src/managed-database-restore-archive-binding.ts",
+    "packages/domain/src/managed-database-restore-receipt-binding.ts",
     "packages/domain/src/managed-database-verified-restore.ts",
     "packages/domain/src/managed-database-restore-binding.test.ts",
     "packages/domain/src/managed-database-backup-binding.test.ts",
