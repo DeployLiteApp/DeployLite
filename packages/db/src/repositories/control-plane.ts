@@ -198,6 +198,15 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
     });
   }
 
+  /** Read-only original proof lookup; callers enforce current project authorization. */
+  async findProjectUpdateById(projectId: string, commandId: string): Promise<ControlCommand | null> {
+    const [row] = await this.db.select().from(controlCommands).where(and(
+      eq(controlCommands.id, commandId), eq(controlCommands.action, "project.update"),
+      eq(controlCommands.scopeKind, "project"), eq(controlCommands.scopeKey, projectId)
+    )).limit(1);
+    return row ? toCommand(row) : null;
+  }
+
   async findProjectUpdateByIdempotency(actorId: string, projectId: string, idempotencyKey: string): Promise<ControlCommand | null> {
     const [row] = await this.db.select().from(controlCommands).where(and(eq(controlCommands.actorUserId, actorId),
       eq(controlCommands.action, "project.update"), eq(controlCommands.scopeKind, "project"), eq(controlCommands.scopeKey, projectId),

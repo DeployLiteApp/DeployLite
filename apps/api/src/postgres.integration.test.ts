@@ -474,6 +474,15 @@ describeIntegration("DeployLite API PostgreSQL integration", () => {
         expect(replay.json().data.idempotent).toBe(true); expect(replay.json().data.receipt).toEqual(originals.get(engine));
       }
       const cacheReader=new DbAgentReplayStore(requireDb(),"opaque-original-reader"),originalIds=[...originalQueries.keys()];
+      const commandReader = new DbControlCommandRepository(requireDb());
+      const commandsBefore = (await requirePool().query("SELECT * FROM control_commands WHERE id=ANY($1::uuid[]) ORDER BY id", [originalIds])).rows;
+      for (const id of originalIds) {
+        const original = await commandReader.findProjectUpdateById(projectId, id);
+        expect(original).toMatchObject({ id, actorId, action: "project.update", scope: { kind: "project", projectId }, status: "completed" });
+        expect(original?.projectExecutionAuthority?.commandId).toBe(id);
+        expect(await commandReader.findProjectUpdateById("other-project", id)).toBeNull();
+      }
+      expect((await requirePool().query("SELECT * FROM control_commands WHERE id=ANY($1::uuid[]) ORDER BY id", [originalIds])).rows).toEqual(commandsBefore);
       const cacheBefore=(await requirePool().query("SELECT * FROM agent_replay WHERE command_id=ANY($1::text[]) ORDER BY command_id",[originalIds])).rows;
       for(const [id,query] of originalQueries){
         const digest=domain.managedDatabaseRuntimeReplayFingerprintDigest(query);
