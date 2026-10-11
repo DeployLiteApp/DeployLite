@@ -870,3 +870,12 @@ Seven positive assertions observed RED before implementation; nine new cases plu
 Browser source snapshot acceptance: #48450c2df68914da326b0b05916e90056c6793468e1/run38130214761 owner9/9,3266unit,allmandatoryphysical0omissions,283global/24P3/289operator source hashes exact, restart/cleanup verified. Actual isolated Chromium proves five engines/105requests with all requested operator and persistence stages. This accepts the inventory/panel functional boundary and H1 core in drafts, not wholeP5/protected-main A1.
 
 Delete intent/confirmation final source: Node24 pnpmcheck exits0 with3275unit across8projects;35focal/domaintypesPASS. New command/confirmation remains unused and grants no deletion authority; exact-head hosted gates pending.
+
+
+### S1 durable pending confirmation recovery — 2026-10-11
+
+Existing project.update repository recovers one original unconsumed destructive confirmation under the existing project advisory lock and command row lock. Exact actor/action/project/digest/key/correlation/expiry and pending state are required; expired, consumed, detached or duplicate stored confirmations fail without renewal. No command update, consumption, grant, lease or runtime effect. Existing command_id uniqueness remains; no migration/model is introduced.
+
+Two positive repository assertions observed RED before implementation; five repository cases plus original reader/rollback regressions yield31focalPASS and DB/APItypesPASS. Hosted five-engine operator acceptance now additionally requires concurrent nonce uniqueness and original nonce recovery after actual PostgreSQL pool reopen, preserving original commands/cache/cipher and all existing browser/lifecycle assertions. Mandatory evidence verifier preserves29guards and adds2complete-recovery boundaries;31PASS. The missing-proof assertion observed RED before verifier implementation (RuntimeError not raised); valid updated fixtures initially hit the old exact-field guard, not assertion RED. Negative boundaries are characterization. Fullcheck/exact-head physical evidence pending. This does not close deletion/S1/P5. Rollback removes this unused repository method, tests and added recovery proof only; preserve existing confirmation rows, suites, resource and cipher history.
+
+Prior pure intent #48559ab93e2ce7d171b6936465996ee1b53f98f86c3/run38131347941 owner9/9SUCCESS,3275unit,285global/24P3/291operator exact hashes, mandatory physical suites without skips and restart/cleanup verified. No destructive effect was activated.

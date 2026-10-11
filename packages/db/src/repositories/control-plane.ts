@@ -62,6 +62,45 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
     });
   }
 
+  /** Recover one existing pending nonce under the same project fence; never renew or consume it. */
+  async resolveProjectUpdateConfirmation(submitted: ControlCommand, observed = new Date()): Promise<ControlConfirmation | null> {
+    const command = structuredClone(submitted), now = new Date(observed);
+    if (command.action !== "project.update" || command.scope.kind !== "project" || command.status !== "pending_confirmation"
+      || command.projectExecutionAuthority || !Number.isFinite(now.getTime()) || now.getTime() < 0
+      || !(command.expiresAt instanceof Date) || !Number.isFinite(command.expiresAt.getTime()) || command.expiresAt <= now) return null;
+    const projectId = command.scope.projectId;
+    return this.db.transaction(async tx => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`deploylite:execution:${projectId}`}, 0))`);
+      const [row] = await tx.select().from(controlCommands).where(and(eq(controlCommands.id, command.id),
+        eq(controlCommands.actorUserId, command.actorId), eq(controlCommands.action, "project.update"),
+        eq(controlCommands.scopeKind, "project"), eq(controlCommands.scopeKey, projectId))).limit(1).for("update");
+      if (!row) return null;
+      const current = toCommand(row);
+      if (current.status !== "pending_confirmation" || current.projectExecutionAuthority || current.expiresAt <= now
+        || !Number.isFinite(current.expiresAt.getTime()) || current.inputDigest !== command.inputDigest
+        || current.idempotencyKey !== command.idempotencyKey || current.correlationId !== command.correlationId
+        || current.expiresAt.getTime() !== command.expiresAt.getTime()) return null;
+      let rows = await tx.select().from(controlCommandConfirmations).where(eq(controlCommandConfirmations.commandId, current.id)).limit(2);
+      if (!rows.length) {
+        const confirmation = createConfirmation({ command: current, classification: "destructive" });
+        await tx.insert(controlCommandConfirmations).values({ id: confirmation.id, commandId: current.id,
+          actorUserId: current.actorId, action: current.action, scopeKind: "project", scopeKey: projectId,
+          inputDigest: current.inputDigest, classification: "destructive", expiresAt: current.expiresAt, consumedAt: null }).onConflictDoNothing();
+        rows = await tx.select().from(controlCommandConfirmations).where(eq(controlCommandConfirmations.commandId, current.id)).limit(2);
+      }
+      if (rows.length !== 1) return null;
+      const stored = rows[0]!;
+      if (stored.scopeKind !== "project" || stored.scopeKey !== projectId || !(stored.expiresAt instanceof Date)
+        || !Number.isFinite(stored.expiresAt.getTime())) return null;
+      const confirmation: ControlConfirmation = { id: stored.id, commandId: stored.commandId, actorId: stored.actorUserId,
+        action: stored.action as ControlConfirmation["action"], scope: current.scope, inputDigest: stored.inputDigest,
+        classification: stored.classification as ControlConfirmation["classification"], expiresAt: stored.expiresAt, consumedAt: stored.consumedAt };
+      try { evaluateConfirmation(current, confirmation, now); }
+      catch (error) { if (error instanceof ConfirmationRejectedError) return null; throw error; }
+      return confirmation;
+    });
+  }
+
   async bind(confirmation: ControlConfirmation): Promise<void> {
     await this.db.insert(controlCommandConfirmations).values({ id: confirmation.id, commandId: confirmation.commandId, actorUserId: confirmation.actorId, action: confirmation.action, scopeKind: confirmation.scope.kind, scopeKey: scopeKey(confirmation.scope), inputDigest: confirmation.inputDigest, classification: confirmation.classification, expiresAt: confirmation.expiresAt, consumedAt: confirmation.consumedAt });
   }
