@@ -1,6 +1,6 @@
 import { MANAGED_DATABASE_RUNTIME_CAPABILITY, MANAGED_DATABASE_BACKUP_CAPABILITY, managedDatabaseBackupPreparationSchema, managedDatabaseBackupReceiptQuerySchema,
   managedDatabaseBackupReceiptSchema, managedDatabaseRuntimeReceiptSchema, protocolPayloadFingerprint, projectControlAuthoritySchema, type ProjectControlAuthorityV1 } from "@deploylite/contracts";
-import { awaitAbortable, createControlCommand, managedDatabaseBackupExecutionBinding, managedDatabaseBackupExecutionDigest,
+import { awaitAbortable, nativeBackupInventoryAuditMetadata, createControlCommand, managedDatabaseBackupExecutionBinding, managedDatabaseBackupExecutionDigest,
   managedDatabaseBackupReceiptMatches, managedDatabaseRuntimeReplayFingerprintDigest,
   managedDatabaseBackupReplayFingerprintDigest, type ControlCommand, type ProjectUpdateControlRepository, type BackupInventoryWriter } from "@deploylite/domain";
 import { type ManagedDatabaseBackupAgentTransport, type PreparedManagedDatabaseBackup } from "./managed-database-backup-transport.js";
@@ -65,7 +65,7 @@ export async function backupManagedDatabaseRuntime(options: ManagedDatabaseBacku
         const completed = await bounded(() => controls.completeProjectUpdate(structuredClone(command), structuredClone(authority), {
           actorUserId: actorId, action: "database.runtime.backup.executed",
           targetType: "project", targetId: preparation.projectId, requestId: context.requestId, correlationId: command.correlationId,
-          metadata: { ...receipt }
+          metadata: nativeBackupInventoryAuditMetadata(receipt)
         }));
         checkCommand(completed); if (completed.id !== command.id || completed.status !== "completed") unavailable(); command = completed;
       }
