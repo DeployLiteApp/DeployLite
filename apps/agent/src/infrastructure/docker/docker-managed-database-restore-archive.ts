@@ -23,7 +23,7 @@ export function createPrivateNativeRestoreArchive(supplied:Options){
   if(!/^[A-Za-z0-9_-]{1,200}$/.test(options.expectedAgentId)||!Number.isSafeInteger(options.maxBytes)||options.maxBytes<1
    ||!Number.isSafeInteger(options.maxDurationMs)||options.maxDurationMs<1||options.maxDurationMs>2147483647)unavailable();
  }catch{return unavailable();}
- return {async verify(raw:unknown,external:AbortSignal){
+ async function inspectArchive(raw:unknown,external:AbortSignal,collect:boolean){
   const controller=new AbortController(),cancel=()=>controller.abort(),handles=new Set<FileHandle>();
   let timer:ReturnType<typeof setTimeout>|undefined;
   try{
@@ -61,13 +61,18 @@ export function createPrivateNativeRestoreArchive(supplied:Options){
    const expected={schemaVersion:1,projectId:receipt.projectId,commandId:receipt.commandId,inputDigest:receipt.inputDigest,agentId:receipt.agentId,
     correlationId:receipt.correlationId,destinationId:receipt.destinationId,sourceDigest:receipt.sourceDigest,format:receipt.format,archiveBytes:receipt.archiveBytes,archiveSha256:receipt.archiveSha256};
    if(protocolPayloadFingerprint(parsed)!==protocolPayloadFingerprint(expected))unavailable();
-   const data=await inspect(join(directory.path,"archive.bin"),receipt.archiveBytes,false);if(data.sha256!==receipt.archiveSha256)unavailable();
+   const data=await inspect(join(directory.path,"archive.bin"),receipt.archiveBytes,collect);if(data.sha256!==receipt.archiveSha256)unavailable();
    for(const file of files){if(!sameFile(file.info,await read(()=>file.handle.stat()))||!sameFile(file.info,await read(()=>lstat(file.path))))unavailable();}
    for(const [path,initial] of [[root.path,root.info],[directory.path,directory.info]] as const){const latest=await read(()=>composeBackupFilesystem.safeDirectory(path,true));if(latest.info.dev!==initial.dev||latest.info.ino!==initial.ino||latest.info.mode!==initial.mode)unavailable();}
-   current();return Object.freeze({archiveId:receipt.archiveId,archiveBytes:receipt.archiveBytes,archiveSha256:receipt.archiveSha256,manifestSha256:receipt.manifestSha256,format:receipt.format,integrity:"verified" as const,redacted:true as const});
+   current();return {bytes:data.bytes,metadata:Object.freeze({archiveId:receipt.archiveId,archiveBytes:receipt.archiveBytes,archiveSha256:receipt.archiveSha256,manifestSha256:receipt.manifestSha256,format:receipt.format,integrity:"verified" as const,redacted:true as const})};
   }catch{return unavailable();}
   finally{controller.abort();if(timer)clearTimeout(timer);external.removeEventListener("abort",cancel);await Promise.allSettled([...handles].map(handle=>handle.close()));}
- }};
+ }
+ return {
+  async verify(raw:unknown,signal:AbortSignal){return (await inspectArchive(raw,signal,false)).metadata;},
+  /** Internal bounded snapshot only. Callers must still prove confirmed authority and original target before effects. */
+  async readVerified(raw:unknown,signal:AbortSignal){const snapshot=await inspectArchive(raw,signal,true);if(!snapshot.bytes)unavailable();return {metadata:snapshot.metadata,bytes:Buffer.from(snapshot.bytes!)};}
+ };
 }
 
 /** Public current metadata over the existing authenticated channel; no archive bytes or effect permission. */

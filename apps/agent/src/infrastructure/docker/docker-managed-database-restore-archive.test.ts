@@ -96,3 +96,23 @@ it("bounds a hung readonly archive authority without returning metadata",async()
  const outcome=createPrivateNativeRestoreArchiveObserver(f.options).observe(query,{assertValid:()=>new Promise(()=>{})},f.signal).then(()=>"resolved",()=>"refused");
  expect(await Promise.race([outcome,new Promise(resolve=>setTimeout(()=>resolve("hung"),30))])).toBe("refused");
 });
+
+
+it.each(engines)("holds hash-verified original %s bytes privately without changing archive metadata",async engine=>{
+ const f=await fixture(engine),archive=createPrivateNativeRestoreArchive(f.options),snapshot=await archive.readVerified(f.preparation,f.signal);
+ expect(snapshot.bytes).toEqual(f.data);expect(snapshot.metadata).toEqual(await archive.verify(f.preparation,f.signal));expect(snapshot.metadata).not.toHaveProperty("bytes");
+ expect(createHash("sha256").update(snapshot.bytes).digest("hex")).toBe(f.preparation.backupReceipt.archiveSha256);expect(await readdir(f.directory)).toEqual(["archive.bin","manifest.json"]);
+});
+it("keeps original verified snapshot when its path is replaced after read and refuses subsequent changed input",async()=>{
+ const f=await fixture(),archive=createPrivateNativeRestoreArchive(f.options),snapshot=await archive.readVerified(f.preparation,f.signal),path=join(f.directory,"archive.bin");
+ await rename(path,path+".original");await writeFile(path,Buffer.alloc(f.data.length,120),{mode:0o600});expect(snapshot.bytes).toEqual(f.data);
+ await expect(archive.readVerified(f.preparation,f.signal)).rejects.toThrow("Native restore archive is unavailable.");
+});
+it("isolates caller mutation of the private snapshot from original archive and later verified readers",async()=>{
+ const f=await fixture(),archive=createPrivateNativeRestoreArchive(f.options),snapshot=await archive.readVerified(f.preparation,f.signal);snapshot.bytes.fill(120);
+ expect(await readFile(join(f.directory,"archive.bin"))).toEqual(f.data);expect((await archive.readVerified(f.preparation,f.signal)).bytes).toEqual(f.data);
+});
+it("rejects canceled or changed-content private snapshot without accepting bytes",async()=>{
+ const f=await fixture(),archive=createPrivateNativeRestoreArchive(f.options),abort=new AbortController();abort.abort();await expect(archive.readVerified(f.preparation,abort.signal)).rejects.toThrow("Native restore archive is unavailable.");
+ await writeFile(join(f.directory,"archive.bin"),Buffer.alloc(f.data.length,120));await expect(archive.readVerified(f.preparation,f.signal)).rejects.toThrow("Native restore archive is unavailable.");
+});
