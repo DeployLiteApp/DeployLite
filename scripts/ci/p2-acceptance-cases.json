@@ -1265,7 +1265,9 @@
     "apps/api/src/managed-database-start-transport.ts",
     "apps/api/src/managed-database-start-transport.test.ts",
     "apps/api/src/managed-database-start-origins.ts",
-    "apps/api/src/managed-database-start-origins.test.ts"
+    "apps/api/src/managed-database-start-origins.test.ts",
+    "apps/api/src/managed-database-start.ts",
+    "apps/api/src/managed-database-start.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
