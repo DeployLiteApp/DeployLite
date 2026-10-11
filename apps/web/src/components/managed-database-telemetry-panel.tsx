@@ -5,19 +5,20 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-type Props = Omit<TelemetryOptions, "fetchImpl" | "signal">;
+type Props = Omit<TelemetryOptions, "fetchImpl" | "signal"> & {onState?(state: "running" | "stopped" | null): void};
 const healthNames = {healthy: "Healthy", unhealthy: "Unhealthy", starting: "Starting", unknown: "Unknown", "not-running": "Stopped"};
 /** Sequential bounded reads retain stopped logs; pausing/searching creates no runtime effects. */
-export function ManagedDatabaseTelemetryPanel({preparation, apiBaseUrl}: Props) {
+export function ManagedDatabaseTelemetryPanel({preparation, apiBaseUrl, onState}: Props) {
   const [view, setView] = useState<"health" | "metrics" | "logs">("health");
   const [live, setLive] = useState(true), [manual, setManual] = useState(0);
   const [tail, setTail] = useState(100), [since, setSince] = useState(""), [search, setSearch] = useState("");
   const [observation, setObservation] = useState<TelemetryObservation | null>(null);
   const [message, setMessage] = useState(""), [busy, setBusy] = useState(false);
+  const stateCallback = useRef(onState); stateCallback.current = onState;
   const previousKey = useRef(""), previousManual = useRef(0);
   const sourceKey = JSON.stringify([apiBaseUrl, preparation, view, tail, since]);
   useEffect(() => {
-    if (previousKey.current !== sourceKey) { setObservation(null); setMessage(""); previousKey.current = sourceKey; }
+    if (previousKey.current !== sourceKey) { setObservation(null); stateCallback.current?.(null); setMessage(""); previousKey.current = sourceKey; }
     if (!live && manual === previousManual.current) { setBusy(false); return; }
     previousManual.current = manual;
     const controller = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined;
@@ -31,11 +32,12 @@ export function ManagedDatabaseTelemetryPanel({preparation, apiBaseUrl}: Props) 
       try {
         const result = await readManagedDatabaseTelemetry(view, {preparation, apiBaseUrl, signal: controller.signal}, selection);
         if (controller.signal.aborted) return;
+        stateCallback.current?.(result.kind === "ready" ? result.observation.state : null);
         setObservation(result.kind === "ready" ? result.observation : null);
         setMessage(result.kind === "ready" ? "" : "Database observation is unavailable.");
       } catch {
         if (controller.signal.aborted) return;
-        setObservation(null); setMessage("Database observation is unavailable.");
+        stateCallback.current?.(null); setObservation(null); setMessage("Database observation is unavailable.");
       }
       if (!controller.signal.aborted) { setBusy(false); if (live) timer = setTimeout(() => void load(), 5000); }
     }
