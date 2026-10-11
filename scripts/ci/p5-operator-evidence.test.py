@@ -64,6 +64,14 @@ def fixture(engine="postgres"):
             metricsObservedAt=None if observation["state"]=="stopped" else observation["observedAt"]-1)
     result["currentMetrics"]=current_metrics
     result["operator"].update(metricsDispatches=3,statsDispatches=2,metricsSignedHttp="passed",metricsNoLedgerWrites="passed",metricsExecutorRemoved="passed")
+    current_logs = copy.deepcopy(current_health)
+    for index,(name,proof) in enumerate(current_logs.items()):
+        observation = proof["observation"]
+        observation.update(action="database.runtime.logs",context={"requestId":"logs-request-"+str(index),"correlationId":"logs-correlation-"+str(index)},
+            logs={"stdout":"ready\n","stderr":"notice\n","redacted":True},logsObservedAt=observation["observedAt"]-1)
+        proof["selection"] = {"tail":100,**({"since":"1970-01-01T00:00:00.500Z"} if index else {})}
+    result["currentLogs"] = current_logs
+    result["operator"].update(logsDispatches=3,logReads=3,logsSignedHttp="passed",logsNoLedgerWrites="passed",logsExecutorRemoved="passed")
     return result, profile
 class OperatorProofTests(unittest.TestCase):
     def test_requires_current_health_not_only_legacy_lifecycle_evidence(self):
@@ -166,6 +174,44 @@ class OperatorProofTests(unittest.TestCase):
     def test_requires_actual_scoped_stats_and_readonly_signed_metrics(self):
         result,profile=fixture()
         for key,value in {"metricsDispatches":2,"statsDispatches":3,"metricsSignedHttp":"not-run","metricsNoLedgerWrites":"not-run","metricsExecutorRemoved":"not-run"}.items():
+            changed=copy.deepcopy(result);changed["operator"][key]=value
+            with self.subTest(key=key),self.assertRaises(RuntimeError):module.validate_result(changed,profile)
+    def test_requires_current_logs_not_only_metrics_and_lifecycle(self):
+        result,profile=fixture()
+        result.pop("currentLogs",None)
+        for key in ("logsDispatches","logReads","logsSignedHttp","logsNoLedgerWrites","logsExecutorRemoved"):result["operator"].pop(key,None)
+        with self.assertRaises(RuntimeError):module.validate_result(result,profile)
+    def test_accepts_only_redacted_labelled_values_and_url_userinfo(self):
+        result,profile=fixture()
+        for proof in result["currentLogs"].values():
+            proof["observation"]["logs"].update(stdout='{"password":"[REDACTED]"}\n',stderr='postgres://[REDACTED]@db.test/orders\n')
+        module.validate_result(result,profile)
+    def test_rejects_private_unsafe_unredacted_or_oversized_log_streams(self):
+        result,profile=fixture()
+        for patch in ({"password":"private"},{"redacted":False},{"stdout":"password=tiny"},{"stderr":"api_key='tiny private'"},
+                {"stdout":"a"*64},{"stderr":"postgres://user:private@db.test/orders"},{"stdout":"pass\x1b[31mword=tiny"},
+                {"stdout":"é"*524289},{"stdout":"\ud800"}):
+            changed=copy.deepcopy(result);changed["currentLogs"]["runningBeforeStop"]["observation"]["logs"].update(patch)
+            with self.subTest(patch=tuple(patch)),self.assertRaises(RuntimeError):module.validate_result(changed,profile)
+    def test_rejects_detached_log_identity_time_types_and_query_window(self):
+        result,profile=fixture()
+        for patch in ({"containerId":"0"*64},{"uid":True},{"schemaVersion":1.0},{"logsObservedAt":1399},{"logsObservedAt":1501},{"password":"private"}):
+            changed=copy.deepcopy(result);changed["currentLogs"]["runningBeforeStop"]["observation"].update(patch)
+            with self.subTest(patch=patch),self.assertRaises(RuntimeError):module.validate_result(changed,profile)
+        changed=copy.deepcopy(result);changed["currentLogs"]["runningAfterStart"]["before"]=2999
+        with self.assertRaises(RuntimeError):module.validate_result(changed,profile)
+        changed=copy.deepcopy(result);changed["currentLogs"]["stopped"]["observation"]["context"]=copy.deepcopy(changed["currentLogs"]["runningBeforeStop"]["observation"]["context"])
+        with self.assertRaises(RuntimeError):module.validate_result(changed,profile)
+    def test_rejects_unbounded_private_local_or_future_log_selection(self):
+        result,profile=fixture()
+        for selection in ({"tail":0},{"tail":-1},{"tail":100.0},{"tail":True},{"tail":5001},{"tail":100,"password":"private"},
+                {"tail":100,"since":"1m"},{"tail":100,"since":"1970-01-01T00:00:00"},{"tail":100,"since":"1970-01-01T00:00:02.000Z"},
+                {"tail":100,"since":"1970-02-31T00:00:00.000Z"}):
+            changed=copy.deepcopy(result);changed["currentLogs"]["runningBeforeStop"]["selection"]=selection
+            with self.subTest(selection=selection),self.assertRaises(RuntimeError):module.validate_result(changed,profile)
+    def test_requires_three_actual_scoped_log_reads_and_signed_readonly_execution(self):
+        result,profile=fixture()
+        for key,value in {"logsDispatches":2,"logReads":2,"logsSignedHttp":"not-run","logsNoLedgerWrites":"not-run","logsExecutorRemoved":"not-run"}.items():
             changed=copy.deepcopy(result);changed["operator"][key]=value
             with self.subTest(key=key),self.assertRaises(RuntimeError):module.validate_result(changed,profile)
 if __name__ == "__main__":
