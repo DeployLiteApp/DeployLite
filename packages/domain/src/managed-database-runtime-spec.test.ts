@@ -3,7 +3,7 @@ import { createEnvSecretCipher } from "@deploylite/config";
 import type { ManagedDatabaseEngineV1 } from "@deploylite/contracts";
 import type { EncryptedEnvSecretValueRecord, EnvSecretValueInput } from "./index.js";
 import { ensureManagedDatabaseCredentials } from "./managed-database-credentials.js";
-import { materializeManagedDatabaseRuntime } from "./managed-database-runtime-spec.js";
+import { materializeManagedDatabaseRuntime, managedDatabaseInternalConnection } from "./managed-database-runtime-spec.js";
 const imagePolicy = { policyVersion: "images-1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true };
 async function fixture(engine: ManagedDatabaseEngineV1, root = false) {
     const input = { schemaVersion: 1, projectId: "project-a", databaseId: "orders", engine };
@@ -48,4 +48,20 @@ it("refuses foreign, tampered and stale encrypted credential evidence", async ()
         { ...f.ports.credentials, encryptedValue: Buffer.from("malformed") }])
         expect(() => materializeManagedDatabaseRuntime(f.input, f.profile, { ...f.ports, credentials })).toThrow("runtime configuration is unavailable");
     expect(() => materializeManagedDatabaseRuntime(f.input, { ...f.profile, profileId: "changed" }, f.ports)).toThrow("runtime configuration is unavailable");
+});
+
+it.each(["postgres", "mysql", "mariadb", "mongodb", "redis"] as const)("projects secret-free %s internal connection from the validated native configuration", async engine => {
+    const f = await fixture(engine), runtime = materializeManagedDatabaseRuntime(f.input, f.profile, f.ports);
+    const connection = managedDatabaseInternalConnection(runtime);
+    expect(connection).toEqual({ schemaVersion: 1, projectId: "project-a", databaseId: "orders", engine,
+        profileId: runtime.plan.profileId, planDigest: runtime.plan.planDigest, availability: "planned", exposure: "internal",
+        hostname: "db-orders", networkName: runtime.plan.network.runtimeName, port: f.profile.containerPort,
+        databaseName: runtime.databaseName, username: runtime.username, authenticationDatabase: engine === "mongodb" ? "admin" : null });
+    expect(JSON.stringify(connection)).not.toContain("09".repeat(32));
+    expect(connection).not.toHaveProperty("environment");
+    expect(Object.isFrozen(connection)).toBe(true);
+});
+it.each(["mysql", "mariadb"] as const)("uses the configured %s application user in connection details", async engine => {
+    const f = await fixture(engine, true), runtime = materializeManagedDatabaseRuntime(f.input, f.profile, f.ports);
+    expect(managedDatabaseInternalConnection(runtime).username).toBe(runtime.environment[engine === "mysql" ? "MYSQL_USER" : "MARIADB_USER"]);
 });

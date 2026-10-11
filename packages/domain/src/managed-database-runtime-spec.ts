@@ -110,3 +110,16 @@ export function validateManagedDatabaseNativeEnvironment(raw: unknown, profile: 
         throw new ManagedDatabaseRuntimeConfigurationError();
     }
 }
+
+/** Public connection metadata for an already validated native configuration. */
+export function managedDatabaseInternalConnection(runtime: ManagedDatabaseRuntimeSpec) {
+    const { plan } = runtime;
+    return Object.freeze({
+        schemaVersion: 1 as const, projectId: plan.projectId, databaseId: plan.databaseId, engine: plan.engine,
+        profileId: plan.profileId, planDigest: plan.planDigest,
+        availability: "planned" as const, exposure: "internal" as const,
+        hostname: plan.volume.key, networkName: plan.network.runtimeName, port: plan.containerPort,
+        databaseName: runtime.databaseName, username: runtime.username,
+        authenticationDatabase: plan.engine === "mongodb" ? "admin" : null
+    });
+}

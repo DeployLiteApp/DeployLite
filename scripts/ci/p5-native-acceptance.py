@@ -66,6 +66,26 @@ def validate_resource_receipt(result):
     require(all(isinstance(receipt.get(key),str) and receipt[key] and receipt[key] == resource.get("name")
                 for key,resource in (("volumeName",volume),("networkName",network))), "original_native_resource_names_required")
 
+def validate_internal_connection(result, profile):
+    proof = result.get("internalConnection")
+    require(isinstance(proof,dict) and set(proof) == {"details","authenticatedRead","afterRestart"}
+            and proof.get("authenticatedRead") == proof.get("afterRestart") == "passed", "native_internal_connection_required")
+    details, receipt = proof.get("details"), result.get("receipt")
+    keys = {"schemaVersion","projectId","databaseId","engine","profileId","planDigest","availability","exposure","hostname","networkName","port","databaseName","username","authenticationDatabase"}
+    require(isinstance(details,dict) and set(details) == keys and isinstance(receipt,dict), "native_public_connection_required")
+    require(all(details.get(key) == receipt.get(key) for key in ("projectId","databaseId","engine","planDigest","networkName")), "native_connection_scope_required")
+    require(details["schemaVersion"] == 1 and details["profileId"] == profile["profileId"] and details["engine"] == profile["engine"]
+            and details["exposure"] == "internal" and details["availability"] == "planned"
+            and type(details["port"]) is int and details["port"] == profile["containerPort"]
+            and details["hostname"] == "db-" + receipt["databaseId"], "native_connection_endpoint_required")
+    engine = profile["engine"]
+    expected_user = "default" if engine == "redis" else "root" if engine in ("mysql","mariadb") and "DATABASE_ROOT_PASSWORD" not in profile["credentialKeys"] else None
+    require(details["databaseName"] == ("0" if engine == "redis" else receipt["databaseId"])
+            and details["authenticationDatabase"] == ("admin" if engine == "mongodb" else None), "native_connection_database_required")
+    username = details["username"]
+    valid_username = username == expected_user if expected_user else isinstance(username,str) and re.fullmatch(r"dl_[a-f0-9]{12}",username)
+    require(valid_username, "native_connection_user_required")
+
 def capture(env):
     require(sys.platform == "linux", "hosted_linux_required")
     context = native_context(env)
@@ -115,6 +135,7 @@ def verify(env):
         result = item.get("result",{})
         receipt = result.get("receipt",{})
         validate_resource_receipt(result)
+        validate_internal_connection(result, binding["profiles"][engine])
         require(item.get("cleanup") == "verified" and all(result.get(key) == "passed" for key in ("authenticatedProbe","restart","persistence")), "native_persistence_cleanup_required")
         require(type(result.get("uid")) is int and 0 < result["uid"] <= 4294967294 and receipt.get("engine") == engine and receipt.get("status") == "ready"
                 and receipt.get("health") == "passed" and receipt.get("storage") == "verified" and receipt.get("redacted") is True, "ready_nonroot_native_receipt_required")

@@ -1,7 +1,7 @@
 import type { FastifyInstance, preHandlerAsyncHookHandler } from "fastify";
 import type { EnvSecretCipher } from "@deploylite/config";
 import { managedDatabaseProfileRequestSchema, managedDatabaseRuntimePreparationSchema, type ImageReferencePolicyV1 } from "@deploylite/contracts";
-import { awaitAbortable, digestControlInput, managedDatabaseCredentialKey, materializeManagedDatabaseRuntime, planManagedDatabaseProfile, PolicyEvaluator,
+import { awaitAbortable, digestControlInput, managedDatabaseCredentialKey, managedDatabaseInternalConnection, materializeManagedDatabaseRuntime, planManagedDatabaseProfile, PolicyEvaluator,
   type ManagedDatabaseCredentialCreationRepository, type ProjectRepository, type ControlGrantRepository, type AuditRepository } from "@deploylite/domain";
 import type { ManagedDatabaseCredentialConfiguration } from "./managed-database-credentials-route.js";
 export type ManagedDatabaseRuntimePreviewOptions = Readonly<{
@@ -58,7 +58,7 @@ export function registerManagedDatabaseRuntimePreviewRoute(app: FastifyInstance,
       await bounded(() => options.audit.append({ actorUserId: user.id, action: "database.runtime.previewed", targetType: "project", targetId: input.projectId,
         ...context, metadata: { ...preparation, redacted: true } }));
       if (!current() || !await authorized() || !current()) return reject(503, "DATABASE_RUNTIME_UNAVAILABLE");
-      return options.ok(request, { preparation, plan, credentialRef: { secretRefId: row.id, redacted: true } });
+      return options.ok(request, { preparation, plan, connection: managedDatabaseInternalConnection(runtime), credentialRef: { secretRefId: row.id, redacted: true } });
     } catch { return reject(503, "DATABASE_RUNTIME_UNAVAILABLE"); }
     finally { clearTimeout(timer); request.raw.off("aborted", cancel); }
   });
