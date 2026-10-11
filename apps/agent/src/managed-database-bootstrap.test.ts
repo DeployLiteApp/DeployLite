@@ -2,6 +2,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MANAGED_DATABASE_RUNTIME_CAPABILITY } from "@deploylite/contracts";
 
 const harness = vi.hoisted(() => ({
+  restoreInput:true,restoreReplay:true,restoreConfirmed:true,
+  binaryInput:vi.fn(async()=>{throw new Error("Unexpected private restore input");}),
   pool: vi.fn(() => ({ end: vi.fn(async () => {}) })),
   closePool: vi.fn(async () => {}),
   startServer: vi.fn(async (_options: unknown) => ({ close: vi.fn(async () => {}) })),
@@ -14,11 +16,14 @@ vi.mock("@deploylite/db", () => ({
   closeDbPool: harness.closePool,
   DbAgentReplayStore: class {
     readonly durable = true;
+    claim=harness.restoreReplay?vi.fn(async()=>{throw new Error("Unexpected claim");}):undefined;
+    wait=harness.restoreReplay?vi.fn(async()=>{throw new Error("Unexpected wait");}):undefined;
+    complete=harness.restoreReplay?vi.fn(async()=>{throw new Error("Unexpected completion");}):undefined;
     lookup = vi.fn(async () => null);
     lookupByFingerprintDigest = vi.fn(async () => null);
     constructor(..._args: unknown[]) {}
   },
-  DbControlCommandRepository: class { validateProjectUpdateAuthority=vi.fn(async()=>{});validateConfirmedProjectUpdateAuthority=vi.fn(async()=>{});constructor(..._args: unknown[]) {} },
+  DbControlCommandRepository: class { validateProjectUpdateAuthority=vi.fn(async()=>{});validateConfirmedProjectUpdateAuthority=harness.restoreConfirmed?vi.fn(async()=>{}):undefined;constructor(..._args: unknown[]) {} },
   DbEnvSecretValueRepository: class { constructor(..._args: unknown[]) {} }
 }));
 vi.mock("./server.js", () => ({ startAgentServer: harness.startServer }));
@@ -29,7 +34,7 @@ vi.mock("./deployment-dispatcher.js", () => ({
   }
 }));
 vi.mock("./infrastructure/docker/docker-process-runner.js", () => ({
-  DockerProcessRunner: class { run = harness.run; runBinaryToSink=harness.binaryRun; }
+  DockerProcessRunner: class { run = harness.run; runBinaryToSink=harness.binaryRun;runBinaryFromSource=harness.restoreInput?harness.binaryInput:undefined; }
 }));
 import { startAgentRuntime } from "./index.js";
 import type { AgentServerOptions } from "./server.js";
@@ -57,7 +62,7 @@ function receiver() {
   return (harness.startServer.mock.calls.at(-1)![0] as AgentServerOptions).receiver;
 }
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.clearAllMocks();harness.restoreInput=true;harness.restoreReplay=true;harness.restoreConfirmed=true;
   vi.spyOn(process, "once").mockImplementation(() => process);
 });
 afterEach(() => vi.restoreAllMocks());
@@ -155,3 +160,8 @@ it("advertises archive metadata only with explicit native backup budget and priv
  const runtime=await startAgentRuntime(env);try{expect(receiver().capabilities).toContain("database.runtime.restore.archive.v1");expect(harness.run).not.toHaveBeenCalled();expect(harness.binaryRun).not.toHaveBeenCalled();}finally{await runtime.close();}
  const disabled=await startAgentRuntime({...env,DEPLOYLITE_MANAGED_DATABASE_RUNTIME:JSON.stringify(configuration())});try{expect(receiver().capabilities).not.toContain("database.runtime.restore.archive.v1");expect(harness.run).not.toHaveBeenCalled();}finally{await disabled.close();}
 });
+
+function restoreBootstrapEnvironment():NodeJS.ProcessEnv{const config=configuration();Object.assign(config.limits,{backupMaxBytes:2097152,stopGraceSeconds:10});return {...environment(JSON.stringify(config)),DEPLOYLITE_COMPOSE_VOLUME_BACKUP_ROOTS:JSON.stringify({sourceRoots:{native:"/fixture/data"},destinations:{"private-a":"/fixture/backups"}})};}
+it("advertises confirmed restore only with explicit native archive/STOP configuration and functional persisted claim/confirmation ports",async()=>{const runtime=await startAgentRuntime(restoreBootstrapEnvironment());try{expect(receiver().capabilities).toContain("database.runtime.restore.v1");expect(harness.run).not.toHaveBeenCalled();expect(harness.binaryInput).not.toHaveBeenCalled();}finally{await runtime.close();}});
+it.each(["restoreInput","restoreReplay","restoreConfirmed"] as const)("withholds restore capability without functional %s",async field=>{harness[field]=false;const runtime=await startAgentRuntime(restoreBootstrapEnvironment());try{expect(receiver().capabilities).not.toContain("database.runtime.restore.v1");expect(harness.run).not.toHaveBeenCalled();expect(harness.binaryInput).not.toHaveBeenCalled();}finally{await runtime.close();}});
+it("never infers confirmed restore from backup budget without bounded STOP or from STOP without native archive",async()=>{for(const missing of ["stopGraceSeconds","backupMaxBytes"]){const env=restoreBootstrapEnvironment(),config=JSON.parse(env.DEPLOYLITE_MANAGED_DATABASE_RUNTIME!);delete config.limits[missing];const runtime=await startAgentRuntime({...env,DEPLOYLITE_MANAGED_DATABASE_RUNTIME:JSON.stringify(config)});try{expect(receiver().capabilities).not.toContain("database.runtime.restore.v1");expect(harness.binaryInput).not.toHaveBeenCalled();}finally{await runtime.close();}}});
