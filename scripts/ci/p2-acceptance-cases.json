@@ -1128,7 +1128,11 @@
     "apps/api/vitest.config.ts",
     "packages/db/vitest.config.ts",
     "scripts/ci/unit-report-acceptance.mjs",
-    "scripts/ci/unit-report-acceptance.test.mjs"
+    "scripts/ci/unit-report-acceptance.test.mjs",
+    "packages/domain/src/backup-retention-preview.ts",
+    "packages/domain/src/backup-retention-preview.test.ts",
+    "apps/api/src/backup-retention-preview-route.ts",
+    "apps/api/src/backup-retention-preview-api.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,

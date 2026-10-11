@@ -10,3 +10,10 @@ export const backupRetentionRequestSchema = z.object({
     createdAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)}).strict()).max(10_000)
 }).strict();
 export type BackupRetentionRequestV1 = z.infer<typeof backupRetentionRequestSchema>;
+
+/** HTTP preview input: inventory and restore protections remain server-owned. */
+export const backupRetentionPreviewRequestSchema = z.object({
+  schemaVersion: z.literal(1), volumeKey: identity, destinationId: identity,
+  keepNewest: z.number().int().positive().max(10_000),
+  expectedInventoryDigest: z.string().regex(/^[a-f0-9]{64}$/).optional()
+}).strict();
