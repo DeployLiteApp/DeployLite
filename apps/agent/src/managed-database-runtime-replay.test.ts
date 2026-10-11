@@ -2,7 +2,7 @@ import {startAgentServer} from "./server.js";
 import { expect, it, vi } from "vitest";
 import { signAgentTransport } from "@deploylite/config";
 import { managedDatabaseRuntimeAgentCommandSchema, managedDatabaseRuntimeCachedReceiptSchema, MANAGED_DATABASE_RUNTIME_RECEIPT_PATH } from "@deploylite/contracts";
-import { planManagedDatabaseProfile, managedDatabaseRuntimeExecutionDigest } from "@deploylite/domain";
+import { planManagedDatabaseProfile, managedDatabaseRuntimeExecutionDigest, managedDatabaseRuntimeReplayFingerprint } from "@deploylite/domain";
 import { AuthenticatedAgentCommandReceiver, type AgentReplayStore } from "./agent-transport.js";
 function fixture() {
     let now = 1000;
@@ -101,4 +101,10 @@ it("rejects native action/path mismatch before execution or claim",async () => {
         }
         expect(f.executor.apply).not.toHaveBeenCalled();expect(f.replayStore.claim).not.toHaveBeenCalled();
     } finally {await server.close();}
+});
+
+it("derives the original replay fingerprint identical to the actual durable apply claim",async()=>{
+    const f=fixture();await f.receiver.receive(f.command,f.signature(f.command));
+    expect(managedDatabaseRuntimeReplayFingerprint(f.query)).toBe(f.replayStore.complete.mock.calls[0]![1].fingerprint);
+    expect(managedDatabaseRuntimeReplayFingerprint({...f.query,timeoutMs:1,context:{...f.query.context,requestId:"new-read"}})).toBe(f.replayStore.complete.mock.calls[0]![1].fingerprint);
 });
