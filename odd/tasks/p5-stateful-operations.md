@@ -719,3 +719,13 @@ Six prospective receiver/server assertionsRED precede8receiver+4server+11health+
 Corroboration draft4627fe1692/run38120009936 owner verifies9/9gates/3106unit/allrequired physical cases,0skipped,pending,failed,241global+24P3+247operator hashes,restart/cleanup. Existing START/15health/15metrics10stats regressions retained; actual logs remain pending.
 
 Signed logs receiver/HTTP final source verification: fresh full Node24 pnpm check exits0:3143unit across8projects,zero skipped/failed. Contract463 current all9gatesSUCCESS; exact case/hash owner verification pending. Actual signed five-engine logs, API/bootstrap/live controls and wholeP5 remain open.
+
+### H1 signed API logs transport and current-access orchestration — 2026-10-11
+
+API logs transport reuses explicit secure original-runtime endpoint admission, negotiates only explicit logs capability, signs exact readonly query path and verifies exact request/response signature, full original identity/current window/redaction and bounded response/deadline. Future since and invalid tail/source fail before network. Current-access orchestration fences grants/configuration/port identities through original completed control and cache corroboration plus fresh logs; expired creation authority is neither refreshed nor reused for new effects. Log selection is excluded from original apply fingerprint/cache input and remains in the signed fresh query. No new ledger command, private environment or runtime endpoint activation yet.
+
+Four prospective transport/orchestration assertionsRED precede6transport+7access+13health=26focal PASS/APItypesPASS. Initial negative stub cases are not claimed as RED; every existing test preserved. Full/exact-head and actual signed five-engine logs pending. Rollback removes API logs transport/access/tests/source additions, preserving existing original runtime/health/metrics and grants. WholeP5 remains open.
+
+Contracts draft463a75dd41/run38120258118 owner verifies9/9gates/3120unit/allrequired physical cases,0skipped,pending,failed,245global+24P3+251operator hashes,restart/cleanup. Existing START/health/metrics proofs retained; actual logs remain pending.
+
+Signed API logs transport/access final source verification: fresh full Node24 pnpm check exits0:3156unit across8projects,zero skipped/failed. Executor464 all9gatesSUCCESS; exact owner case/hash verification pending. Logs endpoint/config/bootstrap, actual signed five-engine logs, live controls and wholeP5 remain open.
