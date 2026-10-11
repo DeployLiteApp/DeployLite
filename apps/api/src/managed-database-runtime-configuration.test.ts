@@ -184,3 +184,24 @@ it("withholds configured restore when protection or original nonce reader is abs
  Object.assign(f.controls,{resolveProjectUpdateConfirmation:vi.fn(async()=>null)});
  expect(await createConfiguredManagedDatabaseApi({...f.input,backupInventory:()=>inventory})).toHaveProperty("restorePreparations",new Map());expect(protection.protect).not.toHaveBeenCalled();
 });
+
+
+function confirmedRestoreConfiguration(){
+ const f=fixture();Object.assign(f.parsed.configuration.limits,{backupMaxBytes:2097152});
+ const ports={findProjectUpdateById:vi.fn(),resolveProjectUpdateConfirmation:vi.fn(),claimConfirmedProjectUpdate:vi.fn(),completeManagedDatabaseRestore:vi.fn(),validateConfirmedProjectUpdateAuthority:vi.fn()};Object.assign(f.controls,ports);
+ const inventory={available:()=>true,list:vi.fn(async()=>[]),recordAuthenticatedReceipt:vi.fn()},protection={protect:vi.fn(),assertProtected:vi.fn()};
+ return {...f,ports,inventory,protection,input:{...f.input,backupInventory:()=>inventory,restoreProtection:()=>protection}};
+}
+it("configures confirmed restore only on named projects with exact persisted protection and existing confirmation ports",async()=>{
+ const f=confirmedRestoreConfiguration(),configured=await createConfiguredManagedDatabaseApi(f.input);
+ expect(configured).toHaveProperty("restoreExecutions",expect.any(Map));const executions=Reflect.get(configured,"restoreExecutions") as Map<string,unknown>;
+ expect([...executions.keys()]).toEqual(["project-a","project-b"]);expect(executions.get("project-a")).toMatchObject({controls:f.controls,protection:f.protection,inventory:f.inventory,agentId:"agent-a",deadlineMs:60000});
+ expect(f.protection.assertProtected).not.toHaveBeenCalled();expect(f.ports.claimConfirmedProjectUpdate).not.toHaveBeenCalled();expect(f.secrets.find).not.toHaveBeenCalled();
+});
+it.each(["assertProtected","claimConfirmedProjectUpdate","completeManagedDatabaseRestore","validateConfirmedProjectUpdateAuthority"])("withholds confirmed restore without functional %s",async port=>{
+ const f=confirmedRestoreConfiguration();Object.assign(port==="assertProtected"?f.protection:f.controls,{[port]:undefined});const configured=await createConfiguredManagedDatabaseApi(f.input);expect(configured).toHaveProperty("restoreExecutions",new Map());expect(f.inventory.list).not.toHaveBeenCalled();
+});
+it("rejects configured confirmed-restore override maps before opening the pool",async()=>{
+ const f=fixture(),{buildApiApp}=await import("./app.js"),pool=vi.fn(()=>{throw new Error("Unexpected pool");});
+ await expect(buildApiApp({env:{NODE_ENV:"test",DATABASE_URL:"postgres://fixture:fixture@invalid/bootstrap",DEPLOYLITE_MANAGED_DATABASE_RUNTIME:JSON.stringify(f.parsed.configuration),DEPLOYLITE_MANAGED_DATABASE_PROJECT_AGENTS_JSON:JSON.stringify(f.parsed.bindings)},managedDatabaseRestoreExecutions:new Map(),db:{createPool:pool}})).rejects.toThrow("Database API configuration cannot be combined with injected native maps.");expect(pool).not.toHaveBeenCalled();
+});
