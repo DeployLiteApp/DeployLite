@@ -25,9 +25,10 @@ function fixture(engine:typeof engines[number]="postgres"){
  const inventory={available:()=>true,list:vi.fn(async()=>[{schemaVersion:1,receipt:backupReceipt,createdAtMs:1000}] as any)};
  const view={archiveId:backupReceipt.archiveId,archiveBytes:4,archiveSha256:backupReceipt.archiveSha256,manifestSha256:backupReceipt.manifestSha256,format:backupReceipt.format,integrity:"verified",redacted:true};
  const archive={verify:vi.fn(async(_preparation:unknown,_signal:AbortSignal)=>({...view}))};
- const access={controls,originalTransport,agentId:"agent-a",deadlineMs:1000,inventory,archive,now:()=>1000,commandTtlMs:1000};
+ const protection={protect:vi.fn(async()=>{})};
+ const access={protection,controls,originalTransport,agentId:"agent-a",deadlineMs:1000,inventory,archive,now:()=>1000,commandTtlMs:1000};
  const input={selection,actorId:"operator-a",idempotencyKey:"restore-orders",context:{requestId:"prepare-request",correlationId:"prepare-correlation"},authorize:vi.fn(async()=>true),current:vi.fn(()=>true),admit:vi.fn(async()=>{})};
- return {access,input,preparation,controls,nonces,ledger,originalTransport,inventory,archive,view,forbidden};
+ return {protection,access,input,preparation,controls,nonces,ledger,originalTransport,inventory,archive,view,forbidden};
 }
 it.each(engines)("persists and recovers the same original %s pending restore nonce",async engine=>{
  const f=fixture(engine),pending=prepareManagedDatabaseRestore(f.access,f.input);
@@ -35,7 +36,7 @@ it.each(engines)("persists and recovers the same original %s pending restore non
  const first=await pending,again=await prepareManagedDatabaseRestore(f.access,{...f.input,context:{requestId:"retry",correlationId:"retry-correlation"}});
  expect(first.preparation).toEqual(f.preparation);expect(first.command).toMatchObject({actorId:f.input.actorId,status:"pending_confirmation",inputDigest:managedDatabaseRestoreExecutionDigest(f.preparation),correlationId:"prepare-correlation",expiresAt:new Date(2000)});
  expect(first.confirmation).toMatchObject({classification:"destructive",consumedAt:null,commandId:first.command.id});expect(again.command).toEqual(first.command);expect(again.confirmation).toEqual(first.confirmation);expect(again.idempotent).toBe(true);expect(first.idempotent).toBe(false);
- expect(f.nonces.size).toBe(1);expect(f.ledger.size).toBe(1);expect(f.originalTransport.readReceipt).toHaveBeenCalled();expect(f.forbidden).not.toHaveBeenCalled();expect(first.command).not.toHaveProperty("projectExecutionAuthority");
+ expect(f.nonces.size).toBe(1);expect(f.ledger.size).toBe(1);expect(f.protection.protect).toHaveBeenCalledTimes(2);expect(f.protection.protect).toHaveBeenCalledWith(first.preparation,first.command,first.confirmation);expect(f.originalTransport.readReceipt).toHaveBeenCalled();expect(f.forbidden).not.toHaveBeenCalled();expect(first.command).not.toHaveProperty("projectExecutionAuthority");
 });
 it("denies revoked access before private source inventory archive or pending writes",async()=>{
  const f=fixture();f.input.authorize.mockResolvedValue(false);await expect(prepareManagedDatabaseRestore(f.access,f.input)).rejects.toThrow("Database restore preparation is unavailable.");
@@ -65,3 +66,6 @@ it("rejects archive refusal without reflecting its private diagnostic or writing
 it("rejects missing durable confirmation capability before source reads",async()=>{
  const f=fixture();await expect(prepareManagedDatabaseRestore({...f.access,controls:{...f.controls,resolveProjectUpdateConfirmation:undefined}},f.input)).rejects.toThrow("Database restore preparation is unavailable.");expect(f.originalTransport.readReceipt).not.toHaveBeenCalled();expect(f.controls.resolve).not.toHaveBeenCalled();
 });
+it("requires durable archive protection before returning or reading original pending intent",async()=>{const f=fixture();await expect(prepareManagedDatabaseRestore({...f.access,protection:undefined} as never,f.input)).rejects.toThrow("Database restore preparation is unavailable.");expect(f.originalTransport.readReceipt).not.toHaveBeenCalled();expect(f.controls.resolve).not.toHaveBeenCalled();});
+it("does not expose a pending approval when durable protection fails or reflect private diagnostics",async()=>{const f=fixture();f.protection.protect.mockImplementation(async()=>{throw new Error("password=private-fixture");});await expect(prepareManagedDatabaseRestore(f.access,f.input)).rejects.toThrow("Database restore preparation is unavailable.");expect(f.ledger.size).toBe(1);expect(f.nonces.size).toBe(1);expect([...f.nonces.values()][0]!.consumedAt).toBeNull();expect(f.forbidden).not.toHaveBeenCalled();});
+it("rechecks grant after protecting the archive and before returning the original nonce",async()=>{const f=fixture();f.protection.protect.mockImplementation(async()=>{f.input.authorize.mockResolvedValue(false);});await expect(prepareManagedDatabaseRestore(f.access,f.input)).rejects.toThrow("Database restore preparation is unavailable.");expect(f.protection.protect).toHaveBeenCalledTimes(1);expect([...f.nonces.values()][0]!.consumedAt).toBeNull();expect(f.forbidden).not.toHaveBeenCalled();});

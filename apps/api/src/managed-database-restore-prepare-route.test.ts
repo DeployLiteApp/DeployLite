@@ -35,9 +35,10 @@ function domainFixture(engine:typeof engines[number]="postgres"){
  const inventory={available:()=>true,list:vi.fn(async()=>[{schemaVersion:1,receipt:backupReceipt,createdAtMs:1000}] as any)};
  const view={archiveId:backupReceipt.archiveId,archiveBytes:4,archiveSha256:backupReceipt.archiveSha256,manifestSha256:backupReceipt.manifestSha256,format:backupReceipt.format,integrity:"verified",redacted:true};
  const archive={verify:vi.fn(async(_preparation:unknown,_signal:AbortSignal)=>({...view}))};
- const access={controls,originalTransport,agentId:"agent-a",deadlineMs:1000,inventory,archive,now:()=>1000,commandTtlMs:1000};
+ const protection={protect:vi.fn(async()=>{})};
+ const access={protection,controls,originalTransport,agentId:"agent-a",deadlineMs:1000,inventory,archive,now:()=>1000,commandTtlMs:1000};
  const input={selection,actorId:"operator-a",idempotencyKey:"restore-orders",context:{requestId:"prepare-request",correlationId:"prepare-correlation"},authorize:vi.fn(async()=>true),current:vi.fn(()=>true),admit:vi.fn(async()=>{})};
- return {profile,imagePolicy,access,input,preparation,controls,nonces,ledger,originalTransport,inventory,archive,view,forbidden};
+ return {protection,profile,imagePolicy,access,input,preparation,controls,nonces,ledger,originalTransport,inventory,archive,view,forbidden};
 }
 function fixture(engine:typeof engines[number]="postgres"){
  const f=domainFixture(engine),app=Fastify();apps.push(app);
