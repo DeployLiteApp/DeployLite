@@ -1,7 +1,8 @@
+import {createManagedDatabaseStartExecutor} from "./docker-managed-database-start-executor.js";
 import {createManagedDatabaseDaemonStopper} from "./docker-managed-database-daemon-stop.js";
 import {createManagedDatabaseStopExecutor} from "./docker-managed-database-stop-executor.js";
 import {validateAgentTransportKey} from "@deploylite/config";
-import {COMPOSE_RESOURCE_INSPECTION_CAPABILITY, MANAGED_DATABASE_RUNTIME_CAPABILITY, MANAGED_DATABASE_STOP_CAPABILITY, type CapabilityRegistry, type Clock, type ImageReferencePolicyV1} from "@deploylite/contracts";
+import {COMPOSE_RESOURCE_INSPECTION_CAPABILITY, MANAGED_DATABASE_RUNTIME_CAPABILITY, MANAGED_DATABASE_START_CAPABILITY, MANAGED_DATABASE_STOP_CAPABILITY, type CapabilityRegistry, type Clock, type ImageReferencePolicyV1} from "@deploylite/contracts";
 import {validateManagedDatabaseRuntimeProfiles} from "@deploylite/domain";
 import type {DockerCliRunner} from "./docker-cli-image-transport.js";
 import {createDockerComposeResourceInspector} from "./docker-compose-resource-inspector.js";
@@ -45,6 +46,7 @@ export function createManagedDatabaseRuntime(supplied: Readonly<{
         const processIdentityReader = createManagedDatabaseProcessIdentityReader(shared);
         const verifier = createManagedDatabaseReadinessVerifier({...shared, nativeInspector, resourceVerifier: resources, composeInspector, processIdentityReader});
         const starter = createManagedDatabaseDaemonStarter({...shared, nativeInspector, verifier});
+        const start=options.capabilities.has(MANAGED_DATABASE_START_CAPABILITY)?createManagedDatabaseStartExecutor({...shared,starter}):undefined;
         const executor = createManagedDatabaseRuntimeExecutor({...shared, preparation, resources, storage, starter});
         const stop=stopGrace===undefined?undefined:createManagedDatabaseStopExecutor({...shared,stopper:createManagedDatabaseDaemonStopper({
             runner:options.runner,verifier,clock:options.clock,limits:{deadlineMs:options.limits.deadlineMs,maxOutputBytes:options.limits.maxOutputBytes,stopGraceSeconds:stopGrace}})});
@@ -53,6 +55,9 @@ export function createManagedDatabaseRuntime(supplied: Readonly<{
         }}, args[2]),...(stop?{stop:async(...args:Parameters<typeof stop.stop>)=>stop.stop(args[0],{assertValid:async()=>{
             capabilities();if(!options.capabilities.has(MANAGED_DATABASE_STOP_CAPABILITY))fail();await args[1].assertValid();capabilities();
             if(!options.capabilities.has(MANAGED_DATABASE_STOP_CAPABILITY))fail();
+        }},args[2])}:{}),...(start?{start:async(...args:Parameters<typeof start.start>)=>start.start(args[0],{assertValid:async()=>{
+            capabilities();if(!options.capabilities.has(MANAGED_DATABASE_START_CAPABILITY))fail();await args[1].assertValid();capabilities();
+            if(!options.capabilities.has(MANAGED_DATABASE_START_CAPABILITY))fail();
         }},args[2])}:{})});
     } catch {return fail();}
 }
