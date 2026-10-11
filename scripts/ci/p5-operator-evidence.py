@@ -170,10 +170,10 @@ def validate_confirmed_deletion(result,profile):
 
 def validate_native_backup(result, profile):
     proof=result.get("nativeBackup")
-    exact(proof,{"receipt","maxBytes","captures","signedHttp","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup"}|({"writersResumed"} if profile["engine"] in ("mysql","mariadb","mongodb") else {"stoppedSource","sourceCleanup"} if profile["engine"]=="redis" else set()),"complete_actual_native_dump_required")
+    exact(proof,{"receipt","maxBytes","captures","signedHttp","archiveIntegrity","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup"}|({"writersResumed"} if profile["engine"] in ("mysql","mariadb","mongodb") else {"stoppedSource","sourceCleanup"} if profile["engine"]=="redis" else set()),"complete_actual_native_dump_required")
     native.require(profile["engine"] in ("postgres","mysql","mariadb","mongodb","redis") and type(proof["captures"]) is int and proof["captures"]==1
         and type(proof["maxBytes"]) is int and proof["maxBytes"]==2097152
-        and all(proof[key]=="passed" for key in ("signedHttp","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup")),"executed_private_postgres_dump_required")
+        and all(proof[key]=="passed" for key in ("signedHttp","archiveIntegrity","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup")),"executed_private_postgres_dump_required")
     if profile["engine"] in ("mysql","mariadb","mongodb"):native.require(proof["writersResumed"]=="passed","actual_sql_writers_resumed_required")
     if profile["engine"]=="postgres":native.require(proof["restoredData"]==proof["restoreCleanup"]=="passed","actual_postgres_restore_required")
     if profile["engine"]=="redis":native.require(proof["stoppedSource"]==proof["sourceCleanup"]=="passed","actual_stopped_redis_source_required")
