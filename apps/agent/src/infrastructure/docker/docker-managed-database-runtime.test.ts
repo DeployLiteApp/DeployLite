@@ -52,3 +52,11 @@ it("composes readonly health only with its explicit capability without Docker ef
  expect(createManagedDatabaseRuntime(f.options)).not.toHaveProperty("health");expect(f.runner.run).not.toHaveBeenCalled();
 });
 it("composes scoped readonly metrics only with its explicit capability without Docker effects",()=>{const f=fixture(),capabilities=new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.metrics.v1"]);const runtime=createManagedDatabaseRuntime({...f.options,capabilities});expect(typeof (runtime as typeof runtime&{metrics?:unknown}).metrics).toBe("function");expect(Object.keys(runtime)).toEqual(["apply","metrics"]);expect(createManagedDatabaseRuntime(f.options)).not.toHaveProperty("metrics");expect(f.runner.run).not.toHaveBeenCalled();});
+it("composes retained scoped logs only with explicit capability and no Docker effects", () => {
+  const f = fixture(), capabilities = new InMemoryCapabilityRegistry(["database.runtime.v1", "compose.resource.inspect.v1", "database.runtime.logs.v1"]);
+  const runtime = createManagedDatabaseRuntime({...f.options, capabilities});
+  expect(typeof (runtime as typeof runtime & {logs?: unknown}).logs).toBe("function");
+  expect(Object.keys(runtime)).toEqual(["apply", "logs"]);
+  expect(createManagedDatabaseRuntime(f.options)).not.toHaveProperty("logs");
+  expect(f.runner.run).not.toHaveBeenCalled();
+});
