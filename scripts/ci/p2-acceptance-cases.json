@@ -1338,7 +1338,9 @@
     "apps/web/src/app/projects/[projectId]/page.tsx",
     "packages/domain/src/managed-database-inventory.ts",
     "packages/domain/src/managed-database-inventory.test.ts",
-    "packages/db/src/repositories/control-plane-digest-reader.test.ts"
+    "packages/db/src/repositories/control-plane-digest-reader.test.ts",
+    "apps/api/src/managed-database-source-recovery.ts",
+    "apps/api/src/managed-database-source-recovery.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
