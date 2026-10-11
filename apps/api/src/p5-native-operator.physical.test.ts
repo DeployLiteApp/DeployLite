@@ -4,8 +4,8 @@ import {lstatSync, readFileSync, writeFileSync} from "node:fs";
 import {resolve} from "node:path";
 import type {FastifyInstance} from "fastify";
 import {AuthenticatedAgentCommandReceiver, startAgentServer} from "@deploylite/agent";
-import {approvedManagedDatabaseProfileSchema, InMemoryCapabilityRegistry, managedDatabaseRuntimeReceiptSchema, managedDatabaseStopReceiptSchema,
-  MANAGED_DATABASE_STOP_PATH, type ManagedDatabaseEngineV1} from "@deploylite/contracts";
+import {approvedManagedDatabaseProfileSchema, InMemoryCapabilityRegistry, managedDatabaseRuntimeReceiptSchema, managedDatabaseStopReceiptSchema, managedDatabaseStartReceiptSchema,
+  MANAGED_DATABASE_STOP_PATH, MANAGED_DATABASE_START_PATH, type ManagedDatabaseEngineV1} from "@deploylite/contracts";
 import {DbAgentReplayStore, DbControlCommandRepository, DbProjectRepository} from "@deploylite/db";
 import {managedDatabaseNativeImagePolicy} from "@deploylite/domain";
 import {buildApiApp} from "./app.js";
@@ -73,18 +73,20 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
   const trustKey = "ci-operator-" + randomBytes(32).toString("hex"), imagePolicy = managedDatabaseNativeImagePolicy();
   const limits = {deadlineMs:60000,maxOutputBytes:131072,maxContainers:64,pollIntervalMs:100,cpus:1,memoryBytes:536870912,pidsLimit:256,stopGraceSeconds:10};
   const raw = JSON.stringify({profiles,limits}), clock = {now:Date.now};
-  const capabilities = new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.stop.v1"]);
+  const capabilities = new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.stop.v1","database.runtime.start.v1"]);
   const shared = {runner,imagePolicy,clock,limits,owner:projectId,agentId,trustKey,capabilities};
   const inspector = createManagedDatabaseDockerInspector(shared), resources = createManagedDatabaseResourceMaterializer(shared);
   const native = createConfiguredManagedDatabaseRuntime(raw, shared)!;
   const stopExecutor = native.stop ? {stop:native.stop} : undefined;
+  const startExecutor = native.start ? {start:native.start} : undefined;
+  if (!startExecutor) throw new Error("Explicit native start required.");
   if (!stopExecutor) throw new Error("Explicit native stop required.");
   let peer: Awaited<ReturnType<typeof startAgentServer>> | undefined, app: FastifyInstance | undefined;
-  let stopDispatches = 0, lostStop = false, result: Record<string,unknown> | undefined;
+  let stopDispatches = 0, startDispatches = 0, lostStop = false, lostStart = false, result: Record<string,unknown> | undefined;
   async function startPeer(enabled:boolean) {
     const replayStore = new DbAgentReplayStore(db.db, "operator-" + projectId);
     const receiver = new AuthenticatedAgentCommandReceiver({agentId,trustKey,replayStore,capabilities:enabled ? capabilities.list() : [],
-      managedDatabaseRuntime:enabled ? native : undefined, managedDatabaseStop:enabled ? stopExecutor : undefined,
+      managedDatabaseRuntime:enabled ? native : undefined, managedDatabaseStop:enabled ? stopExecutor : undefined, managedDatabaseStart:enabled ? startExecutor : undefined,
       dispatcher:{dispatch:async () => {throw new Error("Unexpected deployment.");}},authorityValidator:new DbControlCommandRepository(db.db)});
     peer = await startAgentServer({host:"127.0.0.1",port:0,production:false,receiver,replayStore});
     const address = peer.server.address(); if (!address || typeof address === "string") throw new Error("Owned peer address required.");
@@ -102,9 +104,13 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
       if (!String(url).startsWith(endpoint + "/")) throw new Error("Unscoped fixture HTTP request.");
       const stop = String(url) === endpoint + MANAGED_DATABASE_STOP_PATH;
       if (stop) stopDispatches++;
+      const start = String(url) === endpoint + MANAGED_DATABASE_START_PATH; if (start) startDispatches++;
       const response = await actualFetch(url, init);
       if (stop && engine === "redis" && !lostStop && response.ok) {
         await response.arrayBuffer(); lostStop = true; throw new Error("Lost fixture reply after real durable stop.");
+      }
+      if (start && engine === "mongodb" && !lostStart && response.ok) {
+        await response.arrayBuffer(); lostStart = true; throw new Error("Lost fixture reply after real durable start.");
       }
       return response;
     });
@@ -115,7 +121,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const login = await app.inject({method:"POST",url:"/api/v1/auth/login",payload:{email:"admin@example.test",password:adminPassword}});
     expect(login.statusCode).toBe(200); const cookie = login.headers["set-cookie"] as string, actorId = login.json().data.user.id;
     const call = (operation:string,payload:unknown) => app!.inject({method:"POST",url:`/api/v1/projects/${projectId}/databases/${databaseId}/${operation}`,
-      headers:{cookie,"idempotency-key":operation === "runtime/stop" ? "native-stop-" + engine : "native-" + engine},payload:payload as Record<string,unknown>});
+      headers:{cookie,"idempotency-key":operation === "runtime/stop" ? "native-stop-" + engine : operation === "runtime/start" ? "native-start-" + engine : "native-" + engine},payload:payload as Record<string,unknown>});
     expect((await call("credentials",{schemaVersion:1,engine})).statusCode).toBe(403);
     await db.pool.query("INSERT INTO control_grants(actor_user_id,action,scope_kind,scope_key) VALUES($1,'project.update','project',$2)",[actorId,projectId]);
     expect((await call("credentials",{schemaVersion:1,engine})).statusCode).toBe(200);
@@ -150,9 +156,20 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const audits = (await db.pool.query("SELECT metadata,correlation_id FROM audit_events WHERE target_id=$1 AND action='database.runtime.stopped'",[projectId])).rows;
     expect(audits).toHaveLength(1); expect(audits[0].metadata.receipt).toEqual({...stopped,containerId:"[REDACTED]",imageId:"sha256:[REDACTED]",
       networkId:"[REDACTED]",networkName:"dl-[REDACTED]-net-db-orders",volumeName:"dl-[REDACTED]-vol-db-orders"}); expect(audits[0].correlation_id).toBe(stopped.correlationId);
-    // Fixture-only daemon start proves persistence; no operator restart feature is claimed.
-    await runner.run(["docker","start",receipt.containerId],signal);
-    while ((await inspector.inspectContainer(receipt.containerId,signal)).health === "starting") await new Promise(resolve => setTimeout(resolve,100));
+    const stopReplayRows = (await db.pool.query("SELECT * FROM agent_replay WHERE command_id=$1",[stopped.commandId])).rows;
+    expect(stopReplayRows).toHaveLength(1);
+    const originalStopReplayFingerprint = createHash("sha256").update(stopReplayRows[0].fingerprint).digest("hex");
+    const startInput = {...stopInput,originalStopReceipt:stopped,originalStopReplayFingerprint};
+    const start = await call("runtime/start",startInput); expect(start.statusCode).toBe(200);
+    expect(start.json().data.command.status).toBe("completed");
+    const started = managedDatabaseStartReceiptSchema.parse(start.json().data.receipt);
+    expect(started).toMatchObject({status:"ready",health:"passed",originalCommandId:receipt.commandId,originalStopCommandId:stopped.commandId,containerId:receipt.containerId});
+    expect((await inspector.inspectContainer(receipt.containerId,signal)).running).toBe(true);
+    const startAudits = (await db.pool.query("SELECT metadata,correlation_id FROM audit_events WHERE target_id=$1 AND action='database.runtime.started'",[projectId])).rows;
+    expect(startAudits).toHaveLength(1); expect(startAudits[0].correlation_id).toBe(started.correlationId);
+    expect(startAudits[0].metadata.receipt).toEqual({...started,containerId:"[REDACTED]",imageId:"sha256:[REDACTED]",
+      networkId:"[REDACTED]",networkName:"dl-[REDACTED]-net-db-orders",volumeName:"dl-[REDACTED]-vol-db-orders"});
+    expect((await db.pool.query("SELECT * FROM agent_replay WHERE command_id=$1",[stopped.commandId])).rows).toEqual(stopReplayRows);
     expect(await verifier.verify(input,pinned,authority,signal)).toEqual(ready);
     for (const hostname of ["127.0.0.1",connection.hostname]) expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,hostname)],signal)).stdout.trim()).toBe(marker);
     await app.close(); app = undefined; await peer!.close(); peer = undefined;
@@ -160,11 +177,19 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const replay = await call("runtime/stop",stopInput); expect(replay.statusCode).toBe(200);
     expect(replay.json().data.idempotent).toBe(true); expect(replay.json().data.receipt).toEqual(stopped);
     expect((await inspector.inspectContainer(receipt.containerId,signal)).running).toBe(true); expect(stopDispatches).toBe(1);
-    if (engine === "redis") expect(lostStop).toBe(true);
+    const startReplay = await call("runtime/start",startInput); expect(startReplay.statusCode).toBe(200);
+    expect(startReplay.json().data.idempotent).toBe(true); expect(startReplay.json().data.receipt).toEqual(started); expect(startDispatches).toBe(1);
+    if (engine === "redis") expect(lostStop).toBe(true); if (engine === "mongodb") expect(lostStart).toBe(true);
+    await runner.run(["docker","stop","--timeout","10",receipt.containerId],signal);
+    expect((await inspector.inspectContainer(receipt.containerId,signal)).running).toBe(false);
+    const stoppedStartReplay = await call("runtime/start",startInput); expect(stoppedStartReplay.statusCode).toBe(200);
+    expect(stoppedStartReplay.json().data.receipt).toEqual(started); expect(startDispatches).toBe(1);
+    expect((await inspector.inspectContainer(receipt.containerId,signal)).running).toBe(false);
+    expect((await db.pool.query("SELECT * FROM agent_replay WHERE command_id=$1",[stopped.commandId])).rows).toEqual(stopReplayRows);
     expect(await originals()).toEqual(originalRows); expect(await encrypted()).toEqual(cipherRows);
     const command = (value:typeof apply) => ({id:value.json().data.command.id,correlationId:value.json().data.command.correlationId,status:value.json().data.command.status});
-    result = {receipt,uid:ready.uid,original:pinned,nativeStop:{receipt:stopped,originalReplayFingerprint},internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},
-      authenticatedProbe:"passed",restart:"passed",persistence:"passed",operator:{applyCommand:command(apply),stopCommand:command(stop),signedHttp:"passed",postgresReplay:"passed",
+    result = {receipt,uid:ready.uid,original:pinned,nativeStop:{receipt:stopped,originalReplayFingerprint},nativeStart:{receipt:started,originalStopReplayFingerprint},internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},
+      authenticatedProbe:"passed",restart:"passed",persistence:"passed",operator:{applyCommand:command(apply),stopCommand:command(stop),startCommand:command(start),startDispatches,startAtomicAudit:"passed",startCacheOnlyReplay:"passed",startExecutorRemoved:"passed",stoppedCacheNoRestart:"passed",signedHttp:"passed",postgresReplay:"passed",
         originalRows:"unchanged",cipherRows:"unchanged",atomicAudit:"passed",stopDispatches,cacheOnlyReplay:"passed",executorRemoved:"passed"}};
   } finally {
     if (app) await app.close(); if (peer) await peer.close(); vi.unstubAllGlobals();

@@ -39,6 +39,14 @@ def fixture(engine="postgres"):
             "stopCommand": {"id": stopped["commandId"], "correlationId": stopped["correlationId"], "status": "completed"},
             "signedHttp": "passed", "postgresReplay": "passed", "originalRows": "unchanged", "cipherRows": "unchanged", "atomicAudit": "passed",
             "stopDispatches": 1, "cacheOnlyReplay": "passed", "executorRemoved": "passed"}}
+    start_preparation = {**preparation, "originalStopReceipt": stopped, "originalStopReplayFingerprint": "2" * 64}
+    started = {**ready, "action": "database.runtime.start", "commandId": "55555555-5555-4555-8555-555555555555",
+        "originalCommandId": ready["commandId"], "originalStopCommandId": stopped["commandId"], "profileId": profile["profileId"],
+        "inputDigest": digest({**start_preparation, "action": "project.update", "scope": {"kind": "project", "projectId": project}, "operation": "database.runtime.start"}),
+        "correlationId": "start-correlation", "observedAt": 3000}
+    result["nativeStart"] = {"receipt": started, "originalStopReplayFingerprint": "2" * 64}
+    result["operator"].update(startCommand={"id": started["commandId"], "correlationId": started["correlationId"], "status": "completed"},
+        startDispatches=1, startAtomicAudit="passed", startCacheOnlyReplay="passed", startExecutorRemoved="passed", stoppedCacheNoRestart="passed")
     return result, profile
 class OperatorProofTests(unittest.TestCase):
     def test_exact_public_original_and_distinct_operator_stop(self):
@@ -77,6 +85,23 @@ class OperatorProofTests(unittest.TestCase):
         for patch in [{"commit": "c" * 40}, {"runAttempt": "2"}, {"nonce": "c" * 24},
                 {"database": {"name": "foreign", "cleanup": "verified"}}, {"database": {"name": binding["databaseName"], "cleanup": "pending"}}, {"password": "private"}]:
             with self.subTest(patch=patch), self.assertRaises(RuntimeError): module.validate_acceptance({**acceptance, **patch}, binding)
+    def test_requires_executed_operator_start_instead_of_fixture_restart(self):
+        result, profile = fixture()
+        del result["nativeStart"]
+        with self.assertRaises(RuntimeError): module.validate_result(result, profile)
+
+    def test_rejects_detached_start_and_omitted_execution_replay_or_audit(self):
+        result, profile = fixture()
+        for patch in [{"originalStopCommandId": result["receipt"]["commandId"]}, {"originalCommandId": "foreign"},
+                {"inputDigest": "0" * 64}, {"observedAt": 1999}, {"containerId": "0" * 64}, {"password": "private"},
+                {"commandId": result["nativeStop"]["receipt"]["commandId"]}]:
+            changed = copy.deepcopy(result); changed["nativeStart"]["receipt"].update(patch)
+            with self.subTest(patch=patch), self.assertRaises(RuntimeError): module.validate_result(changed, profile)
+        for key, value in {"startDispatches": 2, "startAtomicAudit": "not-run", "startCacheOnlyReplay": "not-run",
+                "startExecutorRemoved": "not-run", "stoppedCacheNoRestart": "not-run"}.items():
+            changed = copy.deepcopy(result); changed["operator"][key] = value
+            with self.subTest(key=key), self.assertRaises(RuntimeError): module.validate_result(changed, profile)
+
     def test_report_requires_all_five_passed_cases_without_skips(self):
         report = {"success": True, "numTotalTests": 5, "numPassedTests": 5, "numFailedTests": 0, "numPendingTests": 0,
             "testResults": [{"name": "/workspace/apps/api/src/p5-native-operator.physical.test.ts", "assertionResults": [
