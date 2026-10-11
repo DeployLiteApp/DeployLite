@@ -90,3 +90,12 @@ it("retains stop diagnostic redaction for foreign IDs, extra options, failed exi
         } else expect((await pending).stdout).not.toBe(output);
     }
 });
+
+it("preserves only a canonical bounded timeout stop reply and keeps unsafe variants redacted",async()=>{
+    const id="a".repeat(64);
+    for (const [grace,output,valid] of [["10",id+"\n",true],["0",id,false],["31",id,false],["10","b".repeat(64),false],["10",id+"\npassword=private",false]] as const) {
+        const f=fakeProcess(),pending=new DockerProcessRunner({spawn:()=>f.child}).run(["docker","stop","--timeout",grace,id],new AbortController().signal);
+        f.stdout.on.mock.calls[0]![1](output);f.callbacks.get("close")!(0,null);
+        if(valid)expect((await pending).stdout).toBe(output);else expect((await pending).stdout).not.toBe(output);
+    }
+});

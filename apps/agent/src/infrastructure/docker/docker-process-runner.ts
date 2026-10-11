@@ -37,7 +37,7 @@ function redactDockerProtocolOutput(value: string, argv: readonly string[]): str
   const nativeDaemonCreate = op === "create" && /^dl-[a-f0-9]{32}-database$/.test(words[words.indexOf("--name") + 1] ?? "")
     && words.some(word => /^com\.deploylite\.database\.engine=(?:postgres|mysql|mariadb|mongodb|redis)$/.test(word));
   // A bounded stop may echo only the exact caller-selected public container ID.
-  if (op === "stop" && words.length === 4 && words[1] === "--time" && /^(?:[1-9]|[12][0-9]|30)$/.test(words[2]!)
+  if (op === "stop" && words.length === 4 && (words[1] === "--time" || words[1] === "--timeout") && /^(?:[1-9]|[12][0-9]|30)$/.test(words[2]!)
     && /^[a-f0-9]{64}$/.test(words[3]!) && (value === words[3] || value === words[3] + "\n")) return value;
   if (op === "start" && words.length === 2 && /^[a-f0-9]{64}$/.test(words[1]!) && (value === words[1] || value === words[1] + "\n")) return value;
   if (op === "run" || nativeInitializerCreate || nativeDaemonCreate || (op === "network" && words[1] === "create")) return /^[0-9a-f]{64}\n?$/.test(value) ? value : redactDockerDiagnostic(value);
