@@ -1303,7 +1303,11 @@
     "apps/api/src/managed-database-metrics.ts",
     "apps/api/src/managed-database-metrics.test.ts",
     "apps/api/src/managed-database-metrics-route.ts",
-    "apps/api/src/managed-database-metrics-route.test.ts"
+    "apps/api/src/managed-database-metrics-route.test.ts",
+    "apps/agent/src/infrastructure/docker/docker-managed-database-logs.ts",
+    "apps/agent/src/infrastructure/docker/docker-managed-database-logs.test.ts",
+    "packages/config/src/redaction.ts",
+    "packages/config/src/redaction.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
