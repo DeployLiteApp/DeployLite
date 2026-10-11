@@ -411,3 +411,4 @@ export * from "./deployment-contract/managed-database-stop.js";
 export * from "./deployment-contract/managed-database-start.js";
 
 export * from "./deployment-contract/managed-database-health.js";
+export * from "./deployment-contract/managed-database-metrics.js";

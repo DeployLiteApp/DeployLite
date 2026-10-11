@@ -1289,7 +1289,11 @@
     "apps/agent/src/infrastructure/docker/docker-managed-database-stats.ts",
     "apps/agent/src/infrastructure/docker/docker-managed-database-stats.test.ts",
     "apps/agent/src/infrastructure/docker/docker-managed-database-metrics.ts",
-    "apps/agent/src/infrastructure/docker/docker-managed-database-metrics.test.ts"
+    "apps/agent/src/infrastructure/docker/docker-managed-database-metrics.test.ts",
+    "packages/contracts/src/deployment-contract/managed-database-metrics.ts",
+    "packages/contracts/src/deployment-contract/managed-database-metrics.test.ts",
+    "packages/domain/src/managed-database-metrics-binding.ts",
+    "packages/domain/src/managed-database-metrics-binding.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
