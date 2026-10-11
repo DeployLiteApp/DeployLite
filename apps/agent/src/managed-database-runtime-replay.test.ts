@@ -15,7 +15,7 @@ function fixture() {
         requiredCapabilities:["database.runtime.v1"],authority:{schemaVersion:1,projectId:request.projectId,commandId:"command-a",action:"project.update",inputDigest,projectLease:lease},lease,
         context:{requestId:"request-a",correlationId:"correlation-a"},timeoutMs:5000,cancellationRequested:false,sealedEnvironment:"test-sealed-envelope"});
     const receipt = {...request,action:"database.runtime" as const,agentId:command.agentId,commandId:command.commandId,inputDigest,planDigest:plan.planDigest,environmentFingerprint:command.environmentFingerprint,correlationId:command.context.correlationId,
-        containerId:"c".repeat(64),imageId:"sha256:"+"d".repeat(64),volumeName:plan.volume.runtimeName,networkName:plan.network.runtimeName,observedAt:now,status:"ready" as const,health:"passed" as const,storage:"verified" as const,idempotent:false,redacted:true as const};
+        containerId:"c".repeat(64),imageId:"sha256:"+"d".repeat(64),volumeName:plan.volume.runtimeName,networkName:plan.network.runtimeName,networkId:"f".repeat(64),volumeCreatedAt:"2026-10-10T00:00:00Z",observedAt:now,status:"ready" as const,health:"passed" as const,storage:"verified" as const,idempotent:false,redacted:true as const};
     const saved = new Map<string,{fingerprint:string;receipt:Record<string,unknown>}>();
     const replayStore = {durable:true,lookup:vi.fn(async (id:string,fingerprint:string) => {const value=saved.get(id);if(!value)return null;if(value.fingerprint!==fingerprint)throw new Error("fingerprint conflict");return structuredClone(value.receipt);}),
         claim:vi.fn<AgentReplayStore["claim"]>(async () => ({claimed:true,claimToken:"token-a"})),wait:vi.fn<AgentReplayStore["wait"]>(async () => {throw new Error("unexpected wait");}),

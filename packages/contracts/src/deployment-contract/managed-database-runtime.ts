@@ -39,10 +39,11 @@ export const managedDatabaseRuntimeReceiptSchema = z.object({
     environmentFingerprint: fingerprint, correlationId: id, containerId: digest.nullable(), imageId: z.string().regex(/^sha256:[a-f0-9]{64}$/).nullable(),
     volumeName: z.string().max(160).regex(/^dl-[a-f0-9]{32}-vol-db-[a-z][a-z0-9_-]{0,59}$/),
     networkName: z.string().max(160).regex(/^dl-[a-f0-9]{32}-net-db-[a-z][a-z0-9_-]{0,59}$/),
+    networkId: digest.nullable(), volumeCreatedAt: z.string().datetime({offset:true}).nullable(),
     observedAt: z.number().int().nonnegative(), status: z.enum(["ready", "failed"]), health: z.enum(["passed", "failed", "not-run"]),
     storage: z.enum(["verified", "unverified"]), idempotent: z.boolean(), redacted: z.literal(true)
 }).strict().superRefine((receipt, ctx) => {
-    if (receipt.status === "ready" && (receipt.health !== "passed" || receipt.storage !== "verified" || !receipt.containerId || !receipt.imageId))
+    if (receipt.status === "ready" && (receipt.health !== "passed" || receipt.storage !== "verified" || !receipt.containerId || !receipt.imageId || !receipt.networkId || !receipt.volumeCreatedAt))
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["status"], message: "Database readiness requires corroborated image, container, storage and health" });
     if (receipt.status === "failed" && receipt.health === "passed")
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["health"], message: "Failed execution cannot claim passed health" });

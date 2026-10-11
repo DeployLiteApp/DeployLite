@@ -16,7 +16,7 @@ function fixture() {
     agentId: prepared.agentId, commandId: command.id, inputDigest: command.inputDigest, planDigest: input.planDigest,
     environmentFingerprint: input.environmentFingerprint, correlationId: command.correlationId, containerId: "c".repeat(64), imageId: "sha256:" + "d".repeat(64),
     volumeName: composeRuntimeResourceName(input.projectId, "volume", "db-" + input.databaseId), networkName: composeRuntimeResourceName(input.projectId, "network", "db-" + input.databaseId),
-    observedAt: Date.now(), status: "ready", health: "passed", storage: "verified", idempotent: false, redacted: true };
+    networkId: "f".repeat(64), volumeCreatedAt: "2026-10-10T00:00:00Z", observedAt: Date.now(), status: "ready", health: "passed", storage: "verified", idempotent: false, redacted: true };
   const trustKey = "native-transport-key-" + "x".repeat(64);
   const fetchResponse: typeof fetch = async (url, init) => {
     if (String(url).endsWith("/capabilities")) return new Response(JSON.stringify({ schemaVersion: 1, agentId: "agent-a", capabilities: ["database.runtime.v1"], protocolVersions: [1, 2] }),

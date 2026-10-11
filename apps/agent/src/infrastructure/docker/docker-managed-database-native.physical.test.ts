@@ -113,6 +113,7 @@ for (const engine of engines) {
             expect(receipt).toMatchObject({engine,status:"ready",health:"passed",storage:"verified",redacted:true});
             if (!receipt.imageId || !receipt.containerId) throw new Error("Ready original daemon identity required.");
             const pinned = original();
+            expect(receipt).toMatchObject({networkId:pinned.network.id,volumeCreatedAt:pinned.volume.createdAt});
             const nativeInput = {request,profile,commandId,imageId:receipt.imageId,containerId:receipt.containerId,environmentFingerprint:runtime.environmentFingerprint};
             const verifier = createManagedDatabaseReadinessVerifier({...shared,nativeInspector:inspector,resourceVerifier:resources,
                 composeInspector:createDockerComposeResourceInspector(shared),processIdentityReader:createManagedDatabaseProcessIdentityReader(shared)});
