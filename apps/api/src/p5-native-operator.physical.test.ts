@@ -148,7 +148,8 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     await resources.verifyFresh({request:input.request,profile,commandId:receipt.commandId},pinned,authority,signal);
     expect(await originals()).toEqual(originalRows); expect(await encrypted()).toEqual(cipherRows);
     const audits = (await db.pool.query("SELECT metadata,correlation_id FROM audit_events WHERE target_id=$1 AND action='database.runtime.stopped'",[projectId])).rows;
-    expect(audits).toHaveLength(1); expect(audits[0].metadata.receipt).toEqual(stopped); expect(audits[0].correlation_id).toBe(stopped.correlationId);
+    expect(audits).toHaveLength(1); expect(audits[0].metadata.receipt).toEqual({...stopped,containerId:"[REDACTED]",imageId:"sha256:[REDACTED]",
+      networkId:"[REDACTED]",networkName:"dl-[REDACTED]-net-db-orders",volumeName:"dl-[REDACTED]-vol-db-orders"}); expect(audits[0].correlation_id).toBe(stopped.correlationId);
     // Fixture-only daemon start proves persistence; no operator restart feature is claimed.
     await runner.run(["docker","start",receipt.containerId],signal);
     while ((await inspector.inspectContainer(receipt.containerId,signal)).health === "starting") await new Promise(resolve => setTimeout(resolve,100));
