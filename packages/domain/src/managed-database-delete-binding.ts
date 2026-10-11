@@ -1,4 +1,5 @@
 import {createConfirmation,createControlCommand,digestControlInput} from "./control-plane.js";
+import {managedDatabaseStopExecutionBinding} from "./managed-database-stop-binding.js";
 import {managedDatabaseStartExecutionBinding} from "./managed-database-start-binding.js";
 type ConfirmationInput={preparation:unknown;actorId:string;idempotencyKey:string;correlationId:string;now:number;commandTtlMs:number};
 function parseInput(raw:unknown):ConfirmationInput {
@@ -15,8 +16,8 @@ function unavailable():never {throw new Error("Database deletion confirmation is
 /** Intent only: original cache corroboration, confirmation consumption and fresh authority precede effects. */
 export function managedDatabaseDeleteExecutionBinding(raw:unknown) {
  try {
-  const source=managedDatabaseStartExecutionBinding(raw);
-  return {...source,operation:"database.runtime.delete" as const,storagePolicy:"retain-original" as const};
+  const source=(()=>{try{return managedDatabaseStartExecutionBinding(raw);}catch{return managedDatabaseStopExecutionBinding(raw);}})();
+  return {...source,operation:"database.runtime.delete" as const,storagePolicy:"retain-original" as const,stopPolicy:"if-running" as const};
  }catch{return unavailable();}
 }
 export function managedDatabaseDeleteExecutionDigest(raw:unknown):string {
@@ -27,7 +28,7 @@ export function prepareManagedDatabaseDeleteConfirmation(raw:unknown) {
  try {
   const input=parseInput(structuredClone(raw)),binding=managedDatabaseDeleteExecutionBinding(input.preparation);
   const expiry=input.now+input.commandTtlMs,expiresAt=new Date(expiry);
-  if(!Number.isSafeInteger(expiry)||!Number.isFinite(expiresAt.getTime())||binding.originalStopReceipt.observedAt>input.now)unavailable();
+  if(!Number.isSafeInteger(expiry)||!Number.isFinite(expiresAt.getTime())||binding.originalReceipt.observedAt>input.now||("originalStopReceipt" in binding&&binding.originalStopReceipt.observedAt>input.now))unavailable();
   const command=createControlCommand({actorId:input.actorId,action:binding.action,scope:binding.scope,input:binding,
    idempotencyKey:input.idempotencyKey,correlationId:input.correlationId,expiresAt});
   const confirmation=createConfirmation({command,classification:"destructive",expiresAt:new Date(expiry)});
