@@ -15,6 +15,7 @@ const planSchema = base.extend({operation: z.literal("database.profile.preview")
   volume: z.object({key: text, runtimeName: text, target: text}).strict(), network: z.object({key: text, runtimeName: text, internal: z.literal(true)}).strict(), policyVersion: text}).strict();
 const connectionSchema = base.extend({availability: z.literal("planned"), exposure: z.literal("internal"), hostname: text, networkName: text,
   port: z.number().int().min(1).max(65535), databaseName: text, username: text, authenticationDatabase: z.literal("admin").nullable()}).strict();
+export const managedDatabaseConnectionSchema = connectionSchema;
 export type PreparedDatabaseView = {preparation: z.infer<typeof managedDatabaseRuntimePreparationSchema>; connection: z.infer<typeof connectionSchema>};
 const credentialsSchema = managedDatabaseProfileRequestSchema.extend({secretRefId: text, credentialKey: text, credentialsConfigured: z.literal(true), redacted: z.literal(true)}).strict();
 const commandSchema = z.object({id: text, status: z.literal("completed"), action: z.literal("project.update"), scope: z.object({kind: z.literal("project"), projectId: text}).strict(),
