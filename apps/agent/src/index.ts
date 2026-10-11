@@ -1,5 +1,5 @@
 import {MANAGED_DATABASE_DELETE_CAPABILITY,MANAGED_DATABASE_STOP_CAPABILITY, MANAGED_DATABASE_START_CAPABILITY,MANAGED_DATABASE_HEALTH_CAPABILITY,MANAGED_DATABASE_METRICS_CAPABILITY,MANAGED_DATABASE_LOGS_CAPABILITY} from "@deploylite/contracts";
-import { managedDatabaseNativeImagePolicy } from "@deploylite/domain";
+import { parseManagedDatabaseRuntimeConfiguration, managedDatabaseNativeImagePolicy } from "@deploylite/domain";
 import { createConfiguredManagedDatabaseRuntime, MANAGED_DATABASE_RUNTIME_CONFIG_ENV } from "./infrastructure/docker/managed-database-runtime-config.js";
 import {
   createCorrelationContext,
@@ -140,9 +140,10 @@ export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
   if (traefikDynamicDir && !isAbsolute(traefikDynamicDir)) throw new Error("DEPLOYLITE_TRAEFIK_DYNAMIC_DIR must be an absolute path.");
   const nativeRunner = new (await import("./infrastructure/docker/docker-process-runner.js")).DockerProcessRunner();
   const imagePolicy = managedDatabaseNativeImagePolicy();
+  const managedDatabaseConfiguration=parseManagedDatabaseRuntimeConfiguration(env[MANAGED_DATABASE_RUNTIME_CONFIG_ENV],imagePolicy);
   const managedDatabaseRuntime = createConfiguredManagedDatabaseRuntime(env[MANAGED_DATABASE_RUNTIME_CONFIG_ENV], {
     agentId: parsed.DEPLOYLITE_AGENT_ID, owner: "deploylite", trustKey: parsed.DEPLOYLITE_AGENT_TRUST_KEY,
-    imagePolicy, capabilities: new InMemoryCapabilityRegistry([MANAGED_DATABASE_RUNTIME_CAPABILITY, COMPOSE_RESOURCE_INSPECTION_CAPABILITY, MANAGED_DATABASE_STOP_CAPABILITY, MANAGED_DATABASE_START_CAPABILITY,MANAGED_DATABASE_HEALTH_CAPABILITY,MANAGED_DATABASE_METRICS_CAPABILITY,MANAGED_DATABASE_LOGS_CAPABILITY]),
+    imagePolicy, capabilities: new InMemoryCapabilityRegistry([...(managedDatabaseConfiguration?.limits.stopGraceSeconds!==undefined?[MANAGED_DATABASE_DELETE_CAPABILITY]:[]),MANAGED_DATABASE_RUNTIME_CAPABILITY, COMPOSE_RESOURCE_INSPECTION_CAPABILITY, MANAGED_DATABASE_STOP_CAPABILITY, MANAGED_DATABASE_START_CAPABILITY,MANAGED_DATABASE_HEALTH_CAPABILITY,MANAGED_DATABASE_METRICS_CAPABILITY,MANAGED_DATABASE_LOGS_CAPABILITY]),
     clock: { now: Date.now }, runner: nativeRunner
   });
   const pool = createDbPool(parsed.DATABASE_URL); const db = createDbClient(pool);

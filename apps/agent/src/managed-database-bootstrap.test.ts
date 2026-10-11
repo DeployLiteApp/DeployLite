@@ -17,7 +17,7 @@ vi.mock("@deploylite/db", () => ({
     lookupByFingerprintDigest = vi.fn(async () => null);
     constructor(..._args: unknown[]) {}
   },
-  DbControlCommandRepository: class { constructor(..._args: unknown[]) {} },
+  DbControlCommandRepository: class { validateProjectUpdateAuthority=vi.fn(async()=>{});validateConfirmedProjectUpdateAuthority=vi.fn(async()=>{});constructor(..._args: unknown[]) {} },
   DbEnvSecretValueRepository: class { constructor(..._args: unknown[]) {} }
 }));
 vi.mock("./server.js", () => ({ startAgentServer: harness.startServer }));
@@ -126,4 +126,9 @@ it("advertises readonly retained logs only with explicit native configuration an
   const runtime = await startAgentRuntime(environment(JSON.stringify(configuration())));
   expect(receiver().capabilities).toContain("database.runtime.logs.v1"); expect(harness.run).not.toHaveBeenCalled(); await runtime.close();
   const disabled = await startAgentRuntime(environment()); expect(receiver().capabilities).not.toContain("database.runtime.logs.v1"); await disabled.close();
+});
+
+it("offers confirmed deletion only with explicit bounded STOP configuration and durable authority readers",async()=>{
+ const f=configuration(),enabled=await startAgentRuntime(environment(JSON.stringify({...f,limits:{...f.limits,stopGraceSeconds:10}})));expect(receiver().capabilities).toContain("database.runtime.delete.v1");expect(harness.run).not.toHaveBeenCalled();await enabled.close();
+ const disabled=await startAgentRuntime(environment(JSON.stringify(f)));expect(receiver().capabilities).not.toContain("database.runtime.delete.v1");expect(harness.run).not.toHaveBeenCalled();await disabled.close();
 });

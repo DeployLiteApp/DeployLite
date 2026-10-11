@@ -1,3 +1,5 @@
+import {AuthenticatedManagedDatabaseDeleteTransport} from "./managed-database-delete-transport.js";
+import type {ManagedDatabaseDeleteApplyAccess} from "./managed-database-delete-apply.js";
 import type {ManagedDatabaseDeletePreparationAccess} from "./managed-database-delete-prepare.js";
 import {AuthenticatedManagedDatabaseLogsTransport} from "./managed-database-logs-transport.js";
 import type {ManagedDatabaseLogsAccess} from "./managed-database-logs.js";
@@ -47,6 +49,7 @@ export async function createConfiguredManagedDatabaseApi(input: Readonly<{
     const stopExecutions = new Map<string, ManagedDatabaseStopAccess>();
     const startExecutions = new Map<string, ManagedDatabaseStartAccess>();
     const deletePreparations = new Map<string,ManagedDatabaseDeletePreparationAccess>();
+    const deleteExecutions = new Map<string,ManagedDatabaseDeleteApplyAccess>();
     const healthExecutions = new Map<string,ManagedDatabaseHealthAccess>();
     const logsExecutions = new Map<string, ManagedDatabaseLogsAccess>();
     const logsTransport = typeof controls.findProjectUpdateById === "function" ? new AuthenticatedManagedDatabaseLogsTransport({endpoint, agentId, trustKey, allowInsecureInternal: true, timeoutMs: configuration.limits.deadlineMs}) : undefined;
@@ -60,6 +63,8 @@ export async function createConfiguredManagedDatabaseApi(input: Readonly<{
     if (stopEnabled && typeof controls.findProjectUpdateById !== "function") throw new Error();
     const stopTransport = (stopEnabled || startEnabled) ? new AuthenticatedManagedDatabaseStopTransport({ endpoint, agentId, trustKey,
       allowInsecureInternal: true, timeoutMs: configuration.limits.deadlineMs }) : undefined;
+    const deleteEnabled=stopEnabled && [controls.findProjectUpdateById,controls.resolveProjectUpdateConfirmation,controls.claimConfirmedProjectUpdate,controls.completeManagedDatabaseDelete,controls.validateConfirmedProjectUpdateAuthority,controls.findManagedDatabaseRemovals].every(port=>typeof port==="function");
+    const deleteTransport=deleteEnabled?new AuthenticatedManagedDatabaseDeleteTransport({endpoint,agentId,trustKey,allowInsecureInternal:true,timeoutMs:configuration.limits.deadlineMs}):undefined;
     for (const binding of bindings) {
       if (binding.agentId !== agentId || executions.has(binding.projectId)) throw new Error();
       const project = await awaitAbortable(() => input.projects.findById(binding.projectId), controller.signal);
@@ -73,12 +78,13 @@ export async function createConfiguredManagedDatabaseApi(input: Readonly<{
         agentId, now: Date.now, commandTtlMs: configuration.limits.deadlineMs, deadlineMs: configuration.limits.deadlineMs });
       if (typeof controls.findProjectUpdateById === "function" && typeof controls.resolveProjectUpdateConfirmation === "function")
         deletePreparations.set(binding.projectId,{controls,originalTransport:transport,originalStopTransport:stopTransport,agentId,now:Date.now,commandTtlMs:configuration.limits.deadlineMs,deadlineMs:configuration.limits.deadlineMs});
+      if(deleteTransport)deleteExecutions.set(binding.projectId,{controls,transport:deleteTransport,originalTransport:transport,originalStopTransport:stopTransport,agentId,now:Date.now,deadlineMs:configuration.limits.deadlineMs});
       if (startTransport && stopTransport) startExecutions.set(binding.projectId, { controls, transport: startTransport, originalTransport: transport, originalStopTransport: stopTransport,
         agentId, now: Date.now, commandTtlMs: configuration.limits.deadlineMs, deadlineMs: configuration.limits.deadlineMs });
     }
     const credentials: ManagedDatabaseCredentialConfiguration = { profiles: new Map(Object.entries(configuration.profiles) as [keyof typeof configuration.profiles, typeof configuration.profiles.postgres][]),
       store: secrets, projectIds: new Set(bindings.map(binding => binding.projectId)), deadlineMs: configuration.limits.deadlineMs };
-    return { credentials, executions, stopExecutions, startExecutions, deletePreparations, healthExecutions, metricsExecutions, logsExecutions, imagePolicy: managedDatabaseNativeImagePolicy() };
+    return { credentials, executions, stopExecutions, startExecutions, deletePreparations, deleteExecutions, healthExecutions, metricsExecutions, logsExecutions, imagePolicy: managedDatabaseNativeImagePolicy() };
   } catch { throw new Error("Database API configuration is invalid."); }
   finally { clearTimeout(timer); }
 }
