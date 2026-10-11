@@ -1,4 +1,12 @@
-import { backupInventoryReceiptSchema } from "@deploylite/contracts";
+import {redactSecrets} from "@deploylite/config";
+import {digestControlInput} from "./control-plane.js";
+import { managedDatabaseBackupReceiptSchema, backupInventoryReceiptSchema } from "@deploylite/contracts";
+
+/** Bind the complete authenticated receipt while retaining mandatory audit redaction. */
+export function nativeBackupInventoryAuditMetadata(raw: unknown) {
+  const receipt = managedDatabaseBackupReceiptSchema.parse(raw);
+  return {...redactSecrets(receipt), nativeReceiptDigest:digestControlInput({...receipt,status:"created",idempotent:false})};
+}
 
 export class BackupInventoryEvidenceError extends Error {
   constructor() { super("Backup inventory evidence cannot be accepted safely."); this.name = "BackupInventoryEvidenceError"; }
@@ -33,7 +41,9 @@ export function prepareBackupInventoryRecord(raw: unknown) {
   if (receipt.action === "database.runtime.backup") {
     const nativeFields = ["databaseId", "engine", "profileId", "originalCommandId", "planDigest", "environmentFingerprint",
       "containerId", "imageId", "volumeName", "networkName", "networkId", "volumeCreatedAt", "sourceDigest", "format", "storage", "redacted"] as const;
-    if (nativeFields.some(field => metadata[field] !== receipt[field])) reject();
+    const expected = nativeBackupInventoryAuditMetadata(receipt);
+    if (metadata.nativeReceiptDigest !== expected.nativeReceiptDigest
+      || nativeFields.some(field => metadata[field] !== expected[field])) reject();
   } else if (metadata.entries !== receipt.entries) reject();
   const createdAtMs = audit.createdAt instanceof Date ? audit.createdAt.getTime() : NaN;
   if (!Number.isSafeInteger(createdAtMs) || createdAtMs < 0 || !Number.isSafeInteger(input.observedAtMs)

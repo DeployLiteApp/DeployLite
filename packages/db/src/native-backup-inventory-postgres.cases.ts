@@ -1,3 +1,4 @@
+import {nativeBackupInventoryAuditMetadata} from "@deploylite/domain";
 import {randomUUID} from "node:crypto";
 import {expect,it} from "vitest";
 import type pg from "pg";
@@ -16,7 +17,7 @@ export function defineNativeBackupInventoryCases(getPool:()=>pg.Pool,getUrl:()=>
     const controls=new DbControlCommandRepository(createDbClient(pool));
     const command=await controls.findProjectUpdateByIdempotency(actorId,projectId,commandId);
     const claimed=await controls.claimProjectUpdate(command!);
-    await controls.completeProjectUpdate(claimed.command,claimed.authority!,{actorUserId:actorId,action:"database.runtime.backup.executed",targetType:"project",targetId:projectId,requestId:randomUUID(),correlationId,metadata:{...receipt}});
+    await controls.completeProjectUpdate(claimed.command,claimed.authority!,{actorUserId:actorId,action:"database.runtime.backup.executed",targetType:"project",targetId:projectId,requestId:randomUUID(),correlationId,metadata:nativeBackupInventoryAuditMetadata(receipt)});
     return receipt;
   }
   it("persists native inventory from actual completion audit across a fresh pool",async()=>{
