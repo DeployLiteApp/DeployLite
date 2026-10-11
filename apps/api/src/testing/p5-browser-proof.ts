@@ -20,7 +20,7 @@ export function validateDeletionBrowserProof(value:unknown,expectedSource:string
 
 export type BrowserDeletionRecoveryObservation = Readonly<{
  calls: readonly Readonly<{key:string;confirmationId:string;status:number}>[];
- key:string; confirmationId:string; failures:readonly ("request"|"application"|"foreign")[];
+ key:string; confirmationId:string; failures:readonly ("request"|"application"|"foreign")[];requestFailure?:string;
 }>;
 /** Fixed metadata only; never reflect keys, nonce identifiers or browser diagnostics. */
 export function browserDeletionRecoveryFailure(value:BrowserDeletionRecoveryObservation):string|null {
@@ -28,6 +28,16 @@ export function browserDeletionRecoveryFailure(value:BrowserDeletionRecoveryObse
  if(value.calls[0]!.status!==503||value.calls[1]!.status!==200)return "status";
  if(value.calls.some(call=>call.key!==value.key))return "key";
  if(value.calls.some(call=>call.confirmationId!==value.confirmationId))return "confirmation";
- for(const kind of ["foreign","application","request"] as const)if(value.failures.includes(kind))return kind;
+ for(const kind of ["foreign","application","request"] as const)if(value.failures.includes(kind)){
+  if(kind==="request"&&requestFailureKinds.includes(value.requestFailure??""))return "request:"+value.requestFailure;return kind;
+ }
  return null;
+}
+
+export type BrowserFixtureRequestStage="routing"|"body"|"app"|"inject"|"projection"|"response";
+const requestFailureKinds=["routing","body","app","inject","projection","response","body-aborted","api-closed"];
+export function browserFixtureRequestFailure(value:Readonly<{stage:BrowserFixtureRequestStage;aborted:boolean;code:unknown}>):string {
+ if(value.stage==="body"&&value.aborted===true)return "body-aborted";
+ if(value.stage==="inject"&&value.code==="FST_ERR_REOPENED_CLOSE_SERVER")return "api-closed";
+ return ["routing","body","app","inject","projection","response"].includes(value.stage)?value.stage:"request";
 }
