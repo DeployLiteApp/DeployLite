@@ -60,14 +60,14 @@ export class AuthenticatedManagedDatabaseRuntimeTransport implements ManagedData
       requiredCapabilities: [MANAGED_DATABASE_RUNTIME_CAPABILITY], authority, lease: authority.projectLease,
       context: { requestId: context.requestId, correlationId: context.correlationId }, timeoutMs: this.#options.timeoutMs ?? 30000 });
   }
-  private async handshake(signal: AbortSignal) {
+  private async handshake(signal: AbortSignal, requireExecution = true) {
     const signature = signAgentTransport("GET /capabilities", this.#options.trustKey);
     const response = await awaitAbortable(() => this.#fetch(`${this.#options.endpoint.replace(/\/$/, "")}/capabilities`, {
       headers: { "x-deploylite-signature": signature }, redirect: "error", signal
     }), signal);
     if (!response.ok || response.headers.get("x-deploylite-request-signature") !== signature) fail();
     const handshake = agentCapabilityHandshakeSchema.parse(await awaitAbortable(() => response.json(), signal));
-    if (handshake.agentId !== this.#options.agentId || !handshake.capabilities.includes(MANAGED_DATABASE_RUNTIME_CAPABILITY)
+    if (handshake.agentId !== this.#options.agentId || (requireExecution && !handshake.capabilities.includes(MANAGED_DATABASE_RUNTIME_CAPABILITY))
       || !handshake.protocolVersions.includes(1)) fail();
   }
   private async post(path: string, body: unknown, cache: boolean, signal: AbortSignal) {
@@ -110,7 +110,7 @@ export class AuthenticatedManagedDatabaseRuntimeTransport implements ManagedData
     try {
       const query = this.query(prepared, authority, context);
       return await this.operate(context.signal, async signal => {
-        await this.handshake(signal);
+        await this.handshake(signal, false);
         const cached = managedDatabaseRuntimeCachedReceiptSchema.parse(await this.post(MANAGED_DATABASE_RUNTIME_RECEIPT_PATH, query, true, signal));
         if (cached.agentId !== query.agentId || cached.commandId !== query.commandId || cached.correlationId !== query.context.correlationId
           || (cached.receipt && !managedDatabaseRuntimeReceiptMatches(query, cached.receipt))) fail();
