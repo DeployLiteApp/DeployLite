@@ -23,7 +23,9 @@ export function nativeDumpFixture(root:string) {
       captures():number;
       maxBytes:number;
       originalContainerId:string;
+      uid:number;
     }>) {
+      if(!Number.isSafeInteger(input.uid)||input.uid<1||input.uid>4294967294)throw new Error("Corroborated non-root decoder required.");
       const first=await input.call();expect(first.statusCode).toBe(200);
       const data=first.json().data,receipt=managedDatabaseBackupReceiptSchema.parse(data.receipt);
       expect(data).toMatchObject({backupCreated:true,idempotent:false});
@@ -40,24 +42,30 @@ export function nativeDumpFixture(root:string) {
       expect(createHash("sha256").update(manifestBytes).digest("hex")).toBe(receipt.manifestSha256);
       expect(gunzipSync(bytes,{maxOutputLength:input.maxBytes}).subarray(0,5).toString()).toBe("PGDMP");
       // Only the selected owned daemon receives this disposable fixture copy.
-      const copied="/tmp/dl-native-backup-"+receipt.commandId+".gz";let copyIssued=false;
+      const copied="/tmp/dl-native-backup-"+receipt.commandId+".gz";let copyIssued=false,stage="copy",problem:Error|undefined;
       try {
         await input.verify();copyIssued=true;
         await input.runner.run(["docker","cp",archive,input.originalContainerId+":"+copied],input.signal);
-        await input.verify();
+        stage="ownership";await input.verify();
+        await input.runner.run(["docker","exec","--user","0",input.originalContainerId,"chown",String(input.uid),copied],input.signal);
+        stage="decode";await input.verify();
         const output=await input.runner.run(["docker","exec",input.originalContainerId,"bash","-o","pipefail","-c",
           `gzip -cd '${copied}' | pg_restore --file=- | grep -F -x 'p5-persistent-value'`],input.signal);
         expect(output.stdout.trim()).toBe("p5-persistent-value");
-      } finally {
-        if(copyIssued){await input.verify();await input.runner.run(["docker","exec",input.originalContainerId,"rm","--",copied],input.signal);}
+      } catch {problem=new Error("Private native dump fixture failed at "+stage+".");}
+      finally {
+        if(copyIssued)try {await input.verify();await input.runner.run(["docker","exec","--user","0",input.originalContainerId,"rm","--",copied],input.signal);}
+        catch {problem=new Error("Private native dump fixture failed at "+stage+"; copied archive cleanup unresolved.");}
       }
+      if(problem)throw problem;
       const before=await input.inventory().list(receipt.projectId,receipt.volumeKey,receipt.destinationId);expect(before).toHaveLength(1);expect(before[0]!.receipt).toEqual(receipt);
       await input.reopen();
       expect(await input.inventory().list(receipt.projectId,receipt.volumeKey,receipt.destinationId)).toEqual(before);
       const replay=await input.call();expect(replay.statusCode).toBe(200);expect(replay.json().data).toMatchObject({backupCreated:true,idempotent:true});
       expect(replay.json().data.receipt).toEqual(receipt);expect(input.captures()).toBe(1);
       expect(await input.inventory().list(receipt.projectId,receipt.volumeKey,receipt.destinationId)).toEqual(before);
-      expect(await readFile(archive)).toEqual(bytes);expect(await readFile(manifest)).toEqual(manifestBytes);
+      if(createHash("sha256").update(await readFile(archive)).digest("hex")!==receipt.archiveSha256)throw new Error("Private native archive changed.");
+      if(createHash("sha256").update(await readFile(manifest)).digest("hex")!==receipt.manifestSha256)throw new Error("Private native manifest changed.");
       proof={receipt,maxBytes:input.maxBytes,captures:input.captures(),signedHttp:"passed",formatValidated:"passed",seededRow:"passed",inventoryReopen:"passed",replay:"passed",privateFiles:"passed",cleanup:"pending"};
       return proof;
     },

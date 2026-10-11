@@ -173,7 +173,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     if(dump)nativeBackup=await dump.prove({
       call:()=>call("runtime/backup",{...preparation,originalReceipt:receipt,originalReplayFingerprint:apply.json().data.originalReplayFingerprint,destinationId:"private-native",maxBytes:backupMaxBytes}),
       reopen:async()=>{await app!.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(true);app=await build(endpoint,"managed_database_fixture_key_1234567890");},
-      inventory:()=>new DbBackupInventoryStore(db.db,agentId),verify:()=>verifier.verify(input,pinned!,authority,signal),runner,signal,captures:()=>backupCaptures,maxBytes:backupMaxBytes,originalContainerId:receipt.containerId
+      inventory:()=>new DbBackupInventoryStore(db.db,agentId),verify:()=>verifier.verify(input,pinned!,authority,signal),runner,signal,captures:()=>backupCaptures,maxBytes:backupMaxBytes,originalContainerId:receipt.containerId,uid:ready.uid
     });
     const originals = async () => ({commands:(await db.pool.query("SELECT * FROM control_commands WHERE id=$1",[receipt.commandId])).rows,
       cache:(await db.pool.query("SELECT * FROM agent_replay WHERE command_id=$1",[receipt.commandId])).rows});
