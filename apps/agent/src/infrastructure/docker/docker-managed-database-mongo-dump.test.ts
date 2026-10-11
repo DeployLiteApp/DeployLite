@@ -84,3 +84,13 @@ it.each([{hello:{ok:0},code:33},{hello:{ok:1,isWritablePrimary:false},code:34},{
  const f=fixture(),base=f.runCommand.getMockImplementation()!;f.runCommand.mockImplementation(async v=>v.hello?hello:base(v));
  await expect(f.execute(MONGO_BACKUP_LOCK_SCRIPT)).rejects.toThrow("Mongo dump refused.");expect(f.quit).toHaveBeenCalledWith(code);expect(f.runCommand.mock.calls.some(([v])=>v.fsync||v.fsyncUnlock)).toBe(false);
 });
+
+it("awaits process-token conversion before same-server lock and cleanup checks",async()=>{
+ const f=fixture(),base=f.runCommand.getMockImplementation()!;f.runCommand.mockImplementation(async v=>v.hello?{ok:1,isWritablePrimary:true,topologyVersion:{processId:{toHexString:async()=>"a".repeat(24)}}}:base(v));
+ await f.execute(MONGO_BACKUP_LOCK_SCRIPT);expect(f.printed).toEqual(["a".repeat(24)]);await f.execute(MONGO_BACKUP_UNLOCK_SCRIPT);expect(f.getCount()).toBe(0);
+});
+
+it("retains the native process-token method receiver during acquire and cleanup",async()=>{
+ const f=fixture(),base=f.runCommand.getMockImplementation()!,processId={value:"a".repeat(24),toHexString(){if(this!==processId)throw new Error("Unavailable.");return this.value;}};
+ f.runCommand.mockImplementation(async v=>v.hello?{ok:1,isWritablePrimary:true,topologyVersion:{processId}}:base(v));await f.execute(MONGO_BACKUP_LOCK_SCRIPT);await f.execute(MONGO_BACKUP_UNLOCK_SCRIPT);expect(f.getCount()).toBe(0);
+});

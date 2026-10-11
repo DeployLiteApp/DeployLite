@@ -8,7 +8,8 @@ const admin=(await Mongo(uri)).getDB("admin");
 const refuse=async(code)=>{const error=new Error("Unavailable.");error.identityCode=code;throw error;};
 const identity=async()=>{let hello;try{hello=await admin.runCommand({hello:1});}catch{await refuse(32);}
 if(hello.ok!==1)await refuse(33);if(hello.isWritablePrimary!==true)await refuse(34);if(hello.setName||hello.msg)await refuse(35);
-let id;try{id=hello.topologyVersion?.processId?.toHexString();}catch{await refuse(36);}
+let id;try{const version=hello.topologyVersion,processId=version&&version.processId;
+if(!processId||typeof processId.toHexString!=="function")await refuse(36);id=await processId.toHexString();}catch{await refuse(36);}
 if(!/^[a-f0-9]{24}$/.test(id||""))await refuse(36);return id;};`;
 export const MONGO_BACKUP_LOCK_SCRIPT=asMongoCliScript(String.raw`let stage=21;try{${connection}
 stage=22;const id=await identity();stage=23;const state=await admin.runCommand({currentOp:1});
