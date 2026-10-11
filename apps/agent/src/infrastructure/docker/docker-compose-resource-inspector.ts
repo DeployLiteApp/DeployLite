@@ -29,13 +29,13 @@ export type DockerComposeResourceInspectorOptions = Readonly<{
 }>;
 function fail(code: ComposeInspectionErrorCode): never { throw new ComposeResourceInspectionError(code); }
 /** Explicitly composed read-only adapter. No default runner, daemon access or mutation method. */
-export function createDockerComposeResourceInspector(supplied: DockerComposeResourceInspectorOptions): ComposeResourceInspector {
+export function createDockerComposeResourceInspector(supplied: DockerComposeResourceInspectorOptions): ComposeResourceInspector & {inspectAllConsumers:ComposeResourceInspector["inspect"]} {
   const options = { ...supplied, imagePolicy: structuredClone(supplied.imagePolicy), limits: { ...supplied.limits } };
   if (!/^[A-Za-z0-9_-]{1,200}$/.test(options.owner) || !/^[A-Za-z0-9_-]{1,200}$/.test(options.agentId)
     || !Number.isSafeInteger(options.limits.maxContainers) || options.limits.maxContainers < 1 || options.limits.maxContainers > 128
     || !Number.isSafeInteger(options.limits.maxOutputBytes) || options.limits.maxOutputBytes < 1 || options.limits.maxOutputBytes > 1_048_576
     || !Number.isSafeInteger(options.limits.deadlineMs) || options.limits.deadlineMs < 1 || options.limits.deadlineMs > 60_000) fail("COMPOSE_INSPECTION_INVALID");
-  return { async inspect(input, external) {
+  async function inspect(input:Parameters<ComposeResourceInspector["inspect"]>[0], external:AbortSignal,all:boolean) {
     if (external.aborted) fail("COMPOSE_INSPECTION_CANCELED");
     const controller = new AbortController();
     const onAbort = () => controller.abort();
@@ -167,6 +167,7 @@ export function createDockerComposeResourceInspector(supplied: DockerComposeReso
       }
       const selected = [];
       for (const group of byService.values()) {
+        if(all){selected.push(...group);continue;}
         if (group.length === 1) { selected.push(group[0]!); continue; }
         // During an immutable revision cutover, a stopped prior container may remain
         // disconnected while the new revision owns the service. Never hide an old
@@ -187,5 +188,6 @@ export function createDockerComposeResourceInspector(supplied: DockerComposeReso
       if (error instanceof ComposeResourceInspectionError) throw error;
       fail("COMPOSE_INSPECTION_FAILED");
     } finally { clearTimeout(timer); external.removeEventListener("abort", onAbort); }
-  } };
+  }
+  return {inspect:(input,signal)=>inspect(input,signal,false),inspectAllConsumers:(input,signal)=>inspect(input,signal,true)};
 }

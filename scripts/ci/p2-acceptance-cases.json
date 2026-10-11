@@ -1493,7 +1493,9 @@
     "apps/agent/src/infrastructure/docker/docker-managed-database-restore-executor.ts",
     "apps/agent/src/infrastructure/docker/docker-managed-database-restore-executor.test.ts",
     "apps/agent/src/infrastructure/docker/docker-managed-database-restore-tar.ts",
-    "apps/agent/src/infrastructure/docker/docker-managed-database-restore-tar.test.ts"
+    "apps/agent/src/infrastructure/docker/docker-managed-database-restore-tar.test.ts",
+    "apps/agent/src/infrastructure/docker/docker-managed-database-restore-volume.ts",
+    "apps/agent/src/infrastructure/docker/docker-managed-database-restore-volume.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
