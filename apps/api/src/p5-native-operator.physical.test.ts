@@ -150,7 +150,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const originalReplayFingerprint = createHash("sha256").update(originalRows.cache[0].fingerprint).digest("hex");
     const stopInput = {...preparation,originalReceipt:receipt,originalReplayFingerprint};
     const ledgerSnapshot=async()=>({commands:(await db.pool.query("SELECT * FROM control_commands WHERE scope_kind='project' AND scope_key=$1 ORDER BY id",[projectId])).rows,
-      cache:(await db.pool.query("SELECT replay.* FROM agent_replay replay JOIN control_commands command ON command.id=replay.command_id WHERE command.scope_kind='project' AND command.scope_key=$1 ORDER BY replay.command_id",[projectId])).rows,
+      cache:(await db.pool.query("SELECT replay.* FROM agent_replay replay JOIN control_commands command ON command.id::text=replay.command_id WHERE command.scope_kind='project' AND command.scope_key=$1 ORDER BY replay.command_id",[projectId])).rows,
       audit:(await db.pool.query("SELECT * FROM audit_events WHERE target_id=$1 ORDER BY id",[projectId])).rows,cipher:await encrypted()});
     async function currentHealth(state:"running"|"stopped"){
       const beforeRows=await ledgerSnapshot(),before=Date.now(),response=await call("runtime/health",stopInput),after=Date.now();expect(response.statusCode).toBe(200);
