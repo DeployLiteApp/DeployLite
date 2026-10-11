@@ -1,5 +1,5 @@
 import {z} from "zod";
-import {managedDatabaseHealthAgentQuerySchema,managedDatabaseHealthObservationSchema} from "./managed-database-health.js";
+import {managedDatabaseHealthPreparationSchema,managedDatabaseHealthAgentQuerySchema,managedDatabaseHealthObservationSchema} from "./managed-database-health.js";
 export const MANAGED_DATABASE_METRICS_CAPABILITY="database.runtime.metrics.v1" as const;
 export const MANAGED_DATABASE_METRICS_PATH="/databases/runtime/metrics" as const;
 /** Reuse original ready-scope admission without new commands, authority or secrets. */
@@ -17,3 +17,6 @@ export const managedDatabaseMetricsObservationSchema=managedDatabaseHealthObserv
 });
 export type ManagedDatabaseMetricsAgentQueryV1=z.infer<typeof managedDatabaseMetricsAgentQuerySchema>;
 export type ManagedDatabaseMetricsObservationV1=z.infer<typeof managedDatabaseMetricsObservationSchema>;
+
+export const managedDatabaseMetricsPreparationSchema=managedDatabaseHealthPreparationSchema;
+export type ManagedDatabaseMetricsPreparationV1=z.infer<typeof managedDatabaseMetricsPreparationSchema>;
