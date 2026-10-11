@@ -116,3 +116,24 @@ it("projects only the SHA256 digest of the actual original canonical replay clai
     expect(managedDatabaseRuntimeReplayFingerprintDigest(f.query)).toBe(createHash("sha256").update(original).digest("hex"));
     expect(managedDatabaseRuntimeReplayFingerprintDigest(f.query)).toMatch(/^[a-f0-9]{64}$/);
 });
+
+it("recovers the exact original receipt after executor and runtime capability withdrawal without new claims",async()=>{
+  const f=fixture();await f.receiver.receive(f.command,f.signature(f.command));const before={claims:f.replayStore.claim.mock.calls.length,effects:f.executor.apply.mock.calls.length,completions:f.replayStore.complete.mock.calls.length};
+  const withdrawn=new AuthenticatedAgentCommandReceiver({...f.options,capabilities:[],managedDatabaseRuntime:undefined});
+  const signed=signAgentTransport(`POST ${MANAGED_DATABASE_RUNTIME_RECEIPT_PATH}\n${JSON.stringify(f.query)}`,f.options.trustKey);
+  expect((await withdrawn.readManagedDatabaseRuntimeReceipt(f.query,signed)).receipt).toEqual(f.receipt);
+  await expect(withdrawn.receive(f.command,f.signature(f.command))).rejects.toThrow();
+  expect({claims:f.replayStore.claim.mock.calls.length,effects:f.executor.apply.mock.calls.length,completions:f.replayStore.complete.mock.calls.length}).toEqual(before);
+});
+it("still rejects invalid signature and detached original digest on a withdrawn-runtime cache reader",async()=>{
+  const f=fixture(),withdrawn=new AuthenticatedAgentCommandReceiver({...f.options,capabilities:[],managedDatabaseRuntime:undefined});
+  await expect(withdrawn.readManagedDatabaseRuntimeReceipt(f.query,"invalid")).rejects.toThrow();
+  const foreign={...f.query,inputDigest:"0".repeat(64)};await expect(withdrawn.readManagedDatabaseRuntimeReceipt(foreign,signAgentTransport(`POST ${MANAGED_DATABASE_RUNTIME_RECEIPT_PATH}\n${JSON.stringify(foreign)}`,f.options.trustKey))).rejects.toThrow();expect(f.replayStore.lookup).not.toHaveBeenCalled();expect(f.replayStore.claim).not.toHaveBeenCalled();
+});
+
+it("requires durable original replay evidence even for a signed read after capability withdrawal",async()=>{
+  const f=fixture();await f.receiver.receive(f.command,f.signature(f.command));f.replayStore.lookup.mockClear();
+  const volatile=new AuthenticatedAgentCommandReceiver({...f.options,capabilities:[],managedDatabaseRuntime:undefined,replayStore:{...f.replayStore,durable:false}});
+  const signature=signAgentTransport(`POST ${MANAGED_DATABASE_RUNTIME_RECEIPT_PATH}\n${JSON.stringify(f.query)}`,f.options.trustKey);
+  await expect(volatile.readManagedDatabaseRuntimeReceipt(f.query,signature)).rejects.toThrow();expect(f.replayStore.lookup).not.toHaveBeenCalled();
+});
