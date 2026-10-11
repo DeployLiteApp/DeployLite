@@ -8,14 +8,14 @@ function fixture(){
  const plan=planManagedDatabaseProfile(request,profile,imagePolicy),preview=createManagedDatabaseComposePreview(request,profile,imagePolicy),originalId="b".repeat(64),helperId="c".repeat(64),commandId="restore-a";
  const input={request,profile,commandId:"origin-a",imageId:"sha256:"+"d".repeat(64),containerId:originalId,environmentFingerprint:"e".repeat(32)};
  const resources={projectId:request.projectId,databaseId:request.databaseId,commandId:input.commandId,planDigest:plan.planDigest,volume:{name:plan.volume.runtimeName,createdAt:"2026-10-10T00:00:00Z"},network:{name:plan.network.runtimeName,id:"f".repeat(64)}};
- const state={helper:false,wait:"0",remove:helperId,extra:false,foreignResource:false};
+ const state={helper:false,wait:"0",remove:helperId,extra:false,foreignResource:false,helperNetworks:[] as Array<{name:string;networkId:string}>};
  const baseline={id:originalId,name:"/original",imageId:input.imageId,image:plan.image,owner:"deploylite",projectId:request.projectId,databaseId:request.databaseId,engine:"redis",commandId:input.commandId,planDigest:plan.planDigest,environmentFingerprint:input.environmentFingerprint,networkMode:plan.network.runtimeName,storageInitialization:null,running:false,health:"healthy" as const,user:"redis",readOnly:true,privileged:false,capAdd:[],capDrop:["ALL"],securityOpt:["no-new-privileges"],cpu:1000000000,memory:536870912,pids:256,ports:null};
  const helper={...baseline,id:helperId,name:"/dl-"+digestControlInput({projectId:request.projectId,databaseId:request.databaseId,commandId}).slice(0,32)+"-database-init",environmentFingerprint:null,networkMode:"none",storageInitialization:"v1",health:null};
  const nativeInspector={inspectContainer:vi.fn(async(id:string)=>structuredClone(id===originalId?baseline:helper)),inspectImage:vi.fn(async()=>({imageId:input.imageId,declaredVolumes:["/data"]}))};
  const verifier={verifyStopped:vi.fn(async()=>({containerId:originalId}))},authority={assertValid:vi.fn(async()=>{})},clock={now:()=>2000};
  const composeInspector={inspectAllConsumers:vi.fn(async({kind}:{kind:"network"|"volume"})=>{
   const original={containerId:originalId,service:plan.volume.key,running:false,attached:true,composeConfigDigest:preview.configDigest,composeEnvironmentDigest:digestControlInput({environmentFingerprint:input.environmentFingerprint}),networks:[{name:plan.network.runtimeName,networkId:resources.network.id}],mounts:kind==="volume"?[{target:"/data",readOnly:false}]:[]};
-  const consumer={containerId:helperId,service:plan.volume.key,running:false,attached:kind==="volume",composeConfigDigest:preview.configDigest,networks:[],mounts:kind==="volume"?[{target:"/data",readOnly:false}]:[]};
+  const consumer={containerId:helperId,service:plan.volume.key,running:false,attached:kind==="volume",composeConfigDigest:preview.configDigest,networks:state.helperNetworks,mounts:kind==="volume"?[{target:"/data",readOnly:false}]:[]};
   const value={schemaVersion:1 as const,owner:"deploylite",agentId:"agent-a",projectId:request.projectId,kind,key:plan.volume.key,runtimeName:kind==="volume"?resources.volume.name:resources.network.name,physicalIdentity:state.foreignResource?"foreign":kind==="volume"?resources.volume.createdAt:resources.network.id,configDigest:preview.configDigest,observedAt:clock.now(),containers:[original,...(state.helper?[consumer]:[]),...(state.extra?[{...consumer,containerId:"0".repeat(64)}]:[])],stateDigest:"0".repeat(64)};
   value.stateDigest=digestComposeResourceObservation(value);return value;
  })};
@@ -41,4 +41,11 @@ it.each(["input","wait","remove"])("withholds success for %s uncertainty without
 it("bounds canceled and stalled source observation without creating a helper",async()=>{
  const f=fixture(),abort=new AbortController();abort.abort();await expect(createManagedDatabaseRestoreVolumeWriter(f.options).restore(f.input,f.resources,f.bytes,f.authority,abort.signal,6000,f.commandId)).rejects.toThrow();expect(f.runner.run).not.toHaveBeenCalled();
  const g=fixture();g.options.limits.deadlineMs=5;g.composeInspector.inspectAllConsumers.mockImplementation(()=>new Promise(()=>{}));await expect(createManagedDatabaseRestoreVolumeWriter(g.options).restore(g.input,g.resources,g.bytes,g.authority,g.signal,6000,g.commandId)).rejects.toThrow();expect(g.runner.run).not.toHaveBeenCalled();
+});
+
+it("accepts only the Docker builtin none network retained by the stopped owned helper",async()=>{
+ const f=fixture();f.state.helperNetworks=[{name:"none",networkId:"a".repeat(64)}];await expect(f.restore()).resolves.toMatchObject({bytes:1024});expect(f.runner.runBinaryFromSource).toHaveBeenCalledOnce();
+});
+it.each(["bridge","project","two"])("rejects %s helper network before private input",async mode=>{
+ const f=fixture();f.state.helperNetworks=mode==="two"?[{name:"none",networkId:"a".repeat(64)},{name:"none",networkId:"b".repeat(64)}]:[{name:mode==="project"?f.resources.network.name:"bridge",networkId:"a".repeat(64)}];await expect(f.restore()).rejects.toThrow();expect(f.runner.runBinaryFromSource).not.toHaveBeenCalled();
 });

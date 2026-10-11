@@ -170,7 +170,7 @@ def validate_confirmed_deletion(result,profile):
 
 def validate_native_backup(result, profile):
     proof=result.get("nativeBackup")
-    exact(proof,{"pendingRestore","receipt","maxBytes","captures","signedHttp","restorePreparation","archiveIntegrity","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup"}|({"writersResumed"} if profile["engine"] in ("mysql","mariadb","mongodb") else {"stoppedSource","sourceCleanup"} if profile["engine"]=="redis" else set()),"complete_actual_native_dump_required")
+    exact(proof,{"nativeRestore","pendingRestore","receipt","maxBytes","captures","signedHttp","restorePreparation","archiveIntegrity","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup"}|({"writersResumed"} if profile["engine"] in ("mysql","mariadb","mongodb") else {"stoppedSource","sourceCleanup"} if profile["engine"]=="redis" else set()),"complete_actual_native_dump_required")
     native.require(profile["engine"] in ("postgres","mysql","mariadb","mongodb","redis") and type(proof["captures"]) is int and proof["captures"]==1
         and type(proof["maxBytes"]) is int and proof["maxBytes"]==2097152
         and all(proof[key]=="passed" for key in ("signedHttp","restorePreparation","archiveIntegrity","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup")),"executed_private_postgres_dump_required")
@@ -197,6 +197,28 @@ def validate_native_backup(result, profile):
     archive="backup_"+hashlib.sha256((ready["projectId"]+"\0"+receipt["commandId"]+"\0private-native").encode()).hexdigest()[:32]
     native.require(receipt["archiveId"]==archive,"original_private_archive_id_required")
     validate_pending_restore(proof,ready,profile,source)
+    validate_confirmed_restore(proof,ready,profile)
+
+def validate_confirmed_restore(proof,ready,profile):
+    restore=proof["nativeRestore"];backup=proof["receipt"];pending=proof["pendingRestore"]
+    exact(restore,{"receipt","commandId","confirmationId","actorId","idempotencyKey","consumedAt","expiresAt","dispatches","inputWrites","requestPosts","unconsumedConfirmation","expiredConfirmation","reusedConfirmation","foreignConfirmation","lostReply","completionRollback","cacheOnlyReopen","restoredData","originalRows","cipher","inventory","originalPending","protection","auditCount"},"complete_confirmed_original_restore_required")
+    shared={"schemaVersion","projectId","databaseId","engine","agentId","planDigest","environmentFingerprint","containerId","imageId","volumeName","networkName","networkId","volumeCreatedAt","redacted"}
+    receipt=restore["receipt"]
+    exact(receipt,shared|{"action","profileId","commandId","originalCommandId","backupCommandId","confirmationId","inputDigest","correlationId","archiveId","archiveBytes","archiveSha256","manifestSha256","format","observedAt","status","storage","health"},"strict_confirmed_restore_receipt_required")
+    native.require(all(type(restore[key]) is int and restore[key]==1 for key in ("dispatches","inputWrites","requestPosts","auditCount"))
+        and all(restore[key]=="passed" for key in ("unconsumedConfirmation","expiredConfirmation","reusedConfirmation","foreignConfirmation","lostReply","completionRollback","cacheOnlyReopen","restoredData"))
+        and all(restore[key]=="unchanged" for key in ("originalRows","cipher","inventory","protection")) and restore["originalPending"]=="unconsumed"
+        and restore["actorId"]==pending["actorId"] and restore["idempotencyKey"]=="fixture_restore_apply_"+profile["engine"]
+        and all(isinstance(restore[key],str) and re.fullmatch(r"[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}",restore[key]) for key in ("commandId","confirmationId"))
+        and restore["commandId"] not in (ready["commandId"],backup["commandId"],pending["commandId"])
+        and restore["confirmationId"]!=pending["confirmationId"]
+        and all(receipt[key]==ready[key] for key in shared)
+        and receipt["action"]=="database.runtime.restore" and receipt["status"]=="restored" and receipt["storage"]=="original" and receipt["health"]=="passed"
+        and receipt["profileId"]==profile["profileId"] and receipt["originalCommandId"]==ready["commandId"] and receipt["backupCommandId"]==backup["commandId"]
+        and receipt["commandId"]==restore["commandId"] and receipt["confirmationId"]==restore["confirmationId"] and receipt["inputDigest"]==pending["inputDigest"]
+        and all(receipt[key]==backup[key] for key in ("archiveId","archiveBytes","archiveSha256","manifestSha256","format"))
+        and all(type(value) is int for value in (restore["consumedAt"],receipt["observedAt"],restore["expiresAt"]))
+        and backup["observedAt"]<=restore["consumedAt"]<=receipt["observedAt"]<restore["expiresAt"],"one_original_confirmed_native_restore_required")
 
 def validate_pending_restore(proof,ready,profile,source):
     pending=proof["pendingRestore"]
