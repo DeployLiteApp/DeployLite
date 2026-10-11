@@ -149,7 +149,7 @@ def validate_confirmed_authority(result):
 
 def validate_confirmed_deletion(result,profile):
     proof=result.get("confirmedDeletion")
-    stages={"originalSources","apiTransport","signatureRejected","confirmationRejected","originalNonce","signedHttp","rollback","cacheOnlyReopen","executorRemoved","retirement","retainedStorage","audit"}
+    stages={"originalSources","apiTransport","prepareControl","signatureRejected","confirmationRejected","originalNonce","signedHttp","rollback","cacheOnlyReopen","executorRemoved","retirement","retainedStorage","audit"}
     exact(proof,stages|{"projectId","receipt","effects","originalRows","cipher"},"confirmed_deletion_required")
     native.require(proof["projectId"]==result["receipt"]["projectId"] and all(proof[key]=="passed" for key in stages)
         and type(proof["effects"]) is int and proof["effects"]==1 and proof["originalRows"]=="unchanged" and proof["cipher"]=="unchanged","actual_one_confirmed_deletion_required")

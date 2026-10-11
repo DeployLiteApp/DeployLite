@@ -77,7 +77,7 @@ def fixture(engine="postgres"):
     result["confirmationRecovery"]={"projectId":project,"pending":"passed","unique":"passed","reopen":"passed","unconsumed":"passed","noAuthority":"passed","detachedRejected":"passed","originalRows":"unchanged","cipher":"unchanged"}
     result["browserAcceptance"]={"sourceCommit":"7e4875341dbb8e1afdeff23137403528f3af6382","engine":engine,"projectId":project,"databaseId":"orders","creation":"passed","selection":"passed","reload":"passed","telemetry":"passed","start":"passed","stop":"passed","persistence":"passed","browser":"chromium","context":"isolated","requests":12}
     deleted={**{key:value for key,value in ready.items() if key not in ("health","idempotent","commandId","observedAt","inputDigest","correlationId","status","storage","action")},"action":"database.runtime.delete","commandId":"delete1","originalCommandId":ready["commandId"],"originalStopCommandId":None,"confirmationId":"approval1","profileId":profile["profileId"],"inputDigest":"f"*64,"correlationId":"delete-correlation","observedAt":2000,"status":"removed","storage":"retained"}
-    result["confirmedDeletion"]={"projectId":project,"receipt":deleted,"originalSources":"passed","apiTransport":"passed","signatureRejected":"passed","confirmationRejected":"passed","originalNonce":"passed","signedHttp":"passed","effects":1,"rollback":"passed","cacheOnlyReopen":"passed","executorRemoved":"passed","retirement":"passed","retainedStorage":"passed","audit":"passed","originalRows":"unchanged","cipher":"unchanged"}
+    result["confirmedDeletion"]={"projectId":project,"receipt":deleted,"originalSources":"passed","apiTransport":"passed","prepareControl":"passed","signatureRejected":"passed","confirmationRejected":"passed","originalNonce":"passed","signedHttp":"passed","effects":1,"rollback":"passed","cacheOnlyReopen":"passed","executorRemoved":"passed","retirement":"passed","retainedStorage":"passed","audit":"passed","originalRows":"unchanged","cipher":"unchanged"}
     return with_inventory(result, profile), profile
 def with_inventory(result, profile):
     result = copy.deepcopy(result)
@@ -335,7 +335,7 @@ class ConfirmedDeletionProof(unittest.TestCase):
 
 class ConfirmedDeletionTransportProof(unittest.TestCase):
     def test_requires_actual_api_transport_and_original_source_corroboration(self):
-        for key in ("originalSources","apiTransport"):
+        for key in ("originalSources","apiTransport","prepareControl"):
             result,profile=fixture();del result["confirmedDeletion"][key]
             with self.assertRaises(RuntimeError):module.validate_confirmed_deletion(result,profile)
 
