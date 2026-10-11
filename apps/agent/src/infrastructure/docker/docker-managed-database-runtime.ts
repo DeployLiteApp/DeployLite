@@ -1,10 +1,13 @@
+import {createManagedDatabaseMetricsObserver} from "./docker-managed-database-metrics.js";
+import {createManagedDatabaseStatsReader} from "./docker-managed-database-stats.js";
+import {createManagedDatabaseMetricsExecutor} from "./docker-managed-database-metrics-executor.js";
 import {createManagedDatabaseHealthObserver} from "./docker-managed-database-health.js";
 import {createManagedDatabaseHealthExecutor} from "./docker-managed-database-health-executor.js";
 import {createManagedDatabaseStartExecutor} from "./docker-managed-database-start-executor.js";
 import {createManagedDatabaseDaemonStopper} from "./docker-managed-database-daemon-stop.js";
 import {createManagedDatabaseStopExecutor} from "./docker-managed-database-stop-executor.js";
 import {validateAgentTransportKey} from "@deploylite/config";
-import {COMPOSE_RESOURCE_INSPECTION_CAPABILITY, MANAGED_DATABASE_HEALTH_CAPABILITY, MANAGED_DATABASE_RUNTIME_CAPABILITY, MANAGED_DATABASE_START_CAPABILITY, MANAGED_DATABASE_STOP_CAPABILITY, type CapabilityRegistry, type Clock, type ImageReferencePolicyV1} from "@deploylite/contracts";
+import {COMPOSE_RESOURCE_INSPECTION_CAPABILITY, MANAGED_DATABASE_METRICS_CAPABILITY, MANAGED_DATABASE_HEALTH_CAPABILITY, MANAGED_DATABASE_RUNTIME_CAPABILITY, MANAGED_DATABASE_START_CAPABILITY, MANAGED_DATABASE_STOP_CAPABILITY, type CapabilityRegistry, type Clock, type ImageReferencePolicyV1} from "@deploylite/contracts";
 import {validateManagedDatabaseRuntimeProfiles} from "@deploylite/domain";
 import type {DockerCliRunner} from "./docker-cli-image-transport.js";
 import {createDockerComposeResourceInspector} from "./docker-compose-resource-inspector.js";
@@ -50,6 +53,10 @@ export function createManagedDatabaseRuntime(supplied: Readonly<{
         const health=options.capabilities.has(MANAGED_DATABASE_HEALTH_CAPABILITY)?createManagedDatabaseHealthExecutor({agentId:options.agentId,profiles,
             imagePolicy:options.imagePolicy,capabilities:options.capabilities,clock:options.clock,limits:{deadlineMs:options.limits.deadlineMs},
             observer:createManagedDatabaseHealthObserver({nativeInspector,verifier,imagePolicy:options.imagePolicy,clock:options.clock,limits:{deadlineMs:options.limits.deadlineMs}})}):undefined;
+        const metrics=options.capabilities.has(MANAGED_DATABASE_METRICS_CAPABILITY)?createManagedDatabaseMetricsExecutor({agentId:options.agentId,profiles,
+            imagePolicy:options.imagePolicy,capabilities:options.capabilities,clock:options.clock,limits:{deadlineMs:options.limits.deadlineMs},
+            observer:createManagedDatabaseMetricsObserver({health:createManagedDatabaseHealthObserver({nativeInspector,verifier,imagePolicy:options.imagePolicy,clock:options.clock,limits:{deadlineMs:options.limits.deadlineMs}}),
+                stats:createManagedDatabaseStatsReader({runner:options.runner,clock:options.clock,limits:{deadlineMs:options.limits.deadlineMs,maxOutputBytes:options.limits.maxOutputBytes}}),clock:options.clock,limits:{deadlineMs:options.limits.deadlineMs}})}):undefined;
         const starter = createManagedDatabaseDaemonStarter({...shared, nativeInspector, verifier});
         const start=options.capabilities.has(MANAGED_DATABASE_START_CAPABILITY)?createManagedDatabaseStartExecutor({...shared,starter}):undefined;
         const executor = createManagedDatabaseRuntimeExecutor({...shared, preparation, resources, storage, starter});
@@ -66,6 +73,9 @@ export function createManagedDatabaseRuntime(supplied: Readonly<{
         }},args[2])}:{}),...(health?{health:async(...args:Parameters<typeof health.observe>)=>health.observe(args[0],{assertValid:async()=>{
             capabilities();if(!options.capabilities.has(MANAGED_DATABASE_HEALTH_CAPABILITY))fail();await args[1].assertValid();capabilities();
             if(!options.capabilities.has(MANAGED_DATABASE_HEALTH_CAPABILITY))fail();
+        }},args[2])}:{}),...(metrics?{metrics:async(...args:Parameters<typeof metrics.observe>)=>metrics.observe(args[0],{assertValid:async()=>{
+            capabilities();if(!options.capabilities.has(MANAGED_DATABASE_METRICS_CAPABILITY))fail();await args[1].assertValid();capabilities();
+            if(!options.capabilities.has(MANAGED_DATABASE_METRICS_CAPABILITY))fail();
         }},args[2])}:{})});
     } catch {return fail();}
 }

@@ -51,3 +51,4 @@ it("composes readonly health only with its explicit capability without Docker ef
  expect(typeof (runtime as typeof runtime&{health?:unknown}).health).toBe("function");expect(Object.keys(runtime)).toEqual(["apply","health"]);
  expect(createManagedDatabaseRuntime(f.options)).not.toHaveProperty("health");expect(f.runner.run).not.toHaveBeenCalled();
 });
+it("composes scoped readonly metrics only with its explicit capability without Docker effects",()=>{const f=fixture(),capabilities=new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.metrics.v1"]);const runtime=createManagedDatabaseRuntime({...f.options,capabilities});expect(typeof (runtime as typeof runtime&{metrics?:unknown}).metrics).toBe("function");expect(Object.keys(runtime)).toEqual(["apply","metrics"]);expect(createManagedDatabaseRuntime(f.options)).not.toHaveProperty("metrics");expect(f.runner.run).not.toHaveBeenCalled();});

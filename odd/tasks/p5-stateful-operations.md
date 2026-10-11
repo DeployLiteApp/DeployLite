@@ -617,3 +617,12 @@ A distinct metrics capability/path/query reuses strict original ready-scope admi
 Six prospective contract assertionsRED precede8new+8health=16focal PASS/contracts typesPASS. Two prospective source/matching assertionsRED precede6new+5health=11focal PASS/domaintypesPASS. Four preexisting-style boundary cases pass during RED and are not claimed as new RED. Every boundary is pure; actual metrics/factory/API/physical proof and wholeP5 remain pending. Rollback removes new contract/domain/tests/exports/source entries only.
 
 Metrics contract/source final verification: fresh full Node24 pnpm check exits0:3026unit across8projects,zero skipped/failed. Reader draft453cdca9add/run38116989339 owner verifies9/9jobs/3002unit/allrequired physical cases/0skipped,pending,failed/exact219global+24P3+225operator source hashes,including15current-health views and owned restart/cleanup. Metrics runtime/API/physical proof and wholeP5 remain open.
+
+
+### H1 explicit current metrics executor and native composition — 2026-10-11
+
+An explicit optional metrics executor validates immutable original apply digest/profile/agent and bounded current authority/capability before corroborated current metrics. It constructs only original physical-resource references, never credentials, commands or initialization. Strict public output must match original identities/current request and sample window. Substitution of the observer port fails closed. Native factory exposes metrics only when its explicit capability is supplied; default apply-only behavior and existing START/STOP/health remain. No bootstrap/capability/receiver/API activation yet.
+
+Eight prospective executor assertionsRED precede10PASS; separate observer-substitution assertionRED precedes11PASS. Explicit factory assertionRED precedes8factoryPASS. Final11executor+8factory+10observer+9stats+10healthExecutor=48focal PASS/agenttypesPASS. Every port injected, no local Docker/PG. Full source checks and exact-head hosted acceptance pending. Rollback removes new executor/tests/source entries and optional factory composition only. Signed metrics/API/five-engine proof and wholeP5 remain open.
+
+Metrics executor/composition final source verification: fresh full Node24 pnpm check exits0:3038unit across8projects,zero skipped/failed. This adds12cases to contract head. Actual metrics bootstrap/signed receiver/API/five-engine proof and wholeP5 remain open; all new local ports injected.
