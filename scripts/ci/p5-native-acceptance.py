@@ -92,6 +92,29 @@ def validate_daemon_stop(result):
             and stop.get("status") == "passed" and stop.get("containerId") == receipt.get("containerId")
             and isinstance(stop.get("containerId"),str) and re.fullmatch(r"[a-f0-9]{64}",stop["containerId"]), "original_native_daemon_stop_required")
 
+def validate_configured_stop(result,profile):
+    proof,original=result.get("nativeStop"),result.get("receipt")
+    require(isinstance(proof,dict) and set(proof)=={"receipt","originalReplayFingerprint"} and isinstance(original,dict),"configured_native_stop_required")
+    stopped=proof["receipt"]
+    shared=("schemaVersion","projectId","databaseId","engine","agentId","planDigest","environmentFingerprint","containerId","imageId","volumeName","networkName","networkId","volumeCreatedAt")
+    keys=set(shared)|{"action","commandId","originalCommandId","profileId","inputDigest","correlationId","observedAt","status","storage","redacted"}
+    require(isinstance(stopped,dict) and set(stopped)==keys and all(stopped.get(key)==original.get(key) for key in shared),"configured_stop_original_identity_required")
+    require(stopped["action"]=="database.runtime.stop" and stopped["status"]=="stopped" and stopped["storage"]=="verified" and stopped["redacted"] is True
+            and stopped["profileId"]==profile["profileId"] and stopped["engine"]==profile["engine"]
+            and stopped["originalCommandId"]==original["commandId"] and stopped["commandId"]==original["commandId"]+"-stop"
+            and stopped["correlationId"]==stopped["commandId"] and type(stopped["observedAt"]) is int
+            and stopped["observedAt"]>=original["observedAt"],"configured_stop_command_required")
+    fingerprint=proof["originalReplayFingerprint"]
+    require(isinstance(fingerprint,str) and re.fullmatch(r"[a-f0-9]{64}",fingerprint),"configured_stop_original_fingerprint_required")
+    preparation={key:original[key] for key in ("schemaVersion","projectId","databaseId","engine","planDigest","environmentFingerprint")}
+    apply_bound={**preparation,"profileId":profile["profileId"],"action":"project.update","scope":{"kind":"project","projectId":original["projectId"]},"operation":"database.runtime.apply"}
+    apply_digest=hashlib.sha256(json.dumps(apply_bound,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
+    require(original.get("inputDigest")==apply_digest,"configured_stop_creation_digest_required")
+    preparation.update(profileId=profile["profileId"],originalReceipt=original,originalReplayFingerprint=fingerprint)
+    bound={**preparation,"action":"project.update","scope":{"kind":"project","projectId":original["projectId"]},"operation":"database.runtime.stop"}
+    digest=hashlib.sha256(json.dumps(bound,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
+    require(stopped["inputDigest"]==digest,"configured_stop_digest_required")
+
 def capture(env):
     require(sys.platform == "linux", "hosted_linux_required")
     context = native_context(env)
@@ -143,6 +166,7 @@ def verify(env):
         validate_resource_receipt(result)
         validate_internal_connection(result, binding["profiles"][engine])
         validate_daemon_stop(result)
+        validate_configured_stop(result,binding["profiles"][engine])
         require(item.get("cleanup") == "verified" and all(result.get(key) == "passed" for key in ("authenticatedProbe","restart","persistence")), "native_persistence_cleanup_required")
         require(type(result.get("uid")) is int and 0 < result["uid"] <= 4294967294 and receipt.get("engine") == engine and receipt.get("status") == "ready"
                 and receipt.get("health") == "passed" and receipt.get("storage") == "verified" and receipt.get("redacted") is True, "ready_nonroot_native_receipt_required")

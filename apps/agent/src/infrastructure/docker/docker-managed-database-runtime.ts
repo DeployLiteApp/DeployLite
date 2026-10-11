@@ -1,5 +1,7 @@
+import {createManagedDatabaseDaemonStopper} from "./docker-managed-database-daemon-stop.js";
+import {createManagedDatabaseStopExecutor} from "./docker-managed-database-stop-executor.js";
 import {validateAgentTransportKey} from "@deploylite/config";
-import {COMPOSE_RESOURCE_INSPECTION_CAPABILITY, MANAGED_DATABASE_RUNTIME_CAPABILITY, type CapabilityRegistry, type Clock, type ImageReferencePolicyV1} from "@deploylite/contracts";
+import {COMPOSE_RESOURCE_INSPECTION_CAPABILITY, MANAGED_DATABASE_RUNTIME_CAPABILITY, MANAGED_DATABASE_STOP_CAPABILITY, type CapabilityRegistry, type Clock, type ImageReferencePolicyV1} from "@deploylite/contracts";
 import {validateManagedDatabaseRuntimeProfiles} from "@deploylite/domain";
 import type {DockerCliRunner} from "./docker-cli-image-transport.js";
 import {createDockerComposeResourceInspector} from "./docker-compose-resource-inspector.js";
@@ -22,7 +24,7 @@ export function createManagedDatabaseRuntime(supplied: Readonly<{
     capabilities: CapabilityRegistry;
     clock: Clock;
     runner: DockerCliRunner;
-    limits: Readonly<{deadlineMs: number; maxOutputBytes: number; maxContainers: number; pollIntervalMs: number; cpus: number; memoryBytes: number; pidsLimit: number}>;
+    limits: Readonly<{deadlineMs: number; maxOutputBytes: number; maxContainers: number; pollIntervalMs: number; cpus: number; memoryBytes: number; pidsLimit: number; stopGraceSeconds?: number}>;
 }>) {
     try {
         const options = {...supplied, profiles: structuredClone(supplied.profiles), imagePolicy: structuredClone(supplied.imagePolicy), limits: {...supplied.limits}};
@@ -31,6 +33,8 @@ export function createManagedDatabaseRuntime(supplied: Readonly<{
             if (!options.capabilities.has(MANAGED_DATABASE_RUNTIME_CAPABILITY) || !options.capabilities.has(COMPOSE_RESOURCE_INSPECTION_CAPABILITY)) fail();
         }
         capabilities();
+        const stopGrace=options.limits.stopGraceSeconds;
+        if(stopGrace!==undefined && (!Number.isSafeInteger(stopGrace)||stopGrace<1||stopGrace>30||!options.capabilities.has(MANAGED_DATABASE_STOP_CAPABILITY)))fail();
         const profiles = validateManagedDatabaseRuntimeProfiles(options.profiles, options.imagePolicy);
         const shared = {...options, profiles};
         const nativeInspector = createManagedDatabaseDockerInspector(shared);
@@ -42,8 +46,13 @@ export function createManagedDatabaseRuntime(supplied: Readonly<{
         const verifier = createManagedDatabaseReadinessVerifier({...shared, nativeInspector, resourceVerifier: resources, composeInspector, processIdentityReader});
         const starter = createManagedDatabaseDaemonStarter({...shared, nativeInspector, verifier});
         const executor = createManagedDatabaseRuntimeExecutor({...shared, preparation, resources, storage, starter});
+        const stop=stopGrace===undefined?undefined:createManagedDatabaseStopExecutor({...shared,stopper:createManagedDatabaseDaemonStopper({
+            runner:options.runner,verifier,clock:options.clock,limits:{deadlineMs:options.limits.deadlineMs,maxOutputBytes:options.limits.maxOutputBytes,stopGraceSeconds:stopGrace}})});
         return Object.freeze({apply: async (...args: Parameters<typeof executor.apply>) => executor.apply(args[0], {assertValid: async () => {
             capabilities(); await args[1].assertValid(); capabilities();
-        }}, args[2])});
+        }}, args[2]),...(stop?{stop:async(...args:Parameters<typeof stop.stop>)=>stop.stop(args[0],{assertValid:async()=>{
+            capabilities();if(!options.capabilities.has(MANAGED_DATABASE_STOP_CAPABILITY))fail();await args[1].assertValid();capabilities();
+            if(!options.capabilities.has(MANAGED_DATABASE_STOP_CAPABILITY))fail();
+        }},args[2])}:{})});
     } catch {return fail();}
 }

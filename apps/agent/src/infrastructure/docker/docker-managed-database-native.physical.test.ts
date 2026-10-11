@@ -5,13 +5,12 @@ import {resolve} from "node:path";
 import {z} from "zod";
 import {createEnvSecretCipher, sealAgentSecretEnvelope} from "@deploylite/config";
 import {approvedManagedDatabaseProfileSchema, InMemoryCapabilityRegistry} from "@deploylite/contracts";
-import {ensureManagedDatabaseCredentials, materializeManagedDatabaseRuntime, managedDatabaseInternalConnection, managedDatabaseRuntimeExecutionDigest, type EncryptedEnvSecretValueRecord} from "@deploylite/domain";
+import {ensureManagedDatabaseCredentials, materializeManagedDatabaseRuntime, managedDatabaseInternalConnection, managedDatabaseRuntimeExecutionDigest, managedDatabaseRuntimeReplayFingerprint, managedDatabaseStopExecutionDigest, type EncryptedEnvSecretValueRecord} from "@deploylite/domain";
 import {DockerProcessRunner, DockerProcessError} from "./docker-process-runner.js";
 import type {DockerCliRunner} from "./docker-cli-image-transport.js";
 import {createConfiguredManagedDatabaseRuntime} from "./managed-database-runtime-config.js";
 import {createManagedDatabaseDockerInspector} from "./docker-managed-database-inspection.js";
 import {createManagedDatabaseResourceMaterializer, type ManagedDatabaseFreshResources} from "./docker-managed-database-resources.js";
-import {createManagedDatabaseDaemonStopper} from "./docker-managed-database-daemon-stop.js";
 import {createManagedDatabaseReadinessVerifier} from "./docker-managed-database-readiness.js";
 import {createManagedDatabaseProcessIdentityReader} from "./docker-managed-database-process-identity.js";
 import {createDockerComposeResourceInspector} from "./docker-compose-resource-inspector.js";
@@ -91,7 +90,7 @@ for (const engine of engines) {
         }};
         const imagePolicy = {policyVersion:"ci-native-1",trustedHosts:["docker.io"],allowTags:false,allowDigests:true};
         const clock = {now:Date.now}, limits = {deadlineMs:60000,maxOutputBytes:131072,maxContainers:64,pollIntervalMs:100,cpus:1,memoryBytes:536870912,pidsLimit:256};
-        const shared = {runner,imagePolicy,clock,limits,owner:scope.owner,agentId,capabilities:new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1"])};
+        const shared = {runner,imagePolicy,clock,limits,owner:scope.owner,agentId,capabilities:new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.stop.v1"])};
         const inspector = createManagedDatabaseDockerInspector(shared), resources = createManagedDatabaseResourceMaterializer(shared);
         const original = (): ManagedDatabaseFreshResources => {
             if (!volume || !network) throw new Error("Original fixture storage unavailable.");
@@ -114,7 +113,7 @@ for (const engine of engines) {
                 requiredCapabilities:["database.runtime.v1"],authority:{schemaVersion:1,projectId:request.projectId,commandId,action:"project.update",inputDigest,projectLease:lease},lease,
                 context:{requestId:commandId,correlationId:commandId},timeoutMs:60000,cancellationRequested:false,
                 sealedEnvironment:sealAgentSecretEnvelope(runtime.environment,trustKey,{agentId,commandId,inputDigest,projectId:request.projectId})};
-            const executor = createConfiguredManagedDatabaseRuntime(JSON.stringify({profiles:scope.profiles,limits}), {...shared,trustKey});
+            const executor = createConfiguredManagedDatabaseRuntime(JSON.stringify({profiles:scope.profiles,limits:{...limits,stopGraceSeconds:10}}), {...shared,trustKey});
             if (!executor) throw new Error("Missing configured native executor.");
             const receipt = await executor.apply(command,authority,signal);
             expect(receipt).toMatchObject({engine,status:"ready",health:"passed",storage:"verified",redacted:true});
@@ -130,9 +129,18 @@ for (const engine of engines) {
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false)],signal)).stdout.trim()).toBe(marker);
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,connection.hostname)],signal)).stdout.trim()).toBe(marker);
             await verifier.verify(nativeInput,pinned,authority,signal);
-            const stopper = createManagedDatabaseDaemonStopper({runner,verifier,clock,limits:{deadlineMs:60000,maxOutputBytes:131072,stopGraceSeconds:10}});
-            const stopped = await stopper.stop(nativeInput,pinned,authority,signal);
-            expect(stopped).toEqual({containerId:receipt.containerId});
+            const {sealedEnvironment:sealed,cancellationRequested:canceled,...creationQuery}=command;
+            const originalReplayFingerprint=managedDatabaseRuntimeReplayFingerprint(creationQuery);
+            const stopPreparation={...preparation,originalReceipt:receipt,originalReplayFingerprint};
+            const stopDigest=managedDatabaseStopExecutionDigest(stopPreparation),stopId=commandId+"-stop";
+            const stopLease={projectId:request.projectId,leaseId:stopId,fence:2,expiresAt:Date.now()+60000};
+            const stopCommand={...stopPreparation,action:"database.runtime.stop",operation:"database.runtime.stop",agentId,commandId:stopId,idempotencyKey:stopId,inputDigest:stopDigest,
+                requiredCapabilities:["database.runtime.stop.v1"],authority:{schemaVersion:1,projectId:request.projectId,commandId:stopId,action:"project.update",inputDigest:stopDigest,projectLease:stopLease},lease:stopLease,
+                context:{requestId:stopId,correlationId:stopId},timeoutMs:60000,cancellationRequested:false};
+            if(!executor.stop)throw new Error("Explicit configured stop required.");
+            const stopped=await executor.stop(stopCommand,authority,signal);
+            expect(stopped).toMatchObject({containerId:receipt.containerId,originalCommandId:commandId,commandId:stopId,inputDigest:stopDigest,status:"stopped",storage:"verified"});
+            expect(stopped).not.toHaveProperty("health");
             expect((await inspector.inspectContainer(receipt.containerId,signal)).running).toBe(false);
             await resources.verifyFresh({request,profile,commandId},pinned,authority,signal);
             await runner.run(["docker","start",receipt.containerId],signal);
@@ -141,7 +149,7 @@ for (const engine of engines) {
             expect(restarted).toEqual(ready);
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false)],signal)).stdout.trim()).toBe(marker);
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,connection.hostname)],signal)).stdout.trim()).toBe(marker);
-            result = {receipt,original:pinned,uid:ready.uid,daemonStop:{...stopped,status:"passed"},internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},authenticatedProbe:"passed",restart:"passed",persistence:"passed"};
+            result = {receipt,original:pinned,uid:ready.uid,daemonStop:{containerId:stopped.containerId,status:"passed"},nativeStop:{receipt:stopped,originalReplayFingerprint},internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},authenticatedProbe:"passed",restart:"passed",persistence:"passed"};
         } catch (error) {
             writeFileSync(resolve(directory,`diagnostic-${engine}.json`),JSON.stringify({engine,lastOperation,lastProjection,processFailure:processFailure ?? null,stopReply:stopReply ?? null,observation:lastObservation ?? null,composeObservations,expected:{plan:runtime.plan,environmentFingerprint:runtime.environmentFingerprint}},null,2)+"\n",{mode:0o600});
             throw error;

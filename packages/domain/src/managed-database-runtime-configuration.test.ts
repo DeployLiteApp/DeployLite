@@ -48,3 +48,10 @@ it("validates injected native profiles under the existing caller policy and deta
   const parsed = validateManagedDatabaseRuntimeProfiles(f.profiles, policy); expect(parsed.postgres.profileId).toBe(f.profiles.postgres!.profileId);
   parsed.postgres.credentialKeys.push("MUTATED"); expect(f.profiles.postgres!.credentialKeys).toEqual(["DATABASE_PASSWORD"]);
 });
+
+it("accepts only explicit bounded stop grace and never supplies a stop default",()=>{
+    const f=configuration();expect(parseManagedDatabaseRuntimeConfiguration(JSON.stringify(f))!.limits).not.toHaveProperty("stopGraceSeconds");
+    expect(()=>parseManagedDatabaseRuntimeConfiguration(JSON.stringify({...f,limits:{...f.limits,stopGraceSeconds:10}}))).not.toThrow();
+    expect(parseManagedDatabaseRuntimeConfiguration(JSON.stringify({...f,limits:{...f.limits,stopGraceSeconds:10}}))!.limits).toHaveProperty("stopGraceSeconds",10);
+    for(const grace of [0,31,1.5,"10",null])expect(()=>parseManagedDatabaseRuntimeConfiguration(JSON.stringify({...f,limits:{...f.limits,stopGraceSeconds:grace}}))).toThrow();
+});

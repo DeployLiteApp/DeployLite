@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+import hashlib
+import json
 from unittest.mock import patch
 spec = importlib.util.spec_from_file_location("p5_native", Path(__file__).with_name("p5-native-acceptance.py"))
 module = importlib.util.module_from_spec(spec)
@@ -96,6 +98,26 @@ class NativeStop(unittest.TestCase):
         for stop in [None, {"containerId":"b"*64,"status":"passed"}, {"containerId":"a"*64,"status":"not-run"}, {"containerId":"a"*64,"status":"passed","removed":True}]:
             with self.subTest(stop=stop), self.assertRaises(RuntimeError):
                 module.validate_daemon_stop({**result,"daemonStop":stop})
+
+class ConfiguredNativeStop(unittest.TestCase):
+    def test_requires_bound_public_configured_stop_without_secrets(self):
+        origin={"schemaVersion":1,"projectId":"project-original","databaseId":"orders","engine":"postgres","action":"database.runtime","agentId":"agent-original","commandId":"origin-original","inputDigest":"a"*64,"planDigest":"b"*64,"environmentFingerprint":"c"*32,"correlationId":"original-correlation",
+                "containerId":"d"*64,"imageId":"sha256:"+"e"*64,"volumeName":"original-volume","networkName":"original-network","networkId":"f"*64,"volumeCreatedAt":"2026-10-10T00:00:00Z","observedAt":1000,"status":"ready","health":"passed","storage":"verified","idempotent":False,"redacted":True}
+        profile={"profileId":"profile-original","engine":"postgres"}
+        preparation={key:origin[key] for key in ("schemaVersion","projectId","databaseId","engine","planDigest","environmentFingerprint")}
+        apply_bound={**preparation,"profileId":profile["profileId"],"action":"project.update","scope":{"kind":"project","projectId":origin["projectId"]},"operation":"database.runtime.apply"}
+        origin["inputDigest"]=hashlib.sha256(json.dumps(apply_bound,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
+        preparation.update(profileId=profile["profileId"],originalReceipt=origin,originalReplayFingerprint="1"*64)
+        bound={**preparation,"action":"project.update","scope":{"kind":"project","projectId":origin["projectId"]},"operation":"database.runtime.stop"}
+        digest=hashlib.sha256(json.dumps(bound,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
+        stopped={key:origin[key] for key in ("schemaVersion","projectId","databaseId","engine","agentId","planDigest","environmentFingerprint","containerId","imageId","volumeName","networkName","networkId","volumeCreatedAt","storage","redacted")}
+        stopped.update(action="database.runtime.stop",commandId=origin["commandId"]+"-stop",originalCommandId=origin["commandId"],profileId=profile["profileId"],inputDigest=digest,correlationId=origin["commandId"]+"-stop",observedAt=2000,status="stopped")
+        good={"receipt":origin,"nativeStop":{"receipt":stopped,"originalReplayFingerprint":"1"*64}}
+        module.validate_configured_stop(good,profile)
+        for patch in [{"nativeStop":None}, *[{"nativeStop":{**good["nativeStop"],"receipt":{**stopped,**change}}} for change in
+            [{"commandId":origin["commandId"]},{"originalCommandId":"foreign"},{"networkId":"a"*64},{"profileId":"foreign"},{"inputDigest":"0"*64},{"observedAt":999},{"health":"passed"},{"password":"private"}]]]:
+            with self.subTest(patch=patch),self.assertRaises(RuntimeError):
+                module.validate_configured_stop({**good,**patch},profile)
 
 class NativeWorkflow(unittest.TestCase):
     def test_native_report_options_are_forwarded_to_vitest_and_verifier_always_runs(self):

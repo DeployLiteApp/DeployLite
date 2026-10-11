@@ -112,3 +112,10 @@ it("refuses tagged, foreign-host, invalid storage or credential profiles before 
   expect(harness.startServer).not.toHaveBeenCalled();
   expect(harness.run).not.toHaveBeenCalled();
 });
+
+it("advertises native stop only for explicit stop configuration and durable original lookup",async()=>{
+    const f=configuration(),pending=startAgentRuntime(environment(JSON.stringify({...f,limits:{...f.limits,stopGraceSeconds:10}})));
+    await expect(pending).resolves.toHaveProperty("close");const runtime=await pending;
+    expect(receiver().capabilities).toContain("database.runtime.stop.v1");expect(harness.run).not.toHaveBeenCalled();await runtime.close();
+    const disabled=await startAgentRuntime(environment(JSON.stringify(f)));expect(receiver().capabilities).not.toContain("database.runtime.stop.v1");await disabled.close();
+});
