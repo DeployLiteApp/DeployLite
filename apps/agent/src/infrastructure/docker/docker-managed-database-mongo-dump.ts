@@ -1,10 +1,12 @@
 /** Private in-container standalone lock lifetime. Never a stale-lock recovery API. */
+/** mongosh parses sourceType=script before async rewriting; top-level await is invalid. */
+export function asMongoCliScript(source:string):string{return "(async()=>{"+source+"\n})();";}
 const connection=String.raw`const password=process.env.MONGO_INITDB_ROOT_PASSWORD,user=process.env.MONGO_INITDB_ROOT_USERNAME;
 if(!/^[a-f0-9]{64}$/.test(password||"")||typeof user!=="string"||!user)throw new Error("Unavailable.");
 const uri="mongodb://"+encodeURIComponent(user)+":"+encodeURIComponent(password)+"@127.0.0.1:27017/admin?authSource=admin&serverSelectionTimeoutMS=1000&connectTimeoutMS=1000&socketTimeoutMS=1000";
 const admin=(await Mongo(uri)).getDB("admin");
 const identity=async()=>{const hello=await admin.runCommand({hello:1});const id=hello.topologyVersion?.processId?.toHexString();if(hello.ok!==1||hello.isWritablePrimary!==true||hello.setName||hello.msg||!/^[a-f0-9]{24}$/.test(id||""))throw new Error("Unavailable.");return id;};`;
-export const MONGO_BACKUP_LOCK_SCRIPT=String.raw`let stage=21;try{${connection}
+export const MONGO_BACKUP_LOCK_SCRIPT=asMongoCliScript(String.raw`let stage=21;try{${connection}
 stage=22;const id=await identity();stage=23;const state=await admin.runCommand({currentOp:1});
 if(state.ok!==1||(state.fsyncLock!==undefined&&state.fsyncLock!==false))throw new Error("Unavailable.");
 let held=false,acknowledged=false;
@@ -13,13 +15,13 @@ if(locked.ok!==1||!Number.isSafeInteger(Number(locked.lockCount))||Number(locked
 stage=25;if(Number(locked.lockCount)!==1||await identity()!==id)throw new Error("Unavailable.");
 await print(id);acknowledged=true;
 }finally{if(held&&!acknowledged&&await identity()===id)await admin.runCommand({fsyncUnlock:1,maxTimeMS:1000});}
-}catch{await quit(stage);}void 0;`;
-export const MONGO_BACKUP_UNLOCK_SCRIPT=String.raw`try{${connection}
+}catch{await quit(stage);}void 0;`);
+export const MONGO_BACKUP_UNLOCK_SCRIPT=asMongoCliScript(String.raw`try{${connection}
 const id=process.env.DEPLOYLITE_MONGO_BACKUP_PROCESS_ID;
 if(!/^[a-f0-9]{24}$/.test(id||"")||await identity()!==id)throw new Error("Unavailable.");
 const unlocked=await admin.runCommand({fsyncUnlock:1,maxTimeMS:1000});
 if(unlocked.ok!==1||Number(unlocked.lockCount)!==0)throw new Error("Unavailable.");
-}catch{await quit(27);}void 0;`;
+}catch{await quit(27);}void 0;`);
 function quote(value:string){return "'"+value.replaceAll("'",`'"'"'`)+"'";}
 export function buildMongoNativeDumpArgv(containerId:string,deadline:number):readonly string[]{
  if(!/^[a-f0-9]{64}$/.test(containerId)||!Number.isSafeInteger(deadline)||deadline<1)throw new Error("Backup source is unavailable.");

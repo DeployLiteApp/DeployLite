@@ -1,7 +1,7 @@
+import {Script} from "node:vm";
 import {spawnSync} from "node:child_process";
 import {expect,it,vi} from "vitest";
 import {buildMongoNativeDumpArgv,MONGO_BACKUP_LOCK_SCRIPT,MONGO_BACKUP_UNLOCK_SCRIPT} from "./docker-managed-database-mongo-dump.js";
-const AsyncFunction=Object.getPrototypeOf(async()=>{}).constructor as new(...args:string[])=> (...args:unknown[])=>Promise<unknown>;
 function fixture(asyncConnection=false){
  let count=0,id="a".repeat(24);const printed:string[]=[];
  const runCommand=vi.fn(async(command:Record<string,unknown>)=>{
@@ -15,7 +15,7 @@ function fixture(asyncConnection=false){
  const process={env:{MONGO_INITDB_ROOT_USERNAME:"root",MONGO_INITDB_ROOT_PASSWORD:"b".repeat(64),DEPLOYLITE_MONGO_BACKUP_PROCESS_ID:id}};
  const print=vi.fn((value:string)=>{printed.push(value);return Promise.resolve();});
  const quit=vi.fn((_code:number)=>{throw new Error("Mongo dump refused.");});
- const execute=(script:string)=>new AsyncFunction("Mongo","process","print","quit",script)(Mongo,process,print,quit);
+ const execute=async(script:string)=>new Script(script).runInNewContext({Mongo,process,print,quit});
  return {print,quit,execute,runCommand,printed,process,getCount:()=>count,setCount:(value:number)=>{count=value;},replace:()=>{id="c".repeat(24);}};
 }
 it("balances exactly one freshly acknowledged lock on the same standalone process",async()=>{
@@ -74,4 +74,8 @@ it("does not retry shell cleanup after failed acknowledgement emitted a partial 
  const now=Date.now(),script=buildMongoNativeDumpArgv("a".repeat(64),now+10000).at(-1)!;
  const injected=`DEPLOYLITE_MONGO_BACKUP_PROCESS_ID=""; date(){ printf '%s\\n' '${now}'; }; mongosh(){ if test -n "$DEPLOYLITE_MONGO_BACKUP_PROCESS_ID"; then printf 'foreign-unlock-attempt\\n' >&2; return 0; fi; printf '%s\\n' '${"a".repeat(24)}'; return 25; }; `;
  const result=spawnSync("bash",["-c",injected+script],{encoding:"utf8",timeout:2000});expect(result.status).toBe(25);expect(result.stderr).not.toContain("foreign-unlock-attempt");
+});
+
+it.each([["acquire",MONGO_BACKUP_LOCK_SCRIPT],["cleanup",MONGO_BACKUP_UNLOCK_SCRIPT]])("parses the %s CLI input as an ECMAScript script before shell rewriting",(_phase,script)=>{
+ expect(()=>new Script(script)).not.toThrow();
 });
