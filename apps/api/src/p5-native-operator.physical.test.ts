@@ -10,6 +10,7 @@ import {approvedManagedDatabaseProfileSchema, InMemoryCapabilityRegistry, manage
 import {DbAgentReplayStore, DbControlCommandRepository, DbProjectRepository} from "@deploylite/db";
 import {managedDatabaseNativeImagePolicy} from "@deploylite/domain";
 import {buildApiApp} from "./app.js";
+import {openDatabaseBrowser} from "./testing/p5-browser-fixture.js";
 import {openOperatorSession} from "./testing/p5-operator-session.js";
 import {DockerProcessRunner, DockerProcessError} from "../../agent/src/infrastructure/docker/docker-process-runner.js";
 import type {DockerCliRunner} from "../../agent/src/infrastructure/docker/docker-cli-image-transport.js";
@@ -53,7 +54,8 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
   const signal = AbortSignal.timeout(200000), created = new Set<string>(), profile = profiles[engine]!;
   let pinned: ManagedDatabaseFreshResources | undefined, volume: ManagedDatabaseFreshResources["volume"] | undefined;
   let network: ManagedDatabaseFreshResources["network"] | undefined, originalCommandId: string | undefined, originalPlanDigest: string | undefined;
-  let statsDispatches=0, logReads=0;
+  let statsDispatches=0, logReads=0, legacyPhase=true;
+  let browserFixture: Awaited<ReturnType<typeof openDatabaseBrowser>> | undefined;
   const logRequests: string[][] = [];
   const processRunner = new DockerProcessRunner({timeoutMs:60000,maxOutputBytes:131072});
   const runner: DockerCliRunner = {run: async (argv, abort, environment) => {
@@ -113,7 +115,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     let endpoint = await startPeer(true);
     vi.stubGlobal("fetch", async (url: Parameters<typeof fetch>[0], init?:RequestInit) => {
       if (!String(url).startsWith(endpoint + "/")) throw new Error("Unscoped fixture HTTP request.");
-      if(String(url)===endpoint+MANAGED_DATABASE_HEALTH_PATH)healthDispatches++;
+      if(legacyPhase&&String(url)===endpoint+MANAGED_DATABASE_HEALTH_PATH)healthDispatches++;
       if(String(url)===endpoint+MANAGED_DATABASE_METRICS_PATH)metricsDispatches++;
       if (String(url) === endpoint + MANAGED_DATABASE_LOGS_PATH) logsDispatches++;
       const stop = String(url) === endpoint + MANAGED_DATABASE_STOP_PATH;
@@ -142,7 +144,9 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const preview = await call("runtime/preview",{schemaVersion:1,engine}); expect(preview.statusCode).toBe(200);
     const {projectId:_project,databaseId:_database,...preparation} = preview.json().data.preparation;
     const connection = preview.json().data.connection;
-    const apply = await call("runtime/apply",preparation); expect(apply.statusCode).toBe(200);
+    legacyPhase=false;
+    browserFixture=await openDatabaseBrowser({projectId,databaseId,engine,cookie,app:()=>app!});
+    const apply=await browserFixture.create(); legacyPhase=true; expect(apply.statusCode).toBe(200);
     expect(apply.json().data.command.status).toBe("completed");
     const receipt = managedDatabaseRuntimeReceiptSchema.parse(apply.json().data.receipt);
     expect(receipt.status).toBe("ready"); if (!receipt.containerId || !receipt.imageId) throw new Error("Original daemon identity required.");
@@ -289,7 +293,17 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     result = {inventoryRecovery:{views:{runningBeforeStop:inventoryBeforeStop,stopped:inventoryStopped,runningAfterStart:inventoryAfterStart},restart:"passed",sourcesUsed:"passed",commands:"unchanged",cache:"unchanged",cipher:"unchanged",audit:"passed"},currentLogs: {runningBeforeStop: runningLogsBeforeStop, stopped: stoppedLogs, runningAfterStart: runningLogsAfterStart}, currentMetrics:{runningBeforeStop:runningMetricsBeforeStop,stopped:stoppedMetrics,runningAfterStart:runningMetricsAfterStart},currentHealth:{runningBeforeStop,stopped:stoppedHealth,runningAfterStart},receipt,uid:ready.uid,original:pinned,nativeStop:{receipt:stopped,originalReplayFingerprint},nativeStart:{receipt:started,originalStopReplayFingerprint},internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},
       authenticatedProbe:"passed",restart:"passed",persistence:"passed",operator:{publicOriginalSelectors:"passed",logsDispatches,logReads,logsSignedHttp:"passed",logsNoLedgerWrites:"passed",logsExecutorRemoved:"passed",metricsDispatches,statsDispatches,metricsSignedHttp:"passed",metricsNoLedgerWrites:"passed",metricsExecutorRemoved:"passed",healthDispatches,healthSignedHttp:"passed",healthNoLedgerWrites:"passed",healthExecutorRemoved:"passed",applyCommand:command(apply),stopCommand:command(stop),startCommand:command(start),startDispatches,startAtomicAudit:"passed",startCacheOnlyReplay:"passed",startExecutorRemoved:"passed",stoppedCacheNoRestart:"passed",signedHttp:"passed",postgresReplay:"passed",
         originalRows:"unchanged",cipherRows:"unchanged",atomicAudit:"passed",stopDispatches,cacheOnlyReplay:"passed",executorRemoved:"passed"}};
+    legacyPhase=false;
+    await app.close(); app=undefined; await peer!.close();peer=undefined;
+    endpoint=await startPeer(true);app=await build(endpoint,"managed_database_fixture_key_1234567890");
+    const browserAcceptance=await browserFixture.cycle(async()=>{
+      expect((await runner.run(["docker","exec",receipt.containerId!,"sh","-ec",probe(engine,false)],signal)).stdout).toContain("p5-persistent-value");
+      await resources.verifyFresh({request:input.request,profile,commandId:receipt.commandId},pinned!,authority,signal);
+      expect(await encrypted()).toEqual(cipherRows);
+    });
+    result!.browserAcceptance=browserAcceptance;
   } finally {
+    await browserFixture?.close();
     if (app) await app.close(); if (peer) await peer.close(); vi.unstubAllGlobals();
     const cleanup = AbortSignal.timeout(60000);
     for (const id of created) {

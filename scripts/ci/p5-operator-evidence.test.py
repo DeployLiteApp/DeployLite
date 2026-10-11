@@ -72,6 +72,7 @@ def fixture(engine="postgres"):
         proof["selection"] = {"tail":100,**({"since":"1970-01-01T00:00:00.500Z"} if index else {})}
     result["currentLogs"] = current_logs
     result["operator"].update(publicOriginalSelectors="passed",logsDispatches=3,logReads=3,logsSignedHttp="passed",logsNoLedgerWrites="passed",logsExecutorRemoved="passed")
+    result["browserAcceptance"]={"sourceCommit":"7e4875341dbb8e1afdeff23137403528f3af6382","engine":engine,"projectId":project,"databaseId":"orders","creation":"passed","selection":"passed","reload":"passed","telemetry":"passed","start":"passed","stop":"passed","persistence":"passed","browser":"chromium","context":"isolated","requests":12}
     return with_inventory(result, profile), profile
 def with_inventory(result, profile):
     result = copy.deepcopy(result)
@@ -266,5 +267,20 @@ class OperatorProofTests(unittest.TestCase):
             changed["inventoryRecovery"]["views"]["stopped"][key] = changed["inventoryRecovery"]["views"]["runningBeforeStop"][key]
         with self.assertRaises(RuntimeError): module.validate_result(changed,profile)
 
+class BrowserProofTests(unittest.TestCase):
+    def test_requires_real_browser_boundary(self):
+        result,profile=fixture()
+        result.pop("browserAcceptance",None)
+        with self.assertRaises(RuntimeError):module.validate_result(result,profile)
+    def test_rejects_skipped_detached_private_or_shared_browser_proof(self):
+        result,profile=fixture()
+        for patch in ({"start":"skipped"},{"creation":"pending"},{"projectId":"foreign"},{"databaseId":"foreign"},{"engine":"redis"},{"context":"shared"},{"sourceCommit":"main"},{"requests":True},{"requests":1001},{"password":"private"}):
+            changed=copy.deepcopy(result);changed["browserAcceptance"].update(patch)
+            with self.subTest(patch=patch),self.assertRaises(RuntimeError):module.validate_result(changed,profile)
+    def test_accepts_five_engines_with_exact_browser_proof(self):
+        for engine in module.native.ENGINES:
+            result,profile=fixture(engine)
+            result["browserAcceptance"]={"sourceCommit":"7e4875341dbb8e1afdeff23137403528f3af6382","engine":engine,"projectId":result["receipt"]["projectId"],"databaseId":"orders","creation":"passed","selection":"passed","reload":"passed","telemetry":"passed","start":"passed","stop":"passed","persistence":"passed","browser":"chromium","context":"isolated","requests":12}
+            with self.subTest(engine=engine):module.validate_result(result,profile)
 if __name__ == "__main__":
     unittest.main()
