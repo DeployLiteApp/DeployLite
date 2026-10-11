@@ -1,3 +1,4 @@
+import * as captureFixture from "./p5-native-backup-fixture.js";
 import {afterEach,expect,it,vi} from "vitest";
 import {createHash} from "node:crypto";
 import {mkdtemp,realpath,mkdir,writeFile,rm} from "node:fs/promises";
@@ -67,4 +68,20 @@ it("reports only an allowlisted capture stage when the authenticated backup fail
 it("reports a bounded numeric process exit without private command output",async()=>{
  const f=await fixture();f.input.call.mockResolvedValue({statusCode:503,body:"password=fake-private",json:()=>({data:{}})} as any);
  await expect(f.dump.prove({...f.input,captureFailure:()=>"unknown" as const,captureExit:()=>({code:137,signal:null})})).rejects.toThrow("Private native capture failed at unknown (exit=137, signal=none).");await f.dump.close();
+});
+
+it("classifies bounded private shell diagnostics into fixed identifiers only",()=>{
+ expect(typeof captureFixture.nativeCaptureErrorKind).toBe("function");
+ expect(captureFixture.nativeCaptureErrorKind(Buffer.from("SyntaxError: password=fake-private"))).toBe("syntax");
+ expect(captureFixture.nativeCaptureErrorKind(Buffer.from("private-command-output"))).toBe("unknown");
+ expect(captureFixture.nativeCaptureErrorKind(Buffer.alloc(4097))).toBe("unknown");
+});
+it("reports a fixed shell diagnostic class without reflecting private output",async()=>{
+ const f=await fixture();f.input.call.mockResolvedValue({statusCode:503,body:"password=fake-private",json:()=>({data:{}})} as any);
+ await expect(f.dump.prove({...f.input,captureFailure:()=>"shell" as const,captureExit:()=>({code:31,signal:null}),captureError:()=>"syntax" as const})).rejects.toThrow("Private native capture failed at shell (exit=31, signal=none) [shell=syntax].");await f.dump.close();
+});
+
+it("observes diagnostic kind once so a changing reader cannot reflect private text",async()=>{
+ const f=await fixture();f.input.call.mockResolvedValue({statusCode:503,body:"private",json:()=>({data:{}})} as any);const captureError=vi.fn().mockReturnValueOnce("syntax").mockReturnValue("password=fake-private");
+ await expect(f.dump.prove({...f.input,captureFailure:()=>"shell" as const,captureExit:()=>({code:31,signal:null}),captureError})).rejects.toThrow("Private native capture failed at shell (exit=31, signal=none) [shell=syntax].");expect(captureError).toHaveBeenCalledOnce();await f.dump.close();
 });

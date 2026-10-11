@@ -7,6 +7,16 @@ import {expect} from "vitest";
 import {managedDatabaseBackupReceiptSchema} from "@deploylite/contracts";
 import type {DbBackupInventoryStore} from "@deploylite/db";
 
+/** Only a fixed diagnostic kind leaves this hosted fixture; bytes remain private. */
+export function nativeCaptureErrorKind(bytes:Uint8Array){
+  if(!(bytes instanceof Uint8Array)||bytes.byteLength>4096)return "unknown";
+  const text=Buffer.from(bytes).toString("utf8");
+  const kinds=[[/\bSyntaxError:/,"syntax"],[/\bReferenceError:/,"reference"],[/\bTypeError:/,"type"],
+    [/\bMongoServerError:/,"server"],[/\bMongoNetworkError:/,"network"],[/\b(?:EACCES|EROFS)\b/,"permission"]] as const;
+  for(const [pattern,kind] of kinds)if(pattern.test(text))return kind;
+  return "unknown";
+}
+
 export function nativeDumpFixture(root:string) {
   let owned:Awaited<ReturnType<typeof lstat>>|undefined;
   let proof:Record<string,unknown>|undefined;
@@ -25,12 +35,27 @@ export function nativeDumpFixture(root:string) {
       uid:number;
       writerProbe?():Promise<void>;
       stoppedSource?:boolean;
+      captureError?():ReturnType<typeof nativeCaptureErrorKind>;
       captureExit?():Readonly<{code:number|null;signal:string|null}>;
       captureFailure?():"before-capture"|"connection"|"identity"|"preexisting-lock"|"acquisition"|"acknowledgement"|"dump"|"cleanup"|"token"|"clock"|"shell"|"unknown";
     }>) {
       if(!Number.isSafeInteger(input.uid)||input.uid<1||input.uid>4294967294)throw new Error("Corroborated non-root decoder required.");
       const first=await input.call();
-      if(first.statusCode!==200){const stage=input.captureFailure?.();if(stage&&["before-capture","connection","identity","preexisting-lock","acquisition","acknowledgement","dump","cleanup","token","clock","shell","unknown"].includes(stage)){const exit=input.captureExit?.();const code=exit&&Number.isInteger(exit.code)&&exit.code!==null&&exit.code>=0&&exit.code<=255?String(exit.code):"unknown";const signal=exit?.signal===null?"none":["SIGTERM","SIGKILL","SIGABRT","SIGSEGV","SIGPIPE"].includes(exit?.signal??"")?exit!.signal:"unknown";throw new Error("Private native capture failed at "+stage+(exit?" (exit="+code+", signal="+signal+")":"")+".");}}
+      if(first.statusCode!==200){
+        const stage=input.captureFailure?.();
+        const stages=["before-capture","connection","identity","preexisting-lock","acquisition","acknowledgement","dump","cleanup","token","clock","shell","unknown"];
+        if(stage&&stages.includes(stage)){
+          const exit=input.captureExit?.();
+          const code=exit&&Number.isInteger(exit.code)&&exit.code!==null&&exit.code>=0&&exit.code<=255?String(exit.code):"unknown";
+          const signal=exit?.signal===null?"none":["SIGTERM","SIGKILL","SIGABRT","SIGSEGV","SIGPIPE"].includes(exit?.signal??"")?exit!.signal:"unknown";
+          const observedKind=input.captureError?.();
+          const kinds=["syntax","reference","type","server","network","permission","unknown"];
+          const kind=observedKind&&kinds.includes(observedKind)?observedKind:"unknown";
+          const processExit=exit?" (exit="+code+", signal="+signal+")":"";
+          const diagnostic=input.captureError?" [shell="+kind+"]":"";
+          throw new Error("Private native capture failed at "+stage+processExit+diagnostic+".");
+        }
+      }
       expect(first.statusCode).toBe(200);
       const data=first.json().data,receipt=managedDatabaseBackupReceiptSchema.parse(data.receipt);
       expect(data).toMatchObject({backupCreated:true,idempotent:false});
