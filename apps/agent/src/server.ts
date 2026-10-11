@@ -1,3 +1,4 @@
+import {MANAGED_DATABASE_START_PATH,MANAGED_DATABASE_START_RECEIPT_PATH,managedDatabaseStartReceiptSchema,managedDatabaseStartCachedReceiptSchema} from "@deploylite/contracts";
 import {MANAGED_DATABASE_STOP_PATH,MANAGED_DATABASE_STOP_RECEIPT_PATH,managedDatabaseStopReceiptSchema,managedDatabaseStopCachedReceiptSchema} from "@deploylite/contracts";
 import {MANAGED_DATABASE_RUNTIME_PATH, MANAGED_DATABASE_RUNTIME_RECEIPT_PATH, managedDatabaseRuntimeReceiptSchema, managedDatabaseRuntimeCachedReceiptSchema} from "@deploylite/contracts";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -14,7 +15,7 @@ export async function startAgentServer(options: AgentServerOptions) {
   const server = createServer(async (request: IncomingMessage, response: ServerResponse) => {
     if (request.method === "GET" && request.url === "/health") { response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ status: "ready", service: "deploylite-agent" })); return; }
     if (request.method === "GET" && request.url === "/capabilities") { const requestTarget = "GET /capabilities"; const signature = typeof request.headers["x-deploylite-signature"] === "string" ? request.headers["x-deploylite-signature"] : undefined; if (!options.receiver.verifyRequest(requestTarget, signature)) { response.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "agent authentication failed" })); return; } const handshake = agentCapabilityHandshakeSchema.parse({ schemaVersion: 1, agentId: options.receiver.agentId, capabilities: options.receiver.capabilities, protocolVersions: options.protocolVersions ?? [1, 2] }); response.writeHead(200, { "content-type": "application/json", "x-deploylite-request-signature": signature! }).end(JSON.stringify(handshake)); return; }
-    if (request.method !== "POST" || !["/deployments/execute", "/deployments/stop", "/deployments/receipt", COMPOSE_NETWORK_ATTACHMENT_PATH, COMPOSE_NETWORK_ATTACHMENT_RECEIPT_PATH, COMPOSE_VOLUME_ATTACHMENT_PATH, COMPOSE_VOLUME_ATTACHMENT_RECEIPT_PATH, COMPOSE_RESOURCE_INSPECTION_PATH, COMPOSE_RESOURCE_CLEANUP_PATH, COMPOSE_RESOURCE_CLEANUP_RECEIPT_PATH, COMPOSE_VOLUME_BACKUP_PATH, COMPOSE_VOLUME_BACKUP_RECEIPT_PATH, DOMAIN_ROUTE_APPLY_PATH, DOMAIN_ROUTE_APPLY_RECEIPT_PATH, TRANSPORT_PORT_APPLY_PATH, TRANSPORT_PORT_APPLY_RECEIPT_PATH, MANAGED_DATABASE_RUNTIME_PATH, MANAGED_DATABASE_RUNTIME_RECEIPT_PATH, MANAGED_DATABASE_STOP_PATH, MANAGED_DATABASE_STOP_RECEIPT_PATH].includes(request.url ?? "")) { response.writeHead(404).end(); return; }
+    if (request.method !== "POST" || !["/deployments/execute", "/deployments/stop", "/deployments/receipt", COMPOSE_NETWORK_ATTACHMENT_PATH, COMPOSE_NETWORK_ATTACHMENT_RECEIPT_PATH, COMPOSE_VOLUME_ATTACHMENT_PATH, COMPOSE_VOLUME_ATTACHMENT_RECEIPT_PATH, COMPOSE_RESOURCE_INSPECTION_PATH, COMPOSE_RESOURCE_CLEANUP_PATH, COMPOSE_RESOURCE_CLEANUP_RECEIPT_PATH, COMPOSE_VOLUME_BACKUP_PATH, COMPOSE_VOLUME_BACKUP_RECEIPT_PATH, DOMAIN_ROUTE_APPLY_PATH, DOMAIN_ROUTE_APPLY_RECEIPT_PATH, TRANSPORT_PORT_APPLY_PATH, TRANSPORT_PORT_APPLY_RECEIPT_PATH, MANAGED_DATABASE_RUNTIME_PATH, MANAGED_DATABASE_RUNTIME_RECEIPT_PATH, MANAGED_DATABASE_STOP_PATH, MANAGED_DATABASE_STOP_RECEIPT_PATH, MANAGED_DATABASE_START_PATH, MANAGED_DATABASE_START_RECEIPT_PATH].includes(request.url ?? "")) { response.writeHead(404).end(); return; }
     const controller = new AbortController(); active.add(controller); let settled = false; request.once("aborted", () => { if (!settled) controller.abort(); });
     try {
       const chunks: Buffer[] = []; let size = 0;
@@ -24,10 +25,13 @@ export async function startAgentServer(options: AgentServerOptions) {
       const nativeAction = typeof body === "object" && body !== null && body.action === "database.runtime";
       const stopPath=request.url===MANAGED_DATABASE_STOP_PATH || request.url===MANAGED_DATABASE_STOP_RECEIPT_PATH;
       const stopAction=typeof body==="object" && body!==null && body.action==="database.runtime.stop";
-      if (nativePath !== nativeAction || stopPath !== stopAction) throw new Error("agent route scope rejected");
+      const startPath=request.url===MANAGED_DATABASE_START_PATH || request.url===MANAGED_DATABASE_START_RECEIPT_PATH;
+      const startAction=typeof body==="object" && body!==null && body.action==="database.runtime.start";
+      if (nativePath !== nativeAction || stopPath !== stopAction || startPath !== startAction) throw new Error("agent route scope rejected");
       const requestPayload = JSON.stringify(body);
       const signature = typeof request.headers["x-deploylite-signature"] === "string" ? request.headers["x-deploylite-signature"] : undefined;
       const result = request.url === "/deployments/receipt" ? await options.receiver.readReceipt(body, signature, controller.signal)
+        : request.url === MANAGED_DATABASE_START_RECEIPT_PATH ? await options.receiver.readManagedDatabaseStartReceipt(body, signature, controller.signal)
         : request.url === MANAGED_DATABASE_STOP_RECEIPT_PATH ? await options.receiver.readManagedDatabaseStopReceipt(body, signature, controller.signal)
         : request.url === MANAGED_DATABASE_RUNTIME_RECEIPT_PATH ? await options.receiver.readManagedDatabaseRuntimeReceipt(body, signature, controller.signal)
         : request.url === DOMAIN_ROUTE_APPLY_RECEIPT_PATH ? await options.receiver.readDomainRouteApplyReceipt(body, signature, controller.signal)
@@ -39,6 +43,7 @@ export async function startAgentServer(options: AgentServerOptions) {
         : request.url === COMPOSE_RESOURCE_INSPECTION_PATH ? await options.receiver.inspectComposeResource(body, signature, controller.signal)
         : await handler(body, { "x-deploylite-signature": signature }, controller.signal);
       const receipt = request.url === "/deployments/receipt" ? agentCachedReceiptSchema.parse(result)
+        : request.url === MANAGED_DATABASE_START_RECEIPT_PATH ? managedDatabaseStartCachedReceiptSchema.parse(result)
         : request.url === MANAGED_DATABASE_STOP_RECEIPT_PATH ? managedDatabaseStopCachedReceiptSchema.parse(result)
         : request.url === MANAGED_DATABASE_RUNTIME_RECEIPT_PATH ? managedDatabaseRuntimeCachedReceiptSchema.parse(result)
         : request.url === DOMAIN_ROUTE_APPLY_RECEIPT_PATH ? domainRouteApplyCachedReceiptSchema.parse(result)
@@ -53,6 +58,7 @@ export async function startAgentServer(options: AgentServerOptions) {
         : request.url === COMPOSE_VOLUME_ATTACHMENT_PATH ? composeVolumeAttachmentReceiptSchema.parse(result)
         : request.url === COMPOSE_VOLUME_BACKUP_PATH ? composeVolumeBackupReceiptSchema.parse(result)
         : request.url === COMPOSE_RESOURCE_CLEANUP_PATH ? composeResourceCleanupExecutionReceiptSchema.parse(result)
+        : request.url === MANAGED_DATABASE_START_PATH ? managedDatabaseStartReceiptSchema.parse(result)
         : request.url === MANAGED_DATABASE_STOP_PATH ? managedDatabaseStopReceiptSchema.parse(result)
         : request.url === MANAGED_DATABASE_RUNTIME_PATH ? managedDatabaseRuntimeReceiptSchema.parse(result)
         : request.url === DOMAIN_ROUTE_APPLY_PATH ? domainRouteApplyReceiptSchema.parse(result)
