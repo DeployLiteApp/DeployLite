@@ -1077,6 +1077,8 @@
     "apps/agent/src/infrastructure/docker/docker-cli-argv.ts",
     "apps/agent/src/infrastructure/docker/docker-cli-image-transport.ts",
     "apps/agent/src/infrastructure/docker/docker-process-runner.ts",
+    "apps/agent/src/infrastructure/docker/docker-process-runner.test.ts",
+    "apps/agent/src/infrastructure/docker/docker-process-binary.test.ts",
     "apps/api/src/agent-transport.ts",
     "apps/api/src/app.ts",
     "apps/api/src/domain-route-apply-route.ts",
