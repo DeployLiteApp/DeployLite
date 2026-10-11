@@ -47,8 +47,36 @@ def fixture(engine="postgres"):
     result["nativeStart"] = {"receipt": started, "originalStopReplayFingerprint": "2" * 64}
     result["operator"].update(startCommand={"id": started["commandId"], "correlationId": started["correlationId"], "status": "completed"},
         startDispatches=1, startAtomicAudit="passed", startCacheOnlyReplay="passed", startExecutorRemoved="passed", stoppedCacheNoRestart="passed")
+    public = {key:value for key,value in ready.items() if key not in {"action","commandId","inputDigest","correlationId","observedAt","status","health","idempotent"}}
+    current_health = {}
+    for index,(key,state,time) in enumerate((("runningBeforeStop","running",1500),("stopped","stopped",2500),("runningAfterStart","running",3500))):
+        observation = {**public,"action":"database.runtime.health","originalCommandId":ready["commandId"],"profileId":profile["profileId"],
+            "context":{"requestId":"health-request-"+str(index),"correlationId":"health-correlation-"+str(index)},"observedAt":time,
+            "state":state,"health":"healthy" if state=="running" else "not-running","uid":result["uid"] if state=="running" else None}
+        current_health[key] = {"observation":observation,"before":time-100,"after":time+100}
+    result["currentHealth"] = current_health
+    result["operator"].update(healthDispatches=3,healthSignedHttp="passed",healthNoLedgerWrites="passed",healthExecutorRemoved="passed")
     return result, profile
 class OperatorProofTests(unittest.TestCase):
+    def test_requires_current_health_not_only_legacy_lifecycle_evidence(self):
+        result,profile=fixture()
+        del result["currentHealth"]
+        for key in ("healthDispatches","healthSignedHttp","healthNoLedgerWrites","healthExecutorRemoved"):del result["operator"][key]
+        with self.assertRaises(RuntimeError):module.validate_result(result,profile)
+    def test_rejects_private_detached_stale_or_root_current_health(self):
+        result,profile=fixture()
+        for patch in ({"password":"private"},{"containerId":"0"*64},{"uid":0},{"observedAt":999},{"profileId":"foreign"},{"originalCommandId":"foreign"},{"state":"stopped"}):
+            changed=copy.deepcopy(result);changed["currentHealth"]["runningBeforeStop"]["observation"].update(patch)
+            with self.subTest(patch=patch),self.assertRaises(RuntimeError):module.validate_result(changed,profile)
+    def test_rejects_missing_health_state_windows_or_side_effect_proof(self):
+        result,profile=fixture()
+        for patch in ({"before":1501},{"after":1499},{"after":100000},{"before":True}):
+            changed=copy.deepcopy(result);changed["currentHealth"]["runningBeforeStop"].update(patch)
+            with self.subTest(patch=patch),self.assertRaises(RuntimeError):module.validate_result(changed,profile)
+        for key in ("healthSignedHttp","healthNoLedgerWrites","healthExecutorRemoved","healthDispatches"):
+            changed=copy.deepcopy(result);changed["operator"][key]=2 if key=="healthDispatches" else "not-run"
+            with self.subTest(key=key),self.assertRaises(RuntimeError):module.validate_result(changed,profile)
+
     def test_exact_public_original_and_distinct_operator_stop(self):
         result, profile = fixture()
         self.assertEqual(module.validate_result(result, profile), result)

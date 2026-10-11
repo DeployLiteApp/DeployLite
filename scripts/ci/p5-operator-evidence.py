@@ -18,7 +18,7 @@ def exact(value, keys, reason):
     native.require(isinstance(value, dict) and set(value) == set(keys), reason)
 
 def validate_result(result, profile):
-    exact(result, {"receipt", "uid", "original", "nativeStop", "nativeStart", "internalConnection", "authenticatedProbe", "restart", "persistence", "cleanup", "operator"}, "public_operator_result_required")
+    exact(result, {"receipt", "uid", "original", "nativeStop", "nativeStart", "currentHealth", "internalConnection", "authenticatedProbe", "restart", "persistence", "cleanup", "operator"}, "public_operator_result_required")
     native.require(type(result["uid"]) is int and 0 < result["uid"] <= 4294967294
         and all(result[key] == "passed" for key in ("authenticatedProbe", "restart", "persistence"))
         and result["cleanup"] == "verified", "executed_operator_persistence_cleanup_required")
@@ -79,12 +79,35 @@ def validate_result(result, profile):
     native.require(isinstance(stop_fingerprint, str) and re.fullmatch(r"[a-f0-9]{64}", stop_fingerprint), "opaque_stopped_fingerprint_required")
     preparation.update(originalStopReceipt=stopped, originalStopReplayFingerprint=stop_fingerprint)
     native.require(started["inputDigest"] == digest({**preparation, **authority, "operation": "database.runtime.start"}), "operator_start_digest_required")
+    health = result["currentHealth"]
+    exact(health, {"runningBeforeStop","stopped","runningAfterStart"}, "three_current_health_states_required")
+    contexts = set()
+    for name,state,lower,upper in (("runningBeforeStop","running",ready["observedAt"],stopped["observedAt"]),
+            ("stopped","stopped",stopped["observedAt"],started["observedAt"]),
+            ("runningAfterStart","running",started["observedAt"],9007199254740991)):
+        proof = health[name]
+        exact(proof,{"observation","before","after"},"current_health_window_required")
+        observation = proof["observation"]
+        exact(observation,shared | {"action","originalCommandId","profileId","context","observedAt","state","health","uid","storage","redacted"},"public_current_health_required")
+        exact(observation["context"],{"requestId","correlationId"},"current_health_context_required")
+        native.require(all(isinstance(value,str) and 1 <= len(value) <= 256 for value in observation["context"].values()),"current_health_request_scope_required")
+        contexts.add((observation["context"]["requestId"],observation["context"]["correlationId"]))
+        native.require(all(observation[key]==ready[key] for key in shared) and observation["action"]=="database.runtime.health"
+            and observation["originalCommandId"]==ready["commandId"] and observation["profileId"]==profile["profileId"]
+            and observation["storage"]=="verified" and observation["redacted"] is True and observation["state"]==state
+            and observation["health"]==("healthy" if state=="running" else "not-running")
+            and (type(observation["uid"]) is int and observation["uid"]==result["uid"] if state=="running" else observation["uid"] is None),"current_health_identity_state_required")
+        before,after,observed=proof["before"],proof["after"],observation["observedAt"]
+        native.require(all(type(value) is int and 0 <= value <= 9007199254740991 for value in (before,after,observed))
+            and ready["observedAt"] <= before <= observed <= after and after-before < 60000
+            and lower <= observed <= upper,"current_health_chronology_required")
+    native.require(len(contexts)==3,"distinct_current_health_requests_required")
     operator = result["operator"]
     flags = {"signedHttp": "passed", "postgresReplay": "passed", "originalRows": "unchanged", "cipherRows": "unchanged", "atomicAudit": "passed", "cacheOnlyReplay": "passed", "executorRemoved": "passed"}
-    flags.update(startAtomicAudit="passed", startCacheOnlyReplay="passed", startExecutorRemoved="passed", stoppedCacheNoRestart="passed")
-    exact(operator, set(flags) | {"applyCommand", "stopCommand", "startCommand", "stopDispatches", "startDispatches"}, "complete_operator_evidence_required")
+    flags.update(healthSignedHttp="passed",healthNoLedgerWrites="passed",healthExecutorRemoved="passed",startAtomicAudit="passed", startCacheOnlyReplay="passed", startExecutorRemoved="passed", stoppedCacheNoRestart="passed")
+    exact(operator, set(flags) | {"applyCommand", "stopCommand", "startCommand", "stopDispatches", "startDispatches", "healthDispatches"}, "complete_operator_evidence_required")
     native.require(all(operator[key] == value for key, value in flags.items()) and type(operator["stopDispatches"]) is int
-        and operator["stopDispatches"] == 1 and type(operator["startDispatches"]) is int and operator["startDispatches"] == 1, "executed_operator_boundaries_required")
+        and operator["stopDispatches"] == 1 and type(operator["startDispatches"]) is int and operator["startDispatches"] == 1 and type(operator["healthDispatches"]) is int and operator["healthDispatches"] == 3, "executed_operator_boundaries_required")
     for key, receipt in (("applyCommand", ready), ("stopCommand", stopped), ("startCommand", started)):
         exact(operator[key], {"id", "correlationId", "status"}, "public_operator_command_required")
         native.require(operator[key] == {"id": receipt["commandId"], "correlationId": receipt["correlationId"], "status": "completed"}, "completed_original_operator_command_required")
