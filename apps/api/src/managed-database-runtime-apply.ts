@@ -1,7 +1,7 @@
 import { MANAGED_DATABASE_RUNTIME_CAPABILITY, managedDatabaseRuntimePreparationSchema, managedDatabaseRuntimeReceiptQuerySchema,
   managedDatabaseRuntimeReceiptSchema, projectControlAuthoritySchema, type ProjectControlAuthorityV1 } from "@deploylite/contracts";
 import { awaitAbortable, createControlCommand, managedDatabaseRuntimeExecutionBinding, managedDatabaseRuntimeExecutionDigest,
-  type ControlCommand, type ProjectUpdateControlRepository } from "@deploylite/domain";
+  managedDatabaseRuntimeReplayFingerprintDigest, type ControlCommand, type ProjectUpdateControlRepository } from "@deploylite/domain";
 import { managedDatabaseRuntimeReceiptMatches, type ManagedDatabaseRuntimeAgentTransport, type PreparedManagedDatabaseRuntime } from "./managed-database-runtime-transport.js";
 export type ManagedDatabaseRuntimeApplyAccess = Readonly<{
   controls: ProjectUpdateControlRepository; transport: ManagedDatabaseRuntimeAgentTransport; agentId: string;
@@ -53,11 +53,11 @@ export async function applyManagedDatabaseRuntime(options: ManagedDatabaseRuntim
         requiredCapabilities: [MANAGED_DATABASE_RUNTIME_CAPABILITY], authority, lease: authority.projectLease,
         context: { requestId: context.requestId, correlationId: command.correlationId }, timeoutMs: options.deadlineMs });
       if (!managedDatabaseRuntimeReceiptMatches(query, receipt)) unavailable();
-      return receipt;
+      return { receipt, originalReplayFingerprint: managedDatabaseRuntimeReplayFingerprintDigest(query) };
     };
     const finish = async (command: ControlCommand, authority: ProjectControlAuthorityV1, raw: unknown, idempotent: boolean) => {
       if (command.status !== "dispatching" && command.status !== "completed") unavailable();
-      const receipt = receiptFor(raw, command, authority); await fence();
+      const { receipt, originalReplayFingerprint } = receiptFor(raw, command, authority); await fence();
       if (command.status !== "completed") {
         await bounded(() => controls.validateProjectUpdateAuthority(authority, now())); await fence();
         const completed = await bounded(() => controls.completeProjectUpdate(structuredClone(command), structuredClone(authority), {
@@ -67,7 +67,7 @@ export async function applyManagedDatabaseRuntime(options: ManagedDatabaseRuntim
         }));
         checkCommand(completed); if (completed.id !== command.id || completed.status !== "completed") unavailable(); command = completed;
       }
-      await fence(); return { command, receipt, applied: receipt.status === "ready", idempotent };
+      await fence(); return { command, receipt, originalReplayFingerprint, applied: receipt.status === "ready", idempotent };
     };
     await fence(); if (!transport.available()) unavailable();
     let command = await bounded(() => controls.findProjectUpdateByIdempotency(actorId, preparation.projectId, idempotencyKey));

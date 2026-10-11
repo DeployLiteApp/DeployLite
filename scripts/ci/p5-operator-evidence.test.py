@@ -71,7 +71,7 @@ def fixture(engine="postgres"):
             logs={"stdout":"ready\n","stderr":"notice\n","redacted":True},logsObservedAt=observation["observedAt"]-1)
         proof["selection"] = {"tail":100,**({"since":"1970-01-01T00:00:00.500Z"} if index else {})}
     result["currentLogs"] = current_logs
-    result["operator"].update(logsDispatches=3,logReads=3,logsSignedHttp="passed",logsNoLedgerWrites="passed",logsExecutorRemoved="passed")
+    result["operator"].update(publicOriginalSelectors="passed",logsDispatches=3,logReads=3,logsSignedHttp="passed",logsNoLedgerWrites="passed",logsExecutorRemoved="passed")
     return result, profile
 class OperatorProofTests(unittest.TestCase):
     def test_requires_current_health_not_only_legacy_lifecycle_evidence(self):
@@ -214,5 +214,10 @@ class OperatorProofTests(unittest.TestCase):
         for key,value in {"logsDispatches":2,"logReads":2,"logsSignedHttp":"not-run","logsNoLedgerWrites":"not-run","logsExecutorRemoved":"not-run"}.items():
             changed=copy.deepcopy(result);changed["operator"][key]=value
             with self.subTest(key=key),self.assertRaises(RuntimeError):module.validate_result(changed,profile)
+    def test_requires_public_original_selectors(self):
+        result,profile=fixture()
+        result["operator"].pop("publicOriginalSelectors",None)
+        with self.assertRaises(RuntimeError): module.validate_result(result,profile)
+
 if __name__ == "__main__":
     unittest.main()

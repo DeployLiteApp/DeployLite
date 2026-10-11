@@ -2,7 +2,7 @@ import { MANAGED_DATABASE_RUNTIME_CAPABILITY, MANAGED_DATABASE_STOP_CAPABILITY, 
   managedDatabaseStopReceiptSchema, managedDatabaseRuntimeReceiptSchema, protocolPayloadFingerprint, projectControlAuthoritySchema, type ProjectControlAuthorityV1 } from "@deploylite/contracts";
 import { awaitAbortable, createControlCommand, managedDatabaseStopExecutionBinding, managedDatabaseStopExecutionDigest,
   managedDatabaseStopReceiptMatches, managedDatabaseRuntimeReplayFingerprintDigest,
-  type ControlCommand, type ProjectUpdateControlRepository } from "@deploylite/domain";
+  managedDatabaseStopReplayFingerprintDigest, type ControlCommand, type ProjectUpdateControlRepository } from "@deploylite/domain";
 import { type ManagedDatabaseStopAgentTransport, type PreparedManagedDatabaseStop } from "./managed-database-stop-transport.js";
 import type { ManagedDatabaseRuntimeAgentTransport } from "./managed-database-runtime-transport.js";
 export type ManagedDatabaseStopAccess = Readonly<{
@@ -55,11 +55,11 @@ export async function stopManagedDatabaseRuntime(options: ManagedDatabaseStopAcc
         requiredCapabilities: [MANAGED_DATABASE_STOP_CAPABILITY], authority, lease: authority.projectLease,
         context: { requestId: context.requestId, correlationId: command.correlationId }, timeoutMs: options.deadlineMs });
       if (!managedDatabaseStopReceiptMatches(query, receipt)) unavailable();
-      return receipt;
+      return { receipt, originalStopReplayFingerprint: managedDatabaseStopReplayFingerprintDigest(query) };
     };
     const finish = async (command: ControlCommand, authority: ProjectControlAuthorityV1, raw: unknown, idempotent: boolean) => {
       if (command.status !== "dispatching" && command.status !== "completed") unavailable();
-      const receipt = receiptFor(raw, command, authority); await fence();
+      const { receipt, originalStopReplayFingerprint } = receiptFor(raw, command, authority); await fence();
       if (command.status !== "completed") {
         await bounded(() => controls.validateProjectUpdateAuthority(authority, now())); await fence();
         const completed = await bounded(() => controls.completeProjectUpdate(structuredClone(command), structuredClone(authority), {
@@ -69,7 +69,7 @@ export async function stopManagedDatabaseRuntime(options: ManagedDatabaseStopAcc
         }));
         checkCommand(completed); if (completed.id !== command.id || completed.status !== "completed") unavailable(); command = completed;
       }
-      await fence(); return { command, receipt, stopped: receipt.status === "stopped", idempotent };
+      await fence(); return { command, receipt, originalStopReplayFingerprint, stopped: receipt.status === "stopped", idempotent };
     };
     await fence(); if (!transport.available()) unavailable();
     let command = await bounded(() => controls.findProjectUpdateByIdempotency(actorId, preparation.projectId, idempotencyKey));

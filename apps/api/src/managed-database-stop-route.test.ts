@@ -100,6 +100,7 @@ it("stops each of the five engines through project authorization without reading
   for (const engine of ["postgres", "mysql", "mariadb", "mongodb", "redis"] as const) {
     const f = await fixture({ engine }), response = await f.call(); expect(response.statusCode).toBe(200);
     expect(response.json().data).toMatchObject({ stopped: true, command: { status: "completed" }, receipt: { engine, status: "stopped" } });
+  expect(response.json().data.originalStopReplayFingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(response.json().data.command).not.toHaveProperty("projectExecutionAuthority");
     expect(f.transport.dispatch).toHaveBeenCalledTimes(1); expect(f.originalTransport.dispatch).not.toHaveBeenCalled();
     expect(f.secrets.find).not.toHaveBeenCalled(); expect(f.secrets.createIfAbsent).not.toHaveBeenCalled();

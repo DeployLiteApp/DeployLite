@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { composeRuntimeResourceName, resolveControlCommandInMemory, type ControlCommand, type ProjectUpdateControlRepository } from "@deploylite/domain";
+import { composeRuntimeResourceName, managedDatabaseRuntimeReplayFingerprintDigest, resolveControlCommandInMemory, type ControlCommand, type ProjectUpdateControlRepository } from "@deploylite/domain";
 import type { ProjectControlAuthorityV1, ManagedDatabaseRuntimeReceiptV1 } from "@deploylite/contracts";
 import { applyManagedDatabaseRuntime } from "./managed-database-runtime-apply.js";
 function fixture() {
@@ -129,4 +129,19 @@ it("bounds stalled receipt and completion ports without creating acceptance evid
     await expect(applyManagedDatabaseRuntime(f.options, f.input)).rejects.toThrow("Database native apply is unavailable");
     if (stage === "cache") expect(f.transport.dispatch).not.toHaveBeenCalled();
   }
+});
+
+it("returns the existing opaque creation selector and preserves it on expired cache-only replay", async () => {
+  const f = fixture(), outcome = await applyManagedDatabaseRuntime(f.options, f.input);
+  const command = outcome.command;
+  const expected = managedDatabaseRuntimeReplayFingerprintDigest({ ...f.input.preparation, action: "database.runtime", operation: "database.runtime.apply",
+    agentId: f.options.agentId, commandId: command.id, idempotencyKey: command.idempotencyKey, inputDigest: command.inputDigest,
+    requiredCapabilities: ["database.runtime.v1"], authority: command.projectExecutionAuthority, lease: command.projectExecutionAuthority!.projectLease,
+    context: f.input.context, timeoutMs: f.options.deadlineMs });
+  expect(outcome).toHaveProperty("originalReplayFingerprint", expected);
+  f.advance(); f.input.context = { requestId: "new-request", correlationId: "new-correlation" };
+  f.environment.mockClear(); f.transport.dispatch.mockClear();
+  const replay = await applyManagedDatabaseRuntime(f.options, f.input);
+  expect(replay).toHaveProperty("originalReplayFingerprint", expected);
+  expect(f.environment).not.toHaveBeenCalled(); expect(f.transport.dispatch).not.toHaveBeenCalled();
 });
