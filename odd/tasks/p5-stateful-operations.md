@@ -944,4 +944,4 @@ Prospective stub run recorded7failed/2passed of9cases; five engine positives, de
 
 #491 f5ddf309fd1e7087b88f6d6c1fd76d22c30bd2b7/run38134698780 owner9/9SUCCESS,3326unit,0skipped/pending/failed,290global/24P3/296operator source hashes exact, restart/cleanup verified. Original five native and five signed operator/current-source Chromium cases passed. Protocol remains unused; full deletion acceptance and wholeP5 pending.
 
-Confirmed executor source checkpoint: full Node24 pnpmcheck exits0,2376unit across8projects,0pending/failed,9focal/agenttypesPASS. Physical signed deletion still pending; unused source only.
+Confirmed executor source checkpoint: full Node24 pnpmcheck exits0,3335unit across8projects,0pending/failed,9focal/agenttypesPASS. Physical signed deletion still pending; unused source only.
