@@ -1328,6 +1328,8 @@
     "packages/db/src/postgres-fixture-shutdown.test.ts",
     "apps/web/src/lib/managed-database-telemetry.ts",
     "apps/web/src/lib/managed-database-telemetry.test.ts",
+    "apps/web/src/components/managed-database-workbench.tsx",
+    "apps/web/src/components/managed-database-workbench.test.tsx",
     "apps/web/src/components/managed-database-inventory-panel.tsx",
     "apps/web/src/components/managed-database-inventory-panel.test.tsx",
     "apps/web/src/components/managed-database-telemetry-panel.tsx",

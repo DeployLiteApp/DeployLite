@@ -830,3 +830,12 @@ Stored five-engine inventory loads without credential generation or command effe
 Initial missing jsdom setup was diagnostic failure, not behavioral RED. Corrected jsdom stub produced8functional assertion RED; telemetry callback independently produced1assertion RED with7existing PASS. Implemented panel and fresh-state callback now pass46focal cases (8inventory panel+8telemetry panel+8inventory SDK+13lifecycle+9telemetry SDK); original suites retained. State is scoped to selection to avoid child/parent effect order clearing fresh observations. No local services or real HTTP. Full/exact-head verification and project activation/physical five-engine reload proof remain pending; wholeP5 open. Rollback removes unused panel/tests/manifest additions and optional telemetry callback, retaining original resources, encrypted rows, ledger and receipts.
 
 Inventory panel finalsource: complete Node24 pnpmcheck exits0 with3256unit across8projects,0skipped/pending/failed. Base4782eddf3e/run38127088997 owner9/9gates3247unit/allmandatoryexistingphysical0omissions/276global24P3282operator hashes/restartcleanup. New panel is not yet activated on project page; actual reload/source recovery remains pending.
+
+
+### S1/S2 project activation of stored native databases — 2026-10-11
+
+Admin/operator project pages now mount the creator and recovered stored inventory together, scoped by project/user key. A confirmed CREATE clears stale form/control state, selects the created database and reloads readonly inventory; selecting an existing entry never creates credentials or commands. Missing API never mounts inventory. Readonly/unauthenticated/unresolved-project boundaries and exact client props retain the server-cookie exclusion. Existing standalone creator behavior remains available to its original tests.
+
+Four prospective assertion RED (2Workbench/1confirmed-create callback/1real-page activation) precede29focalPASS, including unchanged old creator and inventory/telemetry cases. Exact page prop assertions explicitly include only the new callback, not weakened partial matching. All ports mocked; no local services. Full/exact-head and actual five-engine reload remain pending. Rollback removes Workbench/tests/source entries/page wiring and optional callback, retaining stored rows/resources/receipts. WholeP5 open.
+
+Workbench finalsource: complete Node24 pnpmcheck exits0 with3260unit across8projects. All observed cases execute PASS; actual five-engine inventory/reload and exact hosted verification remain pending.

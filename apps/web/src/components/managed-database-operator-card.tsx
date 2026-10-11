@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 const engines: ReadonlyArray<readonly [ManagedDatabaseEngineV1, string]> = [["postgres", "PostgreSQL"], ["mysql", "MySQL"], ["mariadb", "MariaDB"], ["mongodb", "MongoDB"], ["redis", "Redis"]];
-export function ManagedDatabaseOperatorCard({projectId, apiBaseUrl}: {projectId: string; apiBaseUrl: string | null}) {
+export function ManagedDatabaseOperatorCard({projectId, apiBaseUrl, onCreated}: {projectId: string; apiBaseUrl: string | null; onCreated?(databaseId: string): void}) {
   const [engine, setEngine] = useState<ManagedDatabaseEngineV1>("postgres"), [name, setName] = useState("");
   const [preview, setPreview] = useState<PreparedDatabaseView | null>(null);
   const [source, setSource] = useState<ManagedDatabaseHealthPreparationV1 | null>(null);
@@ -49,7 +49,9 @@ export function ManagedDatabaseOperatorCard({projectId, apiBaseUrl}: {projectId:
     void run("Creating", async options => {
       const result = await applyManagedDatabase(current.preparation, options, token.key); if (options.signal?.aborted) return;
       if (result.kind === "error") {setMessage("Database creation could not be confirmed."); return;}
-      attempts.current.delete(token.identity); setSource(result.preparation); setStopped(null); setMessage("Database created.");
+      attempts.current.delete(token.identity);
+      if (onCreated) {setPreview(null); setSource(null); setStopped(null); setName(""); setMessage("Database created."); onCreated(current.preparation.databaseId); return;}
+      setSource(result.preparation); setStopped(null); setMessage("Database created.");
     });
   }
   function stop() {
