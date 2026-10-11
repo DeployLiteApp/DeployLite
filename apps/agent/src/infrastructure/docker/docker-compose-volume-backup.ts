@@ -216,18 +216,21 @@ function validateEntrySet(entries: ComposeVolumeBackupEntry[], maxEntries: numbe
     if (entry.kind !== "directory" && entries.some(candidate => candidate.path.startsWith(entry.path + "/"))) fail("COMPOSE_BACKUP_UNSAFE_SOURCE");
   }
 }
-async function writeArchive(path: string, entries: ComposeVolumeBackupEntry[], maxBytes: number, signal: AbortSignal, assertCurrent: () => void): Promise<{ archiveBytes: number; archiveSha256: string }> {
-  const handle = await open(path, "wx", 0o600), hasher = createHash("sha256"); let archiveBytes = 0;
+async function writeArchive(path: string | null, entries: ComposeVolumeBackupEntry[], maxBytes: number, signal: AbortSignal, assertCurrent: () => void, sink?: (bytes:Uint8Array)=>Promise<void>): Promise<{ archiveBytes: number; archiveSha256: string }> {
+  const handle = path===null?null:await open(path, "wx", 0o600), hasher = createHash("sha256"); let archiveBytes = 0;
   const write = async (value: Buffer) => {
     assertCurrent();
     if (archiveBytes + value.length > maxBytes) fail("COMPOSE_BACKUP_LIMIT");
+    hasher.update(value);
+    if(handle){
     let offset = 0;
     while (offset < value.length) {
       const result = await handle.write(value, offset, value.length - offset, null);
       if (result.bytesWritten < 1) fail("COMPOSE_BACKUP_FAILED");
       offset += result.bytesWritten;
     }
-    hasher.update(value); archiveBytes += value.length;
+    }else{if(!sink)fail("COMPOSE_BACKUP_FAILED");await sink(value);}
+    assertCurrent();archiveBytes += value.length;
   };
   try {
     for (const entry of entries) {
@@ -254,9 +257,9 @@ async function writeArchive(path: string, entries: ComposeVolumeBackupEntry[], m
       }
     }
     await write(Buffer.alloc(1024));
-    await handle.sync();
+    if(handle)await handle.sync();
     return { archiveBytes, archiveSha256: hasher.digest("hex") };
-  } finally { await handle.close().catch(() => undefined); }
+  } finally { if(handle)await handle.close().catch(() => undefined); }
 }
 
 export function createDockerComposeVolumeBackupExecutor(supplied: ComposeVolumeBackupExecutorOptions) {
@@ -369,3 +372,19 @@ export function createDockerComposeVolumeBackupExecutor(supplied: ComposeVolumeB
 
 /** Shared private filesystem guards; existing Compose behavior remains unchanged. */
 export const composeBackupFilesystem = Object.freeze({safeDirectory,hashFile});
+
+/** Reuse the P3 safe tar writer for an already corroborated stopped native volume. */
+export async function captureComposeVolumeBackupToSink(source:ComposeVolumeBackupSource,runtimeName:string,maxBytes:number,write:(bytes:Uint8Array)=>Promise<void>,signal:AbortSignal,current:()=>void):Promise<{bytes:number;sha256:string}>{
+ if(!Number.isSafeInteger(maxBytes)||maxBytes<1024)fail("COMPOSE_BACKUP_LIMIT");
+ const check=()=>{if(signal.aborted)fail("COMPOSE_BACKUP_FAILED");current();};check();
+ const resolved=await awaitAbortable(()=>source.resolveVolume(runtimeName,signal),signal);check();
+ const root=await safeDirectory(resolved.root,false);check();
+ const entries:ComposeVolumeBackupEntry[]=[],maximum=Math.floor((maxBytes-1024)/512),iterator=resolved.entries()[Symbol.asyncIterator]();
+ try{for(;;){check();const next=await awaitAbortable(()=>Promise.resolve(iterator.next()),signal);check();if(next.done)break;if(entries.length>=maximum)fail("COMPOSE_BACKUP_LIMIT");entries.push(next.value);}}
+ finally{if(signal.aborted)void Promise.resolve(iterator.return?.()).catch(()=>undefined);}
+ validateEntrySet(entries,maximum);entries.sort((a,b)=>a.path.localeCompare(b.path,"en"));
+ const result=await writeArchive(null,entries,maxBytes,signal,check,write);check();
+ const rebound=await awaitAbortable(()=>source.resolveVolume(runtimeName,signal),signal),after=await safeDirectory(rebound.root,false);check();
+ if(after.path!==root.path||after.info.dev!==root.info.dev||after.info.ino!==root.info.ino)fail("COMPOSE_BACKUP_UNSAFE_SOURCE");
+ return {bytes:result.archiveBytes,sha256:result.archiveSha256};
+}

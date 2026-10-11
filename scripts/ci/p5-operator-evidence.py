@@ -170,12 +170,13 @@ def validate_confirmed_deletion(result,profile):
 
 def validate_native_backup(result, profile):
     proof=result.get("nativeBackup")
-    exact(proof,{"receipt","maxBytes","captures","signedHttp","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup"}|({"writersResumed"} if profile["engine"] in ("mysql","mariadb") else set()),"complete_actual_native_dump_required")
-    native.require(profile["engine"] in ("postgres","mysql","mariadb") and type(proof["captures"]) is int and proof["captures"]==1
+    exact(proof,{"receipt","maxBytes","captures","signedHttp","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup"}|({"writersResumed"} if profile["engine"] in ("mysql","mariadb") else {"stoppedSource","sourceCleanup"} if profile["engine"]=="redis" else set()),"complete_actual_native_dump_required")
+    native.require(profile["engine"] in ("postgres","mysql","mariadb","redis") and type(proof["captures"]) is int and proof["captures"]==1
         and type(proof["maxBytes"]) is int and proof["maxBytes"]==2097152
         and all(proof[key]=="passed" for key in ("signedHttp","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup")),"executed_private_postgres_dump_required")
     if profile["engine"] in ("mysql","mariadb"):native.require(proof["writersResumed"]=="passed","actual_sql_writers_resumed_required")
     if profile["engine"]=="postgres":native.require(proof["restoredData"]==proof["restoreCleanup"]=="passed","actual_postgres_restore_required")
+    if profile["engine"]=="redis":native.require(proof["stoppedSource"]==proof["sourceCleanup"]=="passed","actual_stopped_redis_source_required")
     receipt,ready=proof["receipt"],result["receipt"]
     shared={"schemaVersion","projectId","databaseId","engine","agentId","planDigest","environmentFingerprint","containerId","imageId","volumeName","networkName","networkId","volumeCreatedAt","storage","redacted"}
     exact(receipt,shared|{"action","commandId","originalCommandId","profileId","inputDigest","correlationId","volumeKey","observedAt","destinationId","sourceDigest","format","consistency","status","archiveId","archiveBytes","archiveSha256","manifestSha256","idempotent"},"strict_native_dump_receipt_required")
@@ -187,21 +188,21 @@ def validate_native_backup(result, profile):
         and receipt["commandId"]!=ready["commandId"] and receipt["profileId"]==profile["profileId"]
         and receipt["action"]=="database.runtime.backup" and receipt["inputDigest"]==expected and receipt["sourceDigest"]==digest(source)
         and receipt["destinationId"]=="private-native" and receipt["volumeKey"]=="db-"+ready["databaseId"]
-        and receipt["format"]==("postgres-custom-gzip" if profile["engine"]=="postgres" else profile["engine"]+"-sql-gzip") and receipt["consistency"]==("native-snapshot" if profile["engine"]=="postgres" else "global-read-lock")
+        and receipt["format"]==("volume-tar" if profile["engine"]=="redis" else "postgres-custom-gzip" if profile["engine"]=="postgres" else profile["engine"]+"-sql-gzip") and receipt["consistency"]==("all-consumers-stopped" if profile["engine"]=="redis" else "native-snapshot" if profile["engine"]=="postgres" else "global-read-lock")
         and receipt["status"]=="created" and receipt["idempotent"] is False
         and type(receipt["archiveBytes"]) is int and 0<receipt["archiveBytes"]<=proof["maxBytes"]
-        and type(receipt["observedAt"]) is int and ready["observedAt"]<=receipt["observedAt"]<=result["nativeStop"]["receipt"]["observedAt"]
+        and type(receipt["observedAt"]) is int and (result["nativeStop"]["receipt"]["observedAt"]<=receipt["observedAt"]<=result["nativeStart"]["receipt"]["observedAt"] if profile["engine"]=="redis" else ready["observedAt"]<=receipt["observedAt"]<=result["nativeStop"]["receipt"]["observedAt"])
         and all(isinstance(receipt[key],str) and re.fullmatch(r"[a-f0-9]{64}",receipt[key]) for key in ("archiveSha256","manifestSha256"))
         and isinstance(receipt["correlationId"],str) and 1<=len(receipt["correlationId"])<=256,"original_bounded_native_dump_required")
     archive="backup_"+hashlib.sha256((ready["projectId"]+"\0"+receipt["commandId"]+"\0private-native").encode()).hexdigest()[:32]
     native.require(receipt["archiveId"]==archive,"original_private_archive_id_required")
 
 def validate_result(result, profile, source_commit="7e4875341dbb8e1afdeff23137403528f3af6382"):
-    exact(result, {"receipt", "uid", "original", "nativeStop", "nativeStart", "currentHealth", "currentMetrics", "currentLogs", "inventoryRecovery", "browserAcceptance", "confirmationRecovery", "confirmedClaim", "confirmedAuthority", "confirmedDeletion", "internalConnection", "authenticatedProbe", "restart", "persistence", "cleanup", "operator"}|({"nativeBackup"} if profile["engine"] in ("postgres","mysql","mariadb") else set()), "public_operator_result_required")
+    exact(result, {"receipt", "uid", "original", "nativeStop", "nativeStart", "currentHealth", "currentMetrics", "currentLogs", "inventoryRecovery", "browserAcceptance", "confirmationRecovery", "confirmedClaim", "confirmedAuthority", "confirmedDeletion", "internalConnection", "authenticatedProbe", "restart", "persistence", "cleanup", "operator"}|({"nativeBackup"} if profile["engine"] in ("postgres","mysql","mariadb","redis") else set()), "public_operator_result_required")
     native.require(type(result["uid"]) is int and 0 < result["uid"] <= 4294967294
         and all(result[key] == "passed" for key in ("authenticatedProbe", "restart", "persistence"))
         and result["cleanup"] == "verified", "executed_operator_persistence_cleanup_required")
-    if profile["engine"] in ("postgres","mysql","mariadb"):validate_native_backup(result,profile)
+    if profile["engine"] in ("postgres","mysql","mariadb","redis"):validate_native_backup(result,profile)
     validate_browser_acceptance(result,source_commit)
     validate_confirmation_recovery(result)
     validate_confirmed_claim(result)

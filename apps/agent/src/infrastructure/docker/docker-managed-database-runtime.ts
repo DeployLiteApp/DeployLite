@@ -1,3 +1,4 @@
+import type {ComposeVolumeBackupSource} from "./docker-compose-volume-backup.js";
 import {MANAGED_DATABASE_BACKUP_CAPABILITY} from "@deploylite/contracts";
 import type {AgentReplayStore} from "../../agent-transport.js";
 import type {DockerProcessRunner} from "./docker-process-runner.js";
@@ -40,7 +41,7 @@ export function createManagedDatabaseRuntime(supplied: Readonly<{
     capabilities: CapabilityRegistry;
     clock: Clock;
     runner: DockerCliRunner;
-    backup?:Readonly<{destinations:ReadonlyMap<string,string>;runner:Pick<DockerProcessRunner,"runBinaryToSink">;replayStore:Pick<AgentReplayStore,"durable"|"lookupByFingerprintDigest">;maxBytes:number}>;
+    backup?:Readonly<{volumeSource?:ComposeVolumeBackupSource;destinations:ReadonlyMap<string,string>;runner:Pick<DockerProcessRunner,"runBinaryToSink">;replayStore:Pick<AgentReplayStore,"durable"|"lookupByFingerprintDigest">;maxBytes:number}>;
     limits: Readonly<{deadlineMs: number; maxOutputBytes: number; maxContainers: number; pollIntervalMs: number; cpus: number; memoryBytes: number; pidsLimit: number; stopGraceSeconds?: number}>;
 }>) {
     try {
@@ -68,7 +69,7 @@ export function createManagedDatabaseRuntime(supplied: Readonly<{
         const processIdentityReader = createManagedDatabaseProcessIdentityReader(shared);
         const verifier = createManagedDatabaseReadinessVerifier({...shared, nativeInspector, resourceVerifier: resources, composeInspector, processIdentityReader});
         const backup=backupConfig?createManagedDatabaseBackupExecutor({agentId:options.agentId,profiles,imagePolicy:options.imagePolicy,
-            capabilities:options.capabilities,clock:options.clock,replayStore:backupConfig.replayStore,verifier,runner:backupConfig.runner,
+            capabilities:options.capabilities,clock:options.clock,replayStore:backupConfig.replayStore,verifier,volumeSource:backupConfig.volumeSource,runner:backupConfig.runner,
             archive:createPrivateNativeBackupArchive({destinations:backupConfig.destinations,clock:options.clock,maxBytes:backupConfig.maxBytes,maxDurationMs:options.limits.deadlineMs}),
             limits:{deadlineMs:options.limits.deadlineMs,maxBytes:backupConfig.maxBytes}}):undefined;
         const health=options.capabilities.has(MANAGED_DATABASE_HEALTH_CAPABILITY)?createManagedDatabaseHealthExecutor({agentId:options.agentId,profiles,

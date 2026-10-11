@@ -80,7 +80,7 @@ def fixture(engine="postgres"):
     result["confirmedDeletion"]={"projectId":project,"receipt":deleted,"originalSources":"passed","apiTransport":"passed","prepareControl":"passed","prepareRoute":"passed","applyControl":"passed","applyRoute":"passed","inventoryRetirement":"passed","signatureRejected":"passed","confirmationRejected":"passed","originalNonce":"passed","signedHttp":"passed","effects":1,"rollback":"passed","cacheOnlyReopen":"passed","executorRemoved":"passed","retirement":"passed","retainedStorage":"passed","audit":"passed","originalRows":"unchanged","cipher":"unchanged"}
     result["confirmedDeletion"]["browserDeletion"]={**{key:result["browserAcceptance"][key] for key in ("sourceCommit","engine","projectId","databaseId","browser","context")},"preparation":"passed","confirmation":"passed","recovery":"passed","sameOriginalKey":"passed","inventory":"passed","reload":"passed","retainedStorage":"passed","requests":7}
     result=with_inventory(result,profile)
-    if engine in ("postgres","mysql","mariadb"):add_native_backup(result,profile)
+    if engine in ("postgres","mysql","mariadb","redis"):add_native_backup(result,profile)
     return result,profile
 def with_inventory(result, profile):
     result = copy.deepcopy(result)
@@ -367,6 +367,7 @@ def add_native_backup(result,profile):
     proof={"receipt":receipt,"maxBytes":2097152,"captures":1,**{key:"passed" for key in ("signedHttp","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup")}}
     if profile["engine"] in ("mysql","mariadb"):proof["writersResumed"]="passed"
     else:proof.update(restoredData="passed",restoreCleanup="passed")
+    if profile["engine"]=="redis":receipt.update(format="volume-tar",consistency="all-consumers-stopped",observedAt=result["nativeStop"]["receipt"]["observedAt"]);proof.update(stoppedSource="passed",sourceCleanup="passed")
     result["nativeBackup"]=proof
     return result,profile
 
@@ -408,6 +409,13 @@ class SqlNativeBackupProof(unittest.TestCase):
     def test_does_not_accept_sql_global_lock_for_other_engines(self):
         result,profile=fixture();result["nativeBackup"]["receipt"]["consistency"]="global-read-lock"
         with self.assertRaises(RuntimeError):module.validate_native_backup(result,profile)
+
+class RedisNativeBackupProof(unittest.TestCase):
+    def test_accepts_actual_stopped_redis_archive_and_restore(self):
+        result,profile=fixture("redis");add_native_backup(result,profile)
+        result["nativeBackup"]["receipt"].update(format="volume-tar",consistency="all-consumers-stopped",observedAt=result["nativeStop"]["receipt"]["observedAt"])
+        result["nativeBackup"].update(stoppedSource="passed",sourceCleanup="passed")
+        self.assertEqual(module.validate_result(result,profile),result)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,3 +1,6 @@
+import {restoreNativeRedisFixture} from "./testing/p5-native-redis-decoder.js";
+import {createLocalDirectoryComposeVolumeBackupSource} from "../../agent/src/infrastructure/docker/docker-compose-volume-backup.js";
+import {mkdir,lstat,rm} from "node:fs/promises";
 import {restoreNativeSqlFixture} from "./testing/p5-native-sql-decoder.js";
 import {decodeNativePostgresFixture} from "./testing/p5-native-postgres-decoder.js";
 import {nativeDumpFixture} from "./testing/p5-native-backup-fixture.js";
@@ -62,8 +65,12 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
   let network: ManagedDatabaseFreshResources["network"] | undefined, originalCommandId: string | undefined, originalPlanDigest: string | undefined;
   let statsDispatches=0, logReads=0, legacyPhase=true, backupCaptures=0;
   const backupMaxBytes=2097152, backupRoot=resolve(process.env.RUNNER_TEMP!,"deploylite-p5-native-private-"+projectId);
-  const dump=["postgres","mysql","mariadb"].includes(engine)?nativeDumpFixture(backupRoot):undefined;
+  const dump=["postgres","mysql","mariadb","redis"].includes(engine)?nativeDumpFixture(backupRoot):undefined;
   let nativeBackup:Record<string,unknown>|undefined;
+  const redisSourceRoot=resolve(process.env.RUNNER_TEMP!,"deploylite-p5-redis-source-"+projectId),redisRoots=new Map<string,string>();
+  let redisSourceInfo:Awaited<ReturnType<typeof lstat>>|undefined;
+  let redisBackupResponse:Awaited<ReturnType<FastifyInstance["inject"]>>|undefined;
+  const redisSource=createLocalDirectoryComposeVolumeBackupSource(redisRoots);
   let browserFixture: Awaited<ReturnType<typeof openDatabaseBrowser>> | undefined;
   const logRequests: string[][] = [];
   const processRunner = new DockerProcessRunner({timeoutMs:60000,maxOutputBytes:131072});
@@ -92,7 +99,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
   const capabilities = new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.stop.v1","database.runtime.start.v1","database.runtime.health.v1","database.runtime.metrics.v1","database.runtime.logs.v1","database.runtime.delete.v1",...(dump?["database.runtime.backup.v1" as const]:[])]);
   const shared = {runner,imagePolicy,clock,limits,owner:projectId,agentId,trustKey,capabilities};
   const inspector = createManagedDatabaseDockerInspector(shared), resources = createManagedDatabaseResourceMaterializer(shared);
-  const native = createConfiguredManagedDatabaseRuntime(raw, {...shared,...(dump?{backup:{destinations:new Map([["private-native",backupRoot]]),replayStore:new DbAgentReplayStore(db.db,"operator-"+projectId),maxBytes:backupMaxBytes,runner:{runBinaryToSink:async(...args:Parameters<DockerProcessRunner["runBinaryToSink"]>)=>{backupCaptures++;return new DockerProcessRunner({timeoutMs:60000,maxOutputBytes:131072,maxBinaryBytes:backupMaxBytes}).runBinaryToSink(...args);}}}}:{})})!;
+  const native = createConfiguredManagedDatabaseRuntime(raw, {...shared,...(dump?{backup:{...(engine==="redis"?{volumeSource:{resolveVolume:async(name:string,abort:AbortSignal)=>{const source=await redisSource.resolveVolume(name,abort);return {...source,entries:()=>{backupCaptures++;return source.entries();}};}}}:{}),destinations:new Map([["private-native",backupRoot]]),replayStore:new DbAgentReplayStore(db.db,"operator-"+projectId),maxBytes:backupMaxBytes,runner:{runBinaryToSink:async(...args:Parameters<DockerProcessRunner["runBinaryToSink"]>)=>{backupCaptures++;return new DockerProcessRunner({timeoutMs:60000,maxOutputBytes:131072,maxBinaryBytes:backupMaxBytes}).runBinaryToSink(...args);}}}}:{})})!;
   const stopExecutor = native.stop ? {stop:native.stop} : undefined;
   const startExecutor = native.start ? {start:native.start} : undefined;
   if (!startExecutor) throw new Error("Explicit native start required.");
@@ -175,7 +182,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     for (const hostname of ["127.0.0.1",connection.hostname]) expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,hostname)],signal)).stdout.trim()).toBe(marker);
     const sqlDump=engine==="mysql"||engine==="mariadb";
     if(sqlDump)await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,true,"127.0.0.1","CREATE TABLE p5_nontransactional(value varchar(64)) ENGINE=MyISAM; INSERT INTO p5_nontransactional VALUES ('p5-nontransactional-value');")],signal);
-    if(dump)nativeBackup=await dump.prove({
+    if(dump&&engine!=="redis")nativeBackup=await dump.prove({
       call:()=>call("runtime/backup",{...preparation,originalReceipt:receipt,originalReplayFingerprint:apply.json().data.originalReplayFingerprint,destinationId:"private-native",maxBytes:backupMaxBytes}),
       reopen:async()=>{await app!.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(true);app=await build(endpoint,"managed_database_fixture_key_1234567890");},
       inventory:()=>new DbBackupInventoryStore(db.db,agentId),verify:()=>verifier.verify(input,pinned!,authority,signal),decode:bytes=>(engine==="mysql"||engine==="mariadb")?restoreNativeSqlFixture({engine,bytes,containerId:originalContainerId,uid:ready.uid,signal}):decodeNativePostgresFixture({bytes,containerId:originalContainerId,uid:ready.uid,signal}),signal,captures:()=>backupCaptures,maxBytes:backupMaxBytes,originalContainerId:receipt.containerId,uid:ready.uid,
@@ -259,6 +266,12 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const stopped = managedDatabaseStopReceiptSchema.parse(stop.json().data.receipt);
     expect(stopped).toMatchObject({status:"stopped",originalCommandId:receipt.commandId,containerId:receipt.containerId});
     expect((await inspector.inspectContainer(receipt.containerId,signal)).running).toBe(false);
+    if(engine==="redis"){
+      await verifier.verifyStopped(input,pinned,authority,signal);await mkdir(redisSourceRoot,{mode:0o700});redisSourceInfo=await lstat(redisSourceRoot);
+      await runner.run(["docker","container","cp",receipt.containerId+":/data/.",redisSourceRoot],signal);await verifier.verifyStopped(input,pinned,authority,signal);redisRoots.set(receipt.volumeName,redisSourceRoot);
+      redisBackupResponse=await call("runtime/backup",{...preparation,originalReceipt:receipt,originalReplayFingerprint,destinationId:"private-native",maxBytes:backupMaxBytes});expect(redisBackupResponse.statusCode).toBe(200);
+      await verifier.verifyStopped(input,pinned,authority,signal);
+    }
     const stoppedHealth=await currentHealth("stopped");
     const stoppedMetrics=await currentMetrics("stopped");
     const stoppedLogs = await currentLogs("stopped", new Date(Math.max(0, receipt.observedAt - 60000)).toISOString());
@@ -289,6 +302,13 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     expect((await db.pool.query("SELECT * FROM agent_replay WHERE command_id=$1",[stopped.commandId])).rows).toEqual(stopReplayRows);
     expect(await verifier.verify(input,pinned,authority,signal)).toEqual(ready);
     for (const hostname of ["127.0.0.1",connection.hostname]) expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,hostname)],signal)).stdout.trim()).toBe(marker);
+    if(engine==="redis"&&dump){
+      let first=true;const backupInput={...preparation,originalReceipt:receipt,originalReplayFingerprint,destinationId:"private-native",maxBytes:backupMaxBytes};
+      nativeBackup=await dump.prove({call:async()=>{if(first){first=false;return redisBackupResponse!;}return call("runtime/backup",backupInput);},
+        reopen:async()=>{await app!.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(true);app=await build(endpoint,"managed_database_fixture_key_1234567890");},
+        inventory:()=>new DbBackupInventoryStore(db.db,agentId),verify:()=>verifier.verify(input,pinned!,authority,signal),decode:bytes=>restoreNativeRedisFixture({bytes,containerId:originalContainerId,uid:ready.uid,signal}),
+        signal,captures:()=>backupCaptures,maxBytes:backupMaxBytes,originalContainerId,uid:ready.uid,stoppedSource:true});
+    }
     const inventoryAfterStart = await recoveredInventory(stopped,originalStopReplayFingerprint);
     const runningAfterStart=await currentHealth("running");expect(healthDispatches).toBe(3);
     const runningMetricsAfterStart=await currentMetrics("running");expect(metricsDispatches).toBe(3);expect(statsDispatches).toBe(2);
@@ -443,6 +463,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     await browserFixture?.close();
     if (app) await app.close(); if (peer) await peer.close(); vi.unstubAllGlobals();
     await dump?.close();
+    if(redisSourceInfo){const current=await lstat(redisSourceRoot);expect([current.dev,current.ino,current.uid]).toEqual([redisSourceInfo.dev,redisSourceInfo.ino,redisSourceInfo.uid]);expect(current.isDirectory()&&!current.isSymbolicLink()).toBe(true);await rm(redisSourceRoot,{recursive:true});await expect(lstat(redisSourceRoot)).rejects.toMatchObject({code:"ENOENT"});if(nativeBackup)nativeBackup.sourceCleanup="passed";}
     const cleanup = AbortSignal.timeout(60000);
     for (const id of created) {
       let observation;

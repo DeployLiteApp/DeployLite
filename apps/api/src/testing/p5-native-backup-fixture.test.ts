@@ -7,17 +7,19 @@ import {gzipSync} from "node:zlib";
 import {nativeDumpFixture} from "./p5-native-backup-fixture.js";
 const parents:string[]=[];
 afterEach(async()=>{await Promise.all(parents.splice(0).map(path=>rm(path,{recursive:true,force:true})));});
-async function fixture(engine:"postgres"|"mysql"|"mariadb"="postgres") {
+async function fixture(engine:"postgres"|"mysql"|"mariadb"|"redis"="postgres") {
   const parent=await mkdtemp(join(await realpath(tmpdir()),"deploylite-native-fixture-unit-"));parents.push(parent);
   const root=join(parent,"private"),dump=nativeDumpFixture(root);await dump.open();
   const bytes=gzipSync(Buffer.from(engine==="postgres"?"PGDMPfixture":"CREATE TABLE `p5_probe` (value varchar(64)); INSERT INTO `p5_probe` VALUES (\'p5-persistent-value\'); CREATE TABLE `p5_nontransactional` (value varchar(64)) ENGINE=MyISAM; INSERT INTO `p5_nontransactional` VALUES (\'p5-nontransactional-value\');")),manifest=Buffer.from('{"fixture":true}'),hash=(value:Buffer)=>createHash("sha256").update(value).digest("hex");
   const receipt={schemaVersion:1,projectId:"project-a",databaseId:"orders",engine,action:"database.runtime.backup",agentId:"agent-a",commandId:"66666666-6666-4666-8666-666666666666",originalCommandId:"original-a",profileId:"profile-a",inputDigest:"a".repeat(64),planDigest:"b".repeat(64),environmentFingerprint:"c".repeat(32),correlationId:"backup-correlation",containerId:"d".repeat(64),imageId:"sha256:"+"e".repeat(64),volumeName:"dl-"+"f".repeat(32)+"-vol-db-orders",networkName:"dl-"+"f".repeat(32)+"-net-db-orders",networkId:"a".repeat(64),volumeCreatedAt:"2026-10-10T00:00:00Z",volumeKey:"db-orders",observedAt:2000,destinationId:"private-native",sourceDigest:"b".repeat(64),format:engine==="postgres"?"postgres-custom-gzip":engine+"-sql-gzip",consistency:engine==="postgres"?"native-snapshot":"global-read-lock",status:"created",storage:"verified",archiveId:"backup_"+"c".repeat(32),archiveBytes:bytes.length,archiveSha256:hash(bytes),manifestSha256:hash(manifest),idempotent:false,redacted:true};
-  const archive=join(root,receipt.archiveId);await mkdir(archive,{mode:0o700});await writeFile(join(archive,"archive.bin"),bytes,{mode:0o600});await writeFile(join(archive,"manifest.json"),manifest,{mode:0o600});
+  if(engine==="redis"){const tar=Buffer.alloc(2048);tar.write("dump.rdb");tar.write("ustar",257);Object.assign(receipt,{format:"volume-tar",consistency:"all-consumers-stopped",archiveBytes:tar.length,archiveSha256:hash(tar)});}
+  const stored=engine==="redis"?Buffer.alloc(2048):bytes;if(engine==="redis"){stored.write("dump.rdb");stored.write("ustar",257);}
+  const archive=join(root,receipt.archiveId);await mkdir(archive,{mode:0o700});await writeFile(join(archive,"archive.bin"),stored,{mode:0o600});await writeFile(join(archive,"manifest.json"),manifest,{mode:0o600});
   let calls=0;
   const call=vi.fn(async()=>{const data={receipt,command:{id:receipt.commandId},backupCreated:true,idempotent:calls++>0};return {statusCode:200,body:JSON.stringify({data}),json:()=>({data})};});
   const run=vi.fn(async(_bytes:Buffer)=>{});
   const records=[{schemaVersion:1 as const,receipt,createdAtMs:2000}];
-  const input={call,reopen:vi.fn(async()=>{}),inventory:()=>({list:async()=>records}) as any,verify:vi.fn(async()=>({uid:999})),decode:run,signal:new AbortController().signal,captures:()=>1,maxBytes:2097152,originalContainerId:receipt.containerId,uid:999,writerProbe:vi.fn(async()=>{})};
+  const input={call,reopen:vi.fn(async()=>{}),inventory:()=>({list:async()=>records}) as any,verify:vi.fn(async()=>({uid:999})),decode:run,signal:new AbortController().signal,captures:()=>1,maxBytes:2097152,originalContainerId:receipt.containerId,uid:999,stoppedSource:engine==="redis",writerProbe:vi.fn(async()=>{})};
   return {dump,input,run,directory:archive,copied:"/tmp/dl-native-backup-"+receipt.commandId+".gz"};
 }
 it("gives private bytes only to the corroborated non-root decoder",async()=>{
@@ -47,3 +49,5 @@ it.each(["mysql","mariadb"] as const)("verifies private %s transactional and MyI
 it("withholds SQL proof if the post-dump write probe fails without reflecting private output",async()=>{
  const f=await fixture("mysql");f.input.writerProbe.mockRejectedValue(new Error("password=fake-private"));await expect(f.dump.prove(f.input)).rejects.toThrow("Native SQL writers did not resume.");await f.dump.close();
 });
+
+it("proves private Redis tar restore, reopen and one-capture replay",async()=>{const f=await fixture("redis"),proof=await f.dump.prove(f.input);expect(proof).toMatchObject({stoppedSource:"passed",restoredData:"passed",restoreCleanup:"passed",sourceCleanup:"pending"});expect(f.run).toHaveBeenCalledOnce();await f.dump.close();});

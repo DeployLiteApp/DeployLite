@@ -152,7 +152,7 @@ export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
     imagePolicy, capabilities: new InMemoryCapabilityRegistry([...(managedDatabaseConfiguration?.limits.stopGraceSeconds!==undefined?[MANAGED_DATABASE_DELETE_CAPABILITY]:[]),...(backupMaxBytes!==undefined?[MANAGED_DATABASE_BACKUP_CAPABILITY]:[]),MANAGED_DATABASE_RUNTIME_CAPABILITY, COMPOSE_RESOURCE_INSPECTION_CAPABILITY, MANAGED_DATABASE_STOP_CAPABILITY, MANAGED_DATABASE_START_CAPABILITY,MANAGED_DATABASE_HEALTH_CAPABILITY,MANAGED_DATABASE_METRICS_CAPABILITY,MANAGED_DATABASE_LOGS_CAPABILITY]),
     clock: { now: Date.now }, runner: nativeRunner,
     ...(backupMaxBytes!==undefined && volumeBackupConfig && managedDatabaseConfiguration ? {backup:{
-      destinations:volumeBackupConfig.destinations,replayStore,maxBytes:backupMaxBytes,
+      destinations:volumeBackupConfig.destinations,volumeSource:createLocalDirectoryComposeVolumeBackupSource(volumeBackupConfig.sourceRoots),replayStore,maxBytes:backupMaxBytes,
       runner:new DockerProcessRunner({timeoutMs:managedDatabaseConfiguration.limits.deadlineMs,maxOutputBytes:managedDatabaseConfiguration.limits.maxOutputBytes,maxBinaryBytes:backupMaxBytes})
     }}:{})
   });

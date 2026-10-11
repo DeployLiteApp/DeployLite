@@ -1,11 +1,12 @@
 import {createHash} from "node:crypto";
-import {mkdtemp, realpath, readdir, readFile, rm} from "node:fs/promises";
+import {mkdtemp, realpath, readdir, readFile, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {afterEach, expect, it, vi} from "vitest";
 import {InMemoryCapabilityRegistry, managedDatabaseRuntimeReceiptSchema} from "@deploylite/contracts";
 import {planManagedDatabaseProfile, managedDatabaseRuntimeExecutionDigest, managedDatabaseBackupExecutionDigest, managedDatabaseBackupReceiptMatches} from "@deploylite/domain";
 import {createPrivateNativeBackupArchive} from "./docker-managed-database-backup-archive.js";
+import {createLocalDirectoryComposeVolumeBackupSource} from "./docker-compose-volume-backup.js";
 import {createManagedDatabaseBackupExecutor} from "./docker-managed-database-backup-executor.js";
 const roots:string[]=[];
 afterEach(async()=>{await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})));});
@@ -80,4 +81,17 @@ it.each(["mysql","mariadb"] as const)("captures corroborated %s using one bounde
  expect(f.runner.runBinaryToSink).toHaveBeenCalledOnce();expect(f.verifier.verify).toHaveBeenCalledTimes(2);
  expect(f.runner.runBinaryToSink.mock.calls[0]![0].at(-1)).toContain("timeout --signal=TERM --kill-after=1s");
  expect(await readFile(join(f.root,receipt.archiveId,"archive.bin"))).toEqual(f.data);
+});
+
+it("captures only a stopped original Redis volume into the existing private archive",async()=>{
+ const f=await fixture("redis"),sourceRoot=await mkdtemp(join(await realpath(tmpdir()),"deploylite-redis-source-"));roots.push(sourceRoot);await writeFile(join(sourceRoot,"dump.rdb"),"owned-redis-data");
+ const stopped=vi.fn(async()=>({containerId:f.original.containerId!}));
+ const executor=createManagedDatabaseBackupExecutor({...f.options,verifier:{...f.verifier,verifyStopped:stopped},volumeSource:createLocalDirectoryComposeVolumeBackupSource(new Map([[f.original.volumeName,sourceRoot]]))});
+ const receipt=await executor.execute(f.command,f.authority,new AbortController().signal);
+ expect(receipt).toMatchObject({engine:"redis",format:"volume-tar",consistency:"all-consumers-stopped"});expect(stopped).toHaveBeenCalledTimes(2);expect(f.verifier.verify).not.toHaveBeenCalled();expect(f.runner.runBinaryToSink).not.toHaveBeenCalled();
+});
+it("refuses Redis backup when the original stopped-state proof fails",async()=>{
+ const f=await fixture("redis"),source=createLocalDirectoryComposeVolumeBackupSource(new Map());
+ const executor=createManagedDatabaseBackupExecutor({...f.options,verifier:{...f.verifier,verifyStopped:vi.fn(async()=>{throw new Error("running or foreign");})},volumeSource:source});
+ await expect(executor.execute(f.command,f.authority,new AbortController().signal)).rejects.toThrow();expect(await readdir(f.root)).toEqual([]);expect(f.runner.runBinaryToSink).not.toHaveBeenCalled();
 });
