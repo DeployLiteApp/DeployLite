@@ -11,6 +11,7 @@ import type {DockerCliRunner} from "./docker-cli-image-transport.js";
 import {createConfiguredManagedDatabaseRuntime} from "./managed-database-runtime-config.js";
 import {createManagedDatabaseDockerInspector} from "./docker-managed-database-inspection.js";
 import {createManagedDatabaseResourceMaterializer, type ManagedDatabaseFreshResources} from "./docker-managed-database-resources.js";
+import {createManagedDatabaseDaemonRemover} from "./docker-managed-database-daemon-remove.js";
 import {createManagedDatabaseReadinessVerifier} from "./docker-managed-database-readiness.js";
 import {createManagedDatabaseProcessIdentityReader} from "./docker-managed-database-process-identity.js";
 import {createDockerComposeResourceInspector} from "./docker-compose-resource-inspector.js";
@@ -149,7 +150,13 @@ for (const engine of engines) {
             expect(restarted).toEqual(ready);
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false)],signal)).stdout.trim()).toBe(marker);
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,connection.hostname)],signal)).stdout.trim()).toBe(marker);
-            result = {receipt,original:pinned,uid:ready.uid,daemonStop:{containerId:stopped.containerId,status:"passed"},nativeStop:{receipt:stopped,originalReplayFingerprint},internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},authenticatedProbe:"passed",restart:"passed",persistence:"passed"};
+            await runner.run(["docker","stop","--timeout","10",receipt.containerId],signal);
+            const remover=createManagedDatabaseDaemonRemover({runner,verifier,clock,limits:{deadlineMs:60000,maxOutputBytes:131072}});
+            const removed=await remover.remove(nativeInput,pinned,authority,signal);
+            expect(removed).toEqual({containerId:receipt.containerId,storage:"retained"});
+            expect(await resources.verifyFresh({request,profile,commandId},pinned,authority,signal)).toEqual(pinned);
+            const daemonRemoval={...removed,volumeName:pinned.volume.name,volumeCreatedAt:pinned.volume.createdAt,networkName:pinned.network.name,networkId:pinned.network.id,observedAt:Date.now()};
+            result = {daemonRemoval,receipt,original:pinned,uid:ready.uid,daemonStop:{containerId:stopped.containerId,status:"passed"},nativeStop:{receipt:stopped,originalReplayFingerprint},internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},authenticatedProbe:"passed",restart:"passed",persistence:"passed"};
         } catch (error) {
             writeFileSync(resolve(directory,`diagnostic-${engine}.json`),JSON.stringify({engine,lastOperation,lastProjection,processFailure:processFailure ?? null,stopReply:stopReply ?? null,observation:lastObservation ?? null,composeObservations,expected:{plan:runtime.plan,environmentFingerprint:runtime.environmentFingerprint}},null,2)+"\n",{mode:0o600});
             throw error;

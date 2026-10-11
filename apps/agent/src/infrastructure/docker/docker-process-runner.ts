@@ -45,6 +45,8 @@ function redactDockerProtocolOutput(value: string, argv: readonly string[]): str
   // A bounded stop may echo only the exact caller-selected public container ID.
   if (op === "stop" && words.length === 4 && (words[1] === "--time" || words[1] === "--timeout") && /^(?:[1-9]|[12][0-9]|30)$/.test(words[2]!)
     && /^[a-f0-9]{64}$/.test(words[3]!) && (value === words[3] || value === words[3] + "\n")) return value;
+  // Non-forced single-daemon removal returns only the same caller-selected public ID.
+  if (op === "rm" && words.length === 2 && /^[a-f0-9]{64}$/.test(words[1]!) && (value === words[1] || value === words[1] + "\n")) return value;
   if (op === "start" && words.length === 2 && /^[a-f0-9]{64}$/.test(words[1]!) && (value === words[1] || value === words[1] + "\n")) return value;
   if (op === "run" || nativeInitializerCreate || nativeDaemonCreate || (op === "network" && words[1] === "create")) return /^[0-9a-f]{64}\n?$/.test(value) ? value : redactDockerDiagnostic(value);
   const nativeResourceFormat = format === MANAGED_DATABASE_NETWORK_INSPECT_FORMAT || format === MANAGED_DATABASE_VOLUME_INSPECT_FORMAT;
