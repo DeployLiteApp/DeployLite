@@ -56,6 +56,14 @@ def fixture(engine="postgres"):
         current_health[key] = {"observation":observation,"before":time-100,"after":time+100}
     result["currentHealth"] = current_health
     result["operator"].update(healthDispatches=3,healthSignedHttp="passed",healthNoLedgerWrites="passed",healthExecutorRemoved="passed")
+    current_metrics = copy.deepcopy(current_health)
+    for index,(key,proof) in enumerate(current_metrics.items()):
+        observation=proof["observation"]
+        observation.update(action="database.runtime.metrics",context={"requestId":"metrics-request-"+str(index),"correlationId":"metrics-correlation-"+str(index)},
+            metrics=None if observation["state"]=="stopped" else {"cpuPercent":0.25,"memoryUsage":"5.629MiB / 512MiB","memoryPercent":1.1,"networkIO":"916B / 0B","blockIO":"147kB / 0B","pids":9},
+            metricsObservedAt=None if observation["state"]=="stopped" else observation["observedAt"]-1)
+    result["currentMetrics"]=current_metrics
+    result["operator"].update(metricsDispatches=3,statsDispatches=2,metricsSignedHttp="passed",metricsNoLedgerWrites="passed",metricsExecutorRemoved="passed")
     return result, profile
 class OperatorProofTests(unittest.TestCase):
     def test_requires_current_health_not_only_legacy_lifecycle_evidence(self):
@@ -139,5 +147,26 @@ class OperatorProofTests(unittest.TestCase):
             with self.subTest(patch=patch), self.assertRaises(RuntimeError): module.validate_report({**report, **patch})
         for cases in [report["testResults"][0]["assertionResults"][:-1], [{"fullName": "foreign", "status": "passed"}] * 5]:
             with self.subTest(cases=cases), self.assertRaises(RuntimeError): module.validate_report({**report, "testResults": [{**report["testResults"][0], "assertionResults": cases}]})
+    def test_requires_three_current_metrics_states_not_only_health(self):
+        result,profile=fixture(); del result["currentMetrics"]
+        with self.assertRaises(RuntimeError):module.validate_result(result,profile)
+    def test_rejects_detached_private_stale_and_fabricated_metrics(self):
+        result,profile=fixture()
+        for patch in [{"uid":float(result["uid"])},{"schemaVersion":True},{"redacted":1},{"containerId":"0"*64},{"metricsObservedAt":1399},{"metricsObservedAt":1601},{"metricsObservedAt":None},{"password":"private"},
+                {"metrics":None},{"metrics":{**result["currentMetrics"]["runningBeforeStop"]["observation"]["metrics"],"pids":0}},
+                {"metrics":{**result["currentMetrics"]["runningBeforeStop"]["observation"]["metrics"],"cpuPercent":float("inf")}},
+                {"metrics":{**result["currentMetrics"]["runningBeforeStop"]["observation"]["metrics"],"memoryUsage":"private"}},
+                {"metrics":{**result["currentMetrics"]["runningBeforeStop"]["observation"]["metrics"],"password":"private"}}]:
+            changed=copy.deepcopy(result);changed["currentMetrics"]["runningBeforeStop"]["observation"].update(patch)
+            with self.subTest(patch=patch),self.assertRaises(RuntimeError):module.validate_result(changed,profile)
+        changed=copy.deepcopy(result);changed["currentMetrics"]["runningAfterStart"]["before"]=2999
+        with self.assertRaises(RuntimeError):module.validate_result(changed,profile)
+        changed=copy.deepcopy(result);changed["currentMetrics"]["stopped"]["observation"].update(metrics={"cpuPercent":0},metricsObservedAt=2500)
+        with self.assertRaises(RuntimeError):module.validate_result(changed,profile)
+    def test_requires_actual_scoped_stats_and_readonly_signed_metrics(self):
+        result,profile=fixture()
+        for key,value in {"metricsDispatches":2,"statsDispatches":3,"metricsSignedHttp":"not-run","metricsNoLedgerWrites":"not-run","metricsExecutorRemoved":"not-run"}.items():
+            changed=copy.deepcopy(result);changed["operator"][key]=value
+            with self.subTest(key=key),self.assertRaises(RuntimeError):module.validate_result(changed,profile)
 if __name__ == "__main__":
     unittest.main()
