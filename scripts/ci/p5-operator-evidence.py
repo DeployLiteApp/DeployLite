@@ -170,11 +170,12 @@ def validate_confirmed_deletion(result,profile):
 
 def validate_native_backup(result, profile):
     proof=result.get("nativeBackup")
-    exact(proof,{"receipt","maxBytes","captures","signedHttp","formatValidated","seededRow","inventoryReopen","replay","privateFiles","cleanup"}|({"writersResumed"} if profile["engine"] in ("mysql","mariadb") else set()),"complete_actual_native_dump_required")
+    exact(proof,{"receipt","maxBytes","captures","signedHttp","formatValidated","seededRow","inventoryReopen","replay","privateFiles","cleanup"}|({"writersResumed"} if profile["engine"] in ("mysql","mariadb") else {"restoredData","restoreCleanup"}),"complete_actual_native_dump_required")
     native.require(profile["engine"] in ("postgres","mysql","mariadb") and type(proof["captures"]) is int and proof["captures"]==1
         and type(proof["maxBytes"]) is int and proof["maxBytes"]==2097152
         and all(proof[key]=="passed" for key in ("signedHttp","formatValidated","seededRow","inventoryReopen","replay","privateFiles","cleanup")),"executed_private_postgres_dump_required")
     if profile["engine"] in ("mysql","mariadb"):native.require(proof["writersResumed"]=="passed","actual_sql_writers_resumed_required")
+    if profile["engine"]=="postgres":native.require(proof["restoredData"]==proof["restoreCleanup"]=="passed","actual_postgres_restore_required")
     receipt,ready=proof["receipt"],result["receipt"]
     shared={"schemaVersion","projectId","databaseId","engine","agentId","planDigest","environmentFingerprint","containerId","imageId","volumeName","networkName","networkId","volumeCreatedAt","storage","redacted"}
     exact(receipt,shared|{"action","commandId","originalCommandId","profileId","inputDigest","correlationId","volumeKey","observedAt","destinationId","sourceDigest","format","consistency","status","archiveId","archiveBytes","archiveSha256","manifestSha256","idempotent"},"strict_native_dump_receipt_required")

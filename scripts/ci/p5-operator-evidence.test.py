@@ -366,6 +366,7 @@ def add_native_backup(result,profile):
         status="created",archiveId="backup_"+hashlib.sha256((ready["projectId"]+"\0"+"66666666-6666-4666-8666-666666666666"+"\0private-native").encode()).hexdigest()[:32],archiveBytes=512,archiveSha256="2"*64,manifestSha256="3"*64,idempotent=False)
     proof={"receipt":receipt,"maxBytes":2097152,"captures":1,**{key:"passed" for key in ("signedHttp","formatValidated","seededRow","inventoryReopen","replay","privateFiles","cleanup")}}
     if profile["engine"] in ("mysql","mariadb"):proof["writersResumed"]="passed"
+    else:proof.update(restoredData="passed",restoreCleanup="passed")
     result["nativeBackup"]=proof
     return result,profile
 
@@ -382,7 +383,7 @@ class NativeBackupProof(unittest.TestCase):
             with self.assertRaises(RuntimeError):module.validate_native_backup(changed,profile)
     def test_refuses_omitted_or_reexecuted_capture(self):
         result,profile=native_backup_fixture()
-        for patch in ({"captures":2},{"captures":True},{"formatValidated":"skipped"},{"seededRow":"pending"},{"cleanup":"unknown"},{"privatePath":"private"}):
+        for patch in ({"captures":2},{"captures":True},{"formatValidated":"skipped"},{"seededRow":"pending"},{"restoredData":"pending"},{"restoreCleanup":"pending"},{"cleanup":"unknown"},{"privatePath":"private"}):
             changed=copy.deepcopy(result);changed["nativeBackup"].update(patch)
             with self.assertRaises(RuntimeError):module.validate_native_backup(changed,profile)
     def test_refuses_detached_receipt_or_oversized_archive(self):
