@@ -201,7 +201,7 @@ def validate_native_backup(result, profile):
 
 def validate_confirmed_restore(proof,ready,profile):
     restore=proof["nativeRestore"];backup=proof["receipt"];pending=proof["pendingRestore"]
-    exact(restore,{"receipt","commandId","confirmationId","actorId","idempotencyKey","consumedAt","expiresAt","dispatches","inputWrites","requestPosts","unconsumedConfirmation","expiredConfirmation","reusedConfirmation","foreignConfirmation","lostReply","completionRollback","cacheOnlyReopen","restoredData","originalRows","cipher","inventory","originalPending","protection","auditCount"},"complete_confirmed_original_restore_required")
+    exact(restore,{"receipt","commandId","confirmationId","actorId","idempotencyKey","consumedAt","expiresAt","recoveredAt","dispatches","inputWrites","requestPosts","unconsumedConfirmation","expiredConfirmation","reusedConfirmation","foreignConfirmation","lostReply","completionRollback","cacheOnlyReopen","restoredData","originalRows","cipher","inventory","originalPending","protection","auditCount"},"complete_confirmed_original_restore_required")
     shared={"schemaVersion","projectId","databaseId","engine","agentId","planDigest","environmentFingerprint","containerId","imageId","volumeName","networkName","networkId","volumeCreatedAt","redacted"}
     receipt=restore["receipt"]
     exact(receipt,shared|{"action","profileId","commandId","originalCommandId","backupCommandId","confirmationId","inputDigest","correlationId","archiveId","archiveBytes","archiveSha256","manifestSha256","format","observedAt","status","storage","health"},"strict_confirmed_restore_receipt_required")
@@ -217,8 +217,8 @@ def validate_confirmed_restore(proof,ready,profile):
         and receipt["profileId"]==profile["profileId"] and receipt["originalCommandId"]==ready["commandId"] and receipt["backupCommandId"]==backup["commandId"]
         and receipt["commandId"]==restore["commandId"] and receipt["confirmationId"]==restore["confirmationId"] and receipt["inputDigest"]==pending["inputDigest"]
         and all(receipt[key]==backup[key] for key in ("archiveId","archiveBytes","archiveSha256","manifestSha256","format"))
-        and all(type(value) is int for value in (restore["consumedAt"],receipt["observedAt"],restore["expiresAt"]))
-        and backup["observedAt"]<=restore["consumedAt"]<=receipt["observedAt"]<restore["expiresAt"],"one_original_confirmed_native_restore_required")
+        and all(type(value) is int for value in (restore["consumedAt"],receipt["observedAt"],restore["expiresAt"],restore["recoveredAt"]))
+        and backup["observedAt"]<=restore["consumedAt"]<=receipt["observedAt"]<restore["expiresAt"]<=restore["recoveredAt"],"one_original_confirmed_native_restore_required")
 
 def validate_pending_restore(proof,ready,profile,source):
     pending=proof["pendingRestore"]

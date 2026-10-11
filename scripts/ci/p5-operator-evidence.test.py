@@ -374,7 +374,7 @@ def add_native_backup(result,profile):
         "status":"pending_confirmation","classification":"destructive","consumedAt":None,"reopen":"passed","sameOriginalKey":"passed","sameOriginalNonce":"passed","dispatches":0,"authenticatedApi":"passed","protectedArchive":"passed","signedArchive":"passed","configuredArchive":"passed"}
     restored={key:ready[key] for key in keys}
     restored.update(action="database.runtime.restore",profileId=profile["profileId"],commandId="99999999-9999-4999-8999-999999999999",originalCommandId=ready["commandId"],backupCommandId=receipt["commandId"],confirmationId="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",inputDigest=proof["pendingRestore"]["inputDigest"],correlationId="restore-correlation",observedAt=3500,status="restored",storage="original",health="passed",**{key:receipt[key] for key in ("archiveId","archiveBytes","archiveSha256","manifestSha256","format")})
-    proof["nativeRestore"]={"receipt":restored,"commandId":restored["commandId"],"confirmationId":restored["confirmationId"],"actorId":"actor-a","idempotencyKey":"fixture_restore_apply_"+profile["engine"],"consumedAt":3000,"expiresAt":20000,"dispatches":1,"inputWrites":1,"requestPosts":1,"auditCount":1,**{key:"passed" for key in ("unconsumedConfirmation","expiredConfirmation","reusedConfirmation","foreignConfirmation","lostReply","completionRollback","cacheOnlyReopen","restoredData")},**{key:"unchanged" for key in ("originalRows","cipher","inventory","protection")},"originalPending":"unconsumed"}
+    proof["nativeRestore"]={"receipt":restored,"commandId":restored["commandId"],"confirmationId":restored["confirmationId"],"actorId":"actor-a","idempotencyKey":"fixture_restore_apply_"+profile["engine"],"consumedAt":3000,"expiresAt":20000,"recoveredAt":21000,"dispatches":1,"inputWrites":1,"requestPosts":1,"auditCount":1,**{key:"passed" for key in ("unconsumedConfirmation","expiredConfirmation","reusedConfirmation","foreignConfirmation","lostReply","completionRollback","cacheOnlyReopen","restoredData")},**{key:"unchanged" for key in ("originalRows","cipher","inventory","protection")},"originalPending":"unconsumed"}
     result["nativeBackup"]=proof
     return result,profile
 
@@ -492,7 +492,7 @@ class ConfirmedRestoreProof(unittest.TestCase):
                 changed=copy.deepcopy(result);changed["nativeBackup"]["nativeRestore"].pop(key)
                 with self.assertRaises(RuntimeError):module.validate_native_backup(changed,profile)
     def test_refuses_duplicate_effect_or_changed_receipt(self):
-        for patch in ({"dispatches":2},{"inputWrites":0},{"requestPosts":2},{"auditCount":0},{"lostReply":"skipped"},{"originalPending":"consumed"},{"expiresAt":3500},{"consumedAt":4000}):
+        for patch in ({"recoveredAt":3500},{"dispatches":2},{"inputWrites":0},{"requestPosts":2},{"auditCount":0},{"lostReply":"skipped"},{"originalPending":"consumed"},{"expiresAt":3500},{"consumedAt":4000}):
             result,profile=fixture();result["nativeBackup"]["nativeRestore"].update(patch)
             with self.assertRaises(RuntimeError):module.validate_native_backup(result,profile)
         for key in ("archiveSha256","containerId","confirmationId","commandId","inputDigest"):

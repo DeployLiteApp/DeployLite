@@ -420,12 +420,16 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const consumedRestore=await restoreNonce();expect(consumedRestore).toHaveLength(1);expect(consumedRestore[0].consumed_at).not.toBeNull();
     const restoreAudits=async()=>(await db.pool.query("SELECT * FROM audit_events WHERE action='database.runtime.restored' AND correlation_id=$1",[actualPending.command.correlationId])).rows;
     expect(await restoreAudits()).toHaveLength(0);expect((await db.pool.query("SELECT status,result FROM control_commands WHERE id=$1",[actualPending.command.id])).rows).toEqual([{status:"dispatching",result:null}]);
+    const originalRestoreExpiresAt=new Date(actualPending.command.expiresAt).getTime();
+    const recoveryWait=Math.max(0,originalRestoreExpiresAt-Date.now()+1);expect(recoveryWait).toBeLessThanOrEqual(60000);if(recoveryWait)await new Promise(resolve=>setTimeout(resolve,recoveryWait));
     await app!.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(false);app=await build(endpoint);
+    const restoreRecoveredAt=Date.now();expect(restoreRecoveredAt).toBeGreaterThanOrEqual(originalRestoreExpiresAt);
     const recoveredRestore=await restoreCall("apply",actualPending.confirmation.id);expect(recoveredRestore.statusCode).toBe(200);
     const restored=managedDatabaseRestoreReceiptSchema.parse(recoveredRestore.json().data.receipt);expect(recoveredRestore.json().data).toMatchObject({restored:true,idempotent:true});
     expect((await restoreCall("apply",actualPending.confirmation.id)).json().data.receipt).toEqual(restored);expect(restoreEffects).toBe(1);expect(restoreInputs).toBe(1);expect(restorePosts).toBe(1);
     expect((await runner.run(["docker","exec",originalContainerId,"sh","-c",probe(engine,false)],signal)).stdout.trim()).toBe(marker);
     if(engine==="mysql"||engine==="mariadb")expect((await runner.run(["docker","exec",originalContainerId,"sh","-c",probe(engine,false,"127.0.0.1","SELECT value FROM p5_nontransactional;")],signal)).stdout.trim()).toBe("p5-nontransactional-value");
+    expect(await verifyArchive(restoreBackup)).toMatchObject({archiveSha256:restoreBackup.archiveSha256,manifestSha256:restoreBackup.manifestSha256,integrity:"verified"});
     expect(await restoreAudits()).toHaveLength(1);expect(await restoreNonce()).toEqual(consumedRestore);expect(await originals()).toEqual(originalRows);expect(await encrypted()).toEqual(cipherRows);
     expect((await db.pool.query("SELECT * FROM backup_inventory WHERE command_id=$1",[restoreBackup.commandId])).rows).toEqual(inventorySnapshot);
     expect((await db.pool.query("SELECT consumed_at FROM control_command_confirmations WHERE command_id=$1",[pendingCommand.id])).rows).toEqual([{consumed_at:null}]);
@@ -434,7 +438,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const expiredApply=await app!.inject({method:"POST",url:`/api/v1/projects/${projectId}/databases/${databaseId}/runtime/restore/apply`,headers:{cookie,"idempotency-key":pendingRestoreInput.idempotencyKey},payload:{...restoreBody,confirmationId:pendingRestore.confirmation.id}});
     expect(expiredApply.statusCode).toBe(503);expect(restoreEffects).toBe(1);
     expect((await db.pool.query("SELECT consumed_at FROM control_command_confirmations WHERE command_id=$1",[pendingCommand.id])).rows).toEqual([{consumed_at:null}]);
-    nativeBackup.nativeRestore={receipt:restored,commandId:actualPending.command.id,confirmationId:actualPending.confirmation.id,actorId,idempotencyKey:restoreKey,consumedAt:new Date(consumedRestore[0].consumed_at).getTime(),expiresAt:new Date(actualPending.command.expiresAt).getTime(),dispatches:restoreEffects,inputWrites:restoreInputs,requestPosts:restorePosts,unconsumedConfirmation:"passed",expiredConfirmation:"passed",reusedConfirmation:"passed",foreignConfirmation:"passed",lostReply:"passed",completionRollback:"passed",cacheOnlyReopen:"passed",restoredData:"passed",originalRows:"unchanged",cipher:"unchanged",inventory:"unchanged",originalPending:"unconsumed",protection:"unchanged",auditCount:1};
+    nativeBackup.nativeRestore={receipt:restored,commandId:actualPending.command.id,confirmationId:actualPending.confirmation.id,actorId,idempotencyKey:restoreKey,consumedAt:new Date(consumedRestore[0].consumed_at).getTime(),expiresAt:originalRestoreExpiresAt,recoveredAt:restoreRecoveredAt,dispatches:restoreEffects,inputWrites:restoreInputs,requestPosts:restorePosts,unconsumedConfirmation:"passed",expiredConfirmation:"passed",reusedConfirmation:"passed",foreignConfirmation:"passed",lostReply:"passed",completionRollback:"passed",cacheOnlyReopen:"passed",restoredData:"passed",originalRows:"unchanged",cipher:"unchanged",inventory:"unchanged",originalPending:"unconsumed",protection:"unchanged",auditCount:1};
     await app!.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(true);app=await build(endpoint,"managed_database_fixture_key_1234567890");
 
     const inventoryAfterStart = await recoveredInventory(stopped,originalStopReplayFingerprint);
