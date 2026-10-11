@@ -349,6 +349,15 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     expect((await db.pool.query("SELECT * FROM control_commands WHERE id=$1",[pending.id])).rows).toEqual(claimedRows);
     expect(await originals()).toEqual(originalRows);expect(await encrypted()).toEqual(cipherRows);
     result!.confirmedClaim={projectId,originalNonce:"passed",uniqueAuthority:"passed",projectBusy:"passed",rollback:"passed",reopen:"passed",noRenewal:"passed",audit:"passed",originalRows:"unchanged",cipher:"unchanged"};
+    const confirmedAuthority=winner[0]!.authority!;
+    await expect(recoveredControls.validateConfirmedProjectUpdateAuthority(confirmedAuthority,first!.id)).resolves.toBeUndefined();
+    await expect(recoveredControls.validateConfirmedProjectUpdateAuthority(confirmedAuthority,randomUUID())).rejects.toThrow();
+    await expect(recoveredControls.validateConfirmedProjectUpdateAuthority({...confirmedAuthority,inputDigest:"0".repeat(64)},first!.id)).rejects.toThrow();
+    await expect(recoveredControls.validateConfirmedProjectUpdateAuthority(confirmedAuthority,first!.id,pending.expiresAt.getTime())).rejects.toThrow();
+    expect(await storedNonce()).toEqual(consumedRows);expect(await acceptedAudits()).toEqual(acceptedRows);
+    expect((await db.pool.query("SELECT * FROM control_commands WHERE id=$1",[pending.id])).rows).toEqual(claimedRows);
+    expect(await originals()).toEqual(originalRows);expect(await encrypted()).toEqual(cipherRows);
+    result!.confirmedAuthority={projectId,readOnly:"passed",originalNonce:"passed",acceptedAudit:"passed",detachedRejected:"passed",expiryRejected:"passed",reopen:"passed",originalRows:"unchanged",cipher:"unchanged"};
   } finally {
     await browserFixture?.close();
     if (app) await app.close(); if (peer) await peer.close(); vi.unstubAllGlobals();

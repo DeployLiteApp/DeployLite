@@ -38,6 +38,7 @@ function fixture(){
    const matches=[...text.matchAll(/"control_commands"\."([^"]+)" = \$(\d+)/g)].every(match=>row[camel(match[1]!) ]===values[Number(match[2])-1]);
    return {rows:matches?storedRows(controlCommands,text.includes('"control_commands"."id" =')?[row]:[row,...related]):[]};
   }
+  if(text.startsWith('select')&&text.includes('from "control_command_audits"'))return {rows:storedRows(controlCommandAudits,audits)};
   if(text.startsWith('select')&&text.includes('from "control_command_confirmations"'))return {rows:storedRows(controlCommandConfirmations,confirmations.filter(value=>matches(text,values,value)))};
   return {rows:[]};
  }};
@@ -101,4 +102,37 @@ it("rolls back nonce command and audit together when the confirmed authority tra
  await expect(f.repository(()=>{throw new Error("injected failure");}).claimConfirmedProjectUpdate(f.command,nonce,new Date(1000))).rejects.toThrow("injected failure");
  expect({row:f.row,confirmations:f.confirmations,audits:f.audits}).toEqual(before);
  expect(await f.repository().claimConfirmedProjectUpdate(f.command,nonce,new Date(1001))).toMatchObject({accepted:true,claimed:true});
+});
+
+it("corroborates one original consumed confirmation and accepted audit without ledger writes",async()=>{
+ const f=fixture(),nonce=f.seed(),claimed=await f.repository().claimConfirmedProjectUpdate(f.command,nonce,new Date(1000));
+ const before=structuredClone({row:f.row,confirmations:f.confirmations,audits:f.audits}),offset=f.queries.length;
+ await expect(f.repository().validateConfirmedProjectUpdateAuthority(claimed.authority!,nonce.id,1001)).resolves.toBeUndefined();
+ expect({row:f.row,confirmations:f.confirmations,audits:f.audits}).toEqual(before);
+ expect(f.queries.slice(offset).filter(value=>/^(insert|update|delete)/.test(value.text))).toHaveLength(0);
+});
+it("rejects otherwise current authority without its original consumed destructive nonce",async()=>{
+ for(const patch of [{consumedAt:null},{consumedAt:new Date(8000)},{consumedAt:new Date(2000)},{expiresAt:new Date(1000)},{expiresAt:new Date(9000)},{actorUserId:"foreign"},{scopeKind:"platform"},{scopeKey:"foreign"},{classification:"non-destructive"},{inputDigest:"0".repeat(64)}]){
+  const f=fixture(),nonce=f.seed(),claimed=await f.repository().claimConfirmedProjectUpdate(f.command,nonce,new Date(1000));Object.assign(f.confirmations[0]!,patch);
+  await expect(f.repository().validateConfirmedProjectUpdateAuthority(claimed.authority!,nonce.id,1001)).rejects.toThrow();
+ }
+ const f=fixture(),nonce=f.seed(),claimed=await f.repository().claimConfirmedProjectUpdate(f.command,nonce,new Date(1000));
+ await expect(f.repository().validateConfirmedProjectUpdateAuthority(claimed.authority!,"foreign",1001)).rejects.toThrow();
+ f.confirmations.length=0;await expect(f.repository().validateConfirmedProjectUpdateAuthority(claimed.authority!,nonce.id,1001)).rejects.toThrow();
+});
+it("rejects missing duplicate or detached accepted confirmation audit",async()=>{
+ for(const patch of [{commandId:"foreign"},{confirmationId:"foreign"},{correlationId:"foreign"},{outcome:"rejected"}]){
+  const f=fixture(),nonce=f.seed(),claimed=await f.repository().claimConfirmedProjectUpdate(f.command,nonce,new Date(1000));Object.assign(f.audits[0]!,patch);
+  await expect(f.repository().validateConfirmedProjectUpdateAuthority(claimed.authority!,nonce.id,1001)).rejects.toThrow();
+ }
+ for(const duplicate of [false,true]){const f=fixture(),nonce=f.seed(),claimed=await f.repository().claimConfirmedProjectUpdate(f.command,nonce,new Date(1000));if(duplicate)f.audits.push({...f.audits[0]!});else f.audits.length=0;
+  await expect(f.repository().validateConfirmedProjectUpdateAuthority(claimed.authority!,nonce.id,1001)).rejects.toThrow();}
+});
+it("rejects expired terminal detached or superseded confirmed authority",async()=>{
+ for(const mode of ["expired","terminal","digest","higherFence","invalidClock"]){const f=fixture(),nonce=f.seed(),claimed=await f.repository().claimConfirmedProjectUpdate(f.command,nonce,new Date(1000));
+  if(mode==="terminal")f.row.status="completed";
+  if(mode==="higherFence")f.related.push({...f.row,id:"successor",executionAuthority:{...claimed.authority!,commandId:"successor",projectLease:{...claimed.authority!.projectLease,fence:3}}});
+  const authority=mode==="digest"?{...claimed.authority!,inputDigest:"0".repeat(64)}:claimed.authority!;
+  await expect(f.repository().validateConfirmedProjectUpdateAuthority(authority,nonce.id,mode==="expired"?8000:mode==="invalidClock"?NaN:1001)).rejects.toThrow();
+ }
 });

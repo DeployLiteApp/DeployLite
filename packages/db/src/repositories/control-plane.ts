@@ -313,6 +313,42 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
     return row ? toCommand(row) : null;
   }
 
+  /** Private read-only destructive authority proof; current grants remain the caller's responsibility. */
+  async validateConfirmedProjectUpdateAuthority(submitted: ProjectControlAuthorityV1, confirmationId: string, now = Date.now()): Promise<void> {
+    const authority = projectControlAuthoritySchema.parse(structuredClone(submitted));
+    const unavailable = (): never => { throw new FenceError("Confirmed project authority is unavailable"); };
+    if (!Number.isSafeInteger(now) || now < 0 || !/^[A-Za-z0-9_-]{1,200}$/.test(confirmationId)) unavailable();
+    await this.db.transaction(async tx => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`deploylite:execution:${authority.projectId}`}, 0))`);
+      const relatedRows = await tx.select().from(controlCommands).where(or(
+        and(eq(controlCommands.scopeKind, "project"), eq(controlCommands.scopeKey, authority.projectId)),
+        and(eq(controlCommands.scopeKind, "deployment"), sql`${controlCommands.scopeKey}::jsonb ->> 0 = ${authority.projectId}`)));
+      const related = relatedRows.map(toCommand);
+      validateProjectUpdateAuthorityInMemory(related, authority, now);
+      const current = related.find(value => value.id === authority.commandId)!;
+      if (!(current.expiresAt instanceof Date) || !Number.isFinite(current.expiresAt.getTime())
+        || authority.projectLease.expiresAt !== current.expiresAt.getTime()) unavailable();
+      const confirmations = await tx.select().from(controlCommandConfirmations).where(and(
+        eq(controlCommandConfirmations.id, confirmationId), eq(controlCommandConfirmations.commandId, current.id))).limit(2);
+      if (confirmations.length !== 1) unavailable();
+      const stored = confirmations[0]!;
+      if (stored.scopeKind !== "project" || stored.scopeKey !== authority.projectId
+        || !(stored.consumedAt instanceof Date) || !Number.isSafeInteger(stored.consumedAt.getTime())
+        || stored.consumedAt.getTime() < 0 || stored.consumedAt.getTime() > now
+        || !(stored.expiresAt instanceof Date) || !Number.isFinite(stored.expiresAt.getTime())) unavailable();
+      const original: ControlConfirmation = { id: stored.id, commandId: stored.commandId, actorId: stored.actorUserId,
+        action: stored.action as ControlConfirmation["action"], scope: current.scope, inputDigest: stored.inputDigest,
+        classification: stored.classification as ControlConfirmation["classification"], expiresAt: stored.expiresAt, consumedAt: null };
+      try { evaluateConfirmation(current, original, stored.consumedAt!); }
+      catch (error) { if (error instanceof ConfirmationRejectedError) unavailable(); throw error; }
+      const accepted = await tx.select().from(controlCommandAudits).where(and(eq(controlCommandAudits.commandId, current.id),
+        eq(controlCommandAudits.confirmationId, confirmationId), eq(controlCommandAudits.correlationId, current.correlationId),
+        eq(controlCommandAudits.outcome, "accepted"))).limit(2);
+      if (accepted.length !== 1 || accepted[0]!.commandId !== current.id || accepted[0]!.confirmationId !== confirmationId
+        || accepted[0]!.correlationId !== current.correlationId || accepted[0]!.outcome !== "accepted") unavailable();
+    });
+  }
+
   async validateProjectUpdateAuthority(authority: ProjectControlAuthorityV1, now = Date.now()): Promise<void> {
     const request = projectControlAuthoritySchema.parse(authority);
     const rows = await this.db.select().from(controlCommands).where(or(

@@ -6,6 +6,7 @@ export type InitialExecutionBinding = Readonly<{ snapshotOriginId: string; snaps
 export type DeploymentAuthorityValidation = {
   validateInitialExecution?(projectId: string, executionId: string, binding: InitialExecutionBinding): Promise<void>;
   validateDeploymentAuthority(authority: DeploymentExecutionAuthorityV1, now?: number): Promise<void>;
+  validateConfirmedProjectUpdateAuthority?(authority: ProjectControlAuthorityV1, confirmationId: string, now?: number): Promise<void>;
   validateProjectUpdateAuthority?(authority: ProjectControlAuthorityV1, now?: number): Promise<void>;
 };
 
