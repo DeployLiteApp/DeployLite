@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, eq, lte } from "drizzle-orm";
 import { ReplayConflictError } from "@deploylite/contracts";
 import type { DeployLiteDb } from "../client.js";
@@ -7,12 +7,20 @@ import { agentReplay } from "../schema.js";
 export type AgentReplayReceipt = Record<string, unknown>;
 export type AgentReplayClaim = { claimed: boolean; claimToken?: string; receipt?: AgentReplayReceipt };
 export type AgentReplayLease = Readonly<{ leaseId: string; fence: number; expiresAt: number; deploymentId?: string; projectId?: string }>;
-export type AgentReplayStore = { readonly durable: true; lookup(commandId: string, fingerprint: string): Promise<AgentReplayReceipt | null>; claim(commandId: string, fingerprint: string, lease: AgentReplayLease): Promise<AgentReplayClaim>; wait(commandId: string): Promise<AgentReplayReceipt>; complete(commandId: string, value: { fingerprint: string; claimToken: string; receipt: AgentReplayReceipt }): Promise<void>; release(commandId: string, claimToken?: string): Promise<void> };
+export type AgentReplayStore = { readonly durable: true; lookupByFingerprintDigest?(commandId:string,digest:string):Promise<AgentReplayReceipt|null>; lookup(commandId: string, fingerprint: string): Promise<AgentReplayReceipt | null>; claim(commandId: string, fingerprint: string, lease: AgentReplayLease): Promise<AgentReplayClaim>; wait(commandId: string): Promise<AgentReplayReceipt>; complete(commandId: string, value: { fingerprint: string; claimToken: string; receipt: AgentReplayReceipt }): Promise<void>; release(commandId: string, claimToken?: string): Promise<void> };
 
 export class DbAgentReplayStore implements AgentReplayStore {
   readonly durable = true as const;
   readonly #owned = new Set<string>();
   constructor(private readonly db: DeployLiteDb, private readonly owner: string) { if (!owner.trim()) throw new Error("replay owner is required"); }
+  /** Read-only opaque projection over unchanged original replay bytes. No new column or claim. */
+  async lookupByFingerprintDigest(commandId:string,digest:string):Promise<AgentReplayReceipt|null>{
+    if(!/^[a-f0-9]{64}$/.test(digest))throw new ReplayConflictError();
+    const [row]=await this.db.select().from(agentReplay).where(eq(agentReplay.commandId,commandId)).limit(1);
+    if(!row)return null;
+    if(typeof row.fingerprint!=="string"||Buffer.byteLength(row.fingerprint)>131072||createHash("sha256").update(row.fingerprint).digest("hex")!==digest)throw new ReplayConflictError();
+    return row.status==="completed"&&row.receipt?structuredClone(row.receipt):null;
+  }
   async lookup(commandId: string, fingerprint: string): Promise<AgentReplayReceipt | null> {
     const [row] = await this.db.select().from(agentReplay).where(eq(agentReplay.commandId, commandId)).limit(1);
     if (!row) return null;

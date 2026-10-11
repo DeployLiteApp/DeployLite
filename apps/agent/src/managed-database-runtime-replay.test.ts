@@ -1,8 +1,9 @@
+import {createHash} from "node:crypto";
 import {startAgentServer} from "./server.js";
 import { expect, it, vi } from "vitest";
 import { signAgentTransport } from "@deploylite/config";
 import { managedDatabaseRuntimeAgentCommandSchema, managedDatabaseRuntimeCachedReceiptSchema, MANAGED_DATABASE_RUNTIME_RECEIPT_PATH } from "@deploylite/contracts";
-import { planManagedDatabaseProfile, managedDatabaseRuntimeExecutionDigest, managedDatabaseRuntimeReplayFingerprint } from "@deploylite/domain";
+import { planManagedDatabaseProfile, managedDatabaseRuntimeExecutionDigest, managedDatabaseRuntimeReplayFingerprint,managedDatabaseRuntimeReplayFingerprintDigest } from "@deploylite/domain";
 import { AuthenticatedAgentCommandReceiver, type AgentReplayStore } from "./agent-transport.js";
 function fixture() {
     let now = 1000;
@@ -107,4 +108,11 @@ it("derives the original replay fingerprint identical to the actual durable appl
     const f=fixture();await f.receiver.receive(f.command,f.signature(f.command));
     expect(managedDatabaseRuntimeReplayFingerprint(f.query)).toBe(f.replayStore.complete.mock.calls[0]![1].fingerprint);
     expect(managedDatabaseRuntimeReplayFingerprint({...f.query,timeoutMs:1,context:{...f.query.context,requestId:"new-read"}})).toBe(f.replayStore.complete.mock.calls[0]![1].fingerprint);
+});
+
+it("projects only the SHA256 digest of the actual original canonical replay claim",async()=>{
+    const f=fixture();await f.receiver.receive(f.command,f.signature(f.command));
+    const original=f.replayStore.complete.mock.calls[0]![1].fingerprint;
+    expect(managedDatabaseRuntimeReplayFingerprintDigest(f.query)).toBe(createHash("sha256").update(original).digest("hex"));
+    expect(managedDatabaseRuntimeReplayFingerprintDigest(f.query)).toMatch(/^[a-f0-9]{64}$/);
 });

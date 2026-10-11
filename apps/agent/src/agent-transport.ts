@@ -26,7 +26,7 @@ export type AgentReplayReceipt = Record<string, unknown>;
 export type AgentReplayClaim = { claimed: boolean; claimToken?: string; receipt?: AgentReplayReceipt };
 type ReplayLease = Readonly<{ leaseId: string; fence: number; expiresAt: number }>;
 type FenceLease = ReplayLease & Readonly<{ deploymentId?: string; projectId?: string }>;
-export type AgentReplayStore = { readonly durable?: boolean; lookup?(commandId: string, fingerprint: string): Promise<AgentReplayReceipt | null>; claim(commandId: string, fingerprint: string, lease: ReplayLease): Promise<AgentReplayClaim>; wait(commandId: string): Promise<AgentReplayReceipt>; complete(commandId: string, value: { fingerprint: string; claimToken: string; receipt: AgentReplayReceipt }): Promise<void>; release(commandId: string, claimToken?: string): Promise<void> };
+export type AgentReplayStore = { readonly durable?: boolean; lookupByFingerprintDigest?(commandId:string,digest:string):Promise<AgentReplayReceipt|null>; lookup?(commandId: string, fingerprint: string): Promise<AgentReplayReceipt | null>; claim(commandId: string, fingerprint: string, lease: ReplayLease): Promise<AgentReplayClaim>; wait(commandId: string): Promise<AgentReplayReceipt>; complete(commandId: string, value: { fingerprint: string; claimToken: string; receipt: AgentReplayReceipt }): Promise<void>; release(commandId: string, claimToken?: string): Promise<void> };
 export type AgentNetworkAttachmentExecutor = { execute(command: ComposeNetworkAttachmentAgentCommandV1, authority: RuntimeExecutionAuthority, signal: AbortSignal): Promise<ComposeNetworkAttachmentReceiptV1> };
 export type AgentVolumeBackupExecutor = { execute(command: ComposeVolumeBackupAgentCommandV1, authority: ComposeVolumeBackupAuthority, signal: AbortSignal): Promise<ComposeVolumeBackupReceiptV1> };
 export type AgentComposeVolumeAttachmentExecutor = { execute(command: ComposeVolumeAttachmentAgentCommandV1, authority: RuntimeExecutionAuthority, signal: AbortSignal): Promise<ComposeVolumeAttachmentReceiptV1> };
@@ -43,7 +43,7 @@ export class AuthenticatedAgentCommandReceiver {
   constructor(options: AgentCommandReceiverOptions) {
     validateAgentTransportKey(options.trustKey);
     const capabilities = options.capabilities.filter(capability => (capability !== MANAGED_DATABASE_RUNTIME_CAPABILITY || Boolean(options.managedDatabaseRuntime && options.replayStore.durable === true && options.replayStore.lookup))
-      && (capability !== MANAGED_DATABASE_STOP_CAPABILITY || Boolean(options.managedDatabaseStop && options.replayStore.durable === true && options.replayStore.lookup))
+      && (capability !== MANAGED_DATABASE_STOP_CAPABILITY || Boolean(options.managedDatabaseStop && options.replayStore.durable === true && options.replayStore.lookup && options.replayStore.lookupByFingerprintDigest))
       && (capability !== COMPOSE_RESOURCE_INSPECTION_CAPABILITY || Boolean(options.resourceInspector))
       && (capability !== COMPOSE_VOLUME_ATTACHMENT_CAPABILITY || Boolean(options.volumeAttachment))
       && (capability !== COMPOSE_RESOURCE_CLEANUP_CAPABILITY || Boolean(options.resourceCleanup))
@@ -620,7 +620,7 @@ export class AuthenticatedAgentCommandReceiver {
       const admission=this.admission(command.timeoutMs,command.lease,controller.signal);
       try {
         await awaitAbortable(()=>authority.assertValid(),admission.signal);
-        const original=await this.lookupReplay(command.originalReceipt.commandId,command.originalReplayFingerprint,command.timeoutMs,admission.signal);
+        const original=await awaitAbortable(()=>this.#options.replayStore.lookupByFingerprintDigest!(command.originalReceipt.commandId,command.originalReplayFingerprint),admission.signal);
         if(original===null || protocolPayloadFingerprint(managedDatabaseRuntimeReceiptSchema.parse(original))!==protocolPayloadFingerprint(command.originalReceipt))
           throw new FenceError("Original database ready cache required");
         await awaitAbortable(()=>authority.assertValid(),admission.signal);

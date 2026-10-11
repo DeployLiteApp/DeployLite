@@ -5,7 +5,7 @@ import {resolve} from "node:path";
 import {z} from "zod";
 import {createEnvSecretCipher, sealAgentSecretEnvelope} from "@deploylite/config";
 import {approvedManagedDatabaseProfileSchema, InMemoryCapabilityRegistry} from "@deploylite/contracts";
-import {ensureManagedDatabaseCredentials, materializeManagedDatabaseRuntime, managedDatabaseInternalConnection, managedDatabaseRuntimeExecutionDigest, managedDatabaseRuntimeReplayFingerprint, managedDatabaseStopExecutionDigest, type EncryptedEnvSecretValueRecord} from "@deploylite/domain";
+import {ensureManagedDatabaseCredentials, materializeManagedDatabaseRuntime, managedDatabaseInternalConnection, managedDatabaseRuntimeExecutionDigest, managedDatabaseRuntimeReplayFingerprintDigest, managedDatabaseStopExecutionDigest, type EncryptedEnvSecretValueRecord} from "@deploylite/domain";
 import {DockerProcessRunner, DockerProcessError} from "./docker-process-runner.js";
 import type {DockerCliRunner} from "./docker-cli-image-transport.js";
 import {createConfiguredManagedDatabaseRuntime} from "./managed-database-runtime-config.js";
@@ -130,7 +130,7 @@ for (const engine of engines) {
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,connection.hostname)],signal)).stdout.trim()).toBe(marker);
             await verifier.verify(nativeInput,pinned,authority,signal);
             const {sealedEnvironment:sealed,cancellationRequested:canceled,...creationQuery}=command;
-            const originalReplayFingerprint=managedDatabaseRuntimeReplayFingerprint(creationQuery);
+            const originalReplayFingerprint=managedDatabaseRuntimeReplayFingerprintDigest(creationQuery);
             const stopPreparation={...preparation,originalReceipt:receipt,originalReplayFingerprint};
             const stopDigest=managedDatabaseStopExecutionDigest(stopPreparation),stopId=commandId+"-stop";
             const stopLease={projectId:request.projectId,leaseId:stopId,fence:2,expiresAt:Date.now()+60000};
