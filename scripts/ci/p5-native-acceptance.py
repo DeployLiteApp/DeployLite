@@ -86,6 +86,14 @@ def validate_internal_connection(result, profile):
     valid_username = username == expected_user if expected_user else isinstance(username,str) and re.fullmatch(r"dl_[a-f0-9]{12}",username)
     require(valid_username, "native_connection_user_required")
 
+def validate_daemon_removal(result):
+    proof, original = result.get("daemonRemoval"), result.get("receipt")
+    fields = {"containerId","volumeName","networkName","networkId","volumeCreatedAt"}
+    require(isinstance(proof,dict) and set(proof)==fields|{"storage","observedAt"} and isinstance(original,dict),"actual_original_daemon_removal_required")
+    require(proof["storage"]=="retained" and all(proof[key]==original.get(key) for key in fields),"removed_original_retained_storage_required")
+    require(all(type(value) is int and 0<=value<=9007199254740991 for value in (proof["observedAt"],original.get("observedAt")))
+        and proof["observedAt"]>=original["observedAt"],"original_daemon_removal_clock_required")
+
 def validate_daemon_stop(result):
     stop, receipt = result.get("daemonStop"), result.get("receipt")
     require(isinstance(stop,dict) and set(stop) == {"containerId","status"} and isinstance(receipt,dict)
@@ -166,6 +174,7 @@ def verify(env):
         validate_resource_receipt(result)
         validate_internal_connection(result, binding["profiles"][engine])
         validate_daemon_stop(result)
+        validate_daemon_removal(result)
         validate_configured_stop(result,binding["profiles"][engine])
         require(item.get("cleanup") == "verified" and all(result.get(key) == "passed" for key in ("authenticatedProbe","restart","persistence")), "native_persistence_cleanup_required")
         require(type(result.get("uid")) is int and 0 < result["uid"] <= 4294967294 and receipt.get("engine") == engine and receipt.get("status") == "ready"
