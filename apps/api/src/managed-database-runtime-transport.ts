@@ -22,7 +22,7 @@ export type ManagedDatabaseRuntimeAgentTransport = Readonly<{
 }>;
 type Options = Readonly<{ endpoint: string; agentId: string; trustKey: string; fetch?: typeof fetch; timeoutMs?: number; allowInsecureInternal?: boolean }>;
 function fail(): never { throw new TransportError("Database agent transport is unavailable."); }
-function matches(query: ManagedDatabaseRuntimeReceiptQueryV1, receipt: ManagedDatabaseRuntimeReceiptV1): boolean {
+export function managedDatabaseRuntimeReceiptMatches(query: ManagedDatabaseRuntimeReceiptQueryV1, receipt: ManagedDatabaseRuntimeReceiptV1): boolean {
   return receipt.agentId === query.agentId && receipt.commandId === query.commandId && receipt.projectId === query.projectId
     && receipt.databaseId === query.databaseId && receipt.engine === query.engine && receipt.inputDigest === query.inputDigest
     && receipt.planDigest === query.planDigest && receipt.environmentFingerprint === query.environmentFingerprint
@@ -98,7 +98,7 @@ export class AuthenticatedManagedDatabaseRuntimeTransport implements ManagedData
       return await this.operate(context.signal, async signal => {
         await this.handshake(signal); posted = true;
         const receipt = managedDatabaseRuntimeReceiptSchema.parse(await this.post(MANAGED_DATABASE_RUNTIME_PATH, body, false, signal));
-        if (!matches(query, receipt)) fail();
+        if (!managedDatabaseRuntimeReceiptMatches(query, receipt)) fail();
         return receipt;
       });
     } catch {
@@ -113,7 +113,7 @@ export class AuthenticatedManagedDatabaseRuntimeTransport implements ManagedData
         await this.handshake(signal);
         const cached = managedDatabaseRuntimeCachedReceiptSchema.parse(await this.post(MANAGED_DATABASE_RUNTIME_RECEIPT_PATH, query, true, signal));
         if (cached.agentId !== query.agentId || cached.commandId !== query.commandId || cached.correlationId !== query.context.correlationId
-          || (cached.receipt && !matches(query, cached.receipt))) fail();
+          || (cached.receipt && !managedDatabaseRuntimeReceiptMatches(query, cached.receipt))) fail();
         return cached.receipt;
       });
     } catch { return fail(); }

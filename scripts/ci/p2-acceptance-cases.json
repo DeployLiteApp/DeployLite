@@ -1215,7 +1215,9 @@
     "apps/api/src/managed-database-runtime-transport.ts",
     "apps/api/src/managed-database-runtime-transport.test.ts",
     "apps/api/src/managed-database-runtime-preview.ts",
-    "apps/api/src/managed-database-runtime-preview.test.ts"
+    "apps/api/src/managed-database-runtime-preview.test.ts",
+    "apps/api/src/managed-database-runtime-apply.ts",
+    "apps/api/src/managed-database-runtime-apply.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
