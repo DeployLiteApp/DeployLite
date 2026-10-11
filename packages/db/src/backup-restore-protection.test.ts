@@ -43,3 +43,13 @@ it("does not accept an archive replacement under the original restore command",a
 it("retains protection after the original nonce is consumed without treating expiry as release",async()=>{const h=harness();await h.store().protect(h.f.preparation,h.f.command,h.f.confirmation);h.command.status="dispatching";h.confirmation.consumedAt=new Date(1000);h.advance();expect(await h.store().list("project-a","db-orders","private-native")).toEqual([h.f.preparation.backupReceipt.archiveId]);});
 it("refuses changed durable archive hashes during protection reads",async()=>{for(const key of ["archiveSha256","manifestSha256"] as const){const h=harness();await h.store().protect(h.f.preparation,h.f.command,h.f.confirmation);h.backup.receipt[key]="0".repeat(64);await expect(h.store().list("project-a","db-orders","private-native")).rejects.toThrow("Restore archive protection is unavailable.");}});
 it("refuses a foreign protected scope instead of projecting it into the requested scope",async()=>{const h=harness();await h.store().protect(h.f.preparation,h.f.command,h.f.confirmation);h.saved[0]!.projectId="foreign";await expect(h.store().list("project-a","db-orders","private-native")).rejects.toThrow("Restore archive protection is unavailable.");});
+
+it.each(engines)("corroborates exact %s original protected command and nonce without any write",async engine=>{
+ const h=harness(engine);await h.store().protect(h.f.preparation,h.f.command,h.f.confirmation);const before=structuredClone(h.saved);
+ await expect(h.store().assertProtected(h.f.preparation,h.f.command,h.f.confirmation.id)).resolves.toBeUndefined();expect(h.saved).toEqual(before);
+});
+it.each(["absent","nonce","command","hash"])("rejects %s exact restore protection without replacing it",async mode=>{
+ const h=harness();if(mode!=="absent")await h.store().protect(h.f.preparation,h.f.command,h.f.confirmation);const before=structuredClone(h.saved);
+ const preparation=mode==="hash"?{...h.f.preparation,backupReceipt:{...h.f.preparation.backupReceipt,archiveSha256:"0".repeat(64)}}:h.f.preparation;
+ await expect(h.store().assertProtected(preparation,mode==="command"?{...h.f.command,id:"foreign"}:h.f.command,mode==="nonce"?"foreign":h.f.confirmation.id)).rejects.toThrow("Restore archive protection is unavailable.");expect(h.saved).toEqual(before);
+});

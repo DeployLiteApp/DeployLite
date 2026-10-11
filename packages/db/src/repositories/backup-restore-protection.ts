@@ -1,5 +1,5 @@
 import {and,eq,sql} from "drizzle-orm";
-import {managedDatabaseBackupReceiptSchema,managedDatabaseRestorePreparationSchema} from "@deploylite/contracts";
+import {managedDatabaseBackupReceiptSchema,managedDatabaseRestorePreparationSchema,protocolPayloadFingerprint,projectControlAuthoritySchema} from "@deploylite/contracts";
 import {digestControlInput,evaluateConfirmation,managedDatabaseRestoreExecutionDigest,type ControlCommand,type ControlConfirmation,type BackupRetentionProtectionReader} from "@deploylite/domain";
 import type {DeployLiteDb} from "../client.js";
 import {backupRestoreProtections,backupInventory,controlCommands,controlCommandConfirmations} from "../schema.js";
@@ -29,6 +29,23 @@ export class DbBackupRestoreProtectionStore implements BackupRetentionProtection
    ||receipt.agentId!==this.expectedAgentId||receipt.commandId!==row.backupCommandId||receipt.projectId!==row.projectId||receipt.volumeKey!==row.volumeKey
    ||receipt.destinationId!==row.destinationId||receipt.archiveId!==row.archiveId||receipt.archiveSha256!==row.archiveSha256||receipt.manifestSha256!==row.manifestSha256)unavailable();
   this.now();return {command,nonce,receipt};
+ }
+ /** Corroborate the original insert-only protection; never create, renew or release it. */
+ async assertProtected(raw:unknown,suppliedCommand:ControlCommand,confirmationId:string):Promise<void>{
+  try{
+   const preparation=managedDatabaseRestorePreparationSchema.parse(structuredClone(raw)),command=structuredClone(suppliedCommand),receipt=preparation.backupReceipt,digest=managedDatabaseRestoreExecutionDigest(preparation);this.now();
+   if(!/^[A-Za-z0-9_-]{1,200}$/.test(confirmationId)||command.action!=="project.update"||command.scope.kind!=="project"||command.scope.projectId!==preparation.projectId||command.inputDigest!==digest||receipt.agentId!==this.expectedAgentId)unavailable();
+   await this.db.transaction(async tx=>{
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`deploylite:execution:${preparation.projectId}`},0))`);
+    const rows=await tx.select().from(backupRestoreProtections).where(eq(backupRestoreProtections.restoreCommandId,command.id)).limit(2).for("share");
+    if(rows.length!==1)unavailable();const row=rows[0]!;
+    if(row.restoreCommandId!==command.id||row.confirmationId!==confirmationId||row.projectId!==preparation.projectId||row.inputDigest!==digest||row.backupCommandId!==receipt.commandId||row.volumeKey!==receipt.volumeKey||row.destinationId!==receipt.destinationId||row.archiveId!==receipt.archiveId||row.archiveSha256!==receipt.archiveSha256||row.manifestSha256!==receipt.manifestSha256)unavailable();
+    const {command:stored,receipt:original}=await this.read(tx,row);
+    if(stored.actorUserId!==command.actorId||stored.idempotencyKey!==command.idempotencyKey||stored.correlationId!==command.correlationId||stored.status!==command.status||stored.expiresAt.getTime()!==command.expiresAt.getTime()||digestControlInput(original)!==digestControlInput(receipt))unavailable();
+    if(stored.executionAuthority||command.projectExecutionAuthority){if(protocolPayloadFingerprint(projectControlAuthoritySchema.parse(stored.executionAuthority))!==protocolPayloadFingerprint(projectControlAuthoritySchema.parse(command.projectExecutionAuthority)))unavailable();}
+    this.now();
+   });
+  }catch{return unavailable();}
  }
  async protect(raw:unknown,suppliedCommand:ControlCommand,suppliedConfirmation:ControlConfirmation):Promise<void>{
   try{
