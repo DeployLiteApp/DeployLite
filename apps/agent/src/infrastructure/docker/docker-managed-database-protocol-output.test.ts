@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { DockerProcessRunner, type SpawnedProcess } from "./docker-process-runner.js";
+import { DockerProcessRunner, DockerProcessError, type SpawnedProcess } from "./docker-process-runner.js";
 import { MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT, MANAGED_DATABASE_IMAGE_INSPECT_FORMAT } from "./docker-managed-database-inspection-argv.js";
 function fakeProcess() {
     const callbacks = new Map<string, (...args: unknown[]) => void>();
@@ -61,5 +61,32 @@ it("retains diagnostic redaction for unlabelled create, different start IDs and 
         const f = fakeProcess(), pending = new DockerProcessRunner({spawn: () => f.child}).run(argv, new AbortController().signal);
         f.stdout.on.mock.calls[0]![1](output); f.callbacks.get("close")!(0, null);
         expect((await pending).stdout).not.toBe(output);
+    }
+});
+
+it("preserves only the exact bounded stop reply for the caller's public original ID",async()=>{
+    const id="a".repeat(64),f=fakeProcess();
+    const pending=new DockerProcessRunner({spawn:()=>f.child}).run(["docker","stop","--time","10",id],new AbortController().signal);
+    f.stdout.on.mock.calls[0]![1](id+"\n");f.callbacks.get("close")!(0,null);
+    expect((await pending).stdout).toBe(id+"\n");
+});
+
+it("retains stop diagnostic redaction for foreign IDs, extra options, failed exits and secret output",async()=>{
+    const id="a".repeat(64);
+    for(const [argv,output,exit] of [
+        [["docker","stop","--time","10",id],"b".repeat(64),0],
+        [["docker","stop","--time","0",id],id,0],
+        [["docker","stop","--time","31",id],id,0],
+        [["docker","stop","--time","10",id,"foreign"],id,0],
+        [["docker","stop","--time","10",id],id+"\npassword=private",0],
+        [["docker","stop","--time","10",id],id,1]
+    ] as const){
+        const f=fakeProcess(),pending=new DockerProcessRunner({spawn:()=>f.child}).run(argv,new AbortController().signal);
+        f.stdout.on.mock.calls[0]![1](output);f.callbacks.get("close")!(exit,null);
+        if (exit !== 0) {
+            const error = await pending.catch(error => error);
+            expect(error).toBeInstanceOf(DockerProcessError);
+            expect((error as DockerProcessError).result?.stdout).not.toBe(output);
+        } else expect((await pending).stdout).not.toBe(output);
     }
 });
