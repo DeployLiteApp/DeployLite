@@ -24,12 +24,14 @@ export function nativeDumpFixture(root:string) {
       maxBytes:number;
       originalContainerId:string;
       uid:number;
+      writerProbe?():Promise<void>;
     }>) {
       if(!Number.isSafeInteger(input.uid)||input.uid<1||input.uid>4294967294)throw new Error("Corroborated non-root decoder required.");
       const first=await input.call();expect(first.statusCode).toBe(200);
       const data=first.json().data,receipt=managedDatabaseBackupReceiptSchema.parse(data.receipt);
       expect(data).toMatchObject({backupCreated:true,idempotent:false});
-      expect(receipt).toMatchObject({format:"postgres-custom-gzip",consistency:"native-snapshot",status:"created",containerId:input.originalContainerId});
+      const sql=receipt.engine==="mysql"||receipt.engine==="mariadb";
+      expect(receipt).toMatchObject({format:sql?receipt.engine+"-sql-gzip":"postgres-custom-gzip",consistency:sql?"global-read-lock":"native-snapshot",status:"created",containerId:input.originalContainerId});
       expect(data.command).not.toHaveProperty("projectExecutionAuthority");
       expect(first.body).not.toMatch(/encryptedValue|sealedEnvironment|DATABASE_PASSWORD|privatePath/);
       const directory=join(root,receipt.archiveId),archive=join(directory,"archive.bin"),manifest=join(directory,"manifest.json");
@@ -40,24 +42,32 @@ export function nativeDumpFixture(root:string) {
       expect(bytes.length).toBe(receipt.archiveBytes);expect(bytes.length).toBeLessThanOrEqual(input.maxBytes);
       expect(createHash("sha256").update(bytes).digest("hex")).toBe(receipt.archiveSha256);
       expect(createHash("sha256").update(manifestBytes).digest("hex")).toBe(receipt.manifestSha256);
-      expect(gunzipSync(bytes,{maxOutputLength:input.maxBytes}).subarray(0,5).toString()).toBe("PGDMP");
-      // Only the selected owned daemon receives this disposable fixture copy.
-      const copied="/tmp/dl-native-backup-"+receipt.commandId+".gz";let copyIssued=false,stage="copy",problem:Error|undefined;
-      try {
-        await input.verify();copyIssued=true;
-        await input.runner.run(["docker","cp",archive,input.originalContainerId+":"+copied],input.signal);
-        stage="ownership";await input.verify();
-        await input.runner.run(["docker","exec","--user","0",input.originalContainerId,"chown",String(input.uid),copied],input.signal);
-        stage="decode";await input.verify();
-        const output=await input.runner.run(["docker","exec",input.originalContainerId,"bash","-o","pipefail","-c",
-          `gzip -cd '${copied}' | pg_restore --file=- | grep -F -x 'p5-persistent-value'`],input.signal);
-        expect(output.stdout.trim()).toBe("p5-persistent-value");
-      } catch {problem=new Error("Private native dump fixture failed at "+stage+".");}
-      finally {
-        if(copyIssued)try {await input.verify();await input.runner.run(["docker","exec","--user","0",input.originalContainerId,"rm","--",copied],input.signal);}
-        catch {problem=new Error("Private native dump fixture failed at "+stage+"; copied archive cleanup unresolved.");}
+      const decoded=gunzipSync(bytes,{maxOutputLength:input.maxBytes});
+      if(sql){
+        const contents=decoded.toString("utf8");
+        expect(contents.includes("p5-persistent-value")&&contents.includes("p5-nontransactional-value")&&contents.includes("MyISAM")&&contents.includes("CREATE TABLE")).toBe(true);
+        if(!input.writerProbe)throw new Error("Native SQL writer probe required.");
+        try {await input.writerProbe();}catch {throw new Error("Native SQL writers did not resume.");}
+      }else{
+        expect(decoded.subarray(0,5).toString()).toBe("PGDMP");
+        // Only the selected owned daemon receives this disposable fixture copy.
+        const copied="/tmp/dl-native-backup-"+receipt.commandId+".gz";let copyIssued=false,stage="copy",problem:Error|undefined;
+        try {
+          await input.verify();copyIssued=true;
+          await input.runner.run(["docker","cp",archive,input.originalContainerId+":"+copied],input.signal);
+          stage="ownership";await input.verify();
+          await input.runner.run(["docker","exec","--user","0",input.originalContainerId,"chown",String(input.uid),copied],input.signal);
+          stage="decode";await input.verify();
+          const output=await input.runner.run(["docker","exec",input.originalContainerId,"bash","-o","pipefail","-c",
+            `gzip -cd '${copied}' | pg_restore --file=- | grep -F -x 'p5-persistent-value'`],input.signal);
+          expect(output.stdout.trim()).toBe("p5-persistent-value");
+        } catch {problem=new Error("Private native dump fixture failed at "+stage+".");}
+        finally {
+          if(copyIssued)try {await input.verify();await input.runner.run(["docker","exec","--user","0",input.originalContainerId,"rm","--",copied],input.signal);}
+          catch {problem=new Error("Private native dump fixture failed at "+stage+"; copied archive cleanup unresolved.");}
+        }
+        if(problem)throw problem;
       }
-      if(problem)throw problem;
       const before=await input.inventory().list(receipt.projectId,receipt.volumeKey,receipt.destinationId);expect(before).toHaveLength(1);expect(before[0]!.receipt).toEqual(receipt);
       await input.reopen();
       expect(await input.inventory().list(receipt.projectId,receipt.volumeKey,receipt.destinationId)).toEqual(before);
@@ -66,7 +76,7 @@ export function nativeDumpFixture(root:string) {
       expect(await input.inventory().list(receipt.projectId,receipt.volumeKey,receipt.destinationId)).toEqual(before);
       if(createHash("sha256").update(await readFile(archive)).digest("hex")!==receipt.archiveSha256)throw new Error("Private native archive changed.");
       if(createHash("sha256").update(await readFile(manifest)).digest("hex")!==receipt.manifestSha256)throw new Error("Private native manifest changed.");
-      proof={receipt,maxBytes:input.maxBytes,captures:input.captures(),signedHttp:"passed",formatValidated:"passed",seededRow:"passed",inventoryReopen:"passed",replay:"passed",privateFiles:"passed",cleanup:"pending"};
+      proof={...(sql?{writersResumed:"passed"}:{}),receipt,maxBytes:input.maxBytes,captures:input.captures(),signedHttp:"passed",formatValidated:"passed",seededRow:"passed",inventoryReopen:"passed",replay:"passed",privateFiles:"passed",cleanup:"pending"};
       return proof;
     },
     async close() {
