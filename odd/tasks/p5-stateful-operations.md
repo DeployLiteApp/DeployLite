@@ -969,3 +969,16 @@ Receipt matcher #4930440d7c delivered draft: complete3342unit/exit0,36focal/doma
 Signed optional receiver checkpoint: Node24 pnpmcheck exits0,3357unit across8projects;40focal/agenttypesPASS. Exact-head hosted pending; no default runtime/API activated.
 
 #4928cbc6921bafaa9c0edc3711e822dee06117c6952/run38135325531 owner9/9SUCCESS,3335unit,0skipped/pending/failed,292global/24P3/298operator hashes exact,restart/cleanup verified. Existing mandatory native/operator/current-source Chromium proofs passed; full signed deletion still pending.
+
+
+### S1 explicit confirmed removal runtime composition — 2026-10-11
+
+Trusted injected composition offers delete only with explicit deletion capability, existing STOP capability and bounded STOP grace. Reuse the original native inspector, stopped/retained verifier, stopper and remover; wrapped authority rechecks all native/inspection/STOP/delete capabilities around awaits and requires both ordinary and confirmed callbacks. Receiver wiring advertises only an actually composed delete method. Existing production registry does not enable deletion by default; API/config activation remains pending.
+
+Two constructor assertions observed RED before implementation;35composition/executor/receiverfocalPASS,agenttypesPASS. Native mandatory five-engine fixture now executes the composed executor after all previous startup/authenticated restart/persistence/STOP assertions: three running sources stop conditionally, two already-stopped sources skip that stop, PostgreSQL also corroborates a paired original STOP. Actual original removal/retained-resource evidence remains; new strict proof identifies approval callbacks as injected-direct-port rather than real consumed approval. Three missing/detached proof assertions RED against no-op guard;20nativeguardPASS preserving16previous. Full and actual hosted newexecutor proof pending. This is direct physical boundary only; confirmed API/signed full operator deletion/durable retirement/UI and wholeS1/P5 remain open. Rollback removes optional composition/wiring/newproof while retaining all prior tests, storage/cipher/approval history and original lower-port proof.
+
+Receiver #49496e6402 delivered draft after3357unit/exit0,40focal/agenttypesPASS. Exact-head hosted pending.
+
+Explicit composition source checkpoint: Node24 pnpmcheck exits0,3359unit/eightprojects;35focal/20nativeguards/agenttypesPASS. Actual hosted new configured executor proof remains pending; no local Docker/PG executed.
+
+#4930440d7c582d13752feb36600d229aacbc4d07ba5/run38135599524 owner9/9SUCCESS,3342unit,0skipped/pending/failed,293global/24P3/299operator hashes exact,restart/cleanup verified. Existing five native/operator/current-source Chromium proofs passed; full signed deletion remains pending.

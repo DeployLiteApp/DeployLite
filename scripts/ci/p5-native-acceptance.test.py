@@ -146,5 +146,24 @@ class NativeRemoval(unittest.TestCase):
             result=self.fixture(); result["daemonRemoval"]["observedAt"]=value
             with self.subTest(value=value),self.assertRaises(RuntimeError): module.validate_daemon_removal(result)
 
+class NativeConfiguredDelete(unittest.TestCase):
+    def fixture(self):
+        original={"schemaVersion":1,"projectId":"project1","databaseId":"orders","engine":"postgres","agentId":"agent1","commandId":"original1","containerId":"a"*64,"imageId":"sha256:"+"b"*64,"volumeName":"volume1","networkName":"network1","networkId":"c"*64,"volumeCreatedAt":"2026-10-10T00:00:00Z","planDigest":"d"*64,"environmentFingerprint":"e"*32,"observedAt":1000}
+        query={"originalReceipt":original,"confirmationId":"approval1","commandId":"delete1","agentId":"agent1","inputDigest":"f"*64,"storagePolicy":"retain-original","stopPolicy":"if-running","authority":{"commandId":"delete1","inputDigest":"f"*64},"lease":{"expiresAt":10000},"context":{"correlationId":"delete-correlation"}}
+        receipt={**{key:value for key,value in original.items() if key not in ("commandId","observedAt")},"action":"database.runtime.delete","commandId":"delete1","originalCommandId":"original1","originalStopCommandId":None,"confirmationId":"approval1","profileId":"profile1","inputDigest":"f"*64,"correlationId":"delete-correlation","observedAt":2000,"status":"removed","storage":"retained","redacted":True}
+        return {"receipt":original,"nativeDelete":{"receipt":receipt,"query":query,"confirmationChecks":4,"authoritySource":"injected-direct-port","runningBefore":True}}
+    def test_requires_configured_delete_proof(self):
+        with self.assertRaises(RuntimeError): module.validate_configured_delete({"receipt":self.fixture()["receipt"]},{"profileId":"profile1"})
+    def test_accepts_original_confirmed_removed_receipt(self):
+        module.validate_configured_delete(self.fixture(),{"profileId":"profile1"})
+    def test_rejects_detached_approval_container_storage_or_before_source_clock(self):
+        for patch in ({"confirmationId":"foreign"},{"containerId":"0"*64},{"originalCommandId":"foreign"},{"originalStopCommandId":"foreign"},{"storage":"removed"},{"observedAt":999},{"password":"private"}):
+            result=self.fixture();result["nativeDelete"]["receipt"].update(patch)
+            with self.assertRaises(RuntimeError):module.validate_configured_delete(result,{"profileId":"profile1"})
+    def test_rejects_fake_confirmation_or_policy(self):
+        for key,value in (("confirmationChecks",0),("authoritySource","real-consumed-approval"),("runningBefore","unknown")):
+            result=self.fixture();result["nativeDelete"][key]=value
+            with self.assertRaises(RuntimeError):module.validate_configured_delete(result,{"profileId":"profile1"})
+
 if __name__ == "__main__":
     unittest.main()
