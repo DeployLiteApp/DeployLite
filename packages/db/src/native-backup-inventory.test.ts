@@ -1,3 +1,4 @@
+import {nativeBackupInventoryAuditMetadata} from "@deploylite/domain";
 import {expect,it} from "vitest";
 import {PgDialect} from "drizzle-orm/pg-core";
 import {DbBackupInventoryStore} from "./repositories/backup-inventory.js";
@@ -6,7 +7,7 @@ import type {DeployLiteDb} from "./client.js";
 function fixture() {
   const receipt={schemaVersion:1,projectId:"project-a",databaseId:"orders",engine:"postgres",action:"database.runtime.backup",agentId:"agent-a",commandId:"backup-a",originalCommandId:"origin-a",profileId:"profile-a",inputDigest:"a".repeat(64),planDigest:"a".repeat(64),environmentFingerprint:"b".repeat(32),correlationId:"correlation-a",containerId:"c".repeat(64),imageId:"sha256:"+"d".repeat(64),volumeName:"dl-"+"b".repeat(32)+"-vol-db-orders",networkName:"dl-"+"b".repeat(32)+"-net-db-orders",networkId:"e".repeat(64),volumeCreatedAt:"2026-10-10T00:00:00Z",observedAt:1000,volumeKey:"db-orders",destinationId:"destination-a",sourceDigest:"f".repeat(64),archiveId:"backup_"+"a".repeat(32),archiveBytes:4,archiveSha256:"a".repeat(64),manifestSha256:"b".repeat(64),format:"postgres-custom-gzip",consistency:"native-snapshot",status:"created",idempotent:false,storage:"verified",redacted:true};
   const command={id:receipt.commandId,actorUserId:"actor-a",action:"project.update",scopeKind:"project",scopeKey:receipt.projectId,status:"completed",inputDigest:receipt.inputDigest,correlationId:receipt.correlationId};
-  const audit={id:"audit-a",actorUserId:command.actorUserId,action:"database.runtime.backup.executed",targetType:"project",targetId:receipt.projectId,correlationId:receipt.correlationId,createdAt:new Date(1500),metadata:{...receipt}};
+  const audit={id:"audit-a",actorUserId:command.actorUserId,action:"database.runtime.backup.executed",targetType:"project",targetId:receipt.projectId,correlationId:receipt.correlationId,createdAt:new Date(1500),metadata:nativeBackupInventoryAuditMetadata(receipt)};
   let saved:Record<string,unknown>|undefined,inserts=0;
   const filters:unknown[][]=[];
   const queries={select(){return {from(table:unknown){
