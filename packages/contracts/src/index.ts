@@ -417,3 +417,5 @@ export * from "./deployment-contract/managed-database-logs.js";
 export * from "./deployment-contract/managed-database-delete.js";
 
 export * from "./deployment-contract/managed-database-backup.js";
+
+export * from "./deployment-contract/managed-database-restore.js";
