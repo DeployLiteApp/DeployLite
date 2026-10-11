@@ -1,3 +1,5 @@
+import {AuthenticatedManagedDatabaseHealthTransport} from "./managed-database-health-transport.js";
+import type {ManagedDatabaseHealthAccess} from "./managed-database-health.js";
 import { AuthenticatedManagedDatabaseStartTransport } from "./managed-database-start-transport.js";
 import type { ManagedDatabaseStartAccess } from "./managed-database-start.js";
 import { AuthenticatedManagedDatabaseStopTransport } from "./managed-database-stop-transport.js";
@@ -39,6 +41,8 @@ export async function createConfiguredManagedDatabaseApi(input: Readonly<{
     const executions = new Map<string, ManagedDatabaseRuntimeApplyAccess>();
     const stopExecutions = new Map<string, ManagedDatabaseStopAccess>();
     const startExecutions = new Map<string, ManagedDatabaseStartAccess>();
+    const healthExecutions = new Map<string,ManagedDatabaseHealthAccess>();
+    const healthTransport = typeof controls.findProjectUpdateById === "function" ? new AuthenticatedManagedDatabaseHealthTransport({endpoint,agentId,trustKey,allowInsecureInternal:true,timeoutMs:configuration.limits.deadlineMs}) : undefined;
     const startEnabled = typeof controls.findProjectUpdateById === "function";
     const startTransport = startEnabled ? new AuthenticatedManagedDatabaseStartTransport({ endpoint, agentId, trustKey,
       allowInsecureInternal: true, timeoutMs: configuration.limits.deadlineMs }) : undefined;
@@ -52,6 +56,7 @@ export async function createConfiguredManagedDatabaseApi(input: Readonly<{
       if (!project || project.id !== binding.projectId) throw new Error();
       executions.set(binding.projectId, { controls, transport, agentId, now: Date.now,
         commandTtlMs: configuration.limits.deadlineMs, deadlineMs: configuration.limits.deadlineMs });
+      if (healthTransport) healthExecutions.set(binding.projectId,{controls,transport:healthTransport,originalTransport:transport,agentId,now:Date.now,deadlineMs:configuration.limits.deadlineMs});
       if (stopEnabled && stopTransport) stopExecutions.set(binding.projectId, { controls, transport: stopTransport, originalTransport: transport,
         agentId, now: Date.now, commandTtlMs: configuration.limits.deadlineMs, deadlineMs: configuration.limits.deadlineMs });
       if (startTransport && stopTransport) startExecutions.set(binding.projectId, { controls, transport: startTransport, originalTransport: transport, originalStopTransport: stopTransport,
@@ -59,7 +64,7 @@ export async function createConfiguredManagedDatabaseApi(input: Readonly<{
     }
     const credentials: ManagedDatabaseCredentialConfiguration = { profiles: new Map(Object.entries(configuration.profiles) as [keyof typeof configuration.profiles, typeof configuration.profiles.postgres][]),
       store: secrets, projectIds: new Set(bindings.map(binding => binding.projectId)), deadlineMs: configuration.limits.deadlineMs };
-    return { credentials, executions, stopExecutions, startExecutions, imagePolicy: managedDatabaseNativeImagePolicy() };
+    return { credentials, executions, stopExecutions, startExecutions, healthExecutions, imagePolicy: managedDatabaseNativeImagePolicy() };
   } catch { throw new Error("Database API configuration is invalid."); }
   finally { clearTimeout(timer); }
 }

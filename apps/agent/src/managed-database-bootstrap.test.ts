@@ -120,3 +120,4 @@ it("advertises native stop only for explicit stop configuration and durable orig
     expect(receiver().capabilities).toContain("database.runtime.stop.v1");expect(harness.run).not.toHaveBeenCalled();await runtime.close();
     const disabled=await startAgentRuntime(environment(JSON.stringify(f)));expect(receiver().capabilities).not.toContain("database.runtime.stop.v1");await disabled.close();
 });
+it("advertises readonly health only with explicit native configuration and durable source proof",async()=>{const runtime=await startAgentRuntime(environment(JSON.stringify(configuration())));expect(receiver().capabilities).toContain("database.runtime.health.v1");expect(harness.run).not.toHaveBeenCalled();await runtime.close();const disabled=await startAgentRuntime(environment());expect(receiver().capabilities).not.toContain("database.runtime.health.v1");await disabled.close();});

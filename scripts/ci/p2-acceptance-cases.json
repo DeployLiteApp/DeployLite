@@ -1283,7 +1283,9 @@
     "apps/api/src/managed-database-health-transport.ts",
     "apps/api/src/managed-database-health-transport.test.ts",
     "apps/api/src/managed-database-health.ts",
-    "apps/api/src/managed-database-health.test.ts"
+    "apps/api/src/managed-database-health.test.ts",
+    "apps/api/src/managed-database-health-route.ts",
+    "apps/api/src/managed-database-health-route.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
