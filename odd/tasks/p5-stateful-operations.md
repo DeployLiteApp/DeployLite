@@ -1116,3 +1116,5 @@ Private archive complete Node24 pnpmcheck exits0:3491unit across all8projects,0s
 feat/p5-native-backup-proof: Strict five-engine metadata/budget/volume-key contract and original runtime binding. Contract9 and binding5 focused cases pass; capture and public activation remain follow-up.
 
 feat/p5-native-backup-capture: Internal PostgreSQL capture and explicit factory composition corroborate original durable proof, fresh ownership/readiness and current authority around bounded private publication. Capture9/factory14 focused cases pass. Other engines fail closed; no configured bootstrap activation or actual native dump acceptance.
+
+feat/p5-native-backup-receiver: Existing signed project-update receiver and dedicated metadata HTTP/cache routes claim once, reconcile uncertainty without release/re-execution and retain original cache access after execution withdrawal. Receiver/HTTP9 and combined42 cases pass. Public API/bootstrap and actual dump acceptance remain follow-up.
