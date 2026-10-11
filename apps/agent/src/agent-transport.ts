@@ -944,8 +944,8 @@ export class AuthenticatedAgentCommandReceiver {
     if (signal?.aborted) throw new TransportCanceledError();
     if (!this.verifyRequest(`POST ${MANAGED_DATABASE_RUNTIME_RECEIPT_PATH}\n${JSON.stringify(body)}`, signature)) throw new Error("agent authentication failed");
     const query = managedDatabaseRuntimeReceiptQuerySchema.parse(structuredClone(body));
-    if (query.agentId !== this.#options.agentId || !this.#options.capabilities.includes(MANAGED_DATABASE_RUNTIME_CAPABILITY)
-      || this.databaseRuntimeDigest(query) !== query.inputDigest) throw new FenceError("Database cache scope rejected");
+    if (!this.hasDurableReplayStore() || !this.#options.replayStore.lookup
+      || query.agentId !== this.#options.agentId || this.databaseRuntimeDigest(query) !== query.inputDigest) throw new FenceError("Database cache scope rejected");
     const raw = await this.lookupReplay(query.commandId, this.databaseRuntimeFingerprint(query), query.timeoutMs, signal);
     const receipt = raw === null ? null : managedDatabaseRuntimeReceiptSchema.parse(raw);
     if (receipt && !this.matchesDatabaseRuntimeReceipt(query, receipt)) throw new FenceError("Cached database receipt scope rejected");
