@@ -1,8 +1,8 @@
-import { managedDatabaseDeleteReceiptQuerySchema, managedDatabaseDeleteReceiptSchema, FenceError, deploymentExecutionAuthoritySchema, projectControlAuthoritySchema, protocolPayloadFingerprint, type DeploymentExecutionAuthorityV1, type ProjectControlAuthorityV1 } from "@deploylite/contracts";
+import { managedDatabaseRestoreReceiptQuerySchema, managedDatabaseRestoreReceiptSchema, managedDatabaseDeleteReceiptQuerySchema, managedDatabaseDeleteReceiptSchema, FenceError, deploymentExecutionAuthoritySchema, projectControlAuthoritySchema, protocolPayloadFingerprint, type DeploymentExecutionAuthorityV1, type ProjectControlAuthorityV1 } from "@deploylite/contracts";
 import { and, asc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
-import type { ManagedDatabaseDeleteCompletionInput, AuditEventInput, ConfirmedDeploymentRedeployInput, ConfirmedDeploymentRedeployOutcome, ConfirmedDeploymentStopInput, ConfirmedDeploymentStopOutcome, ConfirmedProjectDeleteInput, ConfirmedProjectDeleteOutcome, ControlCommand, ControlCommandRepository, ControlConfirmation, ControlConfirmationRepository, ControlDeleteRepository, ControlGrant, ControlGrantRepository, ConfirmationOutcome, ControlRollbackRepository, ControlRedeployRepository, ControlStopRepository, ProjectUpdateControlRepository } from "@deploylite/domain";
+import type { ManagedDatabaseRestoreCompletionInput, ManagedDatabaseDeleteCompletionInput, AuditEventInput, ConfirmedDeploymentRedeployInput, ConfirmedDeploymentRedeployOutcome, ConfirmedDeploymentStopInput, ConfirmedDeploymentStopOutcome, ConfirmedProjectDeleteInput, ConfirmedProjectDeleteOutcome, ControlCommand, ControlCommandRepository, ControlConfirmation, ControlConfirmationRepository, ControlDeleteRepository, ControlGrant, ControlGrantRepository, ConfirmationOutcome, ControlRollbackRepository, ControlRedeployRepository, ControlStopRepository, ProjectUpdateControlRepository } from "@deploylite/domain";
 import { redactSecrets } from "@deploylite/config";
-import { managedDatabaseDeleteReceiptMatches, claimDeploymentAuthority, claimProjectUpdateAuthority, validateProjectUpdateAuthority as validateProjectUpdateAuthorityInMemory, validateStopCompletion, validateDeploymentAuthority, validateInitialExecution, validateRollbackReservation, isRollbackAdmissionBound, isRollbackClaimBound, createConfirmation, evaluateConfirmation, ConfirmationRejectedError, IdempotencyConflictError, scopeKey } from "@deploylite/domain";
+import { managedDatabaseRestoreReceiptMatches, managedDatabaseDeleteReceiptMatches, claimDeploymentAuthority, claimProjectUpdateAuthority, validateProjectUpdateAuthority as validateProjectUpdateAuthorityInMemory, validateStopCompletion, validateDeploymentAuthority, validateInitialExecution, validateRollbackReservation, isRollbackAdmissionBound, isRollbackClaimBound, createConfirmation, evaluateConfirmation, ConfirmationRejectedError, IdempotencyConflictError, scopeKey } from "@deploylite/domain";
 
 import type { DeployLiteDb } from "../client.js";
 import { auditEvents, controlCommandAudits, controlCommandConfirmations, controlCommands, controlGrants, deployments, projects, type ControlCommandRow, type ControlGrantRow } from "../schema.js";
@@ -364,6 +364,38 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
         ||authority.projectId!==projectId||authority.commandId!==command.id||authority.inputDigest!==command.inputDigest||authority.projectLease.expiresAt!==command.expiresAt.getTime()
         ||receipt.observedAt>=authority.projectLease.expiresAt)throw new FenceError("Database removal history is unavailable");
       return command;
+    });
+  }
+
+  /** Metadata only: persist one confirmed original restore receipt and correlated audit atomically. */
+  async completeManagedDatabaseRestore(raw:ManagedDatabaseRestoreCompletionInput):Promise<ControlCommand>{
+    const input=structuredClone(raw),query=managedDatabaseRestoreReceiptQuerySchema.parse(input.query),receipt=managedDatabaseRestoreReceiptSchema.parse(input.receipt);
+    const authority=query.authority,command=input.command,now=input.now??Date.now(),audit=input.audit;
+    const fail=():never=>{throw new FenceError("Confirmed database restore completion is unavailable");};
+    if(!Number.isSafeInteger(now)||now<0||receipt.observedAt>now||receipt.observedAt>=query.lease.expiresAt||!managedDatabaseRestoreReceiptMatches(query,receipt)
+      ||command.action!=="project.update"||command.scope.kind!=="project"||command.scope.projectId!==query.projectId||command.id!==query.commandId
+      ||command.inputDigest!==query.inputDigest||command.idempotencyKey!==query.idempotencyKey||command.correlationId!==query.context.correlationId
+      ||audit.actorUserId!==command.actorId||audit.action!=="database.runtime.restored"||audit.targetType!=="project"||audit.targetId!==query.projectId
+      ||audit.correlationId!==command.correlationId||audit.requestId!==query.context.requestId||!audit.requestId)fail();
+    return this.db.transaction(async tx=>{
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`deploylite:execution:${query.projectId}`}, 0))`);
+      const [row]=await tx.select().from(controlCommands).where(eq(controlCommands.id,command.id)).limit(1).for("update");if(!row)fail();
+      const current=toCommand(row!);
+      if(current.actorId!==command.actorId||current.action!==command.action||current.scope.kind!=="project"||current.scope.projectId!==query.projectId
+        ||current.inputDigest!==command.inputDigest||current.idempotencyKey!==command.idempotencyKey||current.correlationId!==command.correlationId
+        ||current.expiresAt.getTime()!==command.expiresAt.getTime()||current.expiresAt.getTime()!==authority.projectLease.expiresAt
+        ||!current.projectExecutionAuthority||protocolPayloadFingerprint(current.projectExecutionAuthority)!==protocolPayloadFingerprint(authority))fail();
+      if(current.status==="completed"){
+        if(!current.result||protocolPayloadFingerprint(managedDatabaseRestoreReceiptSchema.parse(current.result))!==protocolPayloadFingerprint(receipt))fail();
+        return current;
+      }
+      if(current.status!=="dispatching")fail();
+      // This is metadata reconciliation only. Effect time must belong to the original consumed lease.
+      await this.validateConfirmedAuthorityInTransaction(tx,authority,query.confirmationId,receipt.observedAt);
+      await tx.insert(auditEvents).values({actorUserId:current.actorId,action:audit.action,targetType:audit.targetType,targetId:audit.targetId,
+        requestId:audit.requestId,correlationId:current.correlationId,metadata:redactSecrets({...audit.metadata,commandId:current.id,inputDigest:current.inputDigest,confirmationId:query.confirmationId,receipt,redacted:true})});
+      const [completed]=await tx.update(controlCommands).set({status:"completed",result:receipt,updatedAt:new Date(now)}).where(and(eq(controlCommands.id,current.id),eq(controlCommands.status,"dispatching"))).returning();
+      if(!completed)fail();await this.fault("command-completed");return toCommand(completed!);
     });
   }
 

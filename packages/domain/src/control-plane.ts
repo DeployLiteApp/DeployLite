@@ -1,6 +1,6 @@
 import type {AuditEventInput} from "./index.js";
 import { createHash, randomUUID } from "node:crypto";
-import type { ManagedDatabaseDeleteReceiptV1, ManagedDatabaseDeleteReceiptQueryV1, CanonicalRole, ConfirmationClassification, ControlCommandStatus, ControlPlaneAction, ControlPlaneScope, Deployment, DeploymentRollbackCommandResult, DeploymentRedeployCommandResult, DeploymentStopCommandResult, DeploymentExecutionAuthorityV1, ComposeResourceCleanupExecutionReceiptV1, ComposeRevisionSaveCommandResult, ProjectControlAuthorityV1, DomainRouteApplyReceiptV1, DomainRouteApplyAgentCommandV1, DomainRouteIntentV1, DomainRouteRevisionV1, TransportPortApplyReceiptV1, TransportPortApplyAgentCommandV1, TransportPortIntentV1, TransportPortRevisionV1, TransportPortBindingV1, TransportPortRuntimeStateV1, TransportPortTransferV1 } from "@deploylite/contracts";
+import type { ManagedDatabaseRestoreReceiptV1, ManagedDatabaseRestoreReceiptQueryV1, ManagedDatabaseDeleteReceiptV1, ManagedDatabaseDeleteReceiptQueryV1, CanonicalRole, ConfirmationClassification, ControlCommandStatus, ControlPlaneAction, ControlPlaneScope, Deployment, DeploymentRollbackCommandResult, DeploymentRedeployCommandResult, DeploymentStopCommandResult, DeploymentExecutionAuthorityV1, ComposeResourceCleanupExecutionReceiptV1, ComposeRevisionSaveCommandResult, ProjectControlAuthorityV1, DomainRouteApplyReceiptV1, DomainRouteApplyAgentCommandV1, DomainRouteIntentV1, DomainRouteRevisionV1, TransportPortApplyReceiptV1, TransportPortApplyAgentCommandV1, TransportPortIntentV1, TransportPortRevisionV1, TransportPortBindingV1, TransportPortRuntimeStateV1, TransportPortTransferV1 } from "@deploylite/contracts";
 import type { DomainRoutePlanV1 } from "./domain-route-plan.js";
 import type { TransportPortPlanV1 } from "./transport-port-plan.js";
 
@@ -8,7 +8,7 @@ export type ControlGrant = { id: string; actorId: string; action: ControlPlaneAc
 export type ControlGrantRepository = { listForActor(actorId: string): Promise<ControlGrant[]> };
 export type PolicyRequest = { actorId: string; role: CanonicalRole; action: ControlPlaneAction; scope: ControlPlaneScope; correlationId: string; grants: ControlGrant[] };
 export type PolicyDecision = { allowed: true; grantId: string; correlationId: string } | { allowed: false; code: "FORBIDDEN" | "ROLE_DENIED" | "SCOPE_DENIED"; correlationId: string };
-export type ControlCommand = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; idempotencyKey: string; correlationId: string; status: ControlCommandStatus; expiresAt: Date; result?: ManagedDatabaseDeleteReceiptV1 | DeploymentStopCommandResult | DeploymentRedeployCommandResult | DeploymentRollbackCommandResult | ComposeRevisionSaveCommandResult | ComposeResourceCleanupExecutionReceiptV1 | (DomainRouteApplyReceiptV1 & { status?: "completed" }) | (TransportPortApplyReceiptV1 & { status?: "completed" }); executionAuthority?: DeploymentExecutionAuthorityV1; projectExecutionAuthority?: ProjectControlAuthorityV1 };
+export type ControlCommand = { id: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; idempotencyKey: string; correlationId: string; status: ControlCommandStatus; expiresAt: Date; result?: ManagedDatabaseRestoreReceiptV1 | ManagedDatabaseDeleteReceiptV1 | DeploymentStopCommandResult | DeploymentRedeployCommandResult | DeploymentRollbackCommandResult | ComposeRevisionSaveCommandResult | ComposeResourceCleanupExecutionReceiptV1 | (DomainRouteApplyReceiptV1 & { status?: "completed" }) | (TransportPortApplyReceiptV1 & { status?: "completed" }); executionAuthority?: DeploymentExecutionAuthorityV1; projectExecutionAuthority?: ProjectControlAuthorityV1 };
 export type ControlConfirmation = { id: string; commandId: string; actorId: string; action: ControlPlaneAction; scope: ControlPlaneScope; inputDigest: string; classification: ConfirmationClassification; expiresAt: Date; consumedAt: Date | null };
 export type ConfirmationOutcome = { command: ControlCommand; accepted: boolean; reason: string | null };
 export type ConfirmedProjectDeleteInput = { command: ControlCommand; confirmation: ControlConfirmation; projectId: string; requestId: string; now?: Date };
@@ -74,6 +74,7 @@ export type ControlCommandRepository = {
   resolve(command: ControlCommand): Promise<{ command: ControlCommand; created: boolean }>;
   complete(command: ControlCommand): Promise<ControlCommand>;
 };
+export type ManagedDatabaseRestoreCompletionInput=Readonly<{command:ControlCommand;query:ManagedDatabaseRestoreReceiptQueryV1;receipt:ManagedDatabaseRestoreReceiptV1;now?:number;audit:AuditEventInput}>;
 export type ManagedDatabaseDeleteCompletionInput=Readonly<{command:ControlCommand;query:ManagedDatabaseDeleteReceiptQueryV1;receipt:ManagedDatabaseDeleteReceiptV1;now?:number;audit:AuditEventInput}>;
 export type ProjectUpdateControlRepository = ControlCommandRepository & {
   /** Private pending destructive nonce recovery; current grants remain the caller’s responsibility. */
@@ -87,6 +88,7 @@ export type ProjectUpdateControlRepository = ControlCommandRepository & {
   validateConfirmedProjectUpdateAuthority?(authority: ProjectControlAuthorityV1, confirmationId: string, now?: number): Promise<void>;
   validateProjectUpdateAuthority(authority: ProjectControlAuthorityV1, now?: number): Promise<void>;
   findManagedDatabaseRemovals?(projectId:string):Promise<ControlCommand[]>;
+  completeManagedDatabaseRestore?(input:ManagedDatabaseRestoreCompletionInput):Promise<ControlCommand>;
   completeManagedDatabaseDelete?(input:ManagedDatabaseDeleteCompletionInput):Promise<ControlCommand>;
   completeProjectUpdate(command: ControlCommand, authority: ProjectControlAuthorityV1, audit: Readonly<{ actorUserId?: string | null; action: string; targetType: string; targetId: string; requestId: string; correlationId: string; metadata?: Record<string, unknown> }>): Promise<ControlCommand>;
 };

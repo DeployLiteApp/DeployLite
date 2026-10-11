@@ -1,3 +1,4 @@
+import {defineManagedDatabaseRestoreCompletionCases} from "./managed-database-restore-postgres.cases.js";
 import {defineNativeBackupInventoryCases} from "./native-backup-inventory-postgres.cases.js";
 import { defineManagedDatabaseCredentialCases } from "./managed-database-credentials-postgres.cases.js";
 import { redactSecrets } from "@deploylite/config";
@@ -45,6 +46,7 @@ async function count(projectId: string) {
   }, 30_000);
   defineManagedDatabaseCredentialCases(() => pool, () => databaseUrl);
   defineNativeBackupInventoryCases(() => pool, () => databaseUrl);
+  defineManagedDatabaseRestoreCompletionCases(() => pool, () => databaseUrl);
   it("persists corroborated inventory across a new PostgreSQL pool lifecycle", async () => {
     const f = await seed(), original = await store().recordAuthenticatedReceipt(f.receipt);
     const fresh = createDbPool(databaseUrl, {max: 1});

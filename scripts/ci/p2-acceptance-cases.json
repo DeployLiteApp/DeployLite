@@ -3,7 +3,7 @@
   "purpose": "Expected evidence only; this manifest neither authorizes runtime nor claims PASS",
   "suites": {
     "db": {
-      "count": 72,
+      "count": 74,
       "allowSkipped": false,
       "cases": [
         {
@@ -436,6 +436,18 @@
           "fullName": "P5 backup inventory durable PostgreSQL acceptance converges native concurrent inventory and replay without overwriting original evidence",
           "title": "converges native concurrent inventory and replay without overwriting original evidence",
           "file": "packages/db/src/native-backup-inventory-postgres.cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance converges five-engine confirmed restore metadata completion and original receipt across a fresh pool",
+          "title": "converges five-engine confirmed restore metadata completion and original receipt across a fresh pool",
+          "file": "packages/db/src/managed-database-restore-postgres.cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance rolls back restore completion audit and refuses unconsumed original nonce without ledger changes",
+          "title": "rolls back restore completion audit and refuses unconsumed original nonce without ledger changes",
+          "file": "packages/db/src/managed-database-restore-postgres.cases.ts",
           "physicalRestart": false
         }
       ],
@@ -1466,7 +1478,9 @@
     "apps/api/src/managed-database-backup.ts",
     "apps/api/src/managed-database-backup.test.ts",
     "apps/api/src/managed-database-backup-route.ts",
-    "apps/api/src/managed-database-backup-route.test.ts"
+    "apps/api/src/managed-database-backup-route.test.ts",
+    "packages/db/src/repositories/control-plane-database-restore.test.ts",
+    "packages/db/src/managed-database-restore-postgres.cases.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
