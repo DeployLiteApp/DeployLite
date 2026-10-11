@@ -6,7 +6,7 @@ import {resolve} from "node:path";
 import {readFile} from "node:fs/promises";
 import {execFileSync} from "node:child_process";
 import type {FastifyInstance} from "fastify";
-import {browserDeletionRecoveryFailure,validateBrowserProof,validateDeletionBrowserProof} from "./p5-browser-proof.js";
+import {browserFixtureRequestFailure,type BrowserFixtureRequestStage,browserDeletionRecoveryFailure,validateBrowserProof,validateDeletionBrowserProof} from "./p5-browser-proof.js";
 const root=resolve(import.meta.dirname,"../../../..");
 /** Compile the actual application stylesheet with its existing production plugin. */
 export async function buildDatabaseBrowserStyles(){
@@ -32,8 +32,9 @@ export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:s
  let requests=0,applyResponse:{statusCode:number;json():any}|undefined;
  let deletionPreparation:{response:typeof applyResponse;key:string}|undefined,deletionRequestStart=0;
  const deletionCalls:{key:string;confirmationId:string;status:number}[]=[];
- const failures:Error[]=[];
+ const failures:Error[]=[],requestFailures:string[]=[];
  const server=createServer(async(req,res)=>{
+  let stage:BrowserFixtureRequestStage="routing";
   try{
    if(req.url==="/"&&req.method==="GET"){res.setHeader("Content-Type","text/html");res.end('<!doctype html><link rel="stylesheet" href="/fixture.css"><div id="root"></div><script src="/fixture.js"></script>');return;}
    if(req.url==="/fixture.css"&&req.method==="GET"){res.setHeader("Content-Type","text/css");res.end(styles);return;}
@@ -41,18 +42,21 @@ export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:s
    if(req.url==="/favicon.ico"){res.writeHead(204);res.end();return;}
    const prefix=`/api/v1/projects/${input.projectId}/databases`;
    if(!req.url?.startsWith(prefix)||!['GET','POST'].includes(req.method!))throw new Error("Unscoped browser API request.");
-   let bytes="";for await(const chunk of req){bytes+=chunk;if(Buffer.byteLength(bytes)>131072)throw new Error("Bounded browser request required.");}
+   stage="body";let bytes="";for await(const chunk of req){bytes+=chunk;if(Buffer.byteLength(bytes)>131072)throw new Error("Bounded browser request required.");}
    if(++requests>1000)throw new Error("Bounded browser request count required.");
    const headers:{cookie:string;"idempotency-key"?:string}={cookie:input.cookie};
    if(typeof req.headers['idempotency-key']==='string')headers['idempotency-key']=req.headers['idempotency-key'];
-   const response=await input.app().inject({method:req.method as 'GET'|'POST',url:req.url,headers,...(bytes?{payload:JSON.parse(bytes)}:{})});
-   if(req.url===prefix+`/${input.databaseId}/runtime/apply`&&response.statusCode===200)applyResponse=response;
+   stage="app";const currentApi=input.app();if(!currentApi)throw new Error("Owned browser API unavailable.");
+   stage="inject";const response=await currentApi.inject({method:req.method as 'GET'|'POST',url:req.url,headers,...(bytes?{payload:JSON.parse(bytes)}:{})});
+   stage="projection";if(req.url===prefix+`/${input.databaseId}/runtime/apply`&&response.statusCode===200)applyResponse=response;
    if(req.url===prefix+`/${input.databaseId}/runtime/delete/prepare`&&response.statusCode===200){
     if(!headers['idempotency-key'])throw new Error("Original deletion key required.");deletionPreparation={response,key:headers['idempotency-key']};
    }
    if(req.url===prefix+`/${input.databaseId}/runtime/delete/apply`)deletionCalls.push({key:headers['idempotency-key']!,confirmationId:JSON.parse(bytes).confirmationId,status:response.statusCode});
-   res.writeHead(response.statusCode,{"Content-Type":"application/json"});res.end(response.body);
-  }catch{failures.push(new Error("Browser fixture request failed."));res.writeHead(500);res.end('{"error":"Fixture unavailable"}');}
+   stage="response";res.writeHead(response.statusCode,{"Content-Type":"application/json"});res.end(response.body);
+  }catch(error){
+   const code=error instanceof Error?Object.getOwnPropertyDescriptor(error,"code")?.value:undefined;
+   requestFailures.push(browserFixtureRequestFailure({stage,aborted:req.aborted,code}));failures.push(new Error("Browser fixture request failed."));res.writeHead(500);res.end('{"error":"Fixture unavailable"}');}
  });
  let browser:any,context:any,page:any;
  await new Promise<void>((done,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',done);});
@@ -101,7 +105,7 @@ export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:s
     await page.reload();await page.getByText('No stored databases.',{exact:true}).waitFor();await retainedStorage();
     const original=deletionPreparation!.response!.json().data;
     const failure=browserDeletionRecoveryFailure({calls:deletionCalls,key:deletionPreparation!.key,confirmationId:original.confirmation.id,
-     failures:failures.map(error=>error.message==="Foreign browser request."?"foreign":error.message==="Browser application error."?"application":"request")});
+     requestFailure:requestFailures[0],failures:failures.map(error=>error.message==="Foreign browser request."?"foreign":error.message==="Browser application error."?"application":"request")});
     if(failure)throw new Error("Original browser deletion recovery required ("+failure+").");
     const proof={sourceCommit,engine:input.engine,projectId:input.projectId,databaseId:input.databaseId,browser:'chromium',context:'isolated',preparation:'passed',confirmation:'passed',recovery:'passed',sameOriginalKey:'passed',inventory:'passed',reload:'passed',retainedStorage:'passed',requests:requests-deletionRequestStart};
     if(!validateDeletionBrowserProof(proof,sourceCommit))throw new Error("Complete destructive browser proof required.");await page.goto('about:blank');return proof;

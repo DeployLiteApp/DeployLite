@@ -1,5 +1,5 @@
 import {expect,it} from "vitest";
-import {browserDeletionRecoveryFailure,validateBrowserProof,validateDeletionBrowserProof} from "./p5-browser-proof.js";
+import {browserFixtureRequestFailure,browserDeletionRecoveryFailure,validateBrowserProof,validateDeletionBrowserProof} from "./p5-browser-proof.js";
 function proof(){return {sourceCommit:"7e4875341dbb8e1afdeff23137403528f3af6382",engine:"postgres",projectId:"project1",databaseId:"orders",creation:"passed",selection:"passed",reload:"passed",telemetry:"passed",start:"passed",stop:"passed",persistence:"passed",browser:"chromium",context:"isolated",requests:12};}
 it.each(["postgres","mysql","mariadb","mongodb","redis"])("accepts complete %s browser evidence",engine=>{expect(validateBrowserProof({...proof(),engine})).toBe(true);});
 it("refuses missing stages, fabricated source, shared browser and unbounded evidence",()=>{
@@ -38,3 +38,10 @@ it.each(["count","status","key","confirmation","request","application","foreign"
  else if(kind==="key")value.calls[1]!.key="private-key-fixture";else if(kind==="confirmation")value.calls[1]!.confirmationId="private-nonce-fixture";else value.failures.push(kind);
  expect(browserDeletionRecoveryFailure(value)).toBe(kind);expect(browserDeletionRecoveryFailure(value)).not.toContain("private-");
 });
+
+it.each(["routing","body","inject","projection","response"] as const)("identifies fixed request %s failure without reflecting diagnostics",stage=>{expect(browserFixtureRequestFailure({stage,aborted:false,code:"password=private-fixture"})).toBe(stage);});
+it("identifies body cancellation without accepting or ignoring the failed request",()=>{expect(browserFixtureRequestFailure({stage:"body",aborted:true,code:"ECONNRESET"})).toBe("body-aborted");});
+it("identifies closed owned API admission without reflecting source",()=>{expect(browserFixtureRequestFailure({stage:"inject",aborted:false,code:"FST_ERR_REOPENED_CLOSE_SERVER"})).toBe("api-closed");});
+it("keeps unknown request metadata redacted",()=>{expect(browserFixtureRequestFailure({stage:"password=private-fixture",aborted:false,code:"private-path"} as never)).toBe("request");});
+it("preserves request rejection with bounded stage metadata",()=>{expect(browserDeletionRecoveryFailure({calls:[{key:"key",confirmationId:"nonce",status:503},{key:"key",confirmationId:"nonce",status:200}],key:"key",confirmationId:"nonce",failures:["request"],requestFailure:"body-aborted"})).toBe("request:body-aborted");});
+it("identifies a temporarily missing owned application separately from injection",()=>{expect(browserFixtureRequestFailure({stage:"app",aborted:false,code:undefined})).toBe("app");});
