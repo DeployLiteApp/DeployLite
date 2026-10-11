@@ -956,3 +956,16 @@ Prospective stub6failed/1passed: five engine positives with/without STOP plus re
 Executor #4928cbc692 delivered draft after full3335unit/exit0,9focal/agenttypesPASS. Exact-head hosted remains pending; no physical signed operator deletion acceptance is claimed.
 
 Deletion receipt correlation checkpoint: Node24 pnpmcheck exits0,3342unit across8projects;36focal/domaintypesPASS. Exact-head hosted pending.
+
+
+### S1 optional signed delete receiver/cache — 2026-10-11
+
+Explicit injected deletion port requires durable replay, original fingerprint reader and both ordinary and consumed-confirmation validators before advertising capability. Signed dedicated execution/cache paths enforce action routing; canonical selector binds approval/original sources. Fresh execution validates current project fence and original creation/optional STOP cache before one durable claim. Both validators accompany the executor; detached approval callback arguments fail. Persist only matching removed receipts after authority revalidation. Lost effect/completion replies retain the claim; no release/retry/new approval. Completed signed cache is read-only and replayable after expiry. No default executor/runtime/API activation.
+
+Prospective receiver14case RED12failed/2passed before implementation. Fifteen new cases (paired STOP source added as characterization) plus25existing START/STOP replay cases yield40focalPASS; agenttypes/full/exact-head hosted pending. Native physical API deletion still pending; injected HTTP proves routing only. Rollback removes optional receiver/cache/path/test/manifest; preserve original ledger/cipher/storage and attempted claims. WholeS1/P5 remains open.
+
+Receipt matcher #4930440d7c delivered draft: complete3342unit/exit0,36focal/domaintypesPASS; exact-head hosted pending.
+
+Signed optional receiver checkpoint: Node24 pnpmcheck exits0,3357unit across8projects;40focal/agenttypesPASS. Exact-head hosted pending; no default runtime/API activated.
+
+#4928cbc6921bafaa9c0edc3711e822dee06117c6952/run38135325531 owner9/9SUCCESS,3335unit,0skipped/pending/failed,292global/24P3/298operator hashes exact,restart/cleanup verified. Existing mandatory native/operator/current-source Chromium proofs passed; full signed deletion still pending.
