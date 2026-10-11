@@ -17,7 +17,7 @@ export async function openDatabaseBrowser(input:{projectId:string;databaseId:str
  const require=createRequire(import.meta.url),viteRequire=createRequire(createRequire(require.resolve("vitest/package.json")).resolve("vite")),esbuild=viteRequire("esbuild");
  const entry=`import React from 'react';import {createRoot} from 'react-dom/client';import {ManagedDatabaseWorkbench} from './apps/web/src/components/managed-database-workbench';createRoot(document.getElementById('root')).render(React.createElement(ManagedDatabaseWorkbench,{projectId:${JSON.stringify(input.projectId)},apiBaseUrl:location.origin}));`;
  const bundle=await esbuild.build({stdin:{contents:entry,resolveDir:root,loader:"tsx"},bundle:true,write:false,format:"iife",platform:"browser",jsx:"automatic",
-  alias:{"@":resolve(root,"apps/web/src")},nodePaths:[resolve(root,"apps/web/node_modules")],define:{"process.env.NODE_ENV":'"production"'}});
+  alias:{"@":resolve(root,"apps/web/src"),"@deploylite/contracts":resolve(root,"packages/contracts/src/index.ts")},nodePaths:[resolve(root,"apps/web/node_modules")],define:{"process.env.NODE_ENV":'"production"'}});
  const script=bundle.outputFiles[0].text;
  let requests=0,applyResponse:{statusCode:number;json():any}|undefined;
  const failures:Error[]=[];
