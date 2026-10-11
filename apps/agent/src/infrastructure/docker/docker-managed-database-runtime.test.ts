@@ -45,3 +45,9 @@ it("composes original-daemon start only with its explicit capability without run
     expect(Object.keys(runtime)).toEqual(["apply","start"]);expect(Object.isFrozen(runtime)).toBe(true);
     expect(createManagedDatabaseRuntime(f.options)).not.toHaveProperty("start");expect(f.runner.run).not.toHaveBeenCalled();
 });
+it("composes readonly health only with its explicit capability without Docker effects",()=>{
+ const f=fixture(),capabilities=new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.health.v1"]);
+ const runtime=createManagedDatabaseRuntime({...f.options,capabilities});
+ expect(typeof (runtime as typeof runtime&{health?:unknown}).health).toBe("function");expect(Object.keys(runtime)).toEqual(["apply","health"]);
+ expect(createManagedDatabaseRuntime(f.options)).not.toHaveProperty("health");expect(f.runner.run).not.toHaveBeenCalled();
+});
