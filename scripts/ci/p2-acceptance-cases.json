@@ -1321,7 +1321,9 @@
     "apps/api/src/managed-database-logs-transport.ts",
     "apps/api/src/managed-database-logs-transport.test.ts",
     "apps/api/src/managed-database-logs.ts",
-    "apps/api/src/managed-database-logs.test.ts"
+    "apps/api/src/managed-database-logs.test.ts",
+    "apps/api/src/managed-database-logs-route.ts",
+    "apps/api/src/managed-database-logs-route.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,

@@ -729,3 +729,13 @@ Four prospective transport/orchestration assertionsRED precede6transport+7access
 Contracts draft463a75dd41/run38120258118 owner verifies9/9gates/3120unit/allrequired physical cases,0skipped,pending,failed,245global+24P3+251operator hashes,restart/cleanup. Existing START/health/metrics proofs retained; actual logs remain pending.
 
 Signed API logs transport/access final source verification: fresh full Node24 pnpm check exits0:3156unit across8projects,zero skipped/failed. Executor464 all9gatesSUCCESS; exact owner case/hash verification pending. Logs endpoint/config/bootstrap, actual signed five-engine logs, live controls and wholeP5 remain open.
+
+### H1 logs endpoint, maps and native bootstrap — 2026-10-11
+
+POST project/database/runtime/logs reuses current authenticated operator/project.update grants, strict original ready preparation plus explicit tail/since selection, trusted approved profile/image/current configuration and original/current-access orchestration. No secret reads, idempotency key, new command or lease refresh. API registers injected/configured maps and rejects mixing with native environment before repositories. Configured maps require original-control reader independently of STOP activation; agent bootstrap supplies logs capability/reader only with explicit native configuration and durable opaque proof admission.
+
+Eight route/bootstrap+two maps assertionsRED and one agent bootstrap assertionRED precede34API+10agentbootstrap=44focal PASS/APIagenttypesPASS. Two later positive route errors exposed a new fixture returning internal AbortSignal in public context; fixture corrected to exact request/correlation keys without weakening assertions/contracts. Invalid unknown payload typing corrected to object input. Failure/type receipts preserved. All local ports injected; no actual services. Full/exact-head and actual signed five-engine logs pending. Rollback removes logs endpoint/maps/capability/reader/test/source additions only; existing lifecycle/health/metrics preserved. WholeP5 open.
+
+Executor draft464bd99362/run38120487737 owner verifies9/9gates/3131unit/allrequiredphysicalcases,0skipped,pending,failed,247global+24P3+253operator hashes,restart/cleanup. Actual signed logs remain pending.
+
+Logs endpoint/maps/bootstrap final source: fresh full Node24 pnpm check exits0:3167unit across8projects,zero skipped/failed. Signed receiver465fe83872/run38120704276 owner verifies9/9gates/3143unit/allrequiredphysicalcases,0skipped,pending,failed,249global+24P3+255operator hashes,restart/cleanup. Actual signed five-engine logs/live UI and wholeP5 remain pending.
