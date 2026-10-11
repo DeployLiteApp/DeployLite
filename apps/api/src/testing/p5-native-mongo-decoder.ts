@@ -8,7 +8,7 @@ export async function restoreNativeMongoFixture(input:PrivateRestoreInput,start:
  const connection=String.raw`const password=process.env.MONGO_INITDB_ROOT_PASSWORD,user=process.env.MONGO_INITDB_ROOT_USERNAME;
 if(!/^[a-f0-9]{64}$/.test(password||"")||!user)throw new Error("Unavailable.");
 const uri="mongodb://"+encodeURIComponent(user)+":"+encodeURIComponent(password)+"@127.0.0.1:27017/admin?authSource=admin&serverSelectionTimeoutMS=1000&connectTimeoutMS=1000&socketTimeoutMS=1000";
-const client=await new Mongo(uri),target=client.getDB("${database}");`;
+const client=await Mongo(uri),target=client.getDB("${database}");`;
  const compare=String.raw`try{${connection}
 const source=client.getDB(process.env.MONGO_INITDB_DATABASE);
 const original=await source.p5_probe.findOne({_id:"probe"}),restored=await target.p5_probe.findOne({_id:"probe"});

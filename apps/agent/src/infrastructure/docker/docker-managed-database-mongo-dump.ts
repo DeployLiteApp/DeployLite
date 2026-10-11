@@ -2,7 +2,7 @@
 const connection=String.raw`const password=process.env.MONGO_INITDB_ROOT_PASSWORD,user=process.env.MONGO_INITDB_ROOT_USERNAME;
 if(!/^[a-f0-9]{64}$/.test(password||"")||typeof user!=="string"||!user)throw new Error("Unavailable.");
 const uri="mongodb://"+encodeURIComponent(user)+":"+encodeURIComponent(password)+"@127.0.0.1:27017/admin?authSource=admin&serverSelectionTimeoutMS=1000&connectTimeoutMS=1000&socketTimeoutMS=1000";
-const admin=(await new Mongo(uri)).getDB("admin");
+const admin=(await Mongo(uri)).getDB("admin");
 const identity=async()=>{const hello=await admin.runCommand({hello:1});const id=hello.topologyVersion?.processId?.toHexString();if(hello.ok!==1||hello.isWritablePrimary!==true||hello.setName||hello.msg||!/^[a-f0-9]{24}$/.test(id||""))throw new Error("Unavailable.");return id;};`;
 export const MONGO_BACKUP_LOCK_SCRIPT=String.raw`let stage=21;try{${connection}
 stage=22;const id=await identity();stage=23;const state=await admin.runCommand({currentOp:1});

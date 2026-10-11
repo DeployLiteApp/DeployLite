@@ -2,7 +2,7 @@ import {spawnSync} from "node:child_process";
 import {expect,it,vi} from "vitest";
 import {buildMongoNativeDumpArgv,MONGO_BACKUP_LOCK_SCRIPT,MONGO_BACKUP_UNLOCK_SCRIPT} from "./docker-managed-database-mongo-dump.js";
 const AsyncFunction=Object.getPrototypeOf(async()=>{}).constructor as new(...args:string[])=> (...args:unknown[])=>Promise<unknown>;
-function fixture(){
+function fixture(asyncConnection=false){
  let count=0,id="a".repeat(24);const printed:string[]=[];
  const runCommand=vi.fn(async(command:Record<string,unknown>)=>{
   if(command.hello)return {ok:1,isWritablePrimary:true,topologyVersion:{processId:{toHexString:()=>id}}};
@@ -11,7 +11,7 @@ function fixture(){
   if(command.fsyncUnlock)return {ok:1,lockCount:--count};
   throw new Error("unknown fixture command");
  });
- const Mongo=function(){return {getDB:()=>({runCommand})};};
+ const Mongo=asyncConnection?async function(){return {getDB:()=>({runCommand})};}:function(){return {getDB:()=>({runCommand})};};
  const process={env:{MONGO_INITDB_ROOT_USERNAME:"root",MONGO_INITDB_ROOT_PASSWORD:"b".repeat(64),DEPLOYLITE_MONGO_BACKUP_PROCESS_ID:id}};
  const print=vi.fn((value:string)=>{printed.push(value);return Promise.resolve();});
  const quit=vi.fn((_code:number)=>{throw new Error("Mongo dump refused.");});
@@ -58,4 +58,8 @@ it("identifies a preexisting lock with a fixed safe exit code and no private dia
 it("releases its confirmed increment when asynchronous acknowledgement output fails",async()=>{
  const f=fixture(),failure=Promise.reject(new Error("private-print-fault"));void failure.catch(()=>{});f.print.mockReturnValueOnce(failure);
  await expect(f.execute(MONGO_BACKUP_LOCK_SCRIPT)).rejects.toThrow("Mongo dump refused.");expect(f.getCount()).toBe(0);expect(f.runCommand.mock.calls.filter(([v])=>v.fsyncUnlock)).toHaveLength(1);
+});
+
+it("uses the actual asynchronous shell Mongo connection API without assuming a JavaScript constructor",async()=>{
+ const f=fixture(true);await f.execute(MONGO_BACKUP_LOCK_SCRIPT);expect(f.getCount()).toBe(1);await f.execute(MONGO_BACKUP_UNLOCK_SCRIPT);expect(f.getCount()).toBe(0);
 });
