@@ -5,7 +5,7 @@ import { closeDbPool, createDbClient, createDbPool, DbAgentRepository, DbAgentRe
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { managedDatabaseRuntimeReceiptSchema, dockerImageExecutionReceiptSchema, trustedPriorExecutionReceiptSchema, type TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
+import { managedDatabaseStopReceiptSchema, managedDatabaseRuntimeReceiptSchema, dockerImageExecutionReceiptSchema, trustedPriorExecutionReceiptSchema, type TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
 import { buildApiApp, type DeploymentDispatcher, type DeploymentStopDispatcher, type BuildApiAppOptions } from "./app.js";
 
 const integrationEnabled = process.env.DEPLOYLITE_API_POSTGRES_INTEGRATION === "1";
@@ -405,10 +405,10 @@ describeIntegration("DeployLite API PostgreSQL integration", () => {
       image: `docker.io/library/${repositories[engine]}@sha256:${"a".repeat(64)}`, dataPath: paths[engine], containerPort: ports[engine],
       credentialKeys: ["DATABASE_PASSWORD"], backupStrategy: engine === "redis" ? "volume-quiesced" : "engine-native" }]));
     const raw = JSON.stringify({ profiles, limits: { deadlineMs: 10000, maxOutputBytes: 131072, maxContainers: 64,
-      pollIntervalMs: 100, cpus: 1, memoryBytes: 536870912, pidsLimit: 256 } });
+      pollIntervalMs: 100, cpus: 1, memoryBytes: 536870912, pidsLimit: 256, stopGraceSeconds: 10 } });
     const approved = domain.parseManagedDatabaseRuntimeConfiguration(raw)!, policy = domain.managedDatabaseNativeImagePolicy();
     const originalQueries=new Map<string,unknown>();
-    let executions = 0, dropped = false;
+    let executions = 0, dropped = false, stopExecutions = 0, stopDropped = false;
     const executor = { apply: async (command: import("@deploylite/contracts").ManagedDatabaseRuntimeAgentCommandV1, authority: { assertValid(): Promise<void> }) => {
       await authority.assertValid();
       const environment = config.openAgentSecretEnvelope(command.sealedEnvironment, trustKey, {
@@ -422,7 +422,19 @@ describeIntegration("DeployLite API PostgreSQL integration", () => {
         volumeName: native.plan.volume.runtimeName, networkName: native.plan.network.runtimeName, networkId: "e".repeat(64),
         volumeCreatedAt: "2026-10-10T00:00:00Z", observedAt: Date.now(), status: "ready", health: "passed", storage: "verified", idempotent: false, redacted: true });
     } };
-    const receiverFor = () => new AuthenticatedAgentCommandReceiver({ agentId, trustKey, capabilities: ["database.runtime.v1"],
+    const stopExecutor = { stop: async (command: import("@deploylite/contracts").ManagedDatabaseStopAgentCommandV1, authority: { assertValid(): Promise<void> }) => {
+      await authority.assertValid(); stopExecutions++;
+      const original = command.originalReceipt;
+      return managedDatabaseStopReceiptSchema.parse({ schemaVersion: 1, action: "database.runtime.stop", agentId,
+        commandId: command.commandId, originalCommandId: original.commandId, projectId, databaseId: command.databaseId,
+        engine: command.engine, profileId: command.profileId, inputDigest: command.inputDigest, planDigest: command.planDigest,
+        environmentFingerprint: command.environmentFingerprint, correlationId: command.context.correlationId,
+        containerId: original.containerId, imageId: original.imageId, volumeName: original.volumeName, networkName: original.networkName,
+        networkId: original.networkId, volumeCreatedAt: original.volumeCreatedAt, observedAt: Date.now(), status: "stopped", storage: "verified", redacted: true });
+    } };
+    const receiverFor = (stopEnabled = true) => new AuthenticatedAgentCommandReceiver({ agentId, trustKey,
+      capabilities: ["database.runtime.v1", ...(stopEnabled ? ["database.runtime.stop.v1"] : [])],
+      managedDatabaseStop: stopEnabled ? stopExecutor : undefined,
       dispatcher: { dispatch: async () => { throw new Error("Unexpected deployment"); } }, managedDatabaseRuntime: executor,
       replayStore: new DbAgentReplayStore(requireDb(), "native-pg-" + projectId), authorityValidator: new DbControlCommandRepository(requireDb()) });
     let receiver = receiverFor();
@@ -433,10 +445,14 @@ describeIntegration("DeployLite API PostgreSQL integration", () => {
         return new Response(JSON.stringify({ schemaVersion: 1, agentId, capabilities: receiver.capabilities, protocolVersions: [1] }), { headers: { "x-deploylite-request-signature": signature } });
       }
       const body = JSON.parse(String(init?.body));
+      if (String(url).endsWith("/stop/receipt")) return new Response(JSON.stringify(await receiver.readManagedDatabaseStopReceipt(body, signature, init?.signal ?? undefined)));
       if (String(url).endsWith("/receipt")) return new Response(JSON.stringify(await receiver.readManagedDatabaseRuntimeReceipt(body, signature, init?.signal ?? undefined)));
-      const {sealedEnvironment:_sealed,cancellationRequested:_canceled,...query}=body;originalQueries.set(body.commandId,query);
+      const {sealedEnvironment:_sealed,cancellationRequested:_canceled,...query}=body;if (body.action === "database.runtime") originalQueries.set(body.commandId,query);
       const receipt = await receiver.receive(body, signature, init?.signal ?? undefined);
-      if (body.engine === "mysql" && !dropped) { dropped = true; throw new Error("synthetic lost native reply after durable completion"); }
+      if (body.action === "database.runtime.stop" && body.engine === "redis" && !stopDropped) {
+        stopDropped = true; throw new Error("synthetic lost stop reply after durable completion");
+      }
+      if (body.action === "database.runtime" && body.engine === "mysql" && !dropped) { dropped = true; throw new Error("synthetic lost native reply after durable completion"); }
       return new Response(JSON.stringify(receipt));
     });
     const build = (key?: string) => buildApiApp({ db: { pool: requirePool(), client: requireDb() }, authConfig: { cookieName: "dl_pg_session", cookieSecure: false, sessionTtlSeconds: 3600 },
@@ -453,7 +469,7 @@ describeIntegration("DeployLite API PostgreSQL integration", () => {
       const login = await app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { email: "admin@example.test", password: adminPassword } });
       expect(login.statusCode).toBe(200); const cookie = login.headers["set-cookie"] as string, actorId = login.json().data.user.id;
       const call = (engine: string, operation: string, payload: unknown) => app!.inject({ method: "POST", url: `/api/v1/projects/${projectId}/databases/${engine}/${operation}`,
-        headers: { cookie, "idempotency-key": "native-" + engine }, payload: payload as Record<string, unknown> });
+        headers: { cookie, "idempotency-key": (operation === "runtime/stop" ? "native-stop-" : "native-") + engine }, payload: payload as Record<string, unknown> });
       expect((await call("postgres", "credentials", { schemaVersion: 1, engine: "postgres" })).statusCode).toBe(403);
       await requirePool().query("INSERT INTO control_grants(actor_user_id,action,scope_kind,scope_key) VALUES($1,'project.update','project',$2)", [actorId, projectId]);
       const prepared = new Map<string, Record<string, unknown>>(), originals = new Map<string, unknown>();
@@ -491,9 +507,34 @@ describeIntegration("DeployLite API PostgreSQL integration", () => {
         await expect(cacheReader.lookupByFingerprintDigest(id,"0".repeat(64))).rejects.toThrow();
       }
       expect((await requirePool().query("SELECT * FROM agent_replay WHERE command_id=ANY($1::text[]) ORDER BY command_id",[originalIds])).rows).toEqual(cacheBefore);
+      const stopInputs = new Map<string, Record<string, unknown>>(), stopReceipts = new Map<string, unknown>();
+      for (const engine of engines) {
+        const original = originals.get(engine) as { commandId: string };
+        const payload = { ...prepared.get(engine), originalReceipt: original,
+          originalReplayFingerprint: domain.managedDatabaseRuntimeReplayFingerprintDigest(originalQueries.get(original.commandId)) };
+        stopInputs.set(engine, payload);
+        const stopped = await call(engine, "runtime/stop", payload); expect(stopped.statusCode).toBe(200);
+        expect(stopped.json().data).toMatchObject({ stopped: true, command: { status: "completed" }, receipt: { engine, originalCommandId: original.commandId } });
+        stopReceipts.set(engine, stopped.json().data.receipt);
+      }
+      expect(stopExecutions).toBe(5); expect(stopDropped).toBe(true);
+      await app.close(); app = undefined; await closeObservedTestPool(requirePool()); pool = createObservedTestPool(databaseUrl); db = createDbClient(pool);
+      receiver = receiverFor(false); app = await build(); // Stop replay uses neither active STOP executor nor decryption key.
+      for (const engine of engines) {
+        const replay = await call(engine, "runtime/stop", stopInputs.get(engine)); expect(replay.statusCode).toBe(200);
+        expect(replay.json().data.idempotent).toBe(true); expect(replay.json().data.receipt).toEqual(stopReceipts.get(engine));
+      }
+      expect(stopExecutions).toBe(5);
+      const stopCommands = (await requirePool().query("SELECT status FROM control_commands WHERE actor_user_id=$1 AND scope_key=$2 AND idempotency_key LIKE 'native-stop-%'", [actorId, projectId])).rows;
+      expect(stopCommands).toHaveLength(5); expect(stopCommands.every(row => row.status === "completed")).toBe(true);
+      const stopAudits = (await requirePool().query("SELECT metadata,correlation_id FROM audit_events WHERE target_id=$1 AND action='database.runtime.stopped'", [projectId])).rows;
+      expect(stopAudits).toHaveLength(5);
+      for (const row of stopAudits) { expect(row.metadata.receipt.correlationId).toBe(row.correlation_id); expect(row.metadata.redacted).toBe(true); expect(row.metadata).not.toHaveProperty("environment"); }
+      expect((await requirePool().query("SELECT * FROM agent_replay WHERE command_id=ANY($1::text[]) ORDER BY command_id", [originalIds])).rows).toEqual(cacheBefore);
+      expect((await requirePool().query("SELECT * FROM control_commands WHERE id=ANY($1::uuid[]) ORDER BY id", [originalIds])).rows).toEqual(commandsBefore);
       expect(executions).toBe(5);
       expect((await requirePool().query("SELECT id,encrypted_value,value_fingerprint FROM env_secret_values WHERE project_id=$1 ORDER BY id", [projectId])).rows).toEqual(secrets);
-      const commands = (await requirePool().query("SELECT status FROM control_commands WHERE actor_user_id=$1 AND action='project.update' AND scope_key=$2", [actorId, projectId])).rows;
+      const commands = (await requirePool().query("SELECT status FROM control_commands WHERE actor_user_id=$1 AND action='project.update' AND scope_key=$2 AND id=ANY($3::uuid[])", [actorId, projectId, originalIds])).rows;
       expect(commands).toHaveLength(5); expect(commands.every(row => row.status === "completed")).toBe(true);
       const audit = (await requirePool().query("SELECT metadata,correlation_id FROM audit_events WHERE target_id=$1 AND action='database.runtime.applied'", [projectId])).rows;
       expect(audit).toHaveLength(5); for (const row of audit) { expect(row.metadata.receipt.correlationId).toBe(row.correlation_id); expect(row.metadata.redacted).toBe(true); expect(row.metadata).not.toHaveProperty("environment"); }
