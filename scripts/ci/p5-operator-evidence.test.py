@@ -72,7 +72,21 @@ def fixture(engine="postgres"):
         proof["selection"] = {"tail":100,**({"since":"1970-01-01T00:00:00.500Z"} if index else {})}
     result["currentLogs"] = current_logs
     result["operator"].update(publicOriginalSelectors="passed",logsDispatches=3,logReads=3,logsSignedHttp="passed",logsNoLedgerWrites="passed",logsExecutorRemoved="passed")
-    return result, profile
+    return with_inventory(result, profile), profile
+def with_inventory(result, profile):
+    result = copy.deepcopy(result)
+    ready, stopped = result["receipt"], result["nativeStop"]["receipt"]
+    base = {key:ready[key] for key in ("schemaVersion","projectId","databaseId","engine","planDigest","environmentFingerprint")}
+    base["profileId"] = profile["profileId"]
+    source = {**base,"originalReceipt":ready,"originalReplayFingerprint":result["nativeStop"]["originalReplayFingerprint"]}
+    start = {**source,"originalStopReceipt":stopped,"originalStopReplayFingerprint":result["nativeStart"]["originalStopReplayFingerprint"]}
+    views = {}
+    for name, time in (("runningBeforeStop",1450),("stopped",2450),("runningAfterStart",3450)):
+        views[name] = {"entry":{"preparation":base,"connection":result["internalConnection"]["details"],"source":source,
+            "startPreparation":None if name=="runningBeforeStop" else start},"before":time-50,"after":time+50,
+            "requestId":"inventory-request-"+name,"correlationId":"inventory-correlation-"+name}
+    result["inventoryRecovery"] = {"views":views,"restart":"passed","sourcesUsed":"passed","commands":"unchanged","cache":"unchanged","cipher":"unchanged","audit":"passed"}
+    return result
 class OperatorProofTests(unittest.TestCase):
     def test_requires_current_health_not_only_legacy_lifecycle_evidence(self):
         result,profile=fixture()
@@ -218,6 +232,39 @@ class OperatorProofTests(unittest.TestCase):
         result,profile=fixture()
         result["operator"].pop("publicOriginalSelectors",None)
         with self.assertRaises(RuntimeError): module.validate_result(result,profile)
+
+    def test_requires_inventory_recovery_after_actual_reopen(self):
+        result, profile = fixture(); del result["inventoryRecovery"]
+        with self.assertRaises(RuntimeError): module.validate_result(result, profile)
+    def test_accepts_bound_recovered_inventory_for_all_five_engines(self):
+        for engine in module.native.ENGINES:
+            result, profile = fixture(engine)
+            with self.subTest(engine=engine): module.validate_result(with_inventory(result,profile),profile)
+    def test_rejects_missing_recovery_views_or_unexecuted_boundaries(self):
+        result, profile = fixture(); result = with_inventory(result,profile)
+        for key in ("restart","sourcesUsed","commands","cache","cipher","audit"):
+            changed = copy.deepcopy(result); changed["inventoryRecovery"][key] = "not-run"
+            with self.subTest(key=key), self.assertRaises(RuntimeError): module.validate_result(changed,profile)
+        for name in result["inventoryRecovery"]["views"]:
+            changed = copy.deepcopy(result); del changed["inventoryRecovery"]["views"][name]
+            with self.subTest(name=name), self.assertRaises(RuntimeError): module.validate_result(changed,profile)
+    def test_rejects_detached_or_private_inventory_entries(self):
+        result, profile = fixture(); result = with_inventory(result,profile)
+        for patch in ({"source":None},{"password":"private"},{"startPreparation":None}):
+            changed = copy.deepcopy(result); changed["inventoryRecovery"]["views"]["stopped"]["entry"].update(patch)
+            with self.subTest(patch=patch), self.assertRaises(RuntimeError): module.validate_result(changed,profile)
+        for field,value in (("projectId","foreign"),("engine","redis"),("planDigest","0"*64)):
+            changed = copy.deepcopy(result); changed["inventoryRecovery"]["views"]["stopped"]["entry"]["preparation"][field] = value
+            with self.subTest(field=field), self.assertRaises(RuntimeError): module.validate_result(changed,profile)
+    def test_rejects_stale_duplicate_or_private_inventory_requests(self):
+        result, profile = fixture(); result = with_inventory(result,profile)
+        for patch in ({"before":False},{"after":999},{"before":1999},{"after":100000},{"password":"private"}):
+            changed = copy.deepcopy(result); changed["inventoryRecovery"]["views"]["stopped"].update(patch)
+            with self.subTest(patch=patch), self.assertRaises(RuntimeError): module.validate_result(changed,profile)
+        changed = copy.deepcopy(result)
+        for key in ("requestId","correlationId"):
+            changed["inventoryRecovery"]["views"]["stopped"][key] = changed["inventoryRecovery"]["views"]["runningBeforeStop"][key]
+        with self.assertRaises(RuntimeError): module.validate_result(changed,profile)
 
 if __name__ == "__main__":
     unittest.main()

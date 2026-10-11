@@ -839,3 +839,12 @@ Admin/operator project pages now mount the creator and recovered stored inventor
 Four prospective assertion RED (2Workbench/1confirmed-create callback/1real-page activation) precede29focalPASS, including unchanged old creator and inventory/telemetry cases. Exact page prop assertions explicitly include only the new callback, not weakened partial matching. All ports mocked; no local services. Full/exact-head and actual five-engine reload remain pending. Rollback removes Workbench/tests/source entries/page wiring and optional callback, retaining stored rows/resources/receipts. WholeP5 open.
 
 Workbench finalsource: complete Node24 pnpmcheck exits0 with3260unit across8projects. All observed cases execute PASS; actual five-engine inventory/reload and exact hosted verification remain pending.
+
+
+### S1/S2 actual five-engine inventory recovery acceptance fixture — 2026-10-11
+
+Existing signed API/PostgreSQL/native Docker lifecycle now requires three GET inventories per engine, preserving all old CREATE/STOP/START/persistence/health/metrics/logs/cleanup assertions. STOP uses the recovered original creation source. After real API/agent close and PostgreSQL pool reopen, a new authenticated API GET recovers immutable STOP preparation and START uses that source. A third GET after START still returns historical sources, never current readiness. Every read requires unchanged commands/cache/cipher plus exactly one correlated count-only inventory audit; public responses exclude passwords.
+
+Mandatory verifier rejects legacy proof without inventory recovery and binds exact public preparation/connection/receipt/fingerprints, three distinct request windows and actual reopen/source-use/no-effects/audit flags. Two new behavior tests observed RED (missing proof accepted; five valid new engine proofs rejected); three rejection groups characterize negative boundaries. All26Pythonproof tests PASS with old cases retained. Local physical execution prohibited; actual hosted outcomes pending. Rollback removes only new fixture/read-proof/verifier additions, preserving existing suites and runtime resources/history. WholeP5 open.
+
+Inventory-recovery fixture finalsource: complete Node24 pnpmcheck exits0 with3260unit across8projects plus26proof/12native/12admission Python guards PASS. New actual five-engine recovery/source-use remains pending hosted exact-head execution.
