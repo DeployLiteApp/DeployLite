@@ -1,14 +1,14 @@
-import {createEnvSecretCipher, loadEnvSecretKey, redactLogMessage} from "@deploylite/config";
+import {signAgentTransport, createEnvSecretCipher, loadEnvSecretKey, redactLogMessage} from "@deploylite/config";
 import {afterAll, beforeAll, expect, it, vi} from "vitest";
 import {createHash, randomBytes, randomUUID} from "node:crypto";
 import {lstatSync, readFileSync, writeFileSync} from "node:fs";
 import {resolve} from "node:path";
 import type {FastifyInstance} from "fastify";
 import {AuthenticatedAgentCommandReceiver, startAgentServer} from "@deploylite/agent";
-import {approvedManagedDatabaseProfileSchema, InMemoryCapabilityRegistry, managedDatabaseRuntimeReceiptSchema, managedDatabaseStopReceiptSchema, managedDatabaseStartReceiptSchema,
+import {managedDatabaseDeleteReceiptQuerySchema, managedDatabaseDeleteReceiptSchema, MANAGED_DATABASE_DELETE_PATH, MANAGED_DATABASE_DELETE_RECEIPT_PATH, approvedManagedDatabaseProfileSchema, InMemoryCapabilityRegistry, managedDatabaseRuntimeReceiptSchema, managedDatabaseStopReceiptSchema, managedDatabaseStartReceiptSchema,
   MANAGED_DATABASE_STOP_PATH, MANAGED_DATABASE_START_PATH, MANAGED_DATABASE_HEALTH_PATH, managedDatabaseHealthObservationSchema, MANAGED_DATABASE_METRICS_PATH, managedDatabaseMetricsObservationSchema, MANAGED_DATABASE_LOGS_PATH, managedDatabaseLogsObservationSchema, type ManagedDatabaseEngineV1} from "@deploylite/contracts";
 import {DbAgentReplayStore, DbControlCommandRepository, DbProjectRepository} from "@deploylite/db";
-import {createControlCommand, managedDatabaseNativeImagePolicy} from "@deploylite/domain";
+import {managedDatabaseDeleteExecutionDigest,managedDatabaseDeleteExecutionBinding,managedDatabaseDeleteReceiptMatches,createControlCommand, managedDatabaseNativeImagePolicy} from "@deploylite/domain";
 import {buildApiApp} from "./app.js";
 import {openDatabaseBrowser} from "./testing/p5-browser-fixture.js";
 import {openOperatorSession} from "./testing/p5-operator-session.js";
@@ -80,7 +80,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
   const trustKey = "ci-operator-" + randomBytes(32).toString("hex"), imagePolicy = managedDatabaseNativeImagePolicy();
   const limits = {deadlineMs:60000,maxOutputBytes:131072,maxContainers:64,pollIntervalMs:100,cpus:1,memoryBytes:536870912,pidsLimit:256,stopGraceSeconds:10};
   const raw = JSON.stringify({profiles,limits}), clock = {now:Date.now};
-  const capabilities = new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.stop.v1","database.runtime.start.v1","database.runtime.health.v1","database.runtime.metrics.v1","database.runtime.logs.v1"]);
+  const capabilities = new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.stop.v1","database.runtime.start.v1","database.runtime.health.v1","database.runtime.metrics.v1","database.runtime.logs.v1","database.runtime.delete.v1"]);
   const shared = {runner,imagePolicy,clock,limits,owner:projectId,agentId,trustKey,capabilities};
   const inspector = createManagedDatabaseDockerInspector(shared), resources = createManagedDatabaseResourceMaterializer(shared);
   const native = createConfiguredManagedDatabaseRuntime(raw, shared)!;
@@ -95,11 +95,12 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
   const logsReader = native.logs ? {observe: native.logs} : undefined;
   if (!logsReader) throw new Error("Explicit native logs required.");
   let peer: Awaited<ReturnType<typeof startAgentServer>> | undefined, app: FastifyInstance | undefined;
+  let deleteEffects=0;
   let stopDispatches = 0, startDispatches = 0, healthDispatches = 0, metricsDispatches = 0, logsDispatches = 0, lostStop = false, lostStart = false, result: Record<string,unknown> | undefined;
   async function startPeer(enabled:boolean) {
     const replayStore = new DbAgentReplayStore(db.db, "operator-" + projectId);
     const receiver = new AuthenticatedAgentCommandReceiver({agentId,trustKey,replayStore,capabilities:enabled ? capabilities.list() : [],
-      managedDatabaseRuntime:enabled ? native : undefined, managedDatabaseStop:enabled ? stopExecutor : undefined, managedDatabaseStart:enabled ? startExecutor : undefined, managedDatabaseHealth:enabled?healthReader:undefined, managedDatabaseMetrics:enabled?metricsReader:undefined, managedDatabaseLogs:enabled?logsReader:undefined,
+      managedDatabaseDelete:enabled&&native.delete?{delete:async(...args)=>{deleteEffects++;return native.delete!(...args);}}:undefined,managedDatabaseRuntime:enabled ? native : undefined, managedDatabaseStop:enabled ? stopExecutor : undefined, managedDatabaseStart:enabled ? startExecutor : undefined, managedDatabaseHealth:enabled?healthReader:undefined, managedDatabaseMetrics:enabled?metricsReader:undefined, managedDatabaseLogs:enabled?logsReader:undefined,
       dispatcher:{dispatch:async () => {throw new Error("Unexpected deployment.");}},authorityValidator:new DbControlCommandRepository(db.db)});
     peer = await startAgentServer({host:"127.0.0.1",port:0,production:false,receiver,replayStore});
     const address = peer.server.address(); if (!address || typeof address === "string") throw new Error("Owned peer address required.");
@@ -358,6 +359,31 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     expect((await db.pool.query("SELECT * FROM control_commands WHERE id=$1",[pending.id])).rows).toEqual(claimedRows);
     expect(await originals()).toEqual(originalRows);expect(await encrypted()).toEqual(cipherRows);
     result!.confirmedAuthority={projectId,readOnly:"passed",originalNonce:"passed",acceptedAudit:"passed",detachedRejected:"passed",expiryRejected:"passed",reopen:"passed",originalRows:"unchanged",cipher:"unchanged"};
+    await recoveredControls.completeProjectUpdate(winner[0]!.command,confirmedAuthority,{actorUserId:actorId,action:"ci.confirmation-proof-completed",targetType:"project",targetId:projectId,requestId:randomUUID(),correlationId:pending.correlationId});
+    const removalSource={...preparation,projectId,databaseId,originalReceipt:receipt,originalReplayFingerprint},deleteDigest=managedDatabaseDeleteExecutionDigest(removalSource);
+    const deleteCandidate=createControlCommand({actorId,action:"project.update",scope:{kind:"project",projectId},input:managedDatabaseDeleteExecutionBinding(removalSource),idempotencyKey:randomUUID(),correlationId:randomUUID(),expiresAt:new Date(Date.now()+60000)});
+    const deletePending=(await recoveredControls.resolve(deleteCandidate)).command,approval=await recoveredControls.resolveProjectUpdateConfirmation(deletePending);expect(approval).not.toBeNull();
+    const deleteClaim=await recoveredControls.claimConfirmedProjectUpdate(deletePending,approval!);expect(deleteClaim.claimed).toBe(true);expect(deleteClaim.authority).toBeDefined();
+    const deleteQuery=managedDatabaseDeleteReceiptQuerySchema.parse({...removalSource,action:"database.runtime.delete",operation:"database.runtime.delete",storagePolicy:"retain-original",stopPolicy:"if-running",confirmationId:approval!.id,agentId,commandId:deletePending.id,inputDigest:deleteDigest,idempotencyKey:deletePending.idempotencyKey,requiredCapabilities:["database.runtime.delete.v1"],authority:deleteClaim.authority!,lease:deleteClaim.authority!.projectLease,context:{requestId:randomUUID(),correlationId:deletePending.correlationId},timeoutMs:60000});
+    endpoint=await startPeer(true);
+    const deleteCommand={...deleteQuery,cancellationRequested:false},sendDelete=(body:unknown,signature=signAgentTransport(JSON.stringify(body),trustKey))=>fetch(endpoint+MANAGED_DATABASE_DELETE_PATH,{method:"POST",headers:{"content-type":"application/json","x-deploylite-signature":signature},body:JSON.stringify(body)});
+    expect((await sendDelete(deleteCommand,"invalid")).status).toBe(403);expect((await sendDelete({...deleteCommand,confirmationId:randomUUID()})).status).toBe(403);expect(deleteEffects).toBe(0);
+    const deleteResponse=await sendDelete(deleteCommand);expect(deleteResponse.status).toBe(200);const deleted=managedDatabaseDeleteReceiptSchema.parse(await deleteResponse.json());expect(managedDatabaseDeleteReceiptMatches(deleteQuery,deleted)).toBe(true);expect(deleteEffects).toBe(1);
+    expect((await runner.run(["docker","container","ls","--all","--no-trunc","--filter",`id=${receipt.containerId}`,"--format","{{.ID}}"],signal)).stdout).toBe("");
+    expect(await resources.verifyFresh({request:input.request,profile,commandId:receipt.commandId},pinned,authority,signal)).toEqual(pinned);
+    const completion={command:deleteClaim.command,query:deleteQuery,receipt:deleted,audit:{actorUserId:actorId,action:"database.runtime.removed",targetType:"project",targetId:projectId,requestId:deleteQuery.context.requestId,correlationId:deletePending.correlationId,metadata:{receipt:deleted,redacted:true}}};
+    const completionAudits=async()=>(await db.pool.query("SELECT * FROM audit_events WHERE action='database.runtime.removed' AND correlation_id=$1",[deletePending.correlationId])).rows;
+    const deleteNonce=async()=>(await db.pool.query("SELECT * FROM control_command_confirmations WHERE command_id=$1",[deletePending.id])).rows,originalConsumed=await deleteNonce();
+    await expect(new DbControlCommandRepository(db.db,stage=>{if(stage==="command-completed")throw new Error("injected removal completion rollback");}).completeManagedDatabaseDelete(completion)).rejects.toThrow("injected removal completion rollback");
+    expect(await completionAudits()).toHaveLength(0);expect((await db.pool.query("SELECT status,result FROM control_commands WHERE id=$1",[deletePending.id])).rows).toEqual([{status:"dispatching",result:null}]);
+    await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(false);
+    const cacheResponse=await fetch(endpoint+MANAGED_DATABASE_DELETE_RECEIPT_PATH,{method:"POST",headers:{"content-type":"application/json","x-deploylite-signature":signAgentTransport(`POST ${MANAGED_DATABASE_DELETE_RECEIPT_PATH}\n${JSON.stringify(deleteQuery)}`,trustKey)},body:JSON.stringify(deleteQuery)});
+    expect(cacheResponse.status).toBe(200);expect((await cacheResponse.json() as {receipt:unknown}).receipt).toEqual(deleted);expect((await sendDelete(deleteCommand)).status).toBe(403);expect(deleteEffects).toBe(1);
+    const finalControls=new DbControlCommandRepository(db.db),completed=await finalControls.completeManagedDatabaseDelete({...completion});expect(completed).toMatchObject({status:"completed",result:deleted});
+    expect(await finalControls.completeManagedDatabaseDelete({...completion,now:deletePending.expiresAt.getTime()+1})).toEqual(completed);
+    expect(await finalControls.findManagedDatabaseRemovals(projectId)).toEqual([completed]);const completedAudits=await completionAudits();expect(completedAudits).toHaveLength(1);expect(completedAudits[0].metadata.receipt.containerId).toBe("[REDACTED]");expect(await deleteNonce()).toEqual(originalConsumed);
+    expect(await originals()).toEqual(originalRows);expect(await encrypted()).toEqual(cipherRows);
+    result!.confirmedDeletion={projectId,receipt:deleted,signatureRejected:"passed",confirmationRejected:"passed",originalNonce:"passed",signedHttp:"passed",effects:deleteEffects,rollback:"passed",cacheOnlyReopen:"passed",executorRemoved:"passed",retirement:"passed",retainedStorage:"passed",audit:"passed",originalRows:"unchanged",cipher:"unchanged"};
   } finally {
     await browserFixture?.close();
     if (app) await app.close(); if (peer) await peer.close(); vi.unstubAllGlobals();
