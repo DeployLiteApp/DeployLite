@@ -158,7 +158,7 @@ function archiveName(command: ComposeVolumeBackupExecutionInput): string {
   const key = createHash("sha256").update(command.projectId + "\0" + command.commandId + "\0" + command.plan.destinationId).digest("hex").slice(0, 32);
   return "backup_" + key;
 }
-async function hashFile(path: string): Promise<{ bytes: number; sha256: string }> {
+async function hashFile(path: string, signal?: AbortSignal): Promise<{ bytes: number; sha256: string }> {
   const fileInfo = await lstat(path);
   if (fileInfo.isSymbolicLink() || !fileInfo.isFile()) fail("COMPOSE_BACKUP_CONFLICT");
   const hasher = createHash("sha256"); let bytes = 0;
@@ -166,6 +166,7 @@ async function hashFile(path: string): Promise<{ bytes: number; sha256: string }
   try {
     const buffer = Buffer.alloc(64 * 1024); let position = 0;
     for (;;) {
+      if (signal?.aborted) fail("COMPOSE_BACKUP_FAILED");
       const result = await handle.read(buffer, 0, buffer.length, position);
       if (result.bytesRead === 0) break;
       const value = buffer.subarray(0, result.bytesRead); position += result.bytesRead; bytes += value.length; hasher.update(value);
@@ -365,3 +366,6 @@ export function createDockerComposeVolumeBackupExecutor(supplied: ComposeVolumeB
     try { return await operation; } finally { if (inFlight.get(key) === operation) inFlight.delete(key); }
   } };
 }
+
+/** Shared private filesystem guards; existing Compose behavior remains unchanged. */
+export const composeBackupFilesystem = Object.freeze({safeDirectory,hashFile});
