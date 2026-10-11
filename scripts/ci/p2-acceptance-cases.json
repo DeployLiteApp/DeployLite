@@ -1351,7 +1351,9 @@
     "apps/web/src/lib/managed-database-inventory.test.ts",
     "apps/api/src/testing/p5-browser-fixture.ts",
     "apps/api/src/testing/p5-browser-proof.ts",
-    "apps/api/src/testing/p5-browser-proof.test.ts"
+    "apps/api/src/testing/p5-browser-proof.test.ts",
+    "packages/domain/src/managed-database-delete-binding.ts",
+    "packages/domain/src/managed-database-delete-binding.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
