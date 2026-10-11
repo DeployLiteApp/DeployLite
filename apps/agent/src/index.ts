@@ -1,3 +1,4 @@
+import { managedDatabaseNativeImagePolicy } from "@deploylite/domain";
 import { createConfiguredManagedDatabaseRuntime, MANAGED_DATABASE_RUNTIME_CONFIG_ENV } from "./infrastructure/docker/managed-database-runtime-config.js";
 import {
   createCorrelationContext,
@@ -137,7 +138,7 @@ export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
   const traefikDynamicDir = env.DEPLOYLITE_TRAEFIK_DYNAMIC_DIR?.trim();
   if (traefikDynamicDir && !isAbsolute(traefikDynamicDir)) throw new Error("DEPLOYLITE_TRAEFIK_DYNAMIC_DIR must be an absolute path.");
   const nativeRunner = new (await import("./infrastructure/docker/docker-process-runner.js")).DockerProcessRunner();
-  const imagePolicy = { policyVersion: "agent-compose-v1", trustedHosts: ["docker.io", "ghcr.io", "registry.example.com"], allowTags: false, allowDigests: true };
+  const imagePolicy = managedDatabaseNativeImagePolicy();
   const managedDatabaseRuntime = createConfiguredManagedDatabaseRuntime(env[MANAGED_DATABASE_RUNTIME_CONFIG_ENV], {
     agentId: parsed.DEPLOYLITE_AGENT_ID, owner: "deploylite", trustKey: parsed.DEPLOYLITE_AGENT_TRUST_KEY,
     imagePolicy, capabilities: new InMemoryCapabilityRegistry([MANAGED_DATABASE_RUNTIME_CAPABILITY, COMPOSE_RESOURCE_INSPECTION_CAPABILITY]),
