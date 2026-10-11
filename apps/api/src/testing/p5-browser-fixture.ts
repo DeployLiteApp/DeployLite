@@ -3,10 +3,17 @@ import {createServer} from "node:http";
 import {createRequire} from "node:module";
 import {pathToFileURL} from "node:url";
 import {resolve} from "node:path";
+import {readFile} from "node:fs/promises";
 import {execFileSync} from "node:child_process";
 import type {FastifyInstance} from "fastify";
 import {validateBrowserProof,validateDeletionBrowserProof} from "./p5-browser-proof.js";
 const root=resolve(import.meta.dirname,"../../../..");
+/** Compile the actual application stylesheet with its existing production plugin. */
+export async function buildDatabaseBrowserStyles(){
+ const webRequire=createRequire(resolve(root,"apps/web/package.json")),postcss=webRequire("postcss"),tailwind=webRequire("@tailwindcss/postcss");
+ const from=resolve(root,"apps/web/src/app/globals.css");
+ return (await postcss([tailwind({base:resolve(root,"apps/web")})]).process(await readFile(from,"utf8"),{from})).css;
+}
 /** Browser library types are isolated CI tooling, not a production dependency. */
 export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:string;databaseId:string;engine:string;cookie:string;app():FastifyInstance}) {
  if(process.platform!=="linux"||process.env.GITHUB_ACTIONS!=="true"||process.env.RUNNER_ENVIRONMENT!=="github-hosted"
@@ -21,14 +28,15 @@ export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:s
  const entry=`import React from 'react';import {createRoot} from 'react-dom/client';import {ManagedDatabaseWorkbench} from './apps/web/src/components/managed-database-workbench';createRoot(document.getElementById('root')).render(React.createElement(ManagedDatabaseWorkbench,{projectId:${JSON.stringify(input.projectId)},apiBaseUrl:location.origin}));`;
  const bundle=await esbuild.build({stdin:{contents:entry,resolveDir:root,loader:"tsx"},bundle:true,write:false,format:"iife",platform:"browser",jsx:"automatic",
   alias:{"@":resolve(root,"apps/web/src"),"@deploylite/contracts":resolve(root,"packages/contracts/src/index.ts")},nodePaths:[resolve(root,"apps/web/node_modules")],define:{"process.env.NODE_ENV":'"production"'}});
- const script=bundle.outputFiles[0].text;
+ const script=bundle.outputFiles[0].text,styles=await buildDatabaseBrowserStyles();
  let requests=0,applyResponse:{statusCode:number;json():any}|undefined;
  let deletionPreparation:{response:typeof applyResponse;key:string}|undefined,deletionRequestStart=0;
  const deletionCalls:{key:string;confirmationId:string;status:number}[]=[];
  const failures:Error[]=[];
  const server=createServer(async(req,res)=>{
   try{
-   if(req.url==="/"&&req.method==="GET"){res.setHeader("Content-Type","text/html");res.end('<!doctype html><div id="root"></div><script src="/fixture.js"></script>');return;}
+   if(req.url==="/"&&req.method==="GET"){res.setHeader("Content-Type","text/html");res.end('<!doctype html><link rel="stylesheet" href="/fixture.css"><div id="root"></div><script src="/fixture.js"></script>');return;}
+   if(req.url==="/fixture.css"&&req.method==="GET"){res.setHeader("Content-Type","text/css");res.end(styles);return;}
    if(req.url==="/fixture.js"&&req.method==="GET"){res.setHeader("Content-Type","application/javascript");res.end(script);return;}
    if(req.url==="/favicon.ico"){res.writeHead(204);res.end();return;}
    const prefix=`/api/v1/projects/${input.projectId}/databases`;

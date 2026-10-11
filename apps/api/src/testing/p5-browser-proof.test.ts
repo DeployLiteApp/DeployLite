@@ -21,3 +21,12 @@ it("refuses missing deletion stages, foreign source, skipped recovery and shared
   const proof=deletionProof();for(const key of Object.keys(proof)){const value:Record<string,unknown>={...proof};delete value[key];expect(validateDeletionBrowserProof(value,"a".repeat(40))).toBe(false);}
   for(const patch of [{sourceCommit:"b".repeat(40)},{recovery:"skipped"},{requests:0},{requests:1001},{context:"shared"},{password:"private"}])expect(validateDeletionBrowserProof({...proof,...patch},"a".repeat(40))).toBe(false);
 });
+
+
+it("compiles current Workbench CSS including modal stacking before browser acceptance",async()=>{
+ const fixture=await import("./p5-browser-fixture.js");
+ expect(fixture).toHaveProperty("buildDatabaseBrowserStyles");
+ const css=await fixture.buildDatabaseBrowserStyles();
+ expect(css).toContain("position: fixed");expect(css).toContain("z-index: 50");
+ expect(css).toContain(".left-1\\/2");expect(css).not.toContain('@import "tailwindcss"');
+});

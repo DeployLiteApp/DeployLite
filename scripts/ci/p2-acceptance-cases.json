@@ -1350,6 +1350,8 @@
     "apps/web/src/components/managed-database-delete-control.tsx",
     "apps/web/src/components/managed-database-delete-control.test.tsx",
     "apps/web/src/components/ui/dialog.tsx",
+    "apps/web/src/app/globals.css",
+    "apps/web/src/styles/vendor/shadcn/tailwind.css",
     "apps/web/src/components/managed-database-telemetry-panel.tsx",
     "apps/web/src/components/managed-database-telemetry-panel.test.tsx",
     "apps/web/src/lib/managed-database-lifecycle.ts",
