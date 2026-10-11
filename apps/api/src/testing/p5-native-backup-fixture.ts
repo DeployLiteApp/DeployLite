@@ -25,11 +25,12 @@ export function nativeDumpFixture(root:string) {
       uid:number;
       writerProbe?():Promise<void>;
       stoppedSource?:boolean;
+      captureExit?():Readonly<{code:number|null;signal:string|null}>;
       captureFailure?():"before-capture"|"connection"|"identity"|"preexisting-lock"|"acquisition"|"acknowledgement"|"dump"|"cleanup"|"unknown";
     }>) {
       if(!Number.isSafeInteger(input.uid)||input.uid<1||input.uid>4294967294)throw new Error("Corroborated non-root decoder required.");
       const first=await input.call();
-      if(first.statusCode!==200){const stage=input.captureFailure?.();if(stage&&["before-capture","connection","identity","preexisting-lock","acquisition","acknowledgement","dump","cleanup","unknown"].includes(stage))throw new Error("Private native capture failed at "+stage+".");}
+      if(first.statusCode!==200){const stage=input.captureFailure?.();if(stage&&["before-capture","connection","identity","preexisting-lock","acquisition","acknowledgement","dump","cleanup","unknown"].includes(stage)){const exit=input.captureExit?.();const code=exit&&Number.isInteger(exit.code)&&exit.code!==null&&exit.code>=0&&exit.code<=255?String(exit.code):"unknown";const signal=exit?.signal===null?"none":["SIGTERM","SIGKILL","SIGABRT","SIGSEGV","SIGPIPE"].includes(exit?.signal??"")?exit!.signal:"unknown";throw new Error("Private native capture failed at "+stage+(exit?" (exit="+code+", signal="+signal+")":"")+".");}}
       expect(first.statusCode).toBe(200);
       const data=first.json().data,receipt=managedDatabaseBackupReceiptSchema.parse(data.receipt);
       expect(data).toMatchObject({backupCreated:true,idempotent:false});

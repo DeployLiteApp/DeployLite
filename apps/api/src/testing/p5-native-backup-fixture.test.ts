@@ -63,3 +63,8 @@ it("reports only an allowlisted capture stage when the authenticated backup fail
  const f=await fixture();f.input.call.mockResolvedValue({statusCode:503,body:"private-output",json:()=>({data:{}})} as any);
  await expect(f.dump.prove({...f.input,captureFailure:()=>"acquisition" as const})).rejects.toThrow("Private native capture failed at acquisition.");await f.dump.close();
 });
+
+it("reports a bounded numeric process exit without private command output",async()=>{
+ const f=await fixture();f.input.call.mockResolvedValue({statusCode:503,body:"password=fake-private",json:()=>({data:{}})} as any);
+ await expect(f.dump.prove({...f.input,captureFailure:()=>"unknown" as const,captureExit:()=>({code:137,signal:null})})).rejects.toThrow("Private native capture failed at unknown (exit=137, signal=none).");await f.dump.close();
+});
