@@ -1,3 +1,4 @@
+import {prepareManagedDatabaseRestore} from "./managed-database-restore-prepare.js";
 import {createPrivateNativeRestoreArchive} from "../../agent/src/infrastructure/docker/docker-managed-database-restore-archive.js";
 import {spawn} from "node:child_process";
 import {restoreNativeMongoFixture} from "./testing/p5-native-mongo-decoder.js";
@@ -337,6 +338,24 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     expect(restoreIntent.confirmation.consumedAt).toBeNull();expect(restoreIntent.command).not.toHaveProperty("projectExecutionAuthority");
     expect((await db.pool.query("SELECT id,status,input_digest FROM control_commands ORDER BY id")).rows).toEqual(commandsBeforeRestoreIntent);
     nativeBackup.restorePreparation="passed";
+    const pendingRestoreInput={selection:restoreSelection,actorId,idempotencyKey:"fixture_restore_pending_"+engine,
+      context:{requestId:randomUUID(),correlationId:"fixture-restore-pending-"+engine},signal,current:()=>!signal.aborted,
+      authorize:async()=>(await db.pool.query("SELECT id FROM control_grants WHERE actor_user_id=$1 AND action='project.update' AND scope_kind='project' AND scope_key=$2",[actorId,projectId])).rows.length===1,
+      admit:async()=>{const plan=planManagedDatabaseProfile({schemaVersion:1,projectId,databaseId,engine},profile,imagePolicy);expect(plan.planDigest).toBe(receipt.planDigest);}};
+    const restoreAccess=()=>({controls:new DbControlCommandRepository(db.db),inventory:new DbBackupInventoryStore(db.db,agentId),archive:archiveVerifier,
+      originalTransport:new AuthenticatedManagedDatabaseRuntimeTransport({endpoint,agentId,trustKey,timeoutMs:5000,allowInsecureInternal:true}),agentId,deadlineMs:5000,now:Date.now,commandTtlMs:10000});
+    const pendingRestore=await prepareManagedDatabaseRestore(restoreAccess(),pendingRestoreInput);
+    expect(pendingRestore.idempotent).toBe(false);expect(pendingRestore.confirmation.consumedAt).toBeNull();expect(pendingRestore.command).not.toHaveProperty("projectExecutionAuthority");
+    await app!.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(true);app=await build(endpoint,"managed_database_fixture_key_1234567890");
+    const samePendingRestore=await prepareManagedDatabaseRestore(restoreAccess(),{...pendingRestoreInput,context:{requestId:randomUUID(),correlationId:randomUUID()}});
+    expect(samePendingRestore.command).toEqual(pendingRestore.command);expect(samePendingRestore.confirmation).toEqual(pendingRestore.confirmation);expect(samePendingRestore.preparation).toEqual(pendingRestore.preparation);expect(samePendingRestore.idempotent).toBe(true);
+    expect((await db.pool.query("SELECT consumed_at FROM control_command_confirmations WHERE command_id=$1",[pendingRestore.command.id])).rows).toEqual([{consumed_at:null}]);
+    expect(await verifier.verify(input,pinned,authority,signal)).toEqual(ready);
+    const pendingCommand=pendingRestore.command;
+    nativeBackup.pendingRestore={commandId:pendingCommand.id,confirmationId:pendingRestore.confirmation.id,actorId,projectId,databaseId,engine,
+      inputDigest:pendingCommand.inputDigest,idempotencyKey:pendingCommand.idempotencyKey,correlationId:pendingCommand.correlationId,expiresAt:pendingCommand.expiresAt.getTime(),
+      status:"pending_confirmation",classification:"destructive",consumedAt:null,reopen:"passed",sameOriginalKey:"passed",sameOriginalNonce:"passed",dispatches:0};
+
     const inventoryAfterStart = await recoveredInventory(stopped,originalStopReplayFingerprint);
     const runningAfterStart=await currentHealth("running");expect(healthDispatches).toBe(3);
     const runningMetricsAfterStart=await currentMetrics("running");expect(metricsDispatches).toBe(3);expect(statsDispatches).toBe(2);
