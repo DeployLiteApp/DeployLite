@@ -396,9 +396,65 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  p5-native-operator-acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env: { POSTGRES_DB: deploylite, POSTGRES_USER: deploylite, POSTGRES_PASSWORD: deploylite-ci-only }
+        ports: ["5432/tcp"]
+        options: >-
+          --health-cmd "pg_isready -U deploylite -d deploylite" --health-interval 5s --health-timeout 5s --health-retries 20
+          --label io.deploylite.ci.owner=${{ github.repository }}
+          --label io.deploylite.ci.run=${{ github.run_id }}
+          --label io.deploylite.ci.attempt=${{ github.run_attempt }}
+          --label io.deploylite.ci.job=p5-native-operator-acceptance
+    env:
+      DEPLOYLITE_P5_OPERATOR_RUNTIME_GRANT: P5_OPERATOR_CI_APPROVED
+      DEPLOYLITE_P5_OPERATOR_PHYSICAL: '1'
+      DEPLOYLITE_P5_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      DEPLOYLITE_P5_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+      DOCKER_HOST: unix:///var/run/docker.sock
+      DOCKER_CONTEXT: ''
+      DOCKER_TLS_VERIFY: ''
+      DOCKER_CERT_PATH: ''
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with: { ref: '${{ github.event.pull_request.head.sha || github.sha }}' }
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with: { version: 9.15.4 }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: { node-version: 24.20.0, cache: pnpm }
+      - run: corepack enable && pnpm install --frozen-lockfile
+      - name: Bind exact disposable operator database and source
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/deploylite-p5-operator-empty-docker-config
+          DEPLOYLITE_P5_OPERATOR_PG_ID: ${{ job.services.postgres.id }}
+          DEPLOYLITE_P5_OPERATOR_PG_PORT: ${{ job.services.postgres.ports[5432] }}
+          DATABASE_URL: postgres://deploylite:deploylite-ci-only@127.0.0.1:${{ job.services.postgres.ports[5432] }}/deploylite
+        run: |
+          mkdir -m 700 "$DOCKER_CONFIG"
+          python3 scripts/ci/p5-operator-admission.test.py
+          python3 scripts/ci/p5-operator-evidence.test.py
+          python3 scripts/ci/p5-operator-admission.py capture
+          printf 'DOCKER_CONFIG=%s\nDEPLOYLITE_P5_OPERATOR_PG_ID=%s\nDEPLOYLITE_P5_OPERATOR_PG_PORT=%s\nDATABASE_URL=%s\n' "$DOCKER_CONFIG" "$DEPLOYLITE_P5_OPERATOR_PG_ID" "$DEPLOYLITE_P5_OPERATOR_PG_PORT" "$DATABASE_URL" >> "$GITHUB_ENV"
+      - name: Execute five real API PG signed HTTP native Docker cases
+        run: pnpm --filter @deploylite/api exec vitest run --allowOnly=false --config vitest.config.ts src/p5-native-operator.physical.test.ts --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/deploylite-p5-operator-evidence/operator.json"
+      - name: Refuse omitted skipped or incomplete operator evidence
+        if: always()
+        run: python3 scripts/ci/p5-operator-evidence.py verify
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: p5-native-operator-evidence
+          path: ${{ runner.temp }}/deploylite-p5-operator-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
   baseline-gate:
     if: always()
-    needs: [quality, postgres-integration, compose-and-supply-chain, p2-docker-acceptance, p3-docker-acceptance, p4-transport-acceptance, p5-native-database-acceptance]
+    needs: [quality, postgres-integration, compose-and-supply-chain, p2-docker-acceptance, p3-docker-acceptance, p4-transport-acceptance, p5-native-database-acceptance, p5-native-operator-acceptance]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -406,11 +462,11 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 24.20.0 }
       - name: Collect pass evidence
-        if: needs.quality.result == 'success' && needs.postgres-integration.result == 'success' && needs.compose-and-supply-chain.result == 'success' && needs.p2-docker-acceptance.result == 'success' && needs.p3-docker-acceptance.result == 'success' && needs.p4-transport-acceptance.result == 'success' && needs.p5-native-database-acceptance.result == 'success'
+        if: needs.quality.result == 'success' && needs.postgres-integration.result == 'success' && needs.compose-and-supply-chain.result == 'success' && needs.p2-docker-acceptance.result == 'success' && needs.p3-docker-acceptance.result == 'success' && needs.p4-transport-acceptance.result == 'success' && needs.p5-native-database-acceptance.result == 'success' && needs.p5-native-operator-acceptance.result == 'success'
         run: |
-          node scripts/ci/collect-evidence.mjs --output artifacts/baseline-evidence.json --commit "$GITHUB_SHA" --lock-hash "$(sha256sum pnpm-lock.yaml | cut -d' ' -f1)" --compose-digest "sha256:$(cat infra/vps/compose.yml infra/vps/compose.tls.yml | sha256sum | cut -d' ' -f1)" --image "deploylite-api:ci,${{ needs.compose-and-supply-chain.outputs.api_digest }},linux/amd64,$GITHUB_RUN_ID" --image "deploylite-web:ci,${{ needs.compose-and-supply-chain.outputs.web_digest }},linux/amd64,$GITHUB_RUN_ID" --check quality:pass --check postgres-integration:pass --check compose-and-supply-chain:pass --check p2-docker-acceptance:pass --check p3-docker-acceptance:pass --check p4-transport-acceptance:pass --check p5-native-database-acceptance:pass
+          node scripts/ci/collect-evidence.mjs --output artifacts/baseline-evidence.json --commit "$GITHUB_SHA" --lock-hash "$(sha256sum pnpm-lock.yaml | cut -d' ' -f1)" --compose-digest "sha256:$(cat infra/vps/compose.yml infra/vps/compose.tls.yml | sha256sum | cut -d' ' -f1)" --image "deploylite-api:ci,${{ needs.compose-and-supply-chain.outputs.api_digest }},linux/amd64,$GITHUB_RUN_ID" --image "deploylite-web:ci,${{ needs.compose-and-supply-chain.outputs.web_digest }},linux/amd64,$GITHUB_RUN_ID" --check quality:pass --check postgres-integration:pass --check compose-and-supply-chain:pass --check p2-docker-acceptance:pass --check p3-docker-acceptance:pass --check p4-transport-acceptance:pass --check p5-native-database-acceptance:pass --check p5-native-operator-acceptance:pass
       - name: Block incomplete or failing gates
-        run: test "${{ needs.quality.result }}:${{ needs.postgres-integration.result }}:${{ needs.compose-and-supply-chain.result }}:${{ needs.p2-docker-acceptance.result }}:${{ needs.p3-docker-acceptance.result }}:${{ needs.p4-transport-acceptance.result }}:${{ needs.p5-native-database-acceptance.result }}" = "success:success:success:success:success:success:success"
+        run: test "${{ needs.quality.result }}:${{ needs.postgres-integration.result }}:${{ needs.compose-and-supply-chain.result }}:${{ needs.p2-docker-acceptance.result }}:${{ needs.p3-docker-acceptance.result }}:${{ needs.p4-transport-acceptance.result }}:${{ needs.p5-native-database-acceptance.result }}:${{ needs.p5-native-operator-acceptance.result }}" = "success:success:success:success:success:success:success:success"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with: { name: baseline-evidence, path: artifacts/baseline-evidence.json, if-no-files-found: warn, retention-days: 30 }

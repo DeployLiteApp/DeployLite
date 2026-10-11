@@ -6,7 +6,8 @@ const physical = Object.freeze({
   ]),
   api: Object.freeze([
     ['src/postgres.integration.test.ts', 'DEPLOYLITE_API_POSTGRES_INTEGRATION'],
-    ['src/compose-resource-docker.integration.test.ts', 'DEPLOYLITE_P3_DOCKER_INTEGRATION']
+    ['src/compose-resource-docker.integration.test.ts', 'DEPLOYLITE_P3_DOCKER_INTEGRATION'],
+    ['src/p5-native-operator.physical.test.ts', 'DEPLOYLITE_P5_OPERATOR_PHYSICAL']
   ]),
   agent: Object.freeze([
     ['src/infrastructure/docker/docker-transport-port-executor.physical.test.ts', 'DEPLOYLITE_P4_PHYSICAL'],

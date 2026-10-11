@@ -40,7 +40,7 @@ test('configurations explicitly use the execution partition and preserve default
   }
 });
 test('mapped suites never manufacture skipped cases; original hosted count guards remain', () => {
-  for (const path of ['packages/db/src/postgres.integration.test.ts', 'packages/db/src/compose-postgres.integration.test.ts', 'apps/api/src/postgres.integration.test.ts', 'apps/api/src/compose-resource-docker.integration.test.ts', 'apps/api/src/deployment-docker.integration.test.ts', 'apps/agent/src/infrastructure/docker/docker-redaction-integration.test.ts', 'apps/agent/src/infrastructure/docker/docker-transport-port-executor.physical.test.ts', 'apps/agent/src/infrastructure/docker/docker-managed-database-native.physical.test.ts']) {
+  for (const path of ['packages/db/src/postgres.integration.test.ts', 'packages/db/src/compose-postgres.integration.test.ts', 'apps/api/src/postgres.integration.test.ts', 'apps/api/src/compose-resource-docker.integration.test.ts', 'apps/api/src/deployment-docker.integration.test.ts', 'apps/agent/src/infrastructure/docker/docker-redaction-integration.test.ts', 'apps/agent/src/infrastructure/docker/docker-transport-port-executor.physical.test.ts', 'apps/agent/src/infrastructure/docker/docker-managed-database-native.physical.test.ts', 'apps/api/src/p5-native-operator.physical.test.ts']) {
     const source = readFileSync(new URL('../../'+path, import.meta.url), 'utf8');
     assert(!/\b(?:describe|it|test)\.skip(?:If)?\b/.test(source), path);
   }
@@ -60,4 +60,13 @@ test('native five-engine physical collection requires its own explicit flag', ()
   assert(excludedPhysicalTestFiles('agent', {}).includes(path));
   assert(excludedPhysicalTestFiles('agent', { DEPLOYLITE_P4_PHYSICAL: '1' }).includes(path));
   assert(!excludedPhysicalTestFiles('agent', { DEPLOYLITE_P5_NATIVE_PHYSICAL: '1' }).includes(path));
+});
+
+test('operator five-engine physical suite has a separate explicit flag and mandatory job', () => {
+  const path = 'src/p5-native-operator.physical.test.ts';
+  assert(excludedPhysicalTestFiles('api', {}).includes(path));
+  assert(excludedPhysicalTestFiles('api', { DEPLOYLITE_API_POSTGRES_INTEGRATION: '1' }).includes(path));
+  assert(!excludedPhysicalTestFiles('api', { DEPLOYLITE_P5_OPERATOR_PHYSICAL: '1' }).includes(path));
+  const workflow = readFileSync(new URL('../../.github/workflows/baseline.yml', import.meta.url), 'utf8');
+  assert(workflow.split('  baseline-gate:\n')[1].includes('p5-native-operator-acceptance'));
 });

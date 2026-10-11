@@ -1252,7 +1252,8 @@
     "apps/api/src/testing/p5-operator-session.ts",
     "apps/api/src/testing/p5-operator-session.test.ts",
     "scripts/ci/p5-operator-evidence.py",
-    "scripts/ci/p5-operator-evidence.test.py"
+    "scripts/ci/p5-operator-evidence.test.py",
+    "apps/api/src/p5-native-operator.physical.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
