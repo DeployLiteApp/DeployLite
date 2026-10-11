@@ -932,3 +932,16 @@ Five new contract positives observed assertion RED against never schemas;8new co
 Combined port #489f166886388f0ffb583e5cd8c244a1a546cd0d09b/run38133861856 owner9/9SUCCESS,3307unit,0omissions,288global/24P3/294operator hashes exact, restart/cleanup verified. Five native original daemon removal/retained-resource proofs and five operator confirmed recovery/claim/authority/browser proofs passed. These remain separate lower boundaries; signed operator deletion still pending.
 
 Delete protocol source checkpoint:24contract/29domain regressions and contracts/domain typesPASS; complete Node24 pnpmcheck exits0 with3326unit across8projects. New protocol remains unused and grants no effect; exact-head hosted acceptance pending.
+
+
+### S1 unused confirmed conditional-stop deletion executor — 2026-10-11
+
+New unused executor requires both current authority and the original consumed confirmation callback before inspection and after every asynchronous boundary. It binds the strict command, original source, canonical digest and server-owned profile. Original running container is stopped once through the existing stopper; removal uses the existing non-forced retained-storage port. Detached identities, revoked confirmation, cancellation and deadlines produce no fabricated receipt or retry. Captured ports and cloned inputs prevent caller mutation. No credentials or persistent-resource deletion; signed receiver/cache/API and durable retirement remain pending.
+
+Prospective stub run recorded7failed/2passed of9cases; five engine positives, detached-effect and deadline assertions were RED. Implemented focal9PASS and agent typesPASS. These are injected local tests, not physical operator deletion acceptance. Full and exact-head hosted evidence pending. Rollback removes only the unused executor/test/manifest entries; preserve all prior approval history, cipher, storage and evidence. WholeS1/P5 remains open.
+
+#490 dc3c202e6d884c37ffa80ffdb9def4345e9776f3/run38134206616 owner9/9SUCCESS,3313unit,0skipped/pending/failed,288global/24P3/294operator source hashes match, restart/cleanup verified. All five isolated Chromium proofs bind exact current head; earlier historical source cannot substitute.
+
+#491 f5ddf309fd1e7087b88f6d6c1fd76d22c30bd2b7/run38134698780 owner9/9SUCCESS,3326unit,0skipped/pending/failed,290global/24P3/296operator source hashes exact, restart/cleanup verified. Original five native and five signed operator/current-source Chromium cases passed. Protocol remains unused; full deletion acceptance and wholeP5 pending.
+
+Confirmed executor source checkpoint: full Node24 pnpmcheck exits0,2376unit across8projects,0pending/failed,9focal/agenttypesPASS. Physical signed deletion still pending; unused source only.
