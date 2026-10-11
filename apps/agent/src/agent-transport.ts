@@ -1,3 +1,5 @@
+import {managedDatabaseRestoreExecutionDigest,managedDatabaseRestoreReceiptMatches,managedDatabaseRestoreReplayFingerprint} from "@deploylite/domain";
+import {MANAGED_DATABASE_RESTORE_CAPABILITY,MANAGED_DATABASE_RESTORE_PATH,MANAGED_DATABASE_RESTORE_RECEIPT_PATH,managedDatabaseRestorePreparationSchema,managedDatabaseRestoreAgentCommandSchema,managedDatabaseRestoreReceiptQuerySchema,managedDatabaseRestoreReceiptSchema,managedDatabaseRestoreCachedReceiptSchema,type ManagedDatabaseRestoreAgentCommandV1,type ManagedDatabaseRestoreReceiptQueryV1,type ManagedDatabaseRestoreReceiptV1,type ManagedDatabaseRestoreCachedReceiptV1} from "@deploylite/contracts";
 import {MANAGED_DATABASE_RESTORE_ARCHIVE_CAPABILITY,MANAGED_DATABASE_RESTORE_ARCHIVE_PATH,managedDatabaseRestoreArchiveObservationSchema,type ManagedDatabaseRestoreArchiveAgentQueryV1,type ManagedDatabaseRestoreArchiveObservationV1} from "@deploylite/contracts";
 import {managedDatabaseRestoreArchiveSourceBinding,managedDatabaseRestoreArchiveObservationMatches} from "@deploylite/domain";
 import {MANAGED_DATABASE_BACKUP_CAPABILITY, MANAGED_DATABASE_BACKUP_RECEIPT_PATH, managedDatabaseBackupAgentCommandSchema, managedDatabaseBackupPreparationSchema, managedDatabaseBackupReceiptQuerySchema, managedDatabaseBackupReceiptSchema, managedDatabaseBackupCachedReceiptSchema, type ManagedDatabaseBackupAgentCommandV1, type ManagedDatabaseBackupReceiptQueryV1, type ManagedDatabaseBackupReceiptV1} from "@deploylite/contracts";
@@ -54,11 +56,12 @@ export type AgentManagedDatabaseMetricsReader = {observe(query:ManagedDatabaseMe
 export type AgentManagedDatabaseRestoreArchiveReader={observe(query:ManagedDatabaseRestoreArchiveAgentQueryV1,authority:RuntimeExecutionAuthority,signal:AbortSignal):Promise<ManagedDatabaseRestoreArchiveObservationV1>};
 export type AgentManagedDatabaseHealthReader = {observe(query:ManagedDatabaseHealthAgentQueryV1,authority:RuntimeExecutionAuthority,signal:AbortSignal):Promise<ManagedDatabaseHealthObservationV1>};
 export type AgentManagedDatabaseStartExecutor = {start(command:ManagedDatabaseStartAgentCommandV1,authority:RuntimeExecutionAuthority,signal:AbortSignal):Promise<ManagedDatabaseStartReceiptV1>};
+export type AgentManagedDatabaseRestoreExecutor={restore(command:ManagedDatabaseRestoreAgentCommandV1,authority:RuntimeExecutionAuthority & {assertConfirmed(authority:ProjectControlAuthorityV1,id:string):Promise<void>},signal:AbortSignal):Promise<ManagedDatabaseRestoreReceiptV1>};
 export type AgentManagedDatabaseDeleteExecutor={delete(command:ManagedDatabaseDeleteAgentCommandV1,authority:RuntimeExecutionAuthority & {assertConfirmed(authority:ProjectControlAuthorityV1,id:string):Promise<void>},signal:AbortSignal):Promise<ManagedDatabaseDeleteReceiptV1>};
 export type AgentManagedDatabaseStopExecutor = {stop(command:ManagedDatabaseStopAgentCommandV1,authority:RuntimeExecutionAuthority,signal:AbortSignal):Promise<ManagedDatabaseStopReceiptV1>};
 export type AgentManagedDatabaseRuntimeExecutor = {apply(command: ManagedDatabaseRuntimeAgentCommandV1, authority: RuntimeExecutionAuthority, signal: AbortSignal): Promise<ManagedDatabaseRuntimeReceiptV1>};
 export type AgentManagedDatabaseBackupExecutor = {execute(command:ManagedDatabaseBackupAgentCommandV1,authority:ComposeVolumeBackupAuthority,signal:AbortSignal):Promise<ManagedDatabaseBackupReceiptV1>};
-export type AgentCommandReceiverOptions = Readonly<{ agentId: string; trustKey: string; capabilities: readonly string[]; dispatcher: AgentCommandDispatcher; stopDispatcher?: AgentStopDispatcher; networkAttachment?: AgentNetworkAttachmentExecutor; volumeBackup?: AgentVolumeBackupExecutor; volumeAttachment?: AgentComposeVolumeAttachmentExecutor; resourceCleanup?: AgentComposeResourceCleanupExecutor; domainRouteApply?: AgentDomainRouteApplyExecutor; transportPortApply?: AgentTransportPortApplyExecutor; managedDatabaseRuntime?: AgentManagedDatabaseRuntimeExecutor; managedDatabaseStop?: AgentManagedDatabaseStopExecutor; managedDatabaseBackup?:AgentManagedDatabaseBackupExecutor; managedDatabaseDelete?:AgentManagedDatabaseDeleteExecutor; managedDatabaseStart?: AgentManagedDatabaseStartExecutor; managedDatabaseRestoreArchive?:AgentManagedDatabaseRestoreArchiveReader; managedDatabaseHealth?: AgentManagedDatabaseHealthReader; managedDatabaseMetrics?: AgentManagedDatabaseMetricsReader; managedDatabaseLogs?: AgentManagedDatabaseLogsReader; resourceInspector?: ComposeResourceInspector; replayStore: AgentReplayStore; authorityValidator?: DeploymentAuthorityValidation; now?: () => number }>;
+export type AgentCommandReceiverOptions = Readonly<{ agentId: string; trustKey: string; capabilities: readonly string[]; dispatcher: AgentCommandDispatcher; stopDispatcher?: AgentStopDispatcher; networkAttachment?: AgentNetworkAttachmentExecutor; volumeBackup?: AgentVolumeBackupExecutor; volumeAttachment?: AgentComposeVolumeAttachmentExecutor; resourceCleanup?: AgentComposeResourceCleanupExecutor; domainRouteApply?: AgentDomainRouteApplyExecutor; transportPortApply?: AgentTransportPortApplyExecutor; managedDatabaseRuntime?: AgentManagedDatabaseRuntimeExecutor; managedDatabaseStop?: AgentManagedDatabaseStopExecutor; managedDatabaseBackup?:AgentManagedDatabaseBackupExecutor; managedDatabaseDelete?:AgentManagedDatabaseDeleteExecutor; managedDatabaseRestore?:AgentManagedDatabaseRestoreExecutor; managedDatabaseStart?: AgentManagedDatabaseStartExecutor; managedDatabaseRestoreArchive?:AgentManagedDatabaseRestoreArchiveReader; managedDatabaseHealth?: AgentManagedDatabaseHealthReader; managedDatabaseMetrics?: AgentManagedDatabaseMetricsReader; managedDatabaseLogs?: AgentManagedDatabaseLogsReader; resourceInspector?: ComposeResourceInspector; replayStore: AgentReplayStore; authorityValidator?: DeploymentAuthorityValidation; now?: () => number }>;
 
 export class AuthenticatedAgentCommandReceiver {
   readonly #options: AgentCommandReceiverOptions;
@@ -66,6 +69,7 @@ export class AuthenticatedAgentCommandReceiver {
   constructor(options: AgentCommandReceiverOptions) {
     validateAgentTransportKey(options.trustKey);
     const capabilities = options.capabilities.filter(capability => (capability !== MANAGED_DATABASE_RUNTIME_CAPABILITY || Boolean(options.managedDatabaseRuntime && options.replayStore.durable === true && options.replayStore.lookup))
+      && (capability !== MANAGED_DATABASE_RESTORE_CAPABILITY || Boolean(typeof options.managedDatabaseRestore?.restore==="function"&&options.replayStore.durable===true&&typeof options.replayStore.lookup==="function"&&typeof options.replayStore.lookupByFingerprintDigest==="function"&&typeof options.replayStore.claim==="function"&&typeof options.replayStore.wait==="function"&&typeof options.replayStore.complete==="function"&&typeof options.authorityValidator?.validateProjectUpdateAuthority==="function"&&typeof options.authorityValidator?.validateConfirmedProjectUpdateAuthority==="function"))
       && (capability !== MANAGED_DATABASE_RESTORE_ARCHIVE_CAPABILITY || Boolean(options.managedDatabaseRestoreArchive && options.replayStore.durable === true && typeof options.replayStore.lookupByFingerprintDigest === "function"))
       && (capability !== MANAGED_DATABASE_HEALTH_CAPABILITY || Boolean(options.managedDatabaseHealth && options.replayStore.durable === true && typeof options.replayStore.lookupByFingerprintDigest === "function"))
       && (capability !== MANAGED_DATABASE_LOGS_CAPABILITY || Boolean(options.managedDatabaseLogs && options.replayStore.durable === true && typeof options.replayStore.lookupByFingerprintDigest === "function"))
@@ -808,6 +812,63 @@ export class AuthenticatedAgentCommandReceiver {
         return receipt;
       } finally {admission.dispose();}
     } finally {clearTimeout(timer);external?.removeEventListener("abort",cancel);}
+  }
+  private databaseRestoreQuery(value:ManagedDatabaseRestoreAgentCommandV1|ManagedDatabaseRestoreReceiptQueryV1){
+    const {cancellationRequested:_,...query}=value as ManagedDatabaseRestoreAgentCommandV1;
+    return managedDatabaseRestoreReceiptQuerySchema.parse(query);
+  }
+  private databaseRestoreSource(value:ManagedDatabaseRestoreAgentCommandV1|ManagedDatabaseRestoreReceiptQueryV1){
+    return managedDatabaseRestorePreparationSchema.parse(Object.fromEntries(Object.keys(managedDatabaseRestorePreparationSchema.shape).map(key=>[key,value[key as keyof typeof value]])));
+  }
+  private matchesDatabaseRestore(value:ManagedDatabaseRestoreAgentCommandV1|ManagedDatabaseRestoreReceiptQueryV1,receipt:ManagedDatabaseRestoreReceiptV1){
+    const now=(this.#options.now??Date.now)();
+    return Number.isSafeInteger(now)&&now>=receipt.observedAt&&receipt.observedAt<value.lease.expiresAt&&managedDatabaseRestoreReceiptMatches(this.databaseRestoreQuery(value),receipt);
+  }
+  async readManagedDatabaseRestoreReceipt(body:unknown,signature:string|undefined,signal?:AbortSignal):Promise<ManagedDatabaseRestoreCachedReceiptV1>{
+    if(signal?.aborted)throw new TransportCanceledError();
+    if(!this.verifyRequest(`POST ${MANAGED_DATABASE_RESTORE_RECEIPT_PATH}\n${JSON.stringify(body)}`,signature))throw new Error("agent authentication failed");
+    const query=managedDatabaseRestoreReceiptQuerySchema.parse(structuredClone(body));
+    if(query.agentId!==this.#options.agentId||query.inputDigest!==managedDatabaseRestoreExecutionDigest(this.databaseRestoreSource(query))||this.#options.replayStore.durable!==true||!this.#options.replayStore.lookup)throw new FenceError("Database restore cache scope rejected");
+    const store=this.#options.replayStore,lookup=store.lookup,clock=this.#options.now??Date.now,start=clock(),deadline=start+query.timeoutMs;
+    const current=()=>{const value=clock();if(signal?.aborted||this.#options.replayStore!==store||store.lookup!==lookup||store.durable!==true||!Number.isSafeInteger(start)||start<query.backupReceipt.observedAt||!Number.isSafeInteger(deadline)||!Number.isSafeInteger(value)||value<start||value>=deadline)throw new FenceError("Database restore cache source changed");};
+    current();const raw=await this.lookupReplay(query.commandId,managedDatabaseRestoreReplayFingerprint(query),query.timeoutMs,signal);current();const receipt=raw===null?null:managedDatabaseRestoreReceiptSchema.parse(raw);
+    if(receipt&&!this.matchesDatabaseRestore(query,receipt))throw new FenceError("Cached database restore receipt scope rejected");
+    return managedDatabaseRestoreCachedReceiptSchema.parse({schemaVersion:1,action:query.action,agentId:this.#options.agentId,commandId:query.commandId,confirmationId:query.confirmationId,correlationId:query.context.correlationId,receipt});
+  }
+  /** One durable claim owns the attempt. Never release it after execution or uncertain cache completion. */
+  async restoreManagedDatabase(body:unknown,signature:string|undefined,external?:AbortSignal):Promise<ManagedDatabaseRestoreReceiptV1>{
+    if(!this.verifyRequest(`POST ${MANAGED_DATABASE_RESTORE_PATH}\n${JSON.stringify(body)}`,signature))throw new Error("agent authentication failed");
+    const command=managedDatabaseRestoreAgentCommandSchema.parse(structuredClone(body)),executor=this.#options.managedDatabaseRestore;
+    if(!executor||!this.#options.capabilities.includes(MANAGED_DATABASE_RESTORE_CAPABILITY))throw new CapabilityError(MANAGED_DATABASE_RESTORE_CAPABILITY);
+    if(command.agentId!==this.#options.agentId||command.inputDigest!==managedDatabaseRestoreExecutionDigest(this.databaseRestoreSource(command)))throw new FenceError("Database restore scope rejected");
+    const controller=new AbortController(),cancel=()=>controller.abort(new TransportCanceledError());external?.addEventListener("abort",cancel,{once:true});if(external?.aborted)cancel();
+    const timer=setTimeout(()=>controller.abort(new TransportTimeoutError()),command.timeoutMs),clock=this.#options.now??Date.now,start=clock(),deadline=start+command.timeoutMs;let lastNow=start;
+    const store=this.#options.replayStore,validatorPort=this.#options.authorityValidator,rawRestore=executor.restore,rawValidator=validatorPort?.validateProjectUpdateAuthority,rawConfirmed=validatorPort?.validateConfirmedProjectUpdateAuthority;
+    const methods=["lookup","lookupByFingerprintDigest","claim","wait","complete"] as const,functions=methods.map(key=>store[key]);
+    const current=()=>{if(executor.restore!==rawRestore||this.#options.managedDatabaseRestore!==executor||this.#options.replayStore!==store||methods.some((key,i)=>store[key]!==functions[i])||this.#options.authorityValidator!==validatorPort||validatorPort?.validateProjectUpdateAuthority!==rawValidator||validatorPort?.validateConfirmedProjectUpdateAuthority!==rawConfirmed||!this.#options.capabilities.includes(MANAGED_DATABASE_RESTORE_CAPABILITY))throw new FenceError("Database restore provider changed");const value=clock();if(controller.signal.aborted||!Number.isSafeInteger(start)||start<0||!Number.isSafeInteger(deadline)||!Number.isSafeInteger(value)||value<lastNow||value>=deadline)throw new TransportTimeoutError();lastNow=value;return value;};
+    const bounded=async<T>(work:()=>Promise<T>)=>{current();const result=await awaitAbortable(work,controller.signal);current();return result;};
+    try{
+      const fingerprint=managedDatabaseRestoreReplayFingerprint(this.databaseRestoreQuery(command)),cached=await bounded(()=>this.lookupReplay(command.commandId,fingerprint,command.timeoutMs,controller.signal));
+      if(cached){const receipt=managedDatabaseRestoreReceiptSchema.parse(cached);if(!this.matchesDatabaseRestore(command,receipt))throw new FenceError("Cached database restore receipt scope rejected");return receipt;}
+      if(current()>=command.lease.expiresAt)throw new LeaseExpiredError();this.validateFence(command.lease,command.projectId);
+      const validator=this.#options.authorityValidator?.validateProjectUpdateAuthority?.bind(this.#options.authorityValidator),confirmed=this.#options.authorityValidator?.validateConfirmedProjectUpdateAuthority?.bind(this.#options.authorityValidator),restore=executor.restore.bind(executor);
+      if(!validator||!confirmed)throw new FenceError("Persisted confirmed project authority reader required");
+      const authority:RuntimeExecutionAuthority & {assertConfirmed(authority:ProjectControlAuthorityV1,id:string):Promise<void>}={expiresAt:command.lease.expiresAt,
+        assertValid:async()=>{await bounded(()=>validator(structuredClone(command.authority),current()));await bounded(()=>confirmed(structuredClone(command.authority),command.confirmationId,current()));if(current()>=command.lease.expiresAt)throw new LeaseExpiredError();this.validateFence(command.lease,command.projectId);},
+        assertConfirmed:async(submitted,id)=>{if(id!==command.confirmationId||protocolPayloadFingerprint(submitted)!==protocolPayloadFingerprint(command.authority))throw new FenceError("Detached restore approval");await bounded(()=>confirmed(structuredClone(command.authority),id,current()));if(current()>=command.lease.expiresAt)throw new LeaseExpiredError();this.validateFence(command.lease,command.projectId);}};
+      const admission=this.admission(command.timeoutMs,command.lease,controller.signal);
+      try{
+        await bounded(()=>authority.assertValid());
+        const original=await bounded(()=>this.#options.replayStore.lookupByFingerprintDigest!(command.originalReceipt.commandId,command.originalReplayFingerprint));
+        if(original===null||protocolPayloadFingerprint(managedDatabaseRuntimeReceiptSchema.parse(original))!==protocolPayloadFingerprint(command.originalReceipt))throw new FenceError("Original database ready cache required");
+        await bounded(()=>authority.assertValid());const claim=await bounded(()=>this.claimReplay(command.commandId,fingerprint,command.lease,admission.signal));
+        if(!claim.claimed){const receipt=managedDatabaseRestoreReceiptSchema.parse(claim.receipt??await bounded(()=>this.#options.replayStore.wait(command.commandId)));if(!this.matchesDatabaseRestore(command,receipt))throw new FenceError("Replayed database restore receipt scope rejected");return receipt;}
+        if(!claim.claimToken)throw new FenceError("Database restore replay claim token missing");await bounded(()=>authority.assertValid());
+        const receipt=managedDatabaseRestoreReceiptSchema.parse(await bounded(()=>restore(command,authority,admission.signal)));
+        if(!this.matchesDatabaseRestore(command,receipt))throw new FenceError("Database restore receipt scope rejected");await bounded(()=>authority.assertValid());
+        await bounded(()=>this.#options.replayStore.complete(command.commandId,{fingerprint,claimToken:claim.claimToken!,receipt}));return receipt;
+      }finally{admission.dispose();}
+    }finally{clearTimeout(timer);external?.removeEventListener("abort",cancel);controller.abort();}
   }
   private databaseDeletePreparation(value: ManagedDatabaseDeleteAgentCommandV1 | ManagedDatabaseDeleteReceiptQueryV1) {
     return {schemaVersion:value.schemaVersion,projectId:value.projectId,databaseId:value.databaseId,engine:value.engine,
