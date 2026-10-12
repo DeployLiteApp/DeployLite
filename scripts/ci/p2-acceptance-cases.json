@@ -1266,6 +1266,8 @@
     "apps/api/src/managed-database-start-transport.test.ts",
     "apps/api/src/managed-database-start-origins.ts",
     "apps/api/src/managed-database-start-origins.test.ts",
+    "apps/api/src/managed-database-start.ts",
+    "apps/api/src/managed-database-start.test.ts",
     "packages/db/src/postgres-fixture-shutdown.ts",
     "packages/db/src/postgres-fixture-shutdown.test.ts"
   ],
