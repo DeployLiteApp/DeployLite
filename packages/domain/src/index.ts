@@ -455,3 +455,5 @@ export * from "./managed-database-runtime-spec.js";
 export * from "./managed-database-runtime-binding.js";
 
 export * from "./managed-database-compose-preview.js";
+
+export * from "./managed-database-runtime-configuration.js";
