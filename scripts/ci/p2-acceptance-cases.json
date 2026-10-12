@@ -1293,7 +1293,9 @@
     "packages/contracts/src/deployment-contract/managed-database-metrics.ts",
     "packages/contracts/src/deployment-contract/managed-database-metrics.test.ts",
     "packages/domain/src/managed-database-metrics-binding.ts",
-    "packages/domain/src/managed-database-metrics-binding.test.ts"
+    "packages/domain/src/managed-database-metrics-binding.test.ts",
+    "packages/db/src/postgres-fixture-shutdown.ts",
+    "packages/db/src/postgres-fixture-shutdown.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
