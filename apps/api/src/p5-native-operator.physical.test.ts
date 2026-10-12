@@ -5,7 +5,7 @@ import {resolve} from "node:path";
 import type {FastifyInstance} from "fastify";
 import {AuthenticatedAgentCommandReceiver, startAgentServer} from "@deploylite/agent";
 import {approvedManagedDatabaseProfileSchema, InMemoryCapabilityRegistry, managedDatabaseRuntimeReceiptSchema, managedDatabaseStopReceiptSchema, managedDatabaseStartReceiptSchema,
-  MANAGED_DATABASE_STOP_PATH, MANAGED_DATABASE_START_PATH, type ManagedDatabaseEngineV1} from "@deploylite/contracts";
+  MANAGED_DATABASE_STOP_PATH, MANAGED_DATABASE_START_PATH, MANAGED_DATABASE_HEALTH_PATH, managedDatabaseHealthObservationSchema, type ManagedDatabaseEngineV1} from "@deploylite/contracts";
 import {DbAgentReplayStore, DbControlCommandRepository, DbProjectRepository} from "@deploylite/db";
 import {managedDatabaseNativeImagePolicy} from "@deploylite/domain";
 import {buildApiApp} from "./app.js";
@@ -73,7 +73,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
   const trustKey = "ci-operator-" + randomBytes(32).toString("hex"), imagePolicy = managedDatabaseNativeImagePolicy();
   const limits = {deadlineMs:60000,maxOutputBytes:131072,maxContainers:64,pollIntervalMs:100,cpus:1,memoryBytes:536870912,pidsLimit:256,stopGraceSeconds:10};
   const raw = JSON.stringify({profiles,limits}), clock = {now:Date.now};
-  const capabilities = new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.stop.v1","database.runtime.start.v1"]);
+  const capabilities = new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.stop.v1","database.runtime.start.v1","database.runtime.health.v1"]);
   const shared = {runner,imagePolicy,clock,limits,owner:projectId,agentId,trustKey,capabilities};
   const inspector = createManagedDatabaseDockerInspector(shared), resources = createManagedDatabaseResourceMaterializer(shared);
   const native = createConfiguredManagedDatabaseRuntime(raw, shared)!;
@@ -81,12 +81,14 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
   const startExecutor = native.start ? {start:native.start} : undefined;
   if (!startExecutor) throw new Error("Explicit native start required.");
   if (!stopExecutor) throw new Error("Explicit native stop required.");
+  const healthReader=native.health?{observe:native.health}:undefined;
+  if(!healthReader)throw new Error("Explicit native health required.");
   let peer: Awaited<ReturnType<typeof startAgentServer>> | undefined, app: FastifyInstance | undefined;
-  let stopDispatches = 0, startDispatches = 0, lostStop = false, lostStart = false, result: Record<string,unknown> | undefined;
+  let stopDispatches = 0, startDispatches = 0, healthDispatches = 0, lostStop = false, lostStart = false, result: Record<string,unknown> | undefined;
   async function startPeer(enabled:boolean) {
     const replayStore = new DbAgentReplayStore(db.db, "operator-" + projectId);
     const receiver = new AuthenticatedAgentCommandReceiver({agentId,trustKey,replayStore,capabilities:enabled ? capabilities.list() : [],
-      managedDatabaseRuntime:enabled ? native : undefined, managedDatabaseStop:enabled ? stopExecutor : undefined, managedDatabaseStart:enabled ? startExecutor : undefined,
+      managedDatabaseRuntime:enabled ? native : undefined, managedDatabaseStop:enabled ? stopExecutor : undefined, managedDatabaseStart:enabled ? startExecutor : undefined, managedDatabaseHealth:enabled?healthReader:undefined,
       dispatcher:{dispatch:async () => {throw new Error("Unexpected deployment.");}},authorityValidator:new DbControlCommandRepository(db.db)});
     peer = await startAgentServer({host:"127.0.0.1",port:0,production:false,receiver,replayStore});
     const address = peer.server.address(); if (!address || typeof address === "string") throw new Error("Owned peer address required.");
@@ -102,6 +104,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     let endpoint = await startPeer(true);
     vi.stubGlobal("fetch", async (url: Parameters<typeof fetch>[0], init?:RequestInit) => {
       if (!String(url).startsWith(endpoint + "/")) throw new Error("Unscoped fixture HTTP request.");
+      if(String(url)===endpoint+MANAGED_DATABASE_HEALTH_PATH)healthDispatches++;
       const stop = String(url) === endpoint + MANAGED_DATABASE_STOP_PATH;
       if (stop) stopDispatches++;
       const start = String(url) === endpoint + MANAGED_DATABASE_START_PATH; if (start) startDispatches++;
@@ -146,11 +149,23 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const originalRows = await originals(), cipherRows = await encrypted(); expect(cipherRows).toHaveLength(1);
     const originalReplayFingerprint = createHash("sha256").update(originalRows.cache[0].fingerprint).digest("hex");
     const stopInput = {...preparation,originalReceipt:receipt,originalReplayFingerprint};
+    const ledgerSnapshot=async()=>({commands:(await db.pool.query("SELECT * FROM control_commands WHERE scope_kind='project' AND scope_key=$1 ORDER BY id",[projectId])).rows,
+      cache:(await db.pool.query("SELECT replay.* FROM agent_replay replay JOIN control_commands command ON command.id::text=replay.command_id WHERE command.scope_kind='project' AND command.scope_key=$1 ORDER BY replay.command_id",[projectId])).rows,
+      audit:(await db.pool.query("SELECT * FROM audit_events WHERE target_id=$1 ORDER BY id",[projectId])).rows,cipher:await encrypted()});
+    async function currentHealth(state:"running"|"stopped"){
+      const beforeRows=await ledgerSnapshot(),before=Date.now(),response=await call("runtime/health",stopInput),after=Date.now();expect(response.statusCode).toBe(200);
+      const observation=managedDatabaseHealthObservationSchema.parse(response.json().data.observation);
+      expect(observation).toMatchObject({originalCommandId:receipt.commandId,projectId,databaseId,engine,profileId:profile.profileId,containerId:receipt.containerId,imageId:receipt.imageId,networkId:receipt.networkId,volumeCreatedAt:receipt.volumeCreatedAt,state,health:state==="running"?"healthy":"not-running",uid:state==="running"?ready.uid:null});
+      expect(observation.observedAt).toBeGreaterThanOrEqual(before);expect(observation.observedAt).toBeLessThanOrEqual(after);
+      expect(await ledgerSnapshot()).toEqual(beforeRows);return {observation,before,after};
+    }
+    const runningBeforeStop=await currentHealth("running");
     const stop = await call("runtime/stop",stopInput); expect(stop.statusCode).toBe(200);
     expect(stop.json().data.command.status).toBe("completed");
     const stopped = managedDatabaseStopReceiptSchema.parse(stop.json().data.receipt);
     expect(stopped).toMatchObject({status:"stopped",originalCommandId:receipt.commandId,containerId:receipt.containerId});
     expect((await inspector.inspectContainer(receipt.containerId,signal)).running).toBe(false);
+    const stoppedHealth=await currentHealth("stopped");
     await resources.verifyFresh({request:input.request,profile,commandId:receipt.commandId},pinned,authority,signal);
     expect(await originals()).toEqual(originalRows); expect(await encrypted()).toEqual(cipherRows);
     const audits = (await db.pool.query("SELECT metadata,correlation_id FROM audit_events WHERE target_id=$1 AND action='database.runtime.stopped'",[projectId])).rows;
@@ -172,8 +187,10 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     expect((await db.pool.query("SELECT * FROM agent_replay WHERE command_id=$1",[stopped.commandId])).rows).toEqual(stopReplayRows);
     expect(await verifier.verify(input,pinned,authority,signal)).toEqual(ready);
     for (const hostname of ["127.0.0.1",connection.hostname]) expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,hostname)],signal)).stdout.trim()).toBe(marker);
+    const runningAfterStart=await currentHealth("running");expect(healthDispatches).toBe(3);
     await app.close(); app = undefined; await peer!.close(); peer = undefined;
     await db.reopen(); endpoint = await startPeer(false); app = await build(endpoint);
+    const removedHealth=await call("runtime/health",stopInput);expect(removedHealth.statusCode).toBe(503);expect(healthDispatches).toBe(3);
     const replay = await call("runtime/stop",stopInput); expect(replay.statusCode).toBe(200);
     expect(replay.json().data.idempotent).toBe(true); expect(replay.json().data.receipt).toEqual(stopped);
     expect((await inspector.inspectContainer(receipt.containerId,signal)).running).toBe(true); expect(stopDispatches).toBe(1);
@@ -188,8 +205,8 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     expect((await db.pool.query("SELECT * FROM agent_replay WHERE command_id=$1",[stopped.commandId])).rows).toEqual(stopReplayRows);
     expect(await originals()).toEqual(originalRows); expect(await encrypted()).toEqual(cipherRows);
     const command = (value:typeof apply) => ({id:value.json().data.command.id,correlationId:value.json().data.command.correlationId,status:value.json().data.command.status});
-    result = {receipt,uid:ready.uid,original:pinned,nativeStop:{receipt:stopped,originalReplayFingerprint},nativeStart:{receipt:started,originalStopReplayFingerprint},internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},
-      authenticatedProbe:"passed",restart:"passed",persistence:"passed",operator:{applyCommand:command(apply),stopCommand:command(stop),startCommand:command(start),startDispatches,startAtomicAudit:"passed",startCacheOnlyReplay:"passed",startExecutorRemoved:"passed",stoppedCacheNoRestart:"passed",signedHttp:"passed",postgresReplay:"passed",
+    result = {currentHealth:{runningBeforeStop,stopped:stoppedHealth,runningAfterStart},receipt,uid:ready.uid,original:pinned,nativeStop:{receipt:stopped,originalReplayFingerprint},nativeStart:{receipt:started,originalStopReplayFingerprint},internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},
+      authenticatedProbe:"passed",restart:"passed",persistence:"passed",operator:{healthDispatches,healthSignedHttp:"passed",healthNoLedgerWrites:"passed",healthExecutorRemoved:"passed",applyCommand:command(apply),stopCommand:command(stop),startCommand:command(start),startDispatches,startAtomicAudit:"passed",startCacheOnlyReplay:"passed",startExecutorRemoved:"passed",stoppedCacheNoRestart:"passed",signedHttp:"passed",postgresReplay:"passed",
         originalRows:"unchanged",cipherRows:"unchanged",atomicAudit:"passed",stopDispatches,cacheOnlyReplay:"passed",executorRemoved:"passed"}};
   } finally {
     if (app) await app.close(); if (peer) await peer.close(); vi.unstubAllGlobals();
