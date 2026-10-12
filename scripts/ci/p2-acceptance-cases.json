@@ -447,7 +447,7 @@
       ]
     },
     "api": {
-      "count": 12,
+      "count": 13,
       "allowSkipped": false,
       "cases": [
         {
@@ -519,6 +519,12 @@
         {
           "fullName": "DeployLite API PostgreSQL integration retries the same queued unclaimed PostgreSQL rollback after claim contention without new reservation",
           "title": "retries the same queued unclaimed PostgreSQL rollback after claim contention without new reservation",
+          "file": "apps/api/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "DeployLite API PostgreSQL integration configures and replays encrypted credentials for all five database engines through authenticated PostgreSQL routes",
+          "title": "configures and replays encrypted credentials for all five database engines through authenticated PostgreSQL routes",
           "file": "apps/api/src/postgres.integration.test.ts",
           "physicalRestart": false
         }
@@ -1151,6 +1157,9 @@
     "packages/db/src/repositories/managed-database-credentials.ts",
     "packages/db/src/repositories/managed-database-credentials.test.ts",
     "packages/db/src/managed-database-credentials-postgres.cases.ts",
+    "apps/api/src/managed-database-credentials-route.ts",
+    "apps/api/src/managed-database-credentials-api.test.ts",
+    "apps/api/src/managed-database-credentials-wiring.test.ts",
     "apps/agent/src/infrastructure/docker/docker-redaction-integration.test.ts",
     "scripts/ci/test-scopes.mjs",
     "scripts/ci/test-scopes.test.mjs",

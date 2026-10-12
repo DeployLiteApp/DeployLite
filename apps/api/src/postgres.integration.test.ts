@@ -6,7 +6,7 @@ import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { dockerImageExecutionReceiptSchema, trustedPriorExecutionReceiptSchema, type TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
-import { buildApiApp, type DeploymentDispatcher, type DeploymentStopDispatcher } from "./app.js";
+import { buildApiApp, type DeploymentDispatcher, type DeploymentStopDispatcher, type BuildApiAppOptions } from "./app.js";
 
 const integrationEnabled = process.env.DEPLOYLITE_API_POSTGRES_INTEGRATION === "1";
 const describeIntegration = describe; // The dedicated PostgreSQL partition owns collection and must run every case.
@@ -367,14 +367,42 @@ describeIntegration("DeployLite API PostgreSQL integration", () => {
     } finally {await f.app.close();}
   },30_000);
 
+  it("configures and replays encrypted credentials for all five database engines through authenticated PostgreSQL routes", async () => {
+    const profiles = new Map<import("@deploylite/contracts").ManagedDatabaseEngineV1, import("@deploylite/contracts").ApprovedManagedDatabaseProfileV1>();
+    for (const engine of ["postgres","mysql","mariadb","mongodb","redis"] as const) profiles.set(engine,{schemaVersion:1,profileId:"approved-"+engine,engine,
+      image:`registry.example.com/${engine}@sha256:${"a".repeat(64)}`,dataPath:"/database/data",containerPort:({postgres:5432,mysql:3306,mariadb:3306,mongodb:27017,redis:6379})[engine],
+      credentialKeys:["DATABASE_PASSWORD"],backupStrategy:engine==="redis"?"volume-quiesced":"engine-native"});
+    const app=await createPostgresApp(undefined,undefined,undefined,{profiles,deadlineMs:10_000});
+    try {
+      if((await app.inject({method:"GET",url:"/api/v1/bootstrap/status"})).json().data.setupRequired)
+        expect((await app.inject({method:"POST",url:"/api/v1/bootstrap/initial-admin",payload:{email:"Admin@Example.TEST",password:adminPassword}})).statusCode).toBe(200);
+      const login=await app.inject({method:"POST",url:"/api/v1/auth/login",payload:{email:"admin@example.test",password:adminPassword}});
+      expect(login.statusCode).toBe(200);const cookie=login.headers["set-cookie"] as string,actorId=login.json().data.user.id;
+      const projectId=randomUUID();await new DbProjectRepository(requireDb()).save({id:projectId,name:"Managed credential fixture",repoUrl:"https://example.test/repo",defaultBranch:"main",buildCommand:null,runCommand:null,port:null,description:null,imageTag:null});
+      const call=(engine:string)=>app.inject({method:"POST",url:`/api/v1/projects/${projectId}/databases/${engine}/credentials`,headers:{cookie},payload:{schemaVersion:1,engine}});
+      expect((await call("postgres")).statusCode).toBe(403);
+      await requirePool().query("INSERT INTO control_grants(actor_user_id,action,scope_kind,scope_key) VALUES($1,'project.update','project',$2)",[actorId,projectId]);
+      for (const engine of profiles.keys()) {
+        const first=await call(engine);expect(first.statusCode).toBe(200);
+        expect(first.json().data.credentials).toMatchObject({engine,databaseId:engine,credentialsConfigured:true,redacted:true});
+        expect((await call(engine)).json().data.credentials).toEqual(first.json().data.credentials);
+      }
+      const rows=(await requirePool().query("SELECT encrypted_value FROM env_secret_values WHERE project_id=$1",[projectId])).rows;
+      expect(rows).toHaveLength(5);for(const row of rows)expect(Buffer.isBuffer(row.encrypted_value)).toBe(true);
+      const audits=(await requirePool().query("SELECT metadata FROM audit_events WHERE target_id=$1 AND action='database.credentials.configured'",[projectId])).rows;
+      expect(audits).toHaveLength(10);for(const row of audits){expect(row.metadata.redacted).toBe(true);expect(row.metadata).not.toHaveProperty("credentials");}
+    } finally {await app.close();}
+  },30_000);
+
 });
 
-async function createPostgresApp(deploymentDispatcher?: DeploymentDispatcher, deploymentStopDispatcher?: DeploymentStopDispatcher, controlRollback?: DbControlCommandRepository): Promise<FastifyInstance> {
+async function createPostgresApp(deploymentDispatcher?: DeploymentDispatcher, deploymentStopDispatcher?: DeploymentStopDispatcher, controlRollback?: DbControlCommandRepository, managedDatabaseCredentials?: BuildApiAppOptions["managedDatabaseCredentials"]): Promise<FastifyInstance> {
   return buildApiApp({
+    managedDatabaseCredentials,
     authConfig: { cookieName: "dl_pg_session", cookieSecure: false, sessionTtlSeconds: 3600 },
     db: { pool: requirePool(), client: requireDb() },
     state: deploymentDispatcher ? { deploymentDispatcher, ...(deploymentStopDispatcher ? { deploymentStopDispatcher } : {}), ...(controlRollback ? { controlRollback } : {}) } : undefined,
-    env: { ...process.env, NODE_ENV: "test", DATABASE_URL: databaseUrl, DEPLOYLITE_AGENT_URL: undefined, DEPLOYLITE_AGENT_TRUST_KEY: undefined, DEPLOYLITE_AGENT_ID: undefined, DEPLOYLITE_BCRYPT_COST: "10", DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE: "true" }
+    env: { ...process.env, NODE_ENV: "test", DATABASE_URL: databaseUrl, DEPLOYLITE_AGENT_URL: undefined, DEPLOYLITE_AGENT_TRUST_KEY: undefined, DEPLOYLITE_AGENT_ID: undefined, DEPLOYLITE_BCRYPT_COST: "10", DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE: "true", ...(managedDatabaseCredentials ? {DEPLOYLITE_SECRET_KEY:"managed_database_fixture_key_1234567890"} : {}) }
   });
 }
 
