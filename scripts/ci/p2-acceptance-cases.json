@@ -1265,7 +1265,9 @@
     "apps/api/src/managed-database-start-transport.ts",
     "apps/api/src/managed-database-start-transport.test.ts",
     "apps/api/src/managed-database-start-origins.ts",
-    "apps/api/src/managed-database-start-origins.test.ts"
+    "apps/api/src/managed-database-start-origins.test.ts",
+    "packages/db/src/postgres-fixture-shutdown.ts",
+    "packages/db/src/postgres-fixture-shutdown.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
