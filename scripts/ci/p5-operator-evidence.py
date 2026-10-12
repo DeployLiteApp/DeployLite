@@ -219,7 +219,7 @@ def validate_backup_browser(proof,ready,source_commit):
 
 def validate_confirmed_restore(proof,ready,profile):
     restore=proof["nativeRestore"];backup=proof["receipt"];pending=proof["pendingRestore"]
-    exact(restore,{"receipt","commandId","confirmationId","actorId","idempotencyKey","consumedAt","expiresAt","recoveredAt","dispatches","inputWrites","requestPosts","unconsumedConfirmation","expiredConfirmation","reusedConfirmation","foreignConfirmation","lostReply","completionRollback","cacheOnlyReopen","restoredData","originalRows","cipher","inventory","originalPending","protection","auditCount"},"complete_confirmed_original_restore_required")
+    exact(restore,{"browserRestore","receipt","commandId","confirmationId","actorId","idempotencyKey","consumedAt","expiresAt","recoveredAt","dispatches","inputWrites","requestPosts","unconsumedConfirmation","expiredConfirmation","reusedConfirmation","foreignConfirmation","lostReply","completionRollback","cacheOnlyReopen","restoredData","originalRows","cipher","inventory","originalPending","protection","auditCount"},"complete_confirmed_original_restore_required")
     shared={"schemaVersion","projectId","databaseId","engine","agentId","planDigest","environmentFingerprint","containerId","imageId","volumeName","networkName","networkId","volumeCreatedAt","redacted"}
     receipt=restore["receipt"]
     exact(receipt,shared|{"action","profileId","commandId","originalCommandId","backupCommandId","confirmationId","inputDigest","correlationId","archiveId","archiveBytes","archiveSha256","manifestSha256","format","observedAt","status","storage","health"},"strict_confirmed_restore_receipt_required")
@@ -237,6 +237,22 @@ def validate_confirmed_restore(proof,ready,profile):
         and all(receipt[key]==backup[key] for key in ("archiveId","archiveBytes","archiveSha256","manifestSha256","format"))
         and all(type(value) is int for value in (restore["consumedAt"],receipt["observedAt"],restore["expiresAt"],restore["recoveredAt"]))
         and backup["observedAt"]<=restore["consumedAt"]<=receipt["observedAt"]<restore["expiresAt"]<=restore["recoveredAt"],"one_original_confirmed_native_restore_required")
+    validate_restore_browser(proof,ready)
+
+def validate_restore_browser(proof,ready):
+    restore=proof["nativeRestore"];browser=restore["browserRestore"]
+    exact(browser,{"sourceCommit","engine","projectId","databaseId","actorId","browser","context","requests","commandId","originalCommandId","archiveId","idempotencyKey","confirmationId","preparation","confirmation","originalSource","lostReply","reload","sameOriginalKey","sameOriginalNonce","cacheOnlyReopen","expiredRecovery","restoredData","calls"},"complete_original_restore_browser_required")
+    native.require(browser["sourceCommit"]==proof["browserBackup"]["sourceCommit"] and browser["browser"]=="chromium" and browser["context"]=="isolated"
+        and all(browser[key]==ready[key] for key in ("engine","projectId","databaseId"))
+        and all(browser[key]==restore[key] for key in ("actorId","commandId","idempotencyKey","confirmationId"))
+        and browser["originalCommandId"]==ready["commandId"] and browser["archiveId"]==proof["receipt"]["archiveId"]
+        and type(browser["requests"]) is int and 1<=browser["requests"]<=1000
+        and all(browser[key]=="passed" for key in ("preparation","confirmation","originalSource","lostReply","reload","sameOriginalKey","sameOriginalNonce","cacheOnlyReopen","expiredRecovery","restoredData")),"actual_original_restore_browser_recovery_required")
+    calls=browser["calls"];native.require(isinstance(calls,list) and len(calls)==2,"one_original_uncertain_restore_and_recovery_required")
+    for call,status in zip(calls,(503,200)):
+        exact(call,{"key","confirmationId","actorId","status"},"bounded_original_restore_browser_response_required")
+        native.require(type(call["status"]) is int and call["status"]==status and call["key"]==restore["idempotencyKey"]
+            and call["confirmationId"]==restore["confirmationId"] and call["actorId"]==restore["actorId"],"same_original_nonce_actor_key_restore_browser_required")
 
 def validate_pending_restore(proof,ready,profile,source):
     pending=proof["pendingRestore"]
