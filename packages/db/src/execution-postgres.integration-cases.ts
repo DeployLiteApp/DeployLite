@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDeploymentSnapshot, createSourceIntent, deploymentRedeployCommandResultSchema, deploymentRollbackCommandResultSchema, type Deployment, type DeploymentExecutionAuthorityV1, type TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
 import { createConfirmation, createControlCommand, type ControlCommand, type ExecutionCompletionInput } from "@deploylite/domain";
 import { createDbClient, createDbPool } from "./client.js";
+import { trackPostgresFixtureShutdown } from "./postgres-fixture-shutdown.js";
 import { DbDeploymentRepository } from "./repositories/deployment-data.js";
 import { DbDeploymentExecutionRepository } from "./repositories/execution-completion.js";
 import { DbControlCommandRepository } from "./repositories/control-plane.js";
@@ -20,6 +21,11 @@ const finishedAt = "2026-01-01T00:01:00.000Z";
 const digest = `sha256:${"b".repeat(64)}`;
 let maintenance: pg.Client;
 let pool: pg.Pool;
+let closeFixturePool: (() => Promise<void>) | undefined;
+function openFixturePool() {
+  pool = createDbPool(databaseUrl, { max: 3 });
+  closeFixturePool = trackPostgresFixtureShutdown(pool);
+}
 let databaseUrl: string;
 let databaseName: string;
 
@@ -225,7 +231,7 @@ suite("atomic execution PostgreSQL integration", () => {
     await maintenance.query(`CREATE DATABASE "${databaseName}"`);
     url.pathname = `/${databaseName}`;
     databaseUrl = url.toString();
-    pool = createDbPool(databaseUrl, { max: 3 });
+    openFixturePool();
     const directory = new URL("../migrations/", import.meta.url);
     for (const file of (await readdir(directory)).filter((name) => name.endsWith(".sql")).sort()) {
       await pool.query(await readFile(new URL(file, directory), "utf8"));
@@ -233,7 +239,7 @@ suite("atomic execution PostgreSQL integration", () => {
   }, 30_000);
 
   afterAll(async () => {
-    await pool?.end();
+    await closeFixturePool?.();
     if (maintenance) {
       if (databaseName) await maintenance.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
       await maintenance.end();
@@ -397,8 +403,8 @@ suite("atomic execution PostgreSQL integration", () => {
   it("replays completed proof across a new pool lifecycle", async () => {
     const { input } = await seed();
     expect((await completion().completeExecution(input)).kind).toBe("committed");
-    await pool.end();
-    pool = createDbPool(databaseUrl, { max: 3 });
+    await closeFixturePool!();
+    openFixturePool();
     expect((await completion().completeExecution(input)).kind).toBe("replayed");
     await expect(deployments().findById(input.executionId)).resolves.toMatchObject({ executionReceipt: input.proof });
   });
@@ -532,8 +538,8 @@ suite("atomic execution PostgreSQL integration", () => {
     const fixture = await authorityFixture();
     const entry = await admitAuthorityCommand(fixture, "deployment.redeploy");
     const authority = requireAuthority(await claimAuthority(controls(), entry));
-    await pool.end();
-    pool = createDbPool(databaseUrl, { max: 3 });
+    await closeFixturePool!();
+    openFixturePool();
     expect((await pool.query("SELECT execution_authority FROM control_commands WHERE id=$1", [entry.command.id])).rows).toEqual([{ execution_authority: authority }]);
     await expect(controls().validateDeploymentAuthority(authority)).resolves.toBeUndefined();
     const changed = structuredClone(authority);
@@ -763,14 +769,14 @@ suite("atomic execution PostgreSQL integration", () => {
     const stop = await admitAuthorityCommand(fixture, "deployment.stop");
     const current = requireAuthority(await claimAuthority(controls(), stop));
     expect(current.projectLease.fence).toBe(stale.projectLease.fence + 1);
-    await pool.end();
+    await closeFixturePool!();
     await maintenance.end();
     await promisify(execFile)("python3", [process.env.DEPLOYLITE_PG_RESTART_HELPER!]);
     const url = new URL(databaseUrl);
     url.pathname = "/postgres";
     maintenance = new pg.Client({ connectionString: url.toString() });
     await maintenance.connect();
-    pool = createDbPool(databaseUrl, { max: 3 });
+    openFixturePool();
     expect((await completion().completeExecution(input)).kind).toBe("replayed");
     expect((await completion().completeExecution(terminalR.input)).kind).toBe("replayed");
     expect(await new DbAgentReplayStore(createDbClient(pool), "restart-reader").lookup(cacheId, "restart-fingerprint")).toEqual({ input: terminalR.input });
