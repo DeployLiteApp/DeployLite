@@ -50,7 +50,7 @@ function fixture(engine:typeof engines[number]="postgres"){
   ok:(_request:unknown,data:unknown)=>({data}),error:(_request:unknown,code:string)=>({error:{code}})};
  registerManagedDatabaseRestorePrepareRoute(app,options);
  const {projectId:_project,databaseId:_database,...body}=f.input.selection;
- const call=(payload:unknown=body,key="restore-orders")=>app.inject({method:"POST",url:"/api/v1/projects/project-a/databases/orders/runtime/restore/prepare",headers:{"idempotency-key":key},payload:payload as Record<string,unknown>});
+ const call=(payload:unknown=body,key="restore-orders",extra:Record<string,string>={})=>app.inject({method:"POST",url:"/api/v1/projects/project-a/databases/orders/runtime/restore/prepare",headers:{"idempotency-key":key,...extra},payload:payload as Record<string,unknown>});
  return {...f,app,options,grants,projects,body,call};
 }
 it.each(engines)("authenticates and recovers original %s pending approval without exposing archive data",async engine=>{
@@ -70,3 +70,9 @@ it("registers authenticated restore preparation in actual bootstrap",async()=>{c
 it("refuses a project reader returning a foreign project before private archive reads",async()=>{const f=fixture();f.projects.mockResolvedValue({...await f.projects(),id:"foreign"});expect((await f.call()).statusCode).toBe(503);expect(f.archive.verify).not.toHaveBeenCalled();expect(f.controls.resolve).not.toHaveBeenCalled();});
 it("refuses profile changes during archive reads before nonce persistence",async()=>{const f=fixture();f.archive.verify.mockImplementation(async()=>{f.profile.image="registry.example.com/postgres@sha256:"+"f".repeat(64);return {...f.view};});expect((await f.call()).statusCode).toBe(503);expect(f.controls.resolve).not.toHaveBeenCalled();});
 it("refuses a consumed original nonce through the route without renewing it",async()=>{const f=fixture();expect((await f.call()).statusCode).toBe(200);const nonce=[...f.nonces.values()][0]!;nonce.consumedAt=new Date(1000);expect((await f.call()).statusCode).toBe(503);expect(f.nonces.size).toBe(1);expect(f.ledger.size).toBe(1);expect(f.forbidden).not.toHaveBeenCalled();});
+
+it.each(["foreign","operator-a, foreign"])("rejects %s expected restore actor before private reads and approval effects",async actor=>{
+ const f=fixture();expect((await f.call(undefined,"restore-orders",{"x-deploylite-expected-actor-id":actor})).statusCode).toBe(409);
+ expect(f.grants).not.toHaveBeenCalled();expect(f.projects).not.toHaveBeenCalled();expect(f.inventory.list).not.toHaveBeenCalled();expect(f.controls.resolve).not.toHaveBeenCalled();
+});
+it("keeps an explicit matching actor on its original restore key and source",async()=>{const f=fixture();expect((await f.call(undefined,"restore-orders",{"x-deploylite-expected-actor-id":"operator-a"})).statusCode).toBe(200);});
