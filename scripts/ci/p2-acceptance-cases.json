@@ -1286,6 +1286,8 @@
     "apps/api/src/managed-database-health.test.ts",
     "apps/api/src/managed-database-health-route.ts",
     "apps/api/src/managed-database-health-route.test.ts",
+    "apps/agent/src/infrastructure/docker/docker-managed-database-stats.ts",
+    "apps/agent/src/infrastructure/docker/docker-managed-database-stats.test.ts",
     "packages/db/src/postgres-fixture-shutdown.ts",
     "packages/db/src/postgres-fixture-shutdown.test.ts"
   ],

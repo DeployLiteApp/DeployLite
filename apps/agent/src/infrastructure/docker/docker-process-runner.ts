@@ -1,3 +1,4 @@
+import {MANAGED_DATABASE_STATS_FORMAT,parseManagedDatabaseStats} from "./docker-managed-database-stats.js";
 import { MANAGED_DATABASE_NETWORK_INSPECT_FORMAT, MANAGED_DATABASE_VOLUME_INSPECT_FORMAT } from "./docker-managed-database-resource-argv.js";
 import { MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT, MANAGED_DATABASE_IMAGE_INSPECT_FORMAT } from "./docker-managed-database-inspection-argv.js";
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
@@ -33,6 +34,11 @@ function redactDockerProtocolOutput(value: string, argv: readonly string[]): str
   const words = argv.slice(1);
   while ((words[0] === "--config" || words[0] === "--host") && words[1]) words.splice(0, 2);
   const op = words[0], format = words[words.indexOf("--format") + 1];
+  if(op==="stats") {
+    if(!(words.length===6 && words[1]==="--no-stream" && words[2]==="--no-trunc" && words[3]==="--format" && words[4]===MANAGED_DATABASE_STATS_FORMAT && /^[a-f0-9]{64}$/.test(words[5]!))) return "[REDACTED]";
+    try {parseManagedDatabaseStats(value,words[5]!);return JSON.stringify(JSON.parse(value))+(value.endsWith("\n")?"\n":"");}
+    catch {return "[REDACTED]";}
+  }
   const nativeInitializerCreate = op === "create" && /^dl-[a-f0-9]{32}-database-init$/.test(words[words.indexOf("--name") + 1] ?? "") && words.includes("com.deploylite.database.storage-init=v1");
   const nativeDaemonCreate = op === "create" && /^dl-[a-f0-9]{32}-database$/.test(words[words.indexOf("--name") + 1] ?? "")
     && words.some(word => /^com\.deploylite\.database\.engine=(?:postgres|mysql|mariadb|mongodb|redis)$/.test(word));
