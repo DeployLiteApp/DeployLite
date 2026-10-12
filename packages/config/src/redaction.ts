@@ -56,7 +56,15 @@ export function redactSecrets<T>(value: T): T {
 }
 
 export function redactLogMessage(message: string): string {
-  return redactSecrets(message);
+  // Normalize display controls before masking, so split credentials cannot bypass redaction.
+  const normalized = message.replace(/\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\))/g, "")
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
+  const labelled = normalized.replace(/\b([A-Za-z0-9_-]{0,128}(?:password|passwd|secret|token|authorization|api[_-]?key|cookie|credential)[A-Za-z0-9_-]{0,128})(["']?\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+)/gi,
+    (_match, key: string, separator: string, value: string) => {
+      const quote = value.startsWith('"') ? '"' : value.startsWith("'") ? "'" : "";
+      return `${key}${separator}${quote}${REDACTED}${quote}`;
+    });
+  return redactSecrets(labelled);
 }
 
 /**

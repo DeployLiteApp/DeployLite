@@ -96,3 +96,6 @@ describe("redaction helpers", () => {
     }
   });
 });
+for(const key of ["password","passwd","api_key","apiKey","cookie","credential","AUTHORIZATION","DATABASE_PASSWORD","REDIS_PASSWORD","MONGO_INITDB_ROOT_PASSWORD"])it(`redacts short labelled ${key} values from public logs`,()=>{for(const input of [`${key}=tiny-private`, `"${key}":"tiny private"`,`${key}='tiny private'`]){const output=redactLogMessage(input);expect(output).not.toContain("tiny");expect(output).toContain("[REDACTED]");}});
+it("normalizes terminal controls before redacting split credentials",()=>{const output=redactLogMessage("a".repeat(32)+"\u001b[31m"+"b".repeat(32)+"\u001b[0m\nready\u0000");expect(output).toBe("[REDACTED]\nready");});
+it("preserves labelled log delimiters and redaction idempotence",()=>{for(const message of ['{"password":"tiny"}',"password=tiny}","password=[REDACTED]tail"]){const once=redactLogMessage(message);expect(redactLogMessage(once)).toBe(once);expect(once).not.toContain("tiny");expect(once).not.toContain("tail");}expect(redactLogMessage('{"password":"tiny"}')).toBe('{"password":"[REDACTED]"}');});
