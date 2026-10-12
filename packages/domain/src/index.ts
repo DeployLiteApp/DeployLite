@@ -461,3 +461,5 @@ export * from "./managed-database-runtime-configuration.js";
 export * from "./managed-database-stop-binding.js";
 
 export * from "./managed-database-start-binding.js";
+
+export * from "./managed-database-health-binding.js";
