@@ -117,3 +117,27 @@ it("requires the original mounted Redis volume independently of an optional imag
  f.nativeInspector.inspectImage.mockResolvedValue({imageId,declaredVolumes:["/unexpected"]});
  await expect(f.verifier.verify(f.input,f.original,f.authority,new AbortController().signal)).rejects.toThrow();
 });
+
+it.each(["postgres", "mysql", "mariadb", "mongodb", "redis"] as const)("admits the original unhealthy %s daemon for stop without readiness credit", async engine => {
+    const f = fixture(engine); f.metadata.health = "unhealthy";
+    await expect(f.verifier.verifyRunning(f.input, f.original, f.authority, new AbortController().signal)).resolves.toEqual({containerId,uid:999});
+    await expect(f.verifier.verify(f.input, f.original, f.authority, new AbortController().signal)).rejects.toThrow();
+});
+it("corroborates a stopped daemon with retained historical Docker health", async () => {
+    for (const health of ["healthy", "unhealthy", "starting"] as const) {
+        const f = fixture(); f.metadata.running = false; f.metadata.health = health;
+        await expect(f.verifier.verifyStopped(f.input, f.original, f.authority, new AbortController().signal)).resolves.toEqual({containerId});
+        expect(f.processIdentityReader.verify).not.toHaveBeenCalled();
+    }
+});
+
+it("refuses stopped, foreign consumers and changed hardening in running admission",async()=>{
+    for(const reason of ["stopped","consumer","hardening","identity"] as const){
+        const f=fixture();f.metadata.health="unhealthy";
+        if(reason==="stopped")f.metadata.running=false;
+        if(reason==="consumer")f.addConsumer();
+        if(reason==="hardening")f.metadata.privileged=true;
+        if(reason==="identity")f.processIdentityReader.verify.mockResolvedValue({uid:0,daemon:"postgres"});
+        await expect(f.verifier.verifyRunning(f.input,f.original,f.authority,new AbortController().signal)).rejects.toThrow();
+    }
+});

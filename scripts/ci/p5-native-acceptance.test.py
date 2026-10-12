@@ -89,6 +89,14 @@ class NativeConnection(unittest.TestCase):
             with self.subTest(patch=patch), self.assertRaises(RuntimeError):
                 module.validate_internal_connection({**good,**patch},profile)
 
+class NativeStop(unittest.TestCase):
+    def test_requires_executed_stop_of_the_same_original_daemon(self):
+        result = {"receipt":{"containerId":"a"*64},"daemonStop":{"containerId":"a"*64,"status":"passed"}}
+        module.validate_daemon_stop(result)
+        for stop in [None, {"containerId":"b"*64,"status":"passed"}, {"containerId":"a"*64,"status":"not-run"}, {"containerId":"a"*64,"status":"passed","removed":True}]:
+            with self.subTest(stop=stop), self.assertRaises(RuntimeError):
+                module.validate_daemon_stop({**result,"daemonStop":stop})
+
 class NativeWorkflow(unittest.TestCase):
     def test_native_report_options_are_forwarded_to_vitest_and_verifier_always_runs(self):
         workflow = (Path(__file__).parents[2]/".github/workflows/baseline.yml").read_text()

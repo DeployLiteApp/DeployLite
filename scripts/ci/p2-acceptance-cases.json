@@ -1230,7 +1230,9 @@
     "packages/domain/src/managed-database-runtime-configuration.ts",
     "packages/domain/src/managed-database-runtime-configuration.test.ts",
     "apps/api/src/managed-database-runtime-configuration.ts",
-    "apps/api/src/managed-database-runtime-configuration.test.ts"
+    "apps/api/src/managed-database-runtime-configuration.test.ts",
+    "apps/agent/src/infrastructure/docker/docker-managed-database-daemon-stop.ts",
+    "apps/agent/src/infrastructure/docker/docker-managed-database-daemon-stop.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,

@@ -11,6 +11,7 @@ import type {DockerCliRunner} from "./docker-cli-image-transport.js";
 import {createConfiguredManagedDatabaseRuntime} from "./managed-database-runtime-config.js";
 import {createManagedDatabaseDockerInspector} from "./docker-managed-database-inspection.js";
 import {createManagedDatabaseResourceMaterializer, type ManagedDatabaseFreshResources} from "./docker-managed-database-resources.js";
+import {createManagedDatabaseDaemonStopper} from "./docker-managed-database-daemon-stop.js";
 import {createManagedDatabaseReadinessVerifier} from "./docker-managed-database-readiness.js";
 import {createManagedDatabaseProcessIdentityReader} from "./docker-managed-database-process-identity.js";
 import {createDockerComposeResourceInspector} from "./docker-compose-resource-inspector.js";
@@ -54,7 +55,7 @@ for (const engine of engines) {
     it(`native five-engine physical ${engine} startup and persistence`, async () => {
         const processRunner = new DockerProcessRunner({timeoutMs:60000,maxOutputBytes:131072});
         const signal = AbortSignal.timeout(170000), created = new Set<string>();
-        let lastOperation: readonly string[] = [], lastObservation:unknown, lastProjection = "other", processFailure:unknown;
+        let lastOperation: readonly string[] = [], lastObservation:unknown, lastProjection = "other", processFailure:unknown, stopReply:unknown;
         const composeObservations: Record<string,unknown> = {};
         let volume: {name:string;createdAt:string}|undefined, network:{name:string;id:string}|undefined;
         const profile = scope.profiles[engine]!, request = {schemaVersion:1,projectId:scope.owner,databaseId:`fixture_${engine}`,engine};
@@ -68,6 +69,10 @@ for (const engine of engines) {
                 processFailure = {kind:error instanceof DockerProcessError ? error.kind : "unknown",missingKey:missing && ["NetworkID","Name","Source","Health","Volumes","Labels","Mounts","Config","Driver"].includes(missing) ? missing : null};
                 throw error;
             }
+            if (argv[1] === "stop") stopReply = {exitCode:result.exitCode,signal:result.signal,
+                stdoutBytes:Buffer.byteLength(result.stdout),stderrBytes:Buffer.byteLength(result.stderr),
+                exactId:result.stdout === argv.at(-1),exactIdNewline:result.stdout === argv.at(-1) + "\n",
+                deprecatedNotice:result.stdout.includes("Flag --time has been deprecated"),redacted:result.stdout.includes("[REDACTED]")};
             if (argv.includes(COMPOSE_CONTAINER_INSPECT_FORMAT)) {
                 const value = JSON.parse(result.stdout);
                 if (created.has(value.id) && value.owner === scope.owner && value.projectId === scope.owner) composeObservations[value.id] = value;
@@ -125,7 +130,9 @@ for (const engine of engines) {
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false)],signal)).stdout.trim()).toBe(marker);
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,connection.hostname)],signal)).stdout.trim()).toBe(marker);
             await verifier.verify(nativeInput,pinned,authority,signal);
-            await runner.run(["docker","stop","--time","10",receipt.containerId],signal);
+            const stopper = createManagedDatabaseDaemonStopper({runner,verifier,clock,limits:{deadlineMs:60000,maxOutputBytes:131072,stopGraceSeconds:10}});
+            const stopped = await stopper.stop(nativeInput,pinned,authority,signal);
+            expect(stopped).toEqual({containerId:receipt.containerId});
             expect((await inspector.inspectContainer(receipt.containerId,signal)).running).toBe(false);
             await resources.verifyFresh({request,profile,commandId},pinned,authority,signal);
             await runner.run(["docker","start",receipt.containerId],signal);
@@ -134,9 +141,9 @@ for (const engine of engines) {
             expect(restarted).toEqual(ready);
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false)],signal)).stdout.trim()).toBe(marker);
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,connection.hostname)],signal)).stdout.trim()).toBe(marker);
-            result = {receipt,original:pinned,uid:ready.uid,internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},authenticatedProbe:"passed",restart:"passed",persistence:"passed"};
+            result = {receipt,original:pinned,uid:ready.uid,daemonStop:{...stopped,status:"passed"},internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},authenticatedProbe:"passed",restart:"passed",persistence:"passed"};
         } catch (error) {
-            writeFileSync(resolve(directory,`diagnostic-${engine}.json`),JSON.stringify({engine,lastOperation,lastProjection,processFailure:processFailure ?? null,observation:lastObservation ?? null,composeObservations,expected:{plan:runtime.plan,environmentFingerprint:runtime.environmentFingerprint}},null,2)+"\n",{mode:0o600});
+            writeFileSync(resolve(directory,`diagnostic-${engine}.json`),JSON.stringify({engine,lastOperation,lastProjection,processFailure:processFailure ?? null,stopReply:stopReply ?? null,observation:lastObservation ?? null,composeObservations,expected:{plan:runtime.plan,environmentFingerprint:runtime.environmentFingerprint}},null,2)+"\n",{mode:0o600});
             throw error;
         } finally {
             // Fixture-only cleanup: never force, adopt a replacement, or delete in-use/foreign resources.

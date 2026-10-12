@@ -21,7 +21,7 @@ export type ManagedDatabaseReadinessOptions = Readonly<{
     }>;
 }>;
 function fail(): never { throw new Error("Database readiness is unavailable."); }
-/** Read-only startup corroboration. No daemon effects, cached replay, client attachment or readiness receipt is created here. */
+/** Read-only original daemon corroboration. Running admission permits unhealthy health but never grants readiness. */
 export function createManagedDatabaseReadinessVerifier(supplied: ManagedDatabaseReadinessOptions) {
     const options = { ...supplied, imagePolicy: structuredClone(supplied.imagePolicy), limits: { ...supplied.limits } }, bounds = options.limits;
     if (!/^[A-Za-z0-9_-]{1,200}$/.test(options.owner) || !/^[A-Za-z0-9_-]{1,200}$/.test(options.agentId)
@@ -39,7 +39,7 @@ export function createManagedDatabaseReadinessVerifier(supplied: ManagedDatabase
             environmentFingerprint: string;
         }>, evidence: ManagedDatabaseFreshResources, authority: Readonly<{
             assertValid(): Promise<void>;
-        }>, external: AbortSignal, stopped = false): Promise<Readonly<{
+        }>, external: AbortSignal, mode: "ready" | "running" | "stopped" = "ready"): Promise<Readonly<{
             uid: number | null;
             containerId: string;
         }>> {
@@ -47,7 +47,7 @@ export function createManagedDatabaseReadinessVerifier(supplied: ManagedDatabase
             external.addEventListener("abort", cancel, { once: true });
             const timer = setTimeout(cancel, bounds.deadlineMs);
             try {
-                const input = structuredClone(raw), original = structuredClone(evidence), start = options.clock.now();
+                const input = structuredClone(raw), original = structuredClone(evidence), start = options.clock.now(), stopped = mode === "stopped";
                 if (!Number.isSafeInteger(start) || start < 0 || !/^[a-f0-9]{64}$/.test(input.containerId) || !/^sha256:[a-f0-9]{64}$/.test(input.imageId)
                     || !/^[a-f0-9]{32}$/.test(input.environmentFingerprint) || !/^[A-Za-z0-9_-]{1,200}$/.test(input.commandId))
                     fail();
@@ -70,7 +70,7 @@ export function createManagedDatabaseReadinessVerifier(supplied: ManagedDatabase
                     if (container.id !== input.containerId || container.name !== "/" + managedDatabaseContainerName(plan.projectId, plan.databaseId) || container.imageId !== input.imageId || container.image !== plan.image
                         || container.owner !== options.owner || container.projectId !== plan.projectId || container.databaseId !== plan.databaseId || container.engine !== plan.engine
                         || container.commandId !== input.commandId || container.planDigest !== plan.planDigest || container.environmentFingerprint !== input.environmentFingerprint
-                        || container.storageInitialization !== null || container.networkMode !== plan.network.runtimeName || (stopped ? container.running || container.health !== null : !container.running || container.health !== "healthy")
+                        || container.storageInitialization !== null || container.networkMode !== plan.network.runtimeName || (stopped ? container.running : !container.running || mode === "ready" && container.health !== "healthy")
                         || container.user !== users[plan.engine] || !container.readOnly || container.privileged || (container.capAdd ?? []).length !== 0
                         || JSON.stringify(container.capDrop) !== '["ALL"]' || JSON.stringify(container.securityOpt) !== '["no-new-privileges"]'
                         || container.cpu !== Math.round(bounds.cpus * 1e9) || container.memory !== bounds.memoryBytes || container.pids !== bounds.pidsLimit
@@ -117,13 +117,18 @@ export function createManagedDatabaseReadinessVerifier(supplied: ManagedDatabase
             }
         }
     return {
+        async verifyRunning(...args: Parameters<typeof verify>) {
+            const result = await verify(args[0], args[1], args[2], args[3], "running");
+            if (result.uid === null) fail();
+            return Object.freeze({uid: result.uid, containerId: result.containerId});
+        },
         async verify(...args: Parameters<typeof verify>) {
             const result = await verify(args[0], args[1], args[2], args[3]);
             if (result.uid === null) fail();
             return Object.freeze({uid: result.uid, containerId: result.containerId});
         },
         async verifyStopped(...args: Parameters<typeof verify>) {
-            const result = await verify(args[0], args[1], args[2], args[3], true);
+            const result = await verify(args[0], args[1], args[2], args[3], "stopped");
             return Object.freeze({containerId: result.containerId});
         }
     };
