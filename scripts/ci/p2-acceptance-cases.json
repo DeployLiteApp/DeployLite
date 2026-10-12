@@ -1318,6 +1318,10 @@
     "apps/agent/src/infrastructure/docker/docker-managed-database-logs-executor.test.ts",
     "apps/agent/src/managed-database-logs-receiver.test.ts",
     "apps/agent/src/managed-database-logs-server.test.ts",
+    "apps/api/src/managed-database-logs-transport.ts",
+    "apps/api/src/managed-database-logs-transport.test.ts",
+    "apps/api/src/managed-database-logs.ts",
+    "apps/api/src/managed-database-logs.test.ts",
     "packages/db/src/postgres-fixture-shutdown.ts",
     "packages/db/src/postgres-fixture-shutdown.test.ts"
   ],
