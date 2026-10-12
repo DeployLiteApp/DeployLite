@@ -80,3 +80,23 @@ it("rejects environment bootstrap combined with injected native maps before repo
     managedDatabaseRuntimeExecutions: new Map(), db: { createPool: pool } }).then(async app => { await app.close(); return "accepted"; }, error => (error as Error).message);
   expect(result).toBe("Database API configuration cannot be combined with injected native maps."); expect(pool).not.toHaveBeenCalled();
 });
+
+it("withholds operator stop maps without explicit trusted stop grace", async () => {
+  const f = fixture(), result = await createConfiguredManagedDatabaseApi(f.input);
+  expect(result).toHaveProperty("stopExecutions", new Map());
+});
+it("composes stop and original cache transports only for explicit approved projects", async () => {
+  const f = fixture(); f.parsed.configuration.limits.stopGraceSeconds = 10;
+  Object.assign(f.controls, { findProjectUpdateById: vi.fn(async () => null) });
+  const result = await createConfiguredManagedDatabaseApi(f.input);
+  expect(result).toHaveProperty("stopExecutions", expect.any(Map));
+  expect([...result.stopExecutions.keys()]).toEqual(["project-a", "project-b"]);
+  expect(result.stopExecutions.get("project-a")).toMatchObject({ controls: f.controls, agentId: "agent-a", deadlineMs: 60000 });
+  expect(result.stopExecutions.get("project-a")!.transport.available()).toBe(true);
+  expect(f.secrets.find).not.toHaveBeenCalled(); expect(f.controls.claimProjectUpdate).not.toHaveBeenCalled();
+});
+it("rejects explicit stop activation without the original command reader", async () => {
+  const f = fixture(); f.parsed.configuration.limits.stopGraceSeconds = 10;
+  await expect(createConfiguredManagedDatabaseApi(f.input)).rejects.toThrow("Database API configuration is invalid.");
+  expect(f.controls.claimProjectUpdate).not.toHaveBeenCalled();
+});
