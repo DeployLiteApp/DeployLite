@@ -1,3 +1,4 @@
+import { MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT, MANAGED_DATABASE_IMAGE_INSPECT_FORMAT } from "./docker-managed-database-inspection-argv.js";
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { redactSecrets } from "@deploylite/config";
 
@@ -12,7 +13,7 @@ const DOCKER_ID = /^(?:sha256:)?[0-9a-f]{64}$/;
 const DOCKER_IMAGE = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[1-9][0-9]{0,4})?\/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[0-9a-f]{64}$/;
 const protocolSample = { owner: "probe", projectId: "probe", deploymentId: "probe", candidateId: "probe:candidate:command", effectiveImage: `registry.example/probe@sha256:${"0".repeat(64)}` };
 const protocolFormats = new Set([
-  ...COMPOSE_INSPECTION_FORMATS,
+  ...COMPOSE_INSPECTION_FORMATS, MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT, MANAGED_DATABASE_IMAGE_INSPECT_FORMAT,
   ...[buildDockerImageIdentityInspectArgv(protocolSample.effectiveImage), buildDockerLifecycleInspectArgv("probe"),
     buildDockerOwnershipInspectArgv("probe"), buildDockerRestoreInspectArgv("probe"),
     buildDockerStopOwnershipInspectArgv("0".repeat(64)), buildDockerOwnedStopLookupArgv(protocolSample), buildDockerTransportPortInspectArgv("probe"),
@@ -39,6 +40,11 @@ function redactDockerProtocolOutput(value: string, argv: readonly string[]): str
     const key = path.at(-1) ?? "";
     if (/(token|secret|password|passwd|api[_-]?key|authorization|cookie|credential)/i.test(key)) return "[REDACTED]";
     if (typeof nested === "string") {
+      if (format === MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT && path.length === 1) {
+        if (key === "name" && /^\/dl-[a-f0-9]{32}-database$/.test(nested)) return nested;
+        if (key === "planDigest" && /^[a-f0-9]{64}$/.test(nested)) return nested;
+        if (key === "environmentFingerprint" && /^[a-f0-9]{32}$/.test(nested)) return nested;
+      }
       if (composeFormat && key === "name" && /^dl-[a-f0-9]{32}-(?:net|vol)-[a-z][a-z0-9_-]{0,62}$/.test(nested)
         && (path.length === 1 || (path.length === 3 && ["networks", "mounts", "configuredMounts"].includes(path[0]!)))) return nested;
       if (candidateFormat && key === "name" && path.length === 1 && /^\/dl-[a-f0-9]{32}-vol-candidate$/.test(nested)) return nested;
