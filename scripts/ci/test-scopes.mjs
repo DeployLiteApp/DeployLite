@@ -9,7 +9,8 @@ const physical = Object.freeze({
     ['src/compose-resource-docker.integration.test.ts', 'DEPLOYLITE_P3_DOCKER_INTEGRATION']
   ]),
   agent: Object.freeze([
-    ['src/infrastructure/docker/docker-transport-port-executor.physical.test.ts', 'DEPLOYLITE_P4_PHYSICAL']
+    ['src/infrastructure/docker/docker-transport-port-executor.physical.test.ts', 'DEPLOYLITE_P4_PHYSICAL'],
+    ['src/infrastructure/docker/docker-managed-database-native.physical.test.ts', 'DEPLOYLITE_P5_NATIVE_PHYSICAL']
   ])
 });
 export function excludedPhysicalTestFiles(workspace, environment = process.env) {

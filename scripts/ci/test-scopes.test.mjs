@@ -40,12 +40,12 @@ test('configurations explicitly use the execution partition and preserve default
   }
 });
 test('mapped suites never manufacture skipped cases; original hosted count guards remain', () => {
-  for (const path of ['packages/db/src/postgres.integration.test.ts', 'packages/db/src/compose-postgres.integration.test.ts', 'apps/api/src/postgres.integration.test.ts', 'apps/api/src/compose-resource-docker.integration.test.ts', 'apps/api/src/deployment-docker.integration.test.ts', 'apps/agent/src/infrastructure/docker/docker-redaction-integration.test.ts', 'apps/agent/src/infrastructure/docker/docker-transport-port-executor.physical.test.ts']) {
+  for (const path of ['packages/db/src/postgres.integration.test.ts', 'packages/db/src/compose-postgres.integration.test.ts', 'apps/api/src/postgres.integration.test.ts', 'apps/api/src/compose-resource-docker.integration.test.ts', 'apps/api/src/deployment-docker.integration.test.ts', 'apps/agent/src/infrastructure/docker/docker-redaction-integration.test.ts', 'apps/agent/src/infrastructure/docker/docker-transport-port-executor.physical.test.ts', 'apps/agent/src/infrastructure/docker/docker-managed-database-native.physical.test.ts']) {
     const source = readFileSync(new URL('../../'+path, import.meta.url), 'utf8');
     assert(!/\b(?:describe|it|test)\.skip(?:If)?\b/.test(source), path);
   }
   const workflow=readFileSync(new URL('../../.github/workflows/baseline.yml',import.meta.url),'utf8');
-  for(const name of ['postgres-integration','p2-docker-acceptance','p3-docker-acceptance','p4-transport-acceptance']) assert(workflow.split('  baseline-gate:\n')[1].includes(name));
+  for(const name of ['postgres-integration','p2-docker-acceptance','p3-docker-acceptance','p4-transport-acceptance','p5-native-database-acceptance']) assert(workflow.split('  baseline-gate:\n')[1].includes(name));
   assert(workflow.includes('numPendingTests !== 0'));
 });
 
@@ -53,4 +53,11 @@ test('every declared acceptance source exists on this exact branch', () => {
   const root = new URL('../../', import.meta.url);
   const manifest = JSON.parse(readFileSync(new URL('scripts/ci/p2-acceptance-cases.json', root), 'utf8'));
   for (const path of manifest.sourceFiles) assert.ok(existsSync(new URL(path, root)), `Missing acceptance source: ${path}`);
+});
+
+test('native five-engine physical collection requires its own explicit flag', () => {
+  const path = 'src/infrastructure/docker/docker-managed-database-native.physical.test.ts';
+  assert(excludedPhysicalTestFiles('agent', {}).includes(path));
+  assert(excludedPhysicalTestFiles('agent', { DEPLOYLITE_P4_PHYSICAL: '1' }).includes(path));
+  assert(!excludedPhysicalTestFiles('agent', { DEPLOYLITE_P5_NATIVE_PHYSICAL: '1' }).includes(path));
 });

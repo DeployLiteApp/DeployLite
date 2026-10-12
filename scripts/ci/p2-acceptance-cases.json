@@ -1208,7 +1208,8 @@
     "apps/agent/src/infrastructure/docker/docker-managed-database-runtime.test.ts",
     "scripts/ci/p5-native-acceptance.py",
     "scripts/ci/p5-native-acceptance.test.py",
-    "scripts/ci/p5-native-profiles.json"
+    "scripts/ci/p5-native-profiles.json",
+    "apps/agent/src/infrastructure/docker/docker-managed-database-native.physical.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,

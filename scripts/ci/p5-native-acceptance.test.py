@@ -53,4 +53,23 @@ class NativeContextTests(unittest.TestCase):
         invalid["profiles"]["mysql"]["image"] = "docker.io/library/mysql:latest"
         for value in [{**manifest,"fixtureOnly":False}, {**manifest,"profiles":{}}, invalid]:
             with self.assertRaises(RuntimeError): module.validate_profiles(value)
-if __name__ == "__main__": unittest.main()
+
+
+class ReportAdmission(unittest.TestCase):
+    def test_native_report_requires_all_five_executed_cases(self):
+        report = {"numTotalTests":5,"numPassedTests":5,"numFailedTests":0,"numPendingTests":0,"success":True,"testResults":[{"assertionResults":[{"fullName":"native five-engine physical " + engine + " startup and persistence","status":"passed"} for engine in module.ENGINES]}]}
+        module.validate_report(report)
+        for mutation in ({"numPendingTests":1},{"numPassedTests":4},{"numFailedTests":1},{"success":False},{"testResults":[]}):
+            with self.assertRaises(RuntimeError):
+                module.validate_report({**report,**mutation})
+
+class NativeWorkflow(unittest.TestCase):
+    def test_native_report_options_are_forwarded_to_vitest_and_verifier_always_runs(self):
+        workflow = (Path(__file__).parents[2]/".github/workflows/baseline.yml").read_text()
+        job = workflow.split("  p5-native-database-acceptance:\n",1)[1].split("  baseline-gate:\n",1)[0]
+        self.assertIn("pnpm --filter @deploylite/agent exec vitest run --allowOnly=false --config vitest.config.ts",job)
+        step = job.split("      - name: Refuse every omitted, skipped or incomplete native case\n",1)[1]
+        self.assertTrue(step.startswith("        if: always()\n"))
+
+if __name__ == "__main__":
+    unittest.main()
