@@ -37,3 +37,11 @@ it("composes stop only with an explicit bounded grace and capability without run
     expect(()=>createManagedDatabaseRuntime({...options,capabilities:f.options.capabilities})).toThrow();
     for(const grace of [0,31,1.5])expect(()=>createManagedDatabaseRuntime({...options,limits:{...options.limits,stopGraceSeconds:grace}})).toThrow();
 });
+
+it("composes original-daemon start only with its explicit capability without runtime effects",()=>{
+    const f=fixture(),capabilities=new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.start.v1"]);
+    const runtime=createManagedDatabaseRuntime({...f.options,capabilities});
+    expect(typeof (runtime as typeof runtime & {start?:unknown}).start).toBe("function");
+    expect(Object.keys(runtime)).toEqual(["apply","start"]);expect(Object.isFrozen(runtime)).toBe(true);
+    expect(createManagedDatabaseRuntime(f.options)).not.toHaveProperty("start");expect(f.runner.run).not.toHaveBeenCalled();
+});

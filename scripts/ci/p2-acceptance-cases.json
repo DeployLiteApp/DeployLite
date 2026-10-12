@@ -1257,7 +1257,9 @@
     "packages/contracts/src/deployment-contract/managed-database-start.ts",
     "packages/contracts/src/deployment-contract/managed-database-start.test.ts",
     "packages/domain/src/managed-database-start-binding.ts",
-    "packages/domain/src/managed-database-start-binding.test.ts"
+    "packages/domain/src/managed-database-start-binding.test.ts",
+    "apps/agent/src/infrastructure/docker/docker-managed-database-start-executor.ts",
+    "apps/agent/src/infrastructure/docker/docker-managed-database-start-executor.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
