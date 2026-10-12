@@ -4,7 +4,9 @@ import {AuthenticatedManagedDatabaseRestoreArchiveTransport} from "./managed-dat
 import type {ManagedDatabaseRestorePreparationAccess} from "./managed-database-restore-prepare.js";
 import {AuthenticatedManagedDatabaseBackupTransport} from "./managed-database-backup-transport.js";
 import type {ManagedDatabaseBackupAccess} from "./managed-database-backup.js";
-import type {BackupInventoryReader,BackupInventoryWriter} from "@deploylite/domain";
+import type {BackupInventoryReader,BackupInventoryWriter,BackupRetentionProtectionReader} from "@deploylite/domain";
+import type {BackupRetentionPreviewAccess} from "./backup-retention-preview-route.js";
+import type {ComposeVolumeBackupPlanAccess} from "./compose-volume-backup-plan-route.js";
 import {AuthenticatedManagedDatabaseDeleteTransport} from "./managed-database-delete-transport.js";
 import type {ManagedDatabaseDeleteApplyAccess} from "./managed-database-delete-apply.js";
 import type {ManagedDatabaseDeletePreparationAccess} from "./managed-database-delete-prepare.js";
@@ -42,7 +44,8 @@ export async function createConfiguredManagedDatabaseApi(input: Readonly<{
   projects: Pick<ProjectRepository, "findById">; controls: unknown; secrets?: ManagedDatabaseCredentialCreationRepository;
   agent: Readonly<{ endpoint?: string; agentId?: string; trustKey?: string }>;
   backupInventory?: (agentId:string)=>BackupInventoryWriter & Partial<BackupInventoryReader>;
-  restoreProtection?: (agentId:string)=>ManagedDatabaseRestorePreparationAccess["protection"] & Partial<Pick<ManagedDatabaseRestoreApplyAccess["protection"],"assertProtected">>;
+  restoreProtection?: (agentId:string)=>ManagedDatabaseRestorePreparationAccess["protection"] & Partial<Pick<ManagedDatabaseRestoreApplyAccess["protection"],"assertProtected">> & Partial<BackupRetentionProtectionReader>;
+  backupPlanning?: ReadonlyMap<string, ComposeVolumeBackupPlanAccess>;
 }>) {
   const controls = projectUpdateControls(input.controls), secrets = input.secrets;
   let parsed: NonNullable<ReturnType<typeof parseManagedDatabaseApiConfiguration>>;
@@ -64,9 +67,10 @@ export async function createConfiguredManagedDatabaseApi(input: Readonly<{
     const restorePreparations=new Map<string,ManagedDatabaseRestorePreparationAccess>();
     const restoreExecutions=new Map<string,ManagedDatabaseRestoreApplyAccess>();
     const restoreInventory=backupInventory && typeof backupInventory.list==="function" ? backupInventory as BackupInventoryReader & BackupInventoryWriter : undefined;
+    const backupProtection = backupMaxBytes !== undefined && restoreInventory && typeof input.restoreProtection === "function" ? input.restoreProtection(agentId) : undefined;
     const restoreEnabled=backupMaxBytes!==undefined && restoreInventory && typeof controls.findProjectUpdateById==="function" && typeof controls.resolveProjectUpdateConfirmation==="function" && typeof input.restoreProtection==="function";
     const restoreArchive=restoreEnabled?new AuthenticatedManagedDatabaseRestoreArchiveTransport({endpoint,agentId,trustKey,allowInsecureInternal:true,timeoutMs:configuration.limits.deadlineMs}):undefined;
-    const restoreProtection=restoreEnabled?input.restoreProtection!(agentId):undefined;
+    const restoreProtection=restoreEnabled?backupProtection:undefined;
     if(restoreArchive && (!restoreArchive.available() || typeof restoreProtection?.protect!=="function"))throw new Error();
     const restoreApplyProtection=restoreProtection && typeof restoreProtection.assertProtected==="function" ? restoreProtection as ManagedDatabaseRestoreApplyAccess["protection"] : undefined;
     const restoreApplyEnabled=restoreArchive && restoreInventory && restoreApplyProtection && [controls.claimConfirmedProjectUpdate,controls.completeManagedDatabaseRestore,controls.validateConfirmedProjectUpdateAuthority].every(port=>typeof port==="function");
@@ -113,7 +117,17 @@ export async function createConfiguredManagedDatabaseApi(input: Readonly<{
     }
     const credentials: ManagedDatabaseCredentialConfiguration = { profiles: new Map(Object.entries(configuration.profiles) as [keyof typeof configuration.profiles, typeof configuration.profiles.postgres][]),
       store: secrets, projectIds: new Set(bindings.map(binding => binding.projectId)), deadlineMs: configuration.limits.deadlineMs };
-    return { credentials, executions, restorePreparations, restoreExecutions, backupExecutions, stopExecutions, startExecutions, deletePreparations, deleteExecutions, healthExecutions, metricsExecutions, logsExecutions, imagePolicy: managedDatabaseNativeImagePolicy() };
+    const imagePolicy = managedDatabaseNativeImagePolicy(), backupRetentionPreviews = new Map<string, BackupRetentionPreviewAccess>();
+    const planning = input.backupPlanning;
+    // No empty-protection fallback: native preview is composed only from the existing durable readers.
+    if (restoreInventory && backupProtection && typeof backupProtection.list === "function" && typeof backupProtection.available === "function"
+      && backupProtection.available() && planning) {
+      for (const binding of bindings) if (planning.has(binding.projectId)) backupRetentionPreviews.set(binding.projectId, {
+        agentId, inventory: restoreInventory, protections: backupProtection as BackupRetentionProtectionReader,
+        deadlineMs: configuration.limits.deadlineMs, native: {configuration: credentials, imagePolicy, planning}
+      });
+    }
+    return { credentials, executions, restorePreparations, restoreExecutions, backupExecutions, backupRetentionPreviews, stopExecutions, startExecutions, deletePreparations, deleteExecutions, healthExecutions, metricsExecutions, logsExecutions, imagePolicy };
   } catch { throw new Error("Database API configuration is invalid."); }
   finally { clearTimeout(timer); }
 }
