@@ -9,7 +9,7 @@ const health: Record<ManagedDatabaseEngineV1, string> = {
     mysql: '[ "$(cat /proc/1/comm)" = mysqld ] && MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql --host 127.0.0.1 --user root --execute "SELECT 1" >/dev/null',
     mariadb: '[ "$(cat /proc/1/comm)" = mariadbd ] && MYSQL_PWD="$MARIADB_ROOT_PASSWORD" mariadb --host 127.0.0.1 --user root --execute "SELECT 1" >/dev/null',
     mongodb: '[ "$(cat /proc/1/comm)" = mongod ] && mongosh --quiet --host 127.0.0.1 --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval "quit(db.adminCommand({ping:1}).ok === 1 ? 0 : 1)" >/dev/null',
-    redis: '[ "$(cat /proc/1/comm)" = redis-server ] && REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli --no-auth-warning --host 127.0.0.1 ping | grep -qx PONG'
+    redis: '[ "$(cat /proc/1/comm)" = redis-server ] && REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli --no-auth-warning -h 127.0.0.1 ping | grep -qx PONG'
 };
 export type ManagedDatabaseRuntimeSpec = Readonly<{
     plan: ReturnType<typeof planManagedDatabaseProfile>;

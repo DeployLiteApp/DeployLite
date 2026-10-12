@@ -3,10 +3,10 @@ import { createManagedDatabaseComposePreview, digestComposeResourceObservation, 
 import type { ComposeResourceObservationV1 } from "@deploylite/contracts";
 import { createManagedDatabaseStorageInitializer } from "./docker-managed-database-storage-initializer.js";
 const helperId = "b".repeat(64), imageId = "sha256:" + "c".repeat(64);
-function fixture() {
+function fixture(engine: "postgres" | "redis" = "postgres") {
     const imagePolicy = { policyVersion: "images-1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true };
-    const request = { schemaVersion: 1, projectId: "project-a", databaseId: "orders", engine: "postgres" as const };
-    const profile = { schemaVersion: 1, profileId: "profile-a", engine: "postgres" as const, image: `registry.example.com/postgres@sha256:${"a".repeat(64)}`, dataPath: "/var/lib/postgresql/data", containerPort: 5432, credentialKeys: ["DATABASE_PASSWORD"], backupStrategy: "engine-native" as const };
+    const request = { schemaVersion: 1, projectId: "project-a", databaseId: "orders", engine };
+    const profile = { schemaVersion: 1, profileId: "profile-a", engine, image: `registry.example.com/${engine}@sha256:${"a".repeat(64)}`, dataPath: engine === "redis" ? "/data" : "/var/lib/postgresql/data", containerPort: engine === "redis" ? 6379 : 5432, credentialKeys: ["DATABASE_PASSWORD"], backupStrategy: engine === "redis" ? "volume-quiesced" as const : "engine-native" as const };
     const plan = planManagedDatabaseProfile(request, profile, imagePolicy), preview = createManagedDatabaseComposePreview(request, profile, imagePolicy);
     const original = { projectId: "project-a", databaseId: "orders", commandId: "command-a", planDigest: plan.planDigest, volume: { name: plan.volume.runtimeName, createdAt: "2026-10-10T00:00:00Z" }, network: { name: plan.network.runtimeName, id: "d".repeat(64) } };
     const input = { request, profile, commandId: "command-a", imageId };
@@ -14,7 +14,7 @@ function fixture() {
     const runner = { run: vi.fn(async (argv: readonly string[]) => {
             let stdout = "";
             if (argv[1] === "create") {
-                helper = { id: helperId, name: "/" + argv[argv.indexOf("--name") + 1], imageId, image: profile.image, owner: "deploylite", projectId: "project-a", databaseId: "orders", engine: "postgres", commandId: "command-a", planDigest: plan.planDigest,
+                helper = { id: helperId, name: "/" + argv[argv.indexOf("--name") + 1], imageId, image: profile.image, owner: "deploylite", projectId: "project-a", databaseId: "orders", engine, commandId: "command-a", planDigest: plan.planDigest,
                     environmentFingerprint: null, storageInitialization: "v1", networkMode: "none", running: false, health: null, user: "0:0", readOnly: true, privileged: false, capAdd: ["CHOWN"], capDrop: ["ALL"], securityOpt: ["no-new-privileges"], cpu: 1000000000, memory: 536870912, pids: 256, ports: null };
                 stdout = helperId;
             }
@@ -110,4 +110,11 @@ it("refuses a previous global consumer before initializing existing storage", as
     });
     await expect(f.initializer.initializeFresh(f.input, f.original, f.authority, new AbortController().signal)).rejects.toThrow("Database storage initialization is unavailable");
     expect(f.runner.run).not.toHaveBeenCalled();
+});
+
+it("initializes original Redis storage even when the approved image has no VOLUME declaration",async () => {
+ const f=fixture("redis");f.nativeInspector.inspectImage.mockResolvedValue({imageId,declaredVolumes:[]});
+ await expect(f.initializer.initializeFresh(f.input,f.original,f.authority,new AbortController().signal)).resolves.toEqual(f.original);
+ expect(f.runner.run.mock.calls.map(([argv]) => argv[1])).toEqual(["create","start","wait","rm"]);
+ expect(f.runner.run.mock.calls[0]![0]).toContain(`type=volume,source=${f.original.volume.name},target=/data,volume-nocopy`);
 });

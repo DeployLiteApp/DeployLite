@@ -110,3 +110,10 @@ it("refuses start admission for a running daemon or a changed original consumer"
     changed.addConsumer();
     await expect(changed.verifier.verifyStopped(changed.input, changed.original, changed.authority, new AbortController().signal)).rejects.toThrow();
 });
+
+it("requires the original mounted Redis volume independently of an optional image VOLUME declaration",async () => {
+ const f=fixture("redis");f.nativeInspector.inspectImage.mockResolvedValue({imageId,declaredVolumes:[]});
+ await expect(f.verifier.verify(f.input,f.original,f.authority,new AbortController().signal)).resolves.toEqual({containerId,uid:999});
+ f.nativeInspector.inspectImage.mockResolvedValue({imageId,declaredVolumes:["/unexpected"]});
+ await expect(f.verifier.verify(f.input,f.original,f.authority,new AbortController().signal)).rejects.toThrow();
+});

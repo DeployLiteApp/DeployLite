@@ -18,11 +18,12 @@ function fixture(kind: Kind = "network") {
   const resource: Resource = { ...(kind === "network" ? { id: "b".repeat(64), internal: false } : { createdAt: "2026-10-08T00:00:00Z" }), name: r.runtimeName, driver: r.driver, scope: "local", optionsCount: 0, owner: "deploylite", projectId: "project-1", resourceKind: kind, resourceKey: r.key };
   const container: Container = { id: "c".repeat(64), owner: "deploylite", projectId: "project-1", service: "app", effectiveImage: image, running: false, networks: [{ name: preview.networks[0]!.runtimeName, networkId: "b".repeat(64) }], mounts: [{ type: "volume", name: preview.volumes[0]!.runtimeName, target: "/data", readOnly: false }], configuredMounts: [{ type: "volume", name: preview.volumes[0]!.runtimeName, target: "/data", readOnly: false }] };
   const calls: readonly string[][] = [];
-  const f = { resource, container, containers: [container], calls: calls as string[][], afterResource: undefined as Resource | undefined, afterContainer: undefined as Container | undefined, afterIds: undefined as string[] | undefined, reads: 0, lists: 0, containerReads: 0, runError: undefined as Error | undefined, outputOverride: undefined as string | undefined };
+  const f = { resource, container, containers: [container], calls: calls as string[][], afterResource: undefined as Resource | undefined, afterContainer: undefined as Container | undefined, afterIds: undefined as string[] | undefined, reads: 0, lists: 0, containerReads: 0, networkReads: 0, stoppedNetwork: undefined as Resource | undefined, afterStoppedNetwork: undefined as Resource | undefined, runError: undefined as Error | undefined, outputOverride: undefined as string | undefined };
   const runner: DockerCliRunner = { run: async (argv) => {
     f.calls.push([...argv]); if (f.runError) throw f.runError;
     let stdout: string;
-    if (argv[1] === kind && argv[2] === "inspect") stdout = JSON.stringify(++f.reads === 2 && f.afterResource ? f.afterResource : f.resource);
+    if (kind === "volume" && argv[1] === "network" && argv[2] === "inspect" && f.stoppedNetwork) stdout = JSON.stringify(++f.networkReads === 2 && f.afterStoppedNetwork ? f.afterStoppedNetwork : f.stoppedNetwork);
+    else if (argv[1] === kind && argv[2] === "inspect") stdout = JSON.stringify(++f.reads === 2 && f.afterResource ? f.afterResource : f.resource);
     else if (argv[1] === "container" && argv[2] === "ls") stdout = (++f.lists === 2 && f.afterIds ? f.afterIds : f.containers.map(c => c.id)).join("\n");
     else if (argv[1] === "container" && argv[2] === "inspect") { const id = argv.at(-1); const c = f.containers.find(c => c.id === id); stdout = JSON.stringify(++f.containerReads > f.containers.length && f.afterContainer ? f.afterContainer : c); }
     else throw new Error("unexpected mutation or argv");
@@ -169,4 +170,40 @@ describe("explicit read-only Compose resource inspection", () => {
 it("retains a stopped volume consumer while omitting an empty builtin none endpoint",async()=>{
  const s=fixture("volume");s.f.container.networks=[{name:"none",networkId:""}];
  await expect(inspect(s)).resolves.toMatchObject({containers:[{containerId:"c".repeat(64),running:false,attached:true,networks:[],mounts:[{target:"/data",readOnly:false}]}]});
+});
+
+for (const field of ["composeConfigDigest","composeEnvironmentDigest"] as const) it(`retains the original scoped consumer when Docker emits absent optional ${field} as empty`,async () => {
+ const s=fixture("volume");Object.assign(s.f.container,{[field]:""});
+ const observation=await inspect(s);
+ expect(observation.containers).toHaveLength(1);
+ expect(observation.containers[0]).toMatchObject({containerId:s.f.container.id,running:false,attached:true,mounts:[{target:"/data",readOnly:false}]});
+ expect(observation.containers[0]).not.toHaveProperty(field);
+ const invalid=fixture("volume");Object.assign(invalid.f.container,{[field]:"private"});
+ await expect(inspect(invalid)).rejects.toMatchObject({code:"COMPOSE_INSPECTION_INVALID"});
+});
+
+function stoppedVolumeNetworkFixture() {
+ const s=fixture("volume"), planned=preview.networks[0]!;
+ s.f.container.networks=[{name:planned.runtimeName,networkId:""}];
+ s.f.stoppedNetwork={id:"b".repeat(64),internal:planned.internal,name:planned.runtimeName,driver:planned.driver,scope:"local",optionsCount:0,owner:"deploylite",projectId:"project-1",resourceKind:"network",resourceKey:planned.key};
+ return s;
+}
+it("corroborates the original named network of a stopped volume consumer with two owned stable reads",async()=>{
+ const s=stoppedVolumeNetworkFixture();
+ await expect(inspect(s)).resolves.toMatchObject({containers:[{containerId:s.f.container.id,attached:true,networks:[{name:preview.networks[0]!.runtimeName,networkId:"b".repeat(64)}],mounts:[{target:"/data",readOnly:false}]}]});
+ expect(s.f.networkReads).toBe(2);
+});
+it("rejects a replaced network while corroborating a stopped volume consumer",async()=>{
+ const s=stoppedVolumeNetworkFixture();s.f.afterStoppedNetwork={...s.f.stoppedNetwork!,id:"d".repeat(64)};
+ await expect(inspect(s)).rejects.toMatchObject({code:"COMPOSE_INSPECTION_UNSTABLE"});
+});
+it("rejects foreign named network metadata for a stopped volume consumer",async()=>{
+ const s=stoppedVolumeNetworkFixture();s.f.stoppedNetwork!.owner="foreign";
+ await expect(inspect(s)).rejects.toMatchObject({code:"COMPOSE_RESOURCE_FOREIGN"});
+});
+
+it("does not corroborate an absent endpoint of a running volume consumer",async()=>{
+ const s=stoppedVolumeNetworkFixture();s.f.container.running=true;
+ await expect(inspect(s)).rejects.toMatchObject({code:"COMPOSE_INSPECTION_FAILED"});
+ expect(s.f.networkReads).toBe(0);
 });

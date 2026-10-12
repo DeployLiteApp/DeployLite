@@ -64,7 +64,7 @@ export function createManagedDatabaseReadinessVerifier(supplied: ManagedDatabase
                         fail();
                     const image = await call(() => options.nativeInspector.inspectImage(plan.image, controller.signal));
                     const targets = [plan.volume.target, ...(plan.engine === "mongodb" ? ["/data/configdb"] : [])];
-                    if (image.imageId !== input.imageId || !image.declaredVolumes.includes(plan.volume.target) || image.declaredVolumes.some(path => !targets.includes(path)))
+                    if (image.imageId !== input.imageId || (!image.declaredVolumes.includes(plan.volume.target) && !(plan.engine === "redis" && image.declaredVolumes.length === 0)) || image.declaredVolumes.some(path => !targets.includes(path)))
                         fail();
                     const container = await call(() => options.nativeInspector.inspectContainer(input.containerId, controller.signal));
                     if (container.id !== input.containerId || container.name !== "/" + managedDatabaseContainerName(plan.projectId, plan.databaseId) || container.imageId !== input.imageId || container.image !== plan.image

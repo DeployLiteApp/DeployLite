@@ -4,19 +4,19 @@ import { InMemoryCapabilityRegistry } from "@deploylite/contracts";
 import { digestControlInput, managedDatabaseRuntimeExecutionDigest, planManagedDatabaseProfile } from "@deploylite/domain";
 import { createManagedDatabaseStartupPreparation } from "./docker-managed-database-startup-preparation.js";
 const trustKey = "test-agent-key-" + "x".repeat(64), password = "b".repeat(64), imageId = "sha256:" + "c".repeat(64);
-function fixture() {
+function fixture(engine: "postgres" | "redis" = "postgres") {
     const imagePolicy = { policyVersion: "images-1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true };
-    const request = { schemaVersion: 1, projectId: "project-a", databaseId: "orders", engine: "postgres" as const };
-    const profile = { schemaVersion: 1, profileId: "profile-a", engine: "postgres" as const, image: `registry.example.com/postgres@sha256:${"a".repeat(64)}`, dataPath: "/var/lib/postgresql/data", containerPort: 5432, credentialKeys: ["DATABASE_PASSWORD"], backupStrategy: "engine-native" as const };
+    const request = { schemaVersion: 1, projectId: "project-a", databaseId: "orders", engine };
+    const profile = { schemaVersion: 1, profileId: "profile-a", engine, image: `registry.example.com/${engine}@sha256:${"a".repeat(64)}`, dataPath: engine === "redis" ? "/data" : "/var/lib/postgresql/data", containerPort: engine === "redis" ? 6379 : 5432, credentialKeys: ["DATABASE_PASSWORD"], backupStrategy: engine === "redis" ? "volume-quiesced" as const : "engine-native" as const };
     const plan = planManagedDatabaseProfile(request, profile, imagePolicy), preparation = { ...request, profileId: profile.profileId, planDigest: plan.planDigest, environmentFingerprint: "d".repeat(32) };
     const inputDigest = managedDatabaseRuntimeExecutionDigest(preparation), lease = { projectId: "project-a", leaseId: "lease-a", fence: 1, expiresAt: 10000 };
-    const environment = { POSTGRES_DB: "orders", POSTGRES_USER: "dl_" + digestControlInput({ projectId: "project-a", databaseId: "orders" }).slice(0, 12), POSTGRES_PASSWORD: password };
+    const environment: Record<string,string> = engine === "redis" ? {REDIS_PASSWORD:password} : { POSTGRES_DB: "orders", POSTGRES_USER: "dl_" + digestControlInput({ projectId: "project-a", databaseId: "orders" }).slice(0, 12), POSTGRES_PASSWORD: password };
     const command = { ...preparation, action: "database.runtime", operation: "database.runtime.apply", agentId: "agent-a", commandId: "command-a", idempotencyKey: "key-a", inputDigest,
         requiredCapabilities: ["database.runtime.v1"], authority: { schemaVersion: 1, projectId: "project-a", commandId: "command-a", action: "project.update", inputDigest, projectLease: lease }, lease,
         context: { requestId: "request-a", correlationId: "correlation-a" }, timeoutMs: 5000, cancellationRequested: false,
         sealedEnvironment: sealAgentSecretEnvelope(environment, trustKey, { agentId: "agent-a", commandId: "command-a", inputDigest, projectId: "project-a" }) };
     const imageInspector = { inspectImage: vi.fn(async () => ({ imageId, declaredVolumes: [profile.dataPath] })) }, authority = { assertValid: vi.fn(async () => { }) };
-    const options = { agentId: "agent-a", owner: "deploylite", trustKey, imagePolicy, profiles: { postgres: profile }, capabilities: new InMemoryCapabilityRegistry(["database.runtime.v1"]),
+    const options = { agentId: "agent-a", owner: "deploylite", trustKey, imagePolicy, profiles: { [engine]: profile }, capabilities: new InMemoryCapabilityRegistry(["database.runtime.v1"]),
         clock: { now: () => 1000 }, imageInspector, limits: { deadlineMs: 5000, cpus: 1, memoryBytes: 536870912, pidsLimit: 256 } };
     return { request, profile, plan, command, options, imageInspector, authority, prepare: createManagedDatabaseStartupPreparation(options) };
 }
@@ -83,4 +83,12 @@ it("rejects foreign digests, expired leases, missing capability, wrong agents an
     cancelled.abort();
     await expect(f.prepare.prepare(f.command, f.authority, cancelled.signal)).rejects.toThrow("Database startup preparation is unavailable");
     expect(f.imageInspector.inspectImage).toHaveBeenCalledOnce();
+});
+
+it("keeps the explicit owned Redis data mount when its approved image declares no Docker volumes",async () => {
+ const f=fixture("redis");f.imageInspector.inspectImage.mockResolvedValue({imageId,declaredVolumes:[]});
+ const prepared=await f.prepare.prepare(f.command,f.authority,new AbortController().signal);
+ expect(prepared.runtimeArgv).toContain(`type=volume,source=${f.plan.volume.runtimeName},target=/data,volume-nocopy`);
+ expect(prepared.runtimeArgv).toContain("--read-only");
+ expect(prepared.environment.REDIS_PASSWORD).toBe(password);
 });

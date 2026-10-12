@@ -66,7 +66,7 @@ export function createManagedDatabaseStartupPreparation(supplied: ManagedDatabas
                 const image = structuredClone(await awaitAbortable(() => options.imageInspector.inspectImage(plan.image, controller.signal), controller.signal));
                 current();
                 const allowed = [plan.volume.target, ...(plan.engine === "mongodb" ? ["/data/configdb"] : [])];
-                if (!/^sha256:[a-f0-9]{64}$/.test(image.imageId) || !Array.isArray(image.declaredVolumes) || !image.declaredVolumes.includes(plan.volume.target)
+                if (!/^sha256:[a-f0-9]{64}$/.test(image.imageId) || !Array.isArray(image.declaredVolumes) || (!image.declaredVolumes.includes(plan.volume.target) && !(plan.engine === "redis" && image.declaredVolumes.length === 0))
                     || image.declaredVolumes.some(path => !allowed.includes(path)) || new Set(image.declaredVolumes).size !== image.declaredVolumes.length)
                     fail();
                 await awaitAbortable(() => authority.assertValid(), controller.signal);

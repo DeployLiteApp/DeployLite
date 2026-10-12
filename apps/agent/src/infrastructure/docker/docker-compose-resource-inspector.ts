@@ -9,12 +9,13 @@ import { COMPOSE_CONTAINER_INSPECT_FORMAT, COMPOSE_NETWORK_INSPECT_FORMAT, COMPO
 
 const id = z.string().regex(/^[a-f0-9]{64}$/);
 const nullableText = z.string().max(512).nullable();
+const optionalDigest = z.union([z.string().regex(/^[a-f0-9]{64}$/), z.literal("").transform(() => null)]).nullable().optional();
 const common = { name: z.string().max(160), driver: z.string().max(64), scope: z.string().max(64),
   optionsCount: z.number().int().nonnegative(), owner: nullableText, projectId: nullableText, resourceKind: nullableText, resourceKey: nullableText };
 const networkSchema = z.object({ ...common, id, internal: z.boolean() }).strict();
 const volumeSchema = z.object({ ...common, createdAt: z.string().max(64).refine(v => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)$/.test(v) && Number.isFinite(Date.parse(v))) }).strict();
 const containerSchema = z.object({ id, owner: nullableText, projectId: nullableText, service: nullableText,
-  composeRevisionId: nullableText.optional(), composeConfigDigest: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(), composeEnvironmentDigest: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
+  composeRevisionId: nullableText.optional(), composeConfigDigest: optionalDigest, composeEnvironmentDigest: optionalDigest,
   effectiveImage: z.string().max(512), running: z.boolean(),
   networks: z.array(z.object({ name: z.string().max(160), networkId: z.string().max(64) }).strict()).max(128),
   mounts: z.array(z.object({ type: z.string().max(32), name: z.string().max(160).nullable(), target: z.string().max(256), readOnly: z.boolean() }).strict()).max(128),
@@ -96,11 +97,32 @@ export function createDockerComposeResourceInspector(supplied: DockerComposeReso
         }
         return records;
       }
+      async function corroborateStoppedNetworks(records: Container[]) {
+        const identities: Record<string, string> = {};
+        if (kind !== "volume") return identities;
+        for (const c of records) {
+          const service = preview.services.find(s => s.name === c.service);
+          if (c.running || c.owner !== options.owner || c.projectId !== preview.projectId || !service || c.effectiveImage !== service.image) continue;
+          for (const edge of c.networks) {
+            if (edge.networkId !== "" || edge.name === "none" || identities[edge.name]) continue;
+            const plannedNetwork = preview.networks.find(n => n.runtimeName === edge.name);
+            if (!plannedNetwork) fail("COMPOSE_RESOURCE_CONFLICT");
+            const network = parse(networkSchema, await run(["docker", "network", "inspect", "--format", COMPOSE_NETWORK_INSPECT_FORMAT, edge.name]));
+            if (network.owner !== options.owner || network.projectId !== preview.projectId || network.resourceKind !== "network" || network.resourceKey !== plannedNetwork.key) fail("COMPOSE_RESOURCE_FOREIGN");
+            if (network.name !== plannedNetwork.runtimeName || network.driver !== plannedNetwork.driver || network.scope !== "local" || network.optionsCount !== 0 || network.internal !== plannedNetwork.internal) fail("COMPOSE_RESOURCE_CONFLICT");
+            identities[edge.name] = network.id;
+          }
+        }
+        return identities;
+      }
       const before = await inspectResource();
       const ids = await listIds(); const first = await readContainers(ids);
+      const firstNetworks = await corroborateStoppedNetworks(first);
       const after = await inspectResource(); const afterIds = await listIds();
       if (protocolPayloadFingerprint(before) !== protocolPayloadFingerprint(after) || protocolPayloadFingerprint(ids) !== protocolPayloadFingerprint(afterIds)) fail("COMPOSE_INSPECTION_UNSTABLE");
       const second = await readContainers(afterIds);
+      const secondNetworks = await corroborateStoppedNetworks(second);
+      if (protocolPayloadFingerprint(firstNetworks) !== protocolPayloadFingerprint(secondNetworks)) fail("COMPOSE_INSPECTION_UNSTABLE");
       if (protocolPayloadFingerprint(first) !== protocolPayloadFingerprint(second)) fail("COMPOSE_INSPECTION_UNSTABLE");
       const physicalIdentity = "id" in before ? before.id : before.createdAt;
       const containers: { containerId: string; service: string; running: boolean; attached: boolean; composeRevisionId?: string; composeConfigDigest?: string; composeEnvironmentDigest?: string; networks: { name: string; networkId: string }[]; mounts: { target: string; readOnly: boolean }[] }[] = [];
@@ -122,8 +144,15 @@ export function createDockerComposeResourceInspector(supplied: DockerComposeReso
         // was ownership-bound above, so project this exact named edge using its current physical identity.
         // A stopped builtin none namespace has no physical endpoint. Retain the
         // consumer/mount proof, but do not invent a project network identity.
-        const networks = c.networks.filter(network => !(network.name === "none" && network.networkId === "" && !c.running)).map(network => ({ name: network.name, networkId: kind === "network" && network.name === planned.runtimeName
-          && network.networkId === "" && !c.running ? physicalIdentity : network.networkId }));
+        const networks = c.networks.filter(network => !(network.name === "none" && network.networkId === "" && !c.running)).map(network => {
+          let networkId = network.networkId;
+          if (!c.running && networkId === "") {
+            if (kind === "network" && network.name === planned.runtimeName) networkId = physicalIdentity;
+            // Volume observations use only the exact owned network corroborated in both snapshots.
+            else if (kind === "volume") networkId = firstNetworks[network.name] ?? networkId;
+          }
+          return {name: network.name, networkId};
+        });
         containers.push({ containerId: c.id, service: service!.name, running: c.running, attached,
           ...(c.composeRevisionId ? { composeRevisionId: c.composeRevisionId } : {}),
           ...(c.composeConfigDigest ? { composeConfigDigest: c.composeConfigDigest } : {}),
