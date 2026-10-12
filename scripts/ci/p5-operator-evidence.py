@@ -2,6 +2,7 @@
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -17,8 +18,38 @@ def digest(value):
 def exact(value, keys, reason):
     native.require(isinstance(value, dict) and set(value) == set(keys), reason)
 
+def validate_current_metrics(result, shared, ready, stopped, started):
+    proofs=result["currentMetrics"]
+    exact(proofs,{"runningBeforeStop","stopped","runningAfterStart"},"three_current_metrics_states_required")
+    contexts=set()
+    for name,state,lower,upper in (("runningBeforeStop","running",ready["observedAt"],stopped["observedAt"]),
+            ("stopped","stopped",stopped["observedAt"],started["observedAt"]),("runningAfterStart","running",started["observedAt"],9007199254740991)):
+        proof=proofs[name];exact(proof,{"observation","before","after"},"current_metrics_window_required")
+        observation=proof["observation"]
+        exact(observation,shared | {"action","originalCommandId","profileId","context","observedAt","state","health","uid","storage","redacted","metrics","metricsObservedAt"},"public_current_metrics_required")
+        exact(observation["context"],{"requestId","correlationId"},"current_metrics_context_required")
+        native.require(all(isinstance(value,str) and 1 <= len(value) <= 256 for value in observation["context"].values()),"current_metrics_request_scope_required")
+        contexts.add((observation["context"]["requestId"],observation["context"]["correlationId"]))
+        identity=shared | {"originalCommandId","profileId","state","health","uid","storage","redacted"}
+        native.require(all(observation[key]==result["currentHealth"][name]["observation"][key] for key in identity)
+            and observation["action"]=="database.runtime.metrics" and type(observation["schemaVersion"]) is int and observation["schemaVersion"]==1
+            and observation["redacted"] is True and (type(observation["uid"]) is int and observation["uid"]==result["uid"] if state=="running" else observation["uid"] is None),"current_metrics_identity_state_required")
+        before,after,observed=proof["before"],proof["after"],observation["observedAt"]
+        native.require(all(type(value) is int and 0 <= value <= 9007199254740991 for value in (before,after,observed))
+            and ready["observedAt"] <= before <= observed <= after and after-before < 60000 and lower <= before <= after <= upper,"current_metrics_chronology_required")
+        metrics,sampled=observation["metrics"],observation["metricsObservedAt"]
+        if state=="stopped":native.require(metrics is None and sampled is None,"stopped_metrics_must_be_absent")
+        else:
+            native.require(type(sampled) is int and before <= sampled <= observed,"current_metrics_sample_window_required")
+            exact(metrics,{"cpuPercent","memoryUsage","memoryPercent","networkIO","blockIO","pids"},"strict_public_counters_required")
+            native.require(all(type(metrics[key]) in (int,float) and 0 <= metrics[key] <= 1.7976931348623157e308 and math.isfinite(metrics[key]) for key in ("cpuPercent","memoryPercent"))
+                and type(metrics["pids"]) is int and 0 < metrics["pids"] <= 9007199254740991,"current_metrics_numeric_counters_required")
+            quantity=r"[0-9]{1,16}(?:\.[0-9]{1,6})?(?:B|kB|MB|GB|TB|PB|EB|KiB|MiB|GiB|TiB|PiB|EiB)"
+            native.require(all(isinstance(metrics[key],str) and re.fullmatch(quantity+r" / "+quantity,metrics[key]) for key in ("memoryUsage","networkIO","blockIO")),"rounded_public_metrics_pairs_required")
+    native.require(len(contexts)==3,"distinct_current_metrics_requests_required")
+
 def validate_result(result, profile):
-    exact(result, {"receipt", "uid", "original", "nativeStop", "nativeStart", "currentHealth", "internalConnection", "authenticatedProbe", "restart", "persistence", "cleanup", "operator"}, "public_operator_result_required")
+    exact(result, {"receipt", "uid", "original", "nativeStop", "nativeStart", "currentHealth", "currentMetrics", "internalConnection", "authenticatedProbe", "restart", "persistence", "cleanup", "operator"}, "public_operator_result_required")
     native.require(type(result["uid"]) is int and 0 < result["uid"] <= 4294967294
         and all(result[key] == "passed" for key in ("authenticatedProbe", "restart", "persistence"))
         and result["cleanup"] == "verified", "executed_operator_persistence_cleanup_required")
@@ -102,12 +133,14 @@ def validate_result(result, profile):
             and ready["observedAt"] <= before <= observed <= after and after-before < 60000
             and lower <= observed <= upper,"current_health_chronology_required")
     native.require(len(contexts)==3,"distinct_current_health_requests_required")
+    validate_current_metrics(result,shared,ready,stopped,started)
     operator = result["operator"]
     flags = {"signedHttp": "passed", "postgresReplay": "passed", "originalRows": "unchanged", "cipherRows": "unchanged", "atomicAudit": "passed", "cacheOnlyReplay": "passed", "executorRemoved": "passed"}
-    flags.update(healthSignedHttp="passed",healthNoLedgerWrites="passed",healthExecutorRemoved="passed",startAtomicAudit="passed", startCacheOnlyReplay="passed", startExecutorRemoved="passed", stoppedCacheNoRestart="passed")
-    exact(operator, set(flags) | {"applyCommand", "stopCommand", "startCommand", "stopDispatches", "startDispatches", "healthDispatches"}, "complete_operator_evidence_required")
+    flags.update(metricsSignedHttp="passed",metricsNoLedgerWrites="passed",metricsExecutorRemoved="passed",healthSignedHttp="passed",healthNoLedgerWrites="passed",healthExecutorRemoved="passed",startAtomicAudit="passed", startCacheOnlyReplay="passed", startExecutorRemoved="passed", stoppedCacheNoRestart="passed")
+    exact(operator, set(flags) | {"applyCommand", "stopCommand", "startCommand", "stopDispatches", "startDispatches", "healthDispatches", "metricsDispatches", "statsDispatches"}, "complete_operator_evidence_required")
     native.require(all(operator[key] == value for key, value in flags.items()) and type(operator["stopDispatches"]) is int
-        and operator["stopDispatches"] == 1 and type(operator["startDispatches"]) is int and operator["startDispatches"] == 1 and type(operator["healthDispatches"]) is int and operator["healthDispatches"] == 3, "executed_operator_boundaries_required")
+        and operator["stopDispatches"] == 1 and type(operator["startDispatches"]) is int and operator["startDispatches"] == 1 and type(operator["healthDispatches"]) is int and operator["healthDispatches"] == 3 and type(operator["metricsDispatches"]) is int and operator["metricsDispatches"]==3
+        and type(operator["statsDispatches"]) is int and operator["statsDispatches"]==2, "executed_operator_boundaries_required")
     for key, receipt in (("applyCommand", ready), ("stopCommand", stopped), ("startCommand", started)):
         exact(operator[key], {"id", "correlationId", "status"}, "public_operator_command_required")
         native.require(operator[key] == {"id": receipt["commandId"], "correlationId": receipt["correlationId"], "status": "completed"}, "completed_original_operator_command_required")

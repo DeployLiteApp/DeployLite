@@ -21,7 +21,7 @@ DeployLite retains its existing project authority, image policy, encrypted secre
 
 ## Active delivery units
 
-Early gate counts are historical observations and grant no acceptance where tests or gates were omitted. Complete source-bound evidence below identifies only its verified functional scope; whole P5 remains open.
+Early gate counts below are historical observations, not current acceptance. The zero-skipped policy and [PR validation audit](p5-pr-validation-audit.md) supersede incomplete earlier evidence. Exact-head complete receipts below identify only their verified functional scope; whole P5 remains open.
 
 | Unit | Boundary | Status |
 | --- | --- | --- |
@@ -32,7 +32,7 @@ Early gate counts are historical observations and grant no acceptance where test
 | B1 | Database-consistent backup and verified durable archive evidence | Pending |
 | R3 | Authorized retention execution with fresh scope/hash/protection verification and atomic evidence | Pending |
 | D1 | Confirmed destructive restore, verification, audit and recovery | Pending |
-| H1 | Scoped health and secret-safe telemetry | Current health accepted on protected main `62a4616` / run `38277332975` with fifteen actual observations across five engines; metrics, logs and operator UI acceptance remain pending |
+| H1 | Scoped health and secret-safe telemetry | Current health accepted on protected main `62a4616` / run `38277332975` with fifteen actual observations across five engines; metrics endpoint/configuration published in draft #459 `ea75adc`, mandatory five-engine metrics proof prepared in #460. Logs and operator UI acceptance remain pending |
 | A1 | Integrated PostgreSQL/Docker acceptance and phase review on protected main | Pending |
 
 R1 is metadata planning only and grants no deletion authority. The count policy is explicit and positive, with no guessed retention duration or default. Restore-protected archives are retained even outside the count. Archive IDs, SHA-256 content/manifest, timestamp, project, volume, destination, keep count and protected IDs bind the preview; inventory order is deterministic. Duplicate archive IDs, unknown/duplicate protection references, invalid count, foreign receipt scope and non-contract fields fail with a bounded generic error.
@@ -661,6 +661,15 @@ Eight route/bootstrap registration assertionsRED, two API configuration assertio
 Executor draft456bdc3529/run38117860154 owner verifies9/9gates/3038unit/allrequired physical suites,0skipped,pending,failed,exact227global+24P3+233operator hashes,START+15current-health views and owned restart/cleanup. This is metrics source/regression evidence, not actual metrics acceptance.
 
 Metrics endpoint/config/bootstrap final source verification: fresh full Node24 pnpm check exits0:3073unit across8projects,zero skipped/failed. Adds11cases to API transport head. Actual hosted five-engine current metrics and exact-head gates remain pending; wholeP5 remains open.
+
+
+### H1 mandatory five-engine current metrics physical acceptance — 2026-10-11
+
+The existing mandatory five-engine API/PostgreSQL/signed-agent/Docker fixture now queries metrics before STOP, while stopped and after START. Each public view matches original container/image/network/storage/profile/current state/non-root identity and bounded query/sample time. Running must execute exactly one scoped Docker stats read; stopped returns absent sample/counters and executes none. Three signed metrics requests/two actual stats reads per engine are required. Each query preserves project command/cache/audit/encrypted-row snapshots. Reopen without executors/capabilities rejects metrics without dispatch/stats. All previous lifecycle/health/authenticated-data/atomic-audit/cache-only/persistence/owned-cleanup assertions remain mandatory.
+
+A standalone prospective assertionRED proves old lifecycle/health proof accepts missing metrics. Extended public fixture produces2positive errors before guard change. Strict metrics guard adds original full identity, three current windows, typed public counters/rounded pairs, sample timing and required signed/read-only/executor-removed dispatch proof. Three type assertionsRED and one state-window assertionRED require actual JSON types and full query window inside current lifecycle phase. Final14proof+12admission+12native=38pureguard PASS/APItypesPASS. Only injected/pure guards/types execute locally; actual hosted metrics and full/exact-head source checks pending. Rollback removes added metrics fixture/proof/tests only, retaining every prior case/guard/assertion. WholeP5 remains open.
+
+Mandatory metrics physical fixture source verification: fresh full Node24 pnpm check exits0:3073unit across8projects,zero skipped/failed;38pureguard PASS/APItypesPASS. Actual three-state/five-engine metrics hosted acceptance and exact-head full gates remain pending. The 15 metric views/10 actual stats reads are requirements, not observed hosted PASS yet. WholeP5 open.
 ### Early fixture disconnect barrier for exact main PostgreSQL CI — 2026-10-12
 
 After PR439 merged, automatic exact-main run 38240667256 passed all 69 database assertions but failed on an unhandled PostgreSQL 57P01 during the owned restart; baseline consequently failed. The failed run remains unaccepted. This unit applies the already reviewed fixture shutdown correction from draft PR469 (5a82cf3) early, without changing runtime pools or acceptance expectations. It waits for public pool connect/remove events to prove all original clients disconnected before restart and teardown. The original prospective delayed two-client disconnect assertion was observed RED before that correction, then three pure simulation cases passed. The early application passed Node24 full source checks (2,862 unit cases, zero skipped/failed), PR537 nine exact-head gates, and protected main ad3e4e8 automatic run 38243462788 nine exact-main gates with all physical cases, hashes and cleanup; Engram #26009 records independent verification. Whole P5 remains open.
