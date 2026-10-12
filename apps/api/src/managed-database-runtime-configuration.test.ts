@@ -100,3 +100,17 @@ it("rejects explicit stop activation without the original command reader", async
   await expect(createConfiguredManagedDatabaseApi(f.input)).rejects.toThrow("Database API configuration is invalid.");
   expect(f.controls.claimProjectUpdate).not.toHaveBeenCalled();
 });
+
+it("withholds operator start maps without an original command reader, preserving apply-only composition",async()=>{
+  const f=fixture(),result=await createConfiguredManagedDatabaseApi(f.input);
+  expect(result).toHaveProperty("startExecutions",new Map());expect([...result.executions.keys()]).toEqual(["project-a","project-b"]);
+});
+it("composes start with both historical signed readers even when new stop execution is disabled",async()=>{
+  const f=fixture();Object.assign(f.controls,{findProjectUpdateById:vi.fn(async()=>null)});
+  const result=await createConfiguredManagedDatabaseApi(f.input);expect(result).toHaveProperty("startExecutions",expect.any(Map));
+  const starts=(result as typeof result & {startExecutions:Map<string,import("./managed-database-start.js").ManagedDatabaseStartAccess>}).startExecutions;
+  expect([...starts.keys()]).toEqual(["project-a","project-b"]);const scope=starts.get("project-a")!;
+  expect(scope).toMatchObject({controls:f.controls,agentId:"agent-a",deadlineMs:60000});
+  expect(scope.transport.available()).toBe(true);expect(scope.originalTransport.available()).toBe(true);expect(scope.originalStopTransport.available()).toBe(true);
+  expect(result.stopExecutions.size).toBe(0);expect(f.secrets.find).not.toHaveBeenCalled();expect(f.controls.claimProjectUpdate).not.toHaveBeenCalled();
+});
