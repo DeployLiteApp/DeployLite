@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "fixtureOnly": true,
+  "dokployReference": "5be17d3dd01d9489521cde2eca7d997b14c54653",
+  "schemaDefaultExceptions": {
+    "mariadb": "Reference mariadb:6 does not resolve; explicit official11.8 fixture candidate.",
+    "mongodb": "Reference mongo:15 does not resolve; explicit official8 fixture candidate."
+  },
+  "profiles": {
+    "postgres": {
+      "schemaVersion": 1,
+      "profileId": "ci-postgres",
+      "engine": "postgres",
+      "image": "docker.io/library/postgres@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336",
+      "dataPath": "/var/lib/postgresql",
+      "containerPort": 5432,
+      "credentialKeys": [
+        "DATABASE_PASSWORD"
+      ],
+      "backupStrategy": "engine-native"
+    },
+    "mysql": {
+      "schemaVersion": 1,
+      "profileId": "ci-mysql",
+      "engine": "mysql",
+      "image": "docker.io/library/mysql@sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242",
+      "dataPath": "/var/lib/mysql",
+      "containerPort": 3306,
+      "credentialKeys": [
+        "DATABASE_PASSWORD",
+        "DATABASE_ROOT_PASSWORD"
+      ],
+      "backupStrategy": "engine-native"
+    },
+    "mariadb": {
+      "schemaVersion": 1,
+      "profileId": "ci-mariadb",
+      "engine": "mariadb",
+      "image": "docker.io/library/mariadb@sha256:6422478cb8e159f080fb1d8ccf65101e26fe51385787fde7d16c3b165a331f15",
+      "dataPath": "/var/lib/mysql",
+      "containerPort": 3306,
+      "credentialKeys": [
+        "DATABASE_PASSWORD",
+        "DATABASE_ROOT_PASSWORD"
+      ],
+      "backupStrategy": "engine-native"
+    },
+    "mongodb": {
+      "schemaVersion": 1,
+      "profileId": "ci-mongodb",
+      "engine": "mongodb",
+      "image": "docker.io/library/mongo@sha256:d731d77bfd7afd66bd487bdf627b5bf7ce4c3602ec461d635977021db529ebbc",
+      "dataPath": "/data/db",
+      "containerPort": 27017,
+      "credentialKeys": [
+        "DATABASE_PASSWORD"
+      ],
+      "backupStrategy": "engine-native"
+    },
+    "redis": {
+      "schemaVersion": 1,
+      "profileId": "ci-redis",
+      "engine": "redis",
+      "image": "docker.io/library/redis@sha256:2c2dff791878316e3b083188be0d578423b24813cdda5de0e80ea4f7b3e6bfd6",
+      "dataPath": "/data",
+      "containerPort": 6379,
+      "credentialKeys": [
+        "DATABASE_PASSWORD"
+      ],
+      "backupStrategy": "volume-quiesced"
+    }
+  }
+}
