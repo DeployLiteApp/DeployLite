@@ -1236,7 +1236,8 @@
     "packages/contracts/src/deployment-contract/managed-database-stop.ts",
     "packages/contracts/src/deployment-contract/managed-database-stop.test.ts",
     "packages/domain/src/managed-database-stop-binding.ts",
-    "packages/domain/src/managed-database-stop-binding.test.ts"
+    "packages/domain/src/managed-database-stop-binding.test.ts",
+    "apps/agent/src/managed-database-stop-replay.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
