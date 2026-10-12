@@ -1,3 +1,4 @@
+import {MANAGED_DATABASE_STOP_CAPABILITY} from "@deploylite/contracts";
 import { managedDatabaseNativeImagePolicy } from "@deploylite/domain";
 import { createConfiguredManagedDatabaseRuntime, MANAGED_DATABASE_RUNTIME_CONFIG_ENV } from "./infrastructure/docker/managed-database-runtime-config.js";
 import {
@@ -141,7 +142,7 @@ export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
   const imagePolicy = managedDatabaseNativeImagePolicy();
   const managedDatabaseRuntime = createConfiguredManagedDatabaseRuntime(env[MANAGED_DATABASE_RUNTIME_CONFIG_ENV], {
     agentId: parsed.DEPLOYLITE_AGENT_ID, owner: "deploylite", trustKey: parsed.DEPLOYLITE_AGENT_TRUST_KEY,
-    imagePolicy, capabilities: new InMemoryCapabilityRegistry([MANAGED_DATABASE_RUNTIME_CAPABILITY, COMPOSE_RESOURCE_INSPECTION_CAPABILITY]),
+    imagePolicy, capabilities: new InMemoryCapabilityRegistry([MANAGED_DATABASE_RUNTIME_CAPABILITY, COMPOSE_RESOURCE_INSPECTION_CAPABILITY, MANAGED_DATABASE_STOP_CAPABILITY]),
     clock: { now: Date.now }, runner: nativeRunner
   });
   const pool = createDbPool(parsed.DATABASE_URL); const db = createDbClient(pool);
@@ -176,8 +177,8 @@ export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
   const domainRouteCapabilities = domainRouteApply ? [DOMAIN_ROUTE_APPLY_CAPABILITY] : [];
   const transportPortApply = createRuntimeTransportPortExecutor({ runner, agentId: parsed.DEPLOYLITE_AGENT_ID, allowedNetworks: ["deploylite-agent"] });
   const receiver = new AuthenticatedAgentCommandReceiver({ agentId: parsed.DEPLOYLITE_AGENT_ID, trustKey: parsed.DEPLOYLITE_AGENT_TRUST_KEY,
-    capabilities: ["deploy.execute", "deployment.stop", ...composeCapabilities, ...domainRouteCapabilities, ...(managedDatabaseRuntime ? [MANAGED_DATABASE_RUNTIME_CAPABILITY] : []), TRANSPORT_PORT_APPLY_CAPABILITY, TRANSPORT_PORT_TRANSFER_CAPABILITY], dispatcher, stopDispatcher: dispatcher, networkAttachment, ...(domainRouteApply ? { domainRouteApply } : {}),
-    ...(managedDatabaseRuntime ? { managedDatabaseRuntime } : {}), transportPortApply, resourceInspector: composeInspector, ...(volumeBackup ? { volumeBackup } : {}), ...(volumeAttachment ? { volumeAttachment } : {}), ...(resourceCleanup ? { resourceCleanup } : {}), authorityValidator, replayStore: replayStore as never });
+    capabilities: ["deploy.execute", "deployment.stop", ...composeCapabilities, ...domainRouteCapabilities, ...(managedDatabaseRuntime ? [MANAGED_DATABASE_RUNTIME_CAPABILITY] : []), ...(managedDatabaseRuntime?.stop ? [MANAGED_DATABASE_STOP_CAPABILITY] : []), TRANSPORT_PORT_APPLY_CAPABILITY, TRANSPORT_PORT_TRANSFER_CAPABILITY], dispatcher, stopDispatcher: dispatcher, networkAttachment, ...(domainRouteApply ? { domainRouteApply } : {}),
+    ...(managedDatabaseRuntime ? { managedDatabaseRuntime } : {}), ...(managedDatabaseRuntime?.stop ? {managedDatabaseStop:{stop:managedDatabaseRuntime.stop}} : {}), transportPortApply, resourceInspector: composeInspector, ...(volumeBackup ? { volumeBackup } : {}), ...(volumeAttachment ? { volumeAttachment } : {}), ...(resourceCleanup ? { resourceCleanup } : {}), authorityValidator, replayStore: replayStore as never });
   const server = await startAgentServer({ host: parsed.DEPLOYLITE_AGENT_HOST, port: parsed.DEPLOYLITE_AGENT_PORT, receiver, replayStore: replayStore as never, production: parsed.NODE_ENV === "production" });
   const close = async () => { await server.close(); await closeDbPool(pool); };
   process.once("SIGINT", close); process.once("SIGTERM", close);

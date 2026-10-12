@@ -1,3 +1,4 @@
+import {createHash} from "node:crypto";
 import { getTableColumns } from "drizzle-orm";
 import type { Pool } from "pg";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -111,4 +112,24 @@ describe("read-only completed receipt lookup", () => {
     expect(await store.lookup("command", "original")).toEqual({ physicalId: "original-observed-container" });
     expect(pool.row?.receipt).toEqual({ physicalId: "original-observed-container" });
   });
+  it("corroborates an opaque digest against original canonical bytes without mutating a row",async()=>{
+    const canonical=JSON.stringify({action:"database.runtime",authority:{commandId:"original"},projectId:"project-a"}),f=cached("completed",canonical),before=structuredClone(f.pool.row);
+    const digest=createHash("sha256").update(canonical).digest("hex"),receipt=await f.store.lookupByFingerprintDigest("command",digest);
+    expect(receipt).toEqual({physicalId:"original-observed-container"});expect(f.pool.row).toEqual(before);
+    expect(f.pool.queries.every(query=>query.text.startsWith("select"))).toBe(true);receipt!.physicalId="forged";
+    expect(await f.store.lookupByFingerprintDigest("command",digest)).toEqual({physicalId:"original-observed-container"});
+  });
+  it("rejects wrong, malformed or oversized canonical digest selectors without writes",async()=>{
+    const f=cached(),before=structuredClone(f.pool.row);
+    for(const digest of ["0".repeat(64),"original","", "A".repeat(64)])await expect(f.store.lookupByFingerprintDigest("command",digest)).rejects.toThrow();
+    f.pool.row!.fingerprint="x".repeat(131073);await expect(f.store.lookupByFingerprintDigest("command",createHash("sha256").update(String(f.pool.row!.fingerprint)).digest("hex"))).rejects.toThrow();
+    f.pool.row!.fingerprint=before!.fingerprint;expect(f.pool.row).toEqual(before);expect(f.pool.queries.every(query=>query.text.startsWith("select"))).toBe(true);
+  });
+  it("leaves absent and unfinished digest lookups unresolved, retaining expired completed evidence",async()=>{
+    const f=cached("in_progress"),digest=createHash("sha256").update("original").digest("hex");
+    expect(await f.store.lookupByFingerprintDigest("command",digest)).toBeNull();expect(await f.store.lookupByFingerprintDigest("missing",digest)).toBeNull();
+    f.pool.row!.status="completed";f.pool.row!.leaseExpiresAt=new Date(Date.now()-1);const before=structuredClone(f.pool.row);
+    expect(await f.store.lookupByFingerprintDigest("command",digest)).toEqual({physicalId:"original-observed-container"});expect(f.pool.row).toEqual(before);
+  });
+
 });

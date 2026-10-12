@@ -29,3 +29,11 @@ it("requires the declared native and existing read-only inspection capabilities"
     for(const capabilities of [[],["database.runtime.v1"],["compose.resource.inspect.v1"]])expect(()=>createManagedDatabaseRuntime({...f.options,capabilities:new InMemoryCapabilityRegistry(capabilities)})).toThrow();
     expect(f.runner.run).not.toHaveBeenCalled();
 });
+
+it("composes stop only with an explicit bounded grace and capability without runtime effects",()=>{
+    const f=fixture(),options={...f.options,capabilities:new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.stop.v1"]),limits:{...f.options.limits,stopGraceSeconds:10}};
+    const runtime=createManagedDatabaseRuntime(options);expect(typeof runtime.stop).toBe("function");expect(typeof runtime.apply).toBe("function");expect(f.runner.run).not.toHaveBeenCalled();
+    expect(createManagedDatabaseRuntime(f.options)).not.toHaveProperty("stop");
+    expect(()=>createManagedDatabaseRuntime({...options,capabilities:f.options.capabilities})).toThrow();
+    for(const grace of [0,31,1.5])expect(()=>createManagedDatabaseRuntime({...options,limits:{...options.limits,stopGraceSeconds:grace}})).toThrow();
+});

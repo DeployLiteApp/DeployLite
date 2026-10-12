@@ -1,3 +1,4 @@
+import {createHash} from "node:crypto";
 import {startAgentServer} from "./server.js";
 import {expect,it,vi} from "vitest";
 import {signAgentTransport} from "@deploylite/config";
@@ -10,13 +11,13 @@ function fixture() {
     const {profileId:__,...originInput}=input;
     const originalReceipt=managedDatabaseRuntimeReceiptSchema.parse({...originInput,action:"database.runtime",agentId:"agent-a",commandId:"origin-a",inputDigest:managedDatabaseRuntimeExecutionDigest(input),correlationId:"origin-correlation",
         containerId:"c".repeat(64),imageId:"sha256:"+"d".repeat(64),volumeName:composeRuntimeResourceName(input.projectId,"volume","db-orders"),networkName:composeRuntimeResourceName(input.projectId,"network","db-orders"),networkId:"e".repeat(64),volumeCreatedAt:"2026-10-10T00:00:00Z",observedAt:1000,status:"ready",health:"passed",storage:"verified",idempotent:false,redacted:true});
-    const preparation={...input,originalReceipt,originalReplayFingerprint:"f".repeat(64)},inputDigest=managedDatabaseStopExecutionDigest(preparation),lease={projectId:input.projectId,leaseId:"stop-lease",fence:2,expiresAt:10000};
+    const preparation={...input,originalReceipt,originalReplayFingerprint:createHash("sha256").update("original-canonical-fingerprint").digest("hex")},inputDigest=managedDatabaseStopExecutionDigest(preparation),lease={projectId:input.projectId,leaseId:"stop-lease",fence:2,expiresAt:10000};
     const command=managedDatabaseStopAgentCommandSchema.parse({...preparation,action:"database.runtime.stop",operation:"database.runtime.stop",agentId:"agent-a",commandId:"stop-a",idempotencyKey:"stop-once",inputDigest,
         requiredCapabilities:["database.runtime.stop.v1"],authority:{schemaVersion:1,projectId:input.projectId,commandId:"stop-a",action:"project.update",inputDigest,projectLease:lease},lease,context:{requestId:"request-a",correlationId:"stop-correlation"},timeoutMs:5000,cancellationRequested:false});
     const receipt={...input,action:"database.runtime.stop" as const,agentId:"agent-a",commandId:"stop-a",originalCommandId:originalReceipt.commandId,inputDigest,correlationId:command.context.correlationId,
         containerId:originalReceipt.containerId!,imageId:originalReceipt.imageId!,volumeName:originalReceipt.volumeName,networkName:originalReceipt.networkName,networkId:originalReceipt.networkId!,volumeCreatedAt:originalReceipt.volumeCreatedAt!,observedAt:1000,status:"stopped" as const,storage:"verified" as const,redacted:true as const};
-    const saved=new Map<string,{fingerprint:string;receipt:Record<string,unknown>}>([[originalReceipt.commandId,{fingerprint:preparation.originalReplayFingerprint,receipt:originalReceipt}]]);
-    const replayStore={durable:true,lookup:vi.fn<NonNullable<AgentReplayStore["lookup"]>>(async(id,fp)=>{const row=saved.get(id);if(!row)return null;if(row.fingerprint!==fp)throw new Error("conflict");return structuredClone(row.receipt);}),claim:vi.fn<AgentReplayStore["claim"]>(async()=>({claimed:true,claimToken:"token-a"})),wait:vi.fn<AgentReplayStore["wait"]>(async()=>{throw new Error("unexpected");}),complete:vi.fn<AgentReplayStore["complete"]>(async(id,row)=>{saved.set(id,structuredClone(row));}),release:vi.fn(async()=>{})};
+    const saved=new Map<string,{fingerprint:string;receipt:Record<string,unknown>}>([[originalReceipt.commandId,{fingerprint:"original-canonical-fingerprint",receipt:originalReceipt}]]);
+    const replayStore={durable:true,lookupByFingerprintDigest:vi.fn(async(id:string,digest:string)=>{const row=saved.get(id);if(!row)return null;if(createHash("sha256").update(row.fingerprint).digest("hex")!==digest)throw new Error("conflict");return structuredClone(row.receipt);}),lookup:vi.fn<NonNullable<AgentReplayStore["lookup"]>>(async(id,fp)=>{const row=saved.get(id);if(!row)return null;if(row.fingerprint!==fp)throw new Error("conflict");return structuredClone(row.receipt);}),claim:vi.fn<AgentReplayStore["claim"]>(async()=>({claimed:true,claimToken:"token-a"})),wait:vi.fn<AgentReplayStore["wait"]>(async()=>{throw new Error("unexpected");}),complete:vi.fn<AgentReplayStore["complete"]>(async(id,row)=>{saved.set(id,structuredClone(row));}),release:vi.fn(async()=>{})};
     const stop=vi.fn(async()=>structuredClone(receipt)),validator=vi.fn(async()=>{});
     const options={agentId:"agent-a",trustKey,capabilities:["database.runtime.stop.v1"],dispatcher:{dispatch:async()=>{throw new Error("unused");}},managedDatabaseStop:{stop},replayStore,authorityValidator:{validateDeploymentAuthority:async()=>{},validateProjectUpdateAuthority:validator},now:()=>now};
     const receiver=new AuthenticatedAgentCommandReceiver(options),signature=(value:unknown)=>signAgentTransport(JSON.stringify(value),trustKey);
@@ -26,7 +27,7 @@ function fixture() {
 }
 it("stops once after corroborating the original durable ready receipt and replays after lease expiry",async()=>{
     const f=fixture();expect(await f.receiver.receive(f.command,f.signature(f.command))).toEqual(f.receipt);
-    expect(f.replayStore.lookup).toHaveBeenCalledWith(f.originalReceipt.commandId,f.command.originalReplayFingerprint);
+    expect(f.replayStore.lookupByFingerprintDigest).toHaveBeenCalledWith(f.originalReceipt.commandId,f.command.originalReplayFingerprint);
     expect(f.stop).toHaveBeenCalledOnce();f.setNow(20000);
     expect(await f.receiver.receive(f.command,f.signature(f.command))).toEqual(f.receipt);expect((await f.read()).receipt).toEqual(f.receipt);
     expect(f.stop).toHaveBeenCalledOnce();expect(f.replayStore.claim).toHaveBeenCalledOnce();expect(f.replayStore.complete).toHaveBeenCalledOnce();
@@ -60,7 +61,7 @@ it("waits for an existing stop claim without another stop and checks the complet
 });
 it("bounds stalled origin, execution and cache ports without retry or release",async()=>{
     for(const stage of ["origin","execution","cache"]){const f=fixture(),command={...f.command,timeoutMs:5};
-        if(stage==="origin")f.replayStore.lookup.mockImplementation(async id=>id===f.originalReceipt.commandId?new Promise(()=>{}):null);
+        if(stage==="origin")f.replayStore.lookupByFingerprintDigest.mockImplementation(()=>new Promise(()=>{}));
         if(stage==="execution")f.stop.mockImplementation(()=>new Promise(()=>{}));if(stage==="cache")f.replayStore.lookup.mockImplementation(()=>new Promise(()=>{}));
         await expect(f.receiver.receive(command,f.signature(command))).rejects.toThrow();expect(f.replayStore.complete).not.toHaveBeenCalled();expect(f.replayStore.release).not.toHaveBeenCalled();}
 });
@@ -95,8 +96,12 @@ it("rejects missing stop tokens and pre-cancellation without repeating or releas
     expect(unavailable.capabilities).not.toContain("database.runtime.stop.v1");
 });
 it("rejects a lower project fence before original cache reads or another stop",async()=>{
-    const f=fixture();await f.receiver.receive(f.command,f.signature(f.command));f.replayStore.lookup.mockClear();
+    const f=fixture();await f.receiver.receive(f.command,f.signature(f.command));f.replayStore.lookup.mockClear();f.replayStore.lookupByFingerprintDigest.mockClear();
     const lease={...f.command.lease,leaseId:"old-lease",fence:1},command={...f.command,commandId:"other-stop",idempotencyKey:"other-key",lease,authority:{...f.command.authority,commandId:"other-stop",projectLease:lease}};
     await expect(f.receiver.receive(command,f.signature(command))).rejects.toThrow();expect(f.stop).toHaveBeenCalledOnce();expect(f.replayStore.claim).toHaveBeenCalledOnce();
-    expect(f.replayStore.lookup).not.toHaveBeenCalledWith(f.originalReceipt.commandId,f.command.originalReplayFingerprint);
+    expect(f.replayStore.lookupByFingerprintDigest).not.toHaveBeenCalledWith(f.originalReceipt.commandId,f.command.originalReplayFingerprint);
+});
+it("withholds stop without the explicit opaque original fingerprint reader",()=>{
+    const f=fixture(),receiver=new AuthenticatedAgentCommandReceiver({...f.options,replayStore:{...f.replayStore,lookupByFingerprintDigest:undefined}});
+    expect(receiver.capabilities).not.toContain("database.runtime.stop.v1");
 });
