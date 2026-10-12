@@ -20,6 +20,8 @@ export function registerManagedDatabaseBackupRoute(app: FastifyInstance, options
     if (!params.success || !body.success || typeof key !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(key)) return reject(400, "VALIDATION_ERROR");
     const user = request.auth?.user, context = request.correlationContext;
     if (!user || !context) return reject(401, "UNAUTHENTICATED");
+    const expectedActor = request.headers["x-deploylite-expected-actor-id"];
+    if (expectedActor !== undefined && expectedActor !== user.id) return reject(409, "ACTOR_CHANGED");
     const parsed = managedDatabaseBackupPreparationSchema.safeParse({ ...params.data, ...body.data });
     if (!parsed.success) return reject(400, "VALIDATION_ERROR");
     const preparation = parsed.data, execution = options.executions?.get(preparation.projectId);

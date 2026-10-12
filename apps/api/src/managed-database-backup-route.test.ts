@@ -27,8 +27,16 @@ async function fixture() {
  const options={prefix:"/api/v1",configuration:{profiles:new Map([["postgres",profile]]),projectIds:new Set(["project-a"]),deadlineMs:1000},imagePolicy:policy,projects:{findById:projects},grants:{listForActor:grants},executions:new Map([["project-a",execution]]),planning:new Map([["project-a",{profiles:new Map([["private-a",destination]]),store:{available:()=>true}}]]),requireAuth:async()=>{},requireRole:async()=>{},ok:(_request:unknown,data:unknown)=>({data}),error:(_request:unknown,code:string,message:string)=>({error:{code,message}})} as unknown as ManagedDatabaseBackupRouteOptions;
  app.addHook("onRequest",async request=>{Reflect.set(request,"auth",{user:{id:"operator",role:"operator"}});Reflect.set(request,"correlationContext",{requestId:"request",correlationId:"correlation"});});
  registerManagedDatabaseBackupRoute(app,options);
- return {body,options,destination,projects,grants,call:(payload:unknown=body)=>app.inject({method:"POST",url:"/api/v1/projects/project-a/databases/orders/runtime/backup",headers:{"idempotency-key":"backup-key"},payload:payload as object})};
+ return {body,options,destination,projects,grants,call:(payload:unknown=body,headers:Record<string,string>={})=>app.inject({method:"POST",url:"/api/v1/projects/project-a/databases/orders/runtime/backup",headers:{...headers,"idempotency-key":"backup-key"},payload:payload as object})};
 }
+it.each(["foreign", "operator, foreign"])("refuses a stale or ambiguous client actor %s before creating another actor-scoped backup",async actor=>{
+ const f=await fixture();expect((await f.call(undefined,{"x-deploylite-expected-actor-id":actor})).statusCode).toBe(409);
+ expect(f.projects).not.toHaveBeenCalled();expect(f.grants).not.toHaveBeenCalled();expect(core.run).not.toHaveBeenCalled();
+});
+it("admits an explicit matching current actor without changing the original command key",async()=>{
+ const f=await fixture();expect((await f.call(undefined,{"x-deploylite-expected-actor-id":"operator"})).statusCode).toBe(200);
+ expect(core.run).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({actorId:"operator",idempotencyKey:"backup-key"}));
+});
 it("admits a scoped private backup and strips project lease from HTTP success",async()=>{
  const f=await fixture(),r=await f.call();expect(r.statusCode).toBe(200);expect(r.json().data.backupCreated).toBe(true);expect(r.body).not.toContain("lease-secret");expect(core.run).toHaveBeenCalledOnce();
 });
