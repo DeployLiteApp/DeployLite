@@ -1,3 +1,4 @@
+import { MANAGED_DATABASE_NETWORK_INSPECT_FORMAT, MANAGED_DATABASE_VOLUME_INSPECT_FORMAT } from "./docker-managed-database-resource-argv.js";
 import { MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT, MANAGED_DATABASE_IMAGE_INSPECT_FORMAT } from "./docker-managed-database-inspection-argv.js";
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { redactSecrets } from "@deploylite/config";
@@ -13,7 +14,7 @@ const DOCKER_ID = /^(?:sha256:)?[0-9a-f]{64}$/;
 const DOCKER_IMAGE = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[1-9][0-9]{0,4})?\/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[0-9a-f]{64}$/;
 const protocolSample = { owner: "probe", projectId: "probe", deploymentId: "probe", candidateId: "probe:candidate:command", effectiveImage: `registry.example/probe@sha256:${"0".repeat(64)}` };
 const protocolFormats = new Set([
-  ...COMPOSE_INSPECTION_FORMATS, MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT, MANAGED_DATABASE_IMAGE_INSPECT_FORMAT,
+  ...COMPOSE_INSPECTION_FORMATS, MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT, MANAGED_DATABASE_IMAGE_INSPECT_FORMAT, MANAGED_DATABASE_NETWORK_INSPECT_FORMAT, MANAGED_DATABASE_VOLUME_INSPECT_FORMAT,
   ...[buildDockerImageIdentityInspectArgv(protocolSample.effectiveImage), buildDockerLifecycleInspectArgv("probe"),
     buildDockerOwnershipInspectArgv("probe"), buildDockerRestoreInspectArgv("probe"),
     buildDockerStopOwnershipInspectArgv("0".repeat(64)), buildDockerOwnedStopLookupArgv(protocolSample), buildDockerTransportPortInspectArgv("probe"),
@@ -33,13 +34,25 @@ function redactDockerProtocolOutput(value: string, argv: readonly string[]): str
   while ((words[0] === "--config" || words[0] === "--host") && words[1]) words.splice(0, 2);
   const op = words[0], format = words[words.indexOf("--format") + 1];
   if (op === "run" || (op === "network" && words[1] === "create")) return /^[0-9a-f]{64}\n?$/.test(value) ? value : redactDockerDiagnostic(value);
-  const composeFormat = COMPOSE_INSPECTION_FORMATS.has(format ?? "");
+  const nativeResourceFormat = format === MANAGED_DATABASE_NETWORK_INSPECT_FORMAT || format === MANAGED_DATABASE_VOLUME_INSPECT_FORMAT;
+  const nativeScopeFormat = nativeResourceFormat || format === MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT;
+  const composeFormat = COMPOSE_INSPECTION_FORMATS.has(format ?? "") || nativeResourceFormat;
   const candidateFormat = format === COMPOSE_REPLACEMENT_CANDIDATE_INSPECT_FORMAT;
   if (!(["inspect", "info", "ps"].includes(op ?? "") || (op === "container" && words[1] === "ls") || (["container", "image", "network"].includes(op ?? "") && words[1] === "inspect") || (composeFormat && op === "volume" && words[1] === "inspect")) || !words.includes("--format") || !protocolFormats.has(format ?? "")) return redactDockerDiagnostic(value);
   const safeJson = (nested: unknown, path: string[] = []): unknown => {
     const key = path.at(-1) ?? "";
     if (/(token|secret|password|passwd|api[_-]?key|authorization|cookie|credential)/i.test(key)) return "[REDACTED]";
     if (typeof nested === "string") {
+      if (composeFormat && path.length === 1) {
+        if (["owner", "projectId"].includes(key) && /^[A-Za-z0-9_-]{1,200}$/.test(nested)) return nested;
+        if (["service", "resourceKey"].includes(key) && /^[a-z][a-z0-9_-]{0,62}$/.test(nested)) return nested;
+      }
+      if (nativeScopeFormat && path.length === 1) {
+        if (["owner", "projectId", "commandId"].includes(key) && /^[A-Za-z0-9_-]{1,200}$/.test(nested)) return nested;
+        if (key === "databaseId" && /^[a-z][a-z0-9_-]{0,59}$/.test(nested)) return nested;
+        if (key === "planDigest" && /^[a-f0-9]{64}$/.test(nested)) return nested;
+        if (nativeResourceFormat && key === "resourceKey" && /^[a-z][a-z0-9_-]{0,62}$/.test(nested)) return nested;
+      }
       if (format === MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT && path.length === 1) {
         if (key === "name" && /^\/dl-[a-f0-9]{32}-database$/.test(nested)) return nested;
         if (key === "planDigest" && /^[a-f0-9]{64}$/.test(nested)) return nested;
