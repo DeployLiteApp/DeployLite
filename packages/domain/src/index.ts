@@ -447,3 +447,5 @@ export * from "./backup-inventory.js";
 export * from "./backup-retention-preview.js";
 
 export * from "./managed-database-profile.js";
+
+export * from "./managed-database-credentials.js";

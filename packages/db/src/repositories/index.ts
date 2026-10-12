@@ -12,3 +12,5 @@ export * from "./domain-routes.js";
 export * from "./transport-port-claims.js";
 export * from "./transport-port-apply.js";
 export * from "./backup-inventory.js";
+
+export * from "./managed-database-credentials.js";
