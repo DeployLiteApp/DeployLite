@@ -37,11 +37,13 @@ export function registerManagedDatabaseRuntimePreviewRoute(app: FastifyInstance,
       if (!await authorized()) return reject(403, "FORBIDDEN");
       const project = await bounded(() => options.projects.findById(input.projectId));
       if (!project) return reject(404, "NOT_FOUND");
+      const projectIds = configuration?.projectIds;
       const profile = configuration?.profiles.get(input.engine), store = configuration?.store ?? options.secrets, cipher = options.cipher;
-      if (project.id !== input.projectId || !configuration || !validDeadline || !profile || !store || !cipher) return reject(503, "DATABASE_RUNTIME_UNAVAILABLE");
+      if (project.id !== input.projectId || !configuration || !validDeadline || (projectIds !== undefined && !projectIds.has(input.projectId)) || !profile || !store || !cipher) return reject(503, "DATABASE_RUNTIME_UNAVAILABLE");
       const policy = structuredClone(options.imagePolicy), plan = planManagedDatabaseProfile(input, profile, policy);
       const current = () => {
         try { return !controller.signal.aborted && options.configuration === configuration && configuration.deadlineMs === deadline
+          && configuration.projectIds === projectIds && (projectIds === undefined || projectIds.has(input.projectId))
           && configuration.profiles.get(input.engine) === profile && (configuration.store ?? options.secrets) === store && options.cipher === cipher
           && digestControlInput(options.imagePolicy) === digestControlInput(policy)
           && planManagedDatabaseProfile(input, profile, policy).planDigest === plan.planDigest; } catch { return false; }

@@ -1,3 +1,5 @@
+import { MANAGED_DATABASE_RUNTIME_CONFIG_ENV } from "@deploylite/domain";
+import { createConfiguredManagedDatabaseApi, parseManagedDatabaseApiConfiguration, MANAGED_DATABASE_PROJECT_AGENTS_ENV } from "./managed-database-runtime-configuration.js";
 import { registerManagedDatabaseRuntimeApplyRoute } from "./managed-database-runtime-apply-route.js";
 import type { ManagedDatabaseRuntimeApplyAccess } from "./managed-database-runtime-apply.js";
 import { registerManagedDatabaseRuntimePreviewRoute } from "./managed-database-runtime-preview.js";
@@ -1303,7 +1305,7 @@ function registerCoreHooks(app: FastifyInstance, corsOrigin: string | null): voi
 function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapters: AuthAdapters, authConfig: AuthConfig, confirmedDeleteEnabled: boolean, imagePolicy: ImageReferencePolicyV1, resourceAccess?: ReadonlyMap<string, ComposeResourceInspectionAccess>, backupPlans?: ReadonlyMap<string, ComposeVolumeBackupPlanAccess>, cleanupPlans?: ReadonlyMap<string, ComposeResourceCleanupAccess>, backupExecutions?: ReadonlyMap<string, ComposeVolumeBackupExecutionAccess>, attachmentExecutions?: ReadonlyMap<string, ComposeNetworkAttachmentExecutionAccess>, cleanupExecutions?: ReadonlyMap<string, ComposeResourceCleanupExecutionAccess>, volumeAttachmentExecutions?: ReadonlyMap<string, ComposeVolumeAttachmentExecutionAccess>, domainRouteApplyExecutions?: ReadonlyMap<string, DomainRouteApplyExecutionAccess>, transportPortApplyExecutions?: ReadonlyMap<string, TransportPortApplyExecutionAccess>,
   backupInventoryFactory?: ApiRepositories["backupInventoryForAgent"],
   backupRetentionPreviews?: ReadonlyMap<string, BackupRetentionPreviewAccess>,
-  managedDatabaseCredentials?: ManagedDatabaseCredentialConfiguration, databaseCredentialCreation?: ManagedDatabaseCredentialCreationRepository, managedDatabaseRuntimeExecutions?: ReadonlyMap<string, ManagedDatabaseRuntimeApplyAccess>): void {
+  managedDatabaseCredentials?: ManagedDatabaseCredentialConfiguration, databaseCredentialCreation?: ManagedDatabaseCredentialCreationRepository, managedDatabaseRuntimeExecutions?: ReadonlyMap<string, ManagedDatabaseRuntimeApplyAccess>, managedDatabaseImagePolicy?: ImageReferencePolicyV1): void {
   const requireAuth = createAuthPreHandler(adapters, authConfig);
   const requireMutationRole = createRolePreHandler(adapters, ["admin", "operator"]);
   const requireAdminRole = createRolePreHandler(adapters, ["admin"]);
@@ -1328,9 +1330,9 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
     execution: cleanupExecutions, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerComposeVolumeBackupPlanRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, planning: backupPlans, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   registerBackupRetentionPreviewRoute(app, {prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, access: backupRetentionPreviews, inventoryFactory: backupInventoryFactory, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope});
-  registerManagedDatabaseCredentialRoute(app, {prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, configuration: managedDatabaseCredentials, secrets: databaseCredentialCreation, cipher: state.envSecretCipher, imagePolicy, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope});
-  registerManagedDatabaseRuntimePreviewRoute(app, {prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, configuration: managedDatabaseCredentials, secrets: databaseCredentialCreation, cipher: state.envSecretCipher, imagePolicy, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope});
-  registerManagedDatabaseRuntimeApplyRoute(app, {prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, configuration: managedDatabaseCredentials, secrets: databaseCredentialCreation, cipher: state.envSecretCipher, imagePolicy, executions: managedDatabaseRuntimeExecutions, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope});
+  registerManagedDatabaseCredentialRoute(app, {prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, configuration: managedDatabaseCredentials, secrets: databaseCredentialCreation, cipher: state.envSecretCipher, imagePolicy: managedDatabaseImagePolicy ?? imagePolicy, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope});
+  registerManagedDatabaseRuntimePreviewRoute(app, {prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, configuration: managedDatabaseCredentials, secrets: databaseCredentialCreation, cipher: state.envSecretCipher, imagePolicy: managedDatabaseImagePolicy ?? imagePolicy, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope});
+  registerManagedDatabaseRuntimeApplyRoute(app, {prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, configuration: managedDatabaseCredentials, secrets: databaseCredentialCreation, cipher: state.envSecretCipher, imagePolicy: managedDatabaseImagePolicy ?? imagePolicy, executions: managedDatabaseRuntimeExecutions, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope});
   registerComposeVolumeBackupExecutionRoute(app, { prefix: API_PREFIX, projects: state.projects, grants: state.controlGrants, audit: adapters.audit, imagePolicy, access: resourceAccess, planning: backupPlans, execution: backupExecutions, inventoryFactory: backupInventoryFactory, requireAuth, requireRole: requireMutationRole, ok, error: errorEnvelope });
   // Audit history is an operator/admin concern. Read-only sessions are denied
   // by design so a passive role cannot enumerate every project + key change.
@@ -2304,6 +2306,10 @@ function registerRoutes(app: FastifyInstance, state: PlatformRepositories, adapt
 
 export async function buildApiApp(options: BuildApiAppOptions = {}): Promise<FastifyInstance> {
   const sourceEnv = options.env ?? process.env;
+  const nativeDatabaseConfiguration = parseManagedDatabaseApiConfiguration(sourceEnv[MANAGED_DATABASE_RUNTIME_CONFIG_ENV], sourceEnv[MANAGED_DATABASE_PROJECT_AGENTS_ENV]);
+  if (nativeDatabaseConfiguration && (options.managedDatabaseCredentials || options.managedDatabaseRuntimeExecutions)) {
+    throw new Error("Database API configuration cannot be combined with injected native maps.");
+  }
   const composeResourceProjectAgents = options.composeResourceProjectAgents ?? parseComposeResourceProjectBindings(sourceEnv[COMPOSE_RESOURCE_PROJECT_AGENTS_ENV]);
   const composeVolumeAttachmentProjectAgents = options.composeVolumeAttachmentProjectAgents
     ?? parseComposeVolumeAttachmentProjectBindings(sourceEnv[COMPOSE_VOLUME_ATTACHMENT_PROJECT_AGENTS_ENV], composeResourceProjectAgents);
@@ -2340,8 +2346,12 @@ export async function buildApiApp(options: BuildApiAppOptions = {}): Promise<Fas
   if (repositories.shouldSeedMockData) {
     await seedMockData(repositories.state);
   }
+  let configuredDatabaseRuntime: Awaited<ReturnType<typeof createConfiguredManagedDatabaseApi>> | undefined;
   let configuredResourceRuntime: Awaited<ReturnType<typeof createProjectScopedComposeResourceRuntime>> | undefined;
   try {
+    configuredDatabaseRuntime = nativeDatabaseConfiguration ? await createConfiguredManagedDatabaseApi({ parsed: nativeDatabaseConfiguration,
+      projects: repositories.state.projects, controls: repositories.state.controlDeletes, secrets: repositories.databaseCredentialCreation,
+      agent: { endpoint: env.DEPLOYLITE_AGENT_URL, agentId: env.DEPLOYLITE_AGENT_ID, trustKey: env.DEPLOYLITE_AGENT_TRUST_KEY } }) : undefined;
     configuredResourceRuntime = composeResourceProjectAgents.length > 0
       ? await createProjectScopedComposeResourceRuntime({ bindings: composeResourceProjectAgents, projects: repositories.state.projects,
         volumeAttachmentBindings: composeVolumeAttachmentProjectAgents, cleanupBindings: composeResourceCleanupProjectAgents,
@@ -2362,7 +2372,7 @@ export async function buildApiApp(options: BuildApiAppOptions = {}): Promise<Fas
     ? new Map([...(configuredResourceRuntime ? (composeResourceCleanupExecutions?.keys() ?? []) : composeResourceInspection.keys())]
       .map(projectId => [projectId, { store: repositories.composeResourceCleanupStore!, confirmationTtlMs: 60_000 }] as const))
     : undefined);
-  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE, options.imagePolicy ?? { policyVersion: "deployment-v1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }, composeResourceInspection, options.composeVolumeBackupPlans, cleanupPlans, options.composeVolumeBackupExecutions, composeNetworkAttachmentExecutions, composeResourceCleanupExecutions, composeVolumeAttachmentExecutions, domainRouteApplyExecutions, transportPortApplyExecutions, repositories.backupInventoryForAgent, options.backupRetentionPreviews, options.managedDatabaseCredentials, repositories.databaseCredentialCreation, options.managedDatabaseRuntimeExecutions);
+  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE, options.imagePolicy ?? { policyVersion: "deployment-v1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }, composeResourceInspection, options.composeVolumeBackupPlans, cleanupPlans, options.composeVolumeBackupExecutions, composeNetworkAttachmentExecutions, composeResourceCleanupExecutions, composeVolumeAttachmentExecutions, domainRouteApplyExecutions, transportPortApplyExecutions, repositories.backupInventoryForAgent, options.backupRetentionPreviews, options.managedDatabaseCredentials ?? configuredDatabaseRuntime?.credentials, repositories.databaseCredentialCreation, options.managedDatabaseRuntimeExecutions ?? configuredDatabaseRuntime?.executions, configuredDatabaseRuntime?.imagePolicy);
   app.addHook("onClose", () => {
     repositories.state.deployRunner.cancelTimers();
   });
