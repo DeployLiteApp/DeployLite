@@ -5,7 +5,7 @@ import {resolve} from "node:path";
 import {z} from "zod";
 import {createEnvSecretCipher, sealAgentSecretEnvelope} from "@deploylite/config";
 import {approvedManagedDatabaseProfileSchema, InMemoryCapabilityRegistry} from "@deploylite/contracts";
-import {ensureManagedDatabaseCredentials, materializeManagedDatabaseRuntime, managedDatabaseRuntimeExecutionDigest, type EncryptedEnvSecretValueRecord} from "@deploylite/domain";
+import {ensureManagedDatabaseCredentials, materializeManagedDatabaseRuntime, managedDatabaseInternalConnection, managedDatabaseRuntimeExecutionDigest, type EncryptedEnvSecretValueRecord} from "@deploylite/domain";
 import {DockerProcessRunner, DockerProcessError} from "./docker-process-runner.js";
 import type {DockerCliRunner} from "./docker-cli-image-transport.js";
 import {createConfiguredManagedDatabaseRuntime} from "./managed-database-runtime-config.js";
@@ -39,15 +39,16 @@ for (const [name,hash] of Object.entries(scope.sourceHashes)) {
 }
 const evidence: Record<string,unknown> = {};
 const marker = "p5-persistent-value";
-function probe(engine:typeof engines[number], write:boolean) {
+function probe(engine:typeof engines[number], write:boolean, hostname = "127.0.0.1") {
+    if (!/^(127\.0\.0\.1|db-[a-z][a-z0-9_-]{0,59})$/.test(hostname)) throw new Error("Scoped fixture hostname required.");
     const sql = write ? "CREATE TABLE IF NOT EXISTS p5_probe (value varchar(64)); DELETE FROM p5_probe; INSERT INTO p5_probe VALUES ('p5-persistent-value');" : "SELECT value FROM p5_probe;";
-    if (engine === "postgres") return `PGPASSWORD="$POSTGRES_PASSWORD" psql --host 127.0.0.1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --no-password --tuples-only --no-align --command "${sql}"`;
+    if (engine === "postgres") return `PGPASSWORD="$POSTGRES_PASSWORD" psql --host ${hostname} --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --no-password --tuples-only --no-align --command "${sql}"`;
     if (engine === "mysql" || engine === "mariadb") {
         const prefix = engine === "mysql" ? "MYSQL" : "MARIADB", binary = engine === "mysql" ? "mysql" : "mariadb";
-        return `MYSQL_PWD="$${prefix}_PASSWORD" ${binary} --host 127.0.0.1 --user "$${prefix}_USER" --database "$${prefix}_DATABASE" --batch --skip-column-names --execute "${sql}"`;
+        return `MYSQL_PWD="$${prefix}_PASSWORD" ${binary} --host ${hostname} --user "$${prefix}_USER" --database "$${prefix}_DATABASE" --batch --skip-column-names --execute "${sql}"`;
     }
-    if (engine === "mongodb") return `mongosh --quiet --host 127.0.0.1 --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval '${write ? 'db.getSiblingDB(process.env.MONGO_INITDB_DATABASE).p5_probe.updateOne({_id:"probe"},{$set:{value:"p5-persistent-value"}},{upsert:true})' : 'print(db.getSiblingDB(process.env.MONGO_INITDB_DATABASE).p5_probe.findOne({_id:"probe"}).value)'}'`;
-    return `REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli --no-auth-warning -h 127.0.0.1 ${write ? "SET p5_probe p5-persistent-value" : "GET p5_probe"}`;
+    if (engine === "mongodb") return `mongosh --quiet --host ${hostname} --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval '${write ? 'db.getSiblingDB(process.env.MONGO_INITDB_DATABASE).p5_probe.updateOne({_id:"probe"},{$set:{value:"p5-persistent-value"}},{upsert:true})' : 'print(db.getSiblingDB(process.env.MONGO_INITDB_DATABASE).p5_probe.findOne({_id:"probe"}).value)'}'`;
+    return `REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli --no-auth-warning -h ${hostname} ${write ? "SET p5_probe p5-persistent-value" : "GET p5_probe"}`;
 }
 for (const engine of engines) {
     it(`native five-engine physical ${engine} startup and persistence`, async () => {
@@ -97,6 +98,7 @@ for (const engine of engines) {
         await ensureManagedDatabaseCredentials(request,profile,{imagePolicy,cipher,authorize:async project => project === scope.owner,secrets:{
             find:async () => row,createIfAbsent:async input => (row ??= {...input,id:`secret-${engine}`,valuePresent:true,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()})}});
         const runtime = materializeManagedDatabaseRuntime(request,profile,{imagePolicy,cipher,credentials:row!});
+        const connection = managedDatabaseInternalConnection(runtime);
         const preparation = {...request,profileId:profile.profileId,planDigest:runtime.plan.planDigest,environmentFingerprint:runtime.environmentFingerprint};
         const inputDigest = managedDatabaseRuntimeExecutionDigest(preparation), trustKey = "ci-native-"+randomBytes(32).toString("hex");
         let result:unknown;
@@ -121,6 +123,7 @@ for (const engine of engines) {
             expect(ready.uid).toBeGreaterThan(0);
             await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,true)],signal);
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false)],signal)).stdout.trim()).toBe(marker);
+            expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,connection.hostname)],signal)).stdout.trim()).toBe(marker);
             await verifier.verify(nativeInput,pinned,authority,signal);
             await runner.run(["docker","stop","--time","10",receipt.containerId],signal);
             expect((await inspector.inspectContainer(receipt.containerId,signal)).running).toBe(false);
@@ -130,7 +133,8 @@ for (const engine of engines) {
             const restarted = await verifier.verify(nativeInput,pinned,authority,signal);
             expect(restarted).toEqual(ready);
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false)],signal)).stdout.trim()).toBe(marker);
-            result = {receipt,original:pinned,uid:ready.uid,authenticatedProbe:"passed",restart:"passed",persistence:"passed"};
+            expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,connection.hostname)],signal)).stdout.trim()).toBe(marker);
+            result = {receipt,original:pinned,uid:ready.uid,internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},authenticatedProbe:"passed",restart:"passed",persistence:"passed"};
         } catch (error) {
             writeFileSync(resolve(directory,`diagnostic-${engine}.json`),JSON.stringify({engine,lastOperation,lastProjection,processFailure:processFailure ?? null,observation:lastObservation ?? null,composeObservations,expected:{plan:runtime.plan,environmentFingerprint:runtime.environmentFingerprint}},null,2)+"\n",{mode:0o600});
             throw error;

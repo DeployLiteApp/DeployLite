@@ -105,3 +105,16 @@ it("requires configured project admission before encrypted preview reads", async
   const f = await fixture(); Object.assign(f.configuration, { projectIds: new Set(["foreign"]) });
   expect((await f.post()).statusCode).toBe(503); expect(f.secrets.find).not.toHaveBeenCalled();
 });
+
+it.each(["postgres", "mysql", "mariadb", "mongodb", "redis"] as const)("returns scoped %s internal connection details with encrypted preview", async engine => {
+  const f = await fixture({ engine }), response = await f.post(), data = response.json().data;
+  expect(response.statusCode).toBe(200);
+  expect(data.connection).toMatchObject({ schemaVersion: 1, projectId: "project-a", databaseId: "orders", engine,
+    profileId: data.preparation.profileId, planDigest: data.preparation.planDigest, availability: "planned", exposure: "internal",
+    hostname: "db-orders", networkName: data.plan.network.runtimeName, port: data.plan.containerPort,
+    databaseName: engine === "redis" ? "0" : "orders", authenticationDatabase: engine === "mongodb" ? "admin" : null });
+  expect(data.connection.username).toMatch(engine === "redis" ? /^default$/ : ["mysql", "mariadb"].includes(engine) ? /^root$/ : /^dl_[a-f0-9]{12}$/);
+  expect(data.connection).not.toHaveProperty("password");
+  expect(data.connection).not.toHaveProperty("environment");
+  expect(f.secrets.createIfAbsent).not.toHaveBeenCalled();
+});

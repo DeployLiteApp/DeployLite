@@ -74,6 +74,21 @@ class NativeResourceReceipt(unittest.TestCase):
             with self.subTest(patch=patch), self.assertRaises(RuntimeError):
                 module.validate_resource_receipt({**result,"receipt":{**result["receipt"],**patch}})
 
+class NativeConnection(unittest.TestCase):
+    def test_rejects_missing_unverified_or_foreign_connection_evidence(self):
+        profile = {"profileId":"profile-postgres","engine":"postgres","containerPort":5432,"credentialKeys":["DATABASE_PASSWORD"]}
+        receipt = {"projectId":"project-original","databaseId":"orders","planDigest":"a"*64,"networkName":"network-original","engine":"postgres"}
+        connection = {"schemaVersion":1,"projectId":"project-original","databaseId":"orders","engine":"postgres","profileId":"profile-postgres",
+            "planDigest":"a"*64,"availability":"planned","exposure":"internal","hostname":"db-orders","networkName":"network-original",
+            "port":5432,"databaseName":"orders","username":"dl_"+"a"*12,"authenticationDatabase":None}
+        good = {"receipt":receipt,"internalConnection":{"details":connection,"authenticatedRead":"passed","afterRestart":"passed"}}
+        module.validate_internal_connection(good,profile)
+        for patch in [{"internalConnection":None}, {"internalConnection":{**good["internalConnection"],"authenticatedRead":"not-run"}},
+            *[{"internalConnection":{**good["internalConnection"],"details":{**connection,**change}}} for change in
+              [{"projectId":"foreign"},{"networkName":"foreign"},{"hostname":"127.0.0.1"},{"port":9999},{"authenticationDatabase":"wrong"},{"password":"private"}]]]:
+            with self.subTest(patch=patch), self.assertRaises(RuntimeError):
+                module.validate_internal_connection({**good,**patch},profile)
+
 class NativeWorkflow(unittest.TestCase):
     def test_native_report_options_are_forwarded_to_vitest_and_verifier_always_runs(self):
         workflow = (Path(__file__).parents[2]/".github/workflows/baseline.yml").read_text()
