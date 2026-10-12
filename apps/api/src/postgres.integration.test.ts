@@ -3,9 +3,9 @@ import { readdir, readFile } from "node:fs/promises";
 
 import { closeDbPool, createDbClient, createDbPool, DbAgentRepository, DbAgentReplayStore, DbControlCommandRepository, DbDeploymentRepository, DbProjectRepository, type DeployLiteDb } from "@deploylite/db";
 import type { FastifyInstance } from "fastify";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { dockerImageExecutionReceiptSchema, trustedPriorExecutionReceiptSchema, type TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
+import { managedDatabaseRuntimeReceiptSchema, dockerImageExecutionReceiptSchema, trustedPriorExecutionReceiptSchema, type TrustedPriorExecutionReceiptV1 } from "@deploylite/contracts";
 import { buildApiApp, type DeploymentDispatcher, type DeploymentStopDispatcher, type BuildApiAppOptions } from "./app.js";
 
 const integrationEnabled = process.env.DEPLOYLITE_API_POSTGRES_INTEGRATION === "1";
@@ -393,6 +393,92 @@ describeIntegration("DeployLite API PostgreSQL integration", () => {
       expect(audits).toHaveLength(10);for(const row of audits){expect(row.metadata.redacted).toBe(true);expect(row.metadata).not.toHaveProperty("credentials");}
     } finally {await app.close();}
   },30_000);
+
+  it("persists native database apply and signed replay for five engines across PostgreSQL client lifecycles with injected runtime", async () => {
+    const [{ AuthenticatedAgentCommandReceiver }, config, domain] = await Promise.all([import("@deploylite/agent"), import("@deploylite/config"), import("@deploylite/domain")]);
+    const projectId = randomUUID(), agentId = randomUUID(), trustKey = "pg-source-only-trust-key-123456789";
+    const engines = ["postgres", "mysql", "mariadb", "mongodb", "redis"] as const;
+    const paths = { postgres: "/var/lib/postgresql", mysql: "/var/lib/mysql", mariadb: "/var/lib/mysql", mongodb: "/data/db", redis: "/data" };
+    const ports = { postgres: 5432, mysql: 3306, mariadb: 3306, mongodb: 27017, redis: 6379 };
+    const repositories = { postgres: "postgres", mysql: "mysql", mariadb: "mariadb", mongodb: "mongo", redis: "redis" };
+    const profiles = Object.fromEntries(engines.map(engine => [engine, { schemaVersion: 1, profileId: "native-" + engine, engine,
+      image: `docker.io/library/${repositories[engine]}@sha256:${"a".repeat(64)}`, dataPath: paths[engine], containerPort: ports[engine],
+      credentialKeys: ["DATABASE_PASSWORD"], backupStrategy: engine === "redis" ? "volume-quiesced" : "engine-native" }]));
+    const raw = JSON.stringify({ profiles, limits: { deadlineMs: 10000, maxOutputBytes: 131072, maxContainers: 64,
+      pollIntervalMs: 100, cpus: 1, memoryBytes: 536870912, pidsLimit: 256 } });
+    const approved = domain.parseManagedDatabaseRuntimeConfiguration(raw)!, policy = domain.managedDatabaseNativeImagePolicy();
+    let executions = 0, dropped = false;
+    const executor = { apply: async (command: import("@deploylite/contracts").ManagedDatabaseRuntimeAgentCommandV1, authority: { assertValid(): Promise<void> }) => {
+      await authority.assertValid();
+      const environment = config.openAgentSecretEnvelope(command.sealedEnvironment, trustKey, {
+        agentId, commandId: command.commandId, inputDigest: command.inputDigest, projectId });
+      const input = { schemaVersion: 1 as const, projectId, databaseId: command.databaseId, engine: command.engine };
+      const native = domain.validateManagedDatabaseNativeEnvironment(input, approved.profiles[command.engine], policy, environment, command.environmentFingerprint);
+      executions++;
+      return managedDatabaseRuntimeReceiptSchema.parse({ ...input, action: "database.runtime", agentId, commandId: command.commandId,
+        inputDigest: command.inputDigest, planDigest: native.plan.planDigest, environmentFingerprint: native.environmentFingerprint,
+        correlationId: command.context.correlationId, containerId: "c".repeat(64), imageId: `sha256:${"d".repeat(64)}`,
+        volumeName: native.plan.volume.runtimeName, networkName: native.plan.network.runtimeName, networkId: "e".repeat(64),
+        volumeCreatedAt: "2026-10-10T00:00:00Z", observedAt: Date.now(), status: "ready", health: "passed", storage: "verified", idempotent: false, redacted: true });
+    } };
+    const receiverFor = () => new AuthenticatedAgentCommandReceiver({ agentId, trustKey, capabilities: ["database.runtime.v1"],
+      dispatcher: { dispatch: async () => { throw new Error("Unexpected deployment"); } }, managedDatabaseRuntime: executor,
+      replayStore: new DbAgentReplayStore(requireDb(), "native-pg-" + projectId), authorityValidator: new DbControlCommandRepository(requireDb()) });
+    let receiver = receiverFor();
+    vi.stubGlobal("fetch", async (url: unknown, init?: RequestInit) => {
+      const signature = String((init?.headers as Record<string, string>)["x-deploylite-signature"]);
+      if (String(url).endsWith("/capabilities")) {
+        expect(receiver.verifyRequest("GET /capabilities", signature)).toBe(true);
+        return new Response(JSON.stringify({ schemaVersion: 1, agentId, capabilities: receiver.capabilities, protocolVersions: [1] }), { headers: { "x-deploylite-request-signature": signature } });
+      }
+      const body = JSON.parse(String(init?.body));
+      if (String(url).endsWith("/receipt")) return new Response(JSON.stringify(await receiver.readManagedDatabaseRuntimeReceipt(body, signature, init?.signal ?? undefined)));
+      const receipt = await receiver.receive(body, signature, init?.signal ?? undefined);
+      if (body.engine === "mysql" && !dropped) { dropped = true; throw new Error("synthetic lost native reply after durable completion"); }
+      return new Response(JSON.stringify(receipt));
+    });
+    const build = (key?: string) => buildApiApp({ db: { pool: requirePool(), client: requireDb() }, authConfig: { cookieName: "dl_pg_session", cookieSecure: false, sessionTtlSeconds: 3600 },
+      env: { ...process.env, NODE_ENV: "test", DATABASE_URL: databaseUrl, DEPLOYLITE_BCRYPT_COST: "10", DEPLOYLITE_SECRET_KEY: key,
+        DEPLOYLITE_AGENT_URL: "https://agent.fixture.test", DEPLOYLITE_AGENT_ID: agentId, DEPLOYLITE_AGENT_TRUST_KEY: trustKey,
+        DEPLOYLITE_MANAGED_DATABASE_RUNTIME: raw, DEPLOYLITE_MANAGED_DATABASE_PROJECT_AGENTS_JSON: JSON.stringify([{ projectId, agentId }]) } });
+    let app: FastifyInstance | undefined;
+    try {
+    await new DbProjectRepository(requireDb()).save({ id: projectId, name: "Native control fixture", repoUrl: "https://example.test/repo", defaultBranch: "main",
+      buildCommand: null, runCommand: null, port: null, description: null, imageTag: null });
+      app = await build("managed_database_fixture_key_1234567890");
+      if ((await app.inject({ method: "GET", url: "/api/v1/bootstrap/status" })).json().data.setupRequired)
+        expect((await app.inject({ method: "POST", url: "/api/v1/bootstrap/initial-admin", payload: { email: "admin@example.test", password: adminPassword } })).statusCode).toBe(200);
+      const login = await app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { email: "admin@example.test", password: adminPassword } });
+      expect(login.statusCode).toBe(200); const cookie = login.headers["set-cookie"] as string, actorId = login.json().data.user.id;
+      const call = (engine: string, operation: string, payload: unknown) => app!.inject({ method: "POST", url: `/api/v1/projects/${projectId}/databases/${engine}/${operation}`,
+        headers: { cookie, "idempotency-key": "native-" + engine }, payload: payload as Record<string, unknown> });
+      expect((await call("postgres", "credentials", { schemaVersion: 1, engine: "postgres" })).statusCode).toBe(403);
+      await requirePool().query("INSERT INTO control_grants(actor_user_id,action,scope_kind,scope_key) VALUES($1,'project.update','project',$2)", [actorId, projectId]);
+      const prepared = new Map<string, Record<string, unknown>>(), originals = new Map<string, unknown>();
+      for (const engine of engines) {
+        expect((await call(engine, "credentials", { schemaVersion: 1, engine })).statusCode).toBe(200);
+        const preview = await call(engine, "runtime/preview", { schemaVersion: 1, engine }); expect(preview.statusCode).toBe(200);
+        const { projectId: _project, databaseId: _database, ...body } = preview.json().data.preparation; prepared.set(engine, body);
+        const apply = await call(engine, "runtime/apply", body); expect(apply.statusCode).toBe(200);
+        expect(apply.json().data).toMatchObject({ command: { status: "completed" }, applied: true }); originals.set(engine, apply.json().data.receipt);
+      }
+      expect(executions).toBe(5); expect(dropped).toBe(true);
+      const secrets = (await requirePool().query("SELECT id,encrypted_value,value_fingerprint FROM env_secret_values WHERE project_id=$1 ORDER BY id", [projectId])).rows;
+      expect(secrets).toHaveLength(5);
+      await app.close(); app = undefined; await closeObservedTestPool(requirePool()); pool = createObservedTestPool(databaseUrl); db = createDbClient(pool);
+      receiver = receiverFor(); app = await build(); // Original cache replay must work without any decryption key.
+      for (const engine of engines) {
+        const replay = await call(engine, "runtime/apply", prepared.get(engine)); expect(replay.statusCode).toBe(200);
+        expect(replay.json().data.idempotent).toBe(true); expect(replay.json().data.receipt).toEqual(originals.get(engine));
+      }
+      expect(executions).toBe(5);
+      expect((await requirePool().query("SELECT id,encrypted_value,value_fingerprint FROM env_secret_values WHERE project_id=$1 ORDER BY id", [projectId])).rows).toEqual(secrets);
+      const commands = (await requirePool().query("SELECT status FROM control_commands WHERE actor_user_id=$1 AND action='project.update' AND scope_key=$2", [actorId, projectId])).rows;
+      expect(commands).toHaveLength(5); expect(commands.every(row => row.status === "completed")).toBe(true);
+      const audit = (await requirePool().query("SELECT metadata,correlation_id FROM audit_events WHERE target_id=$1 AND action='database.runtime.applied'", [projectId])).rows;
+      expect(audit).toHaveLength(5); for (const row of audit) { expect(row.metadata.receipt.correlationId).toBe(row.correlation_id); expect(row.metadata.redacted).toBe(true); expect(row.metadata).not.toHaveProperty("environment"); }
+    } finally { if (app) await app.close(); vi.unstubAllGlobals(); }
+  }, 30_000);
 
 });
 

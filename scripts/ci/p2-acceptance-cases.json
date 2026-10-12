@@ -447,7 +447,7 @@
       ]
     },
     "api": {
-      "count": 13,
+      "count": 14,
       "allowSkipped": false,
       "cases": [
         {
@@ -525,6 +525,12 @@
         {
           "fullName": "DeployLite API PostgreSQL integration configures and replays encrypted credentials for all five database engines through authenticated PostgreSQL routes",
           "title": "configures and replays encrypted credentials for all five database engines through authenticated PostgreSQL routes",
+          "file": "apps/api/src/postgres.integration.test.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "DeployLite API PostgreSQL integration persists native database apply and signed replay for five engines across PostgreSQL client lifecycles with injected runtime",
+          "title": "persists native database apply and signed replay for five engines across PostgreSQL client lifecycles with injected runtime",
           "file": "apps/api/src/postgres.integration.test.ts",
           "physicalRestart": false
         }
