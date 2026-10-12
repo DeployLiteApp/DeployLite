@@ -50,3 +50,8 @@ it("rejects a cached wrapper for another agent, command or correlation", () => {
     for (const patch of [{ agentId: "foreign" }, { commandId: "foreign" }, { correlationId: "foreign" }])
         expect(managedDatabaseRuntimeCachedReceiptSchema.safeParse({ ...cached, ...patch }).success).toBe(false);
 });
+it("represents a missing original cached database receipt without authorizing execution", () => {
+    const cached = {schemaVersion: 1, action: "database.runtime", agentId: "agent-a", commandId: "command-a", correlationId: "correlation-a", receipt: null};
+    expect(managedDatabaseRuntimeCachedReceiptSchema.parse(cached)).toEqual(cached);
+    expect(managedDatabaseRuntimeCachedReceiptSchema.safeParse({...cached, execute: true}).success).toBe(false);
+});

@@ -1,3 +1,6 @@
+import { MANAGED_DATABASE_RUNTIME_CAPABILITY, MANAGED_DATABASE_RUNTIME_RECEIPT_PATH, managedDatabaseRuntimeAgentCommandSchema, managedDatabaseRuntimeReceiptQuerySchema,
+  managedDatabaseRuntimeReceiptSchema, managedDatabaseRuntimeCachedReceiptSchema, type ManagedDatabaseRuntimeAgentCommandV1, type ManagedDatabaseRuntimeReceiptQueryV1, type ManagedDatabaseRuntimeReceiptV1 } from "@deploylite/contracts";
+import { managedDatabaseRuntimeExecutionDigest, composeRuntimeResourceName } from "@deploylite/domain";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { signAgentTransport, validateAgentTransportKey, verifyAgentTransport } from "@deploylite/config";
 import { agentReceiptQuerySchema, agentCachedReceiptSchema, type AgentReceiptQuery, agentExecutionCommandSchema, CapabilityError, composeNetworkAttachmentAgentCommandSchema, composeNetworkAttachmentCachedReceiptSchema, composeNetworkAttachmentReceiptQuerySchema, composeNetworkAttachmentReceiptSchema, composeResourceAttachmentCommandSchema, composeResourceCleanupAgentCommandSchema, composeResourceCleanupCachedReceiptSchema, composeResourceCleanupExecutionReceiptSchema, composeResourceCleanupReceiptQuerySchema, composeResourceInspectionAgentCommandSchema, composeResourceInspectionAgentResponseSchema, composeResourceObservationSchema, COMPOSE_NETWORK_ATTACHMENT_CAPABILITY, COMPOSE_NETWORK_ATTACHMENT_RECEIPT_PATH, COMPOSE_RESOURCE_CLEANUP_CAPABILITY, COMPOSE_RESOURCE_CLEANUP_RECEIPT_PATH, COMPOSE_RESOURCE_INSPECTION_CAPABILITY, COMPOSE_RESOURCE_INSPECTION_PATH, composeVolumeAttachmentAgentCommandSchema, composeVolumeAttachmentCachedReceiptSchema, composeVolumeAttachmentReceiptQuerySchema, composeVolumeAttachmentReceiptSchema, COMPOSE_VOLUME_ATTACHMENT_CAPABILITY, COMPOSE_VOLUME_ATTACHMENT_RECEIPT_PATH, composeVolumeBackupAgentCommandSchema, composeVolumeBackupCachedReceiptSchema, composeVolumeBackupReceiptQuerySchema, composeVolumeBackupReceiptSchema, COMPOSE_VOLUME_BACKUP_CAPABILITY, COMPOSE_VOLUME_BACKUP_RECEIPT_PATH, createDeploymentCommand, deploymentStopAgentCommandSchema, deploymentStopAgentReceiptSchema, dockerImageExecutionReceiptSchema, FenceError, LeaseExpiredError, protocolPayloadFingerprint, TransportCanceledError, TransportTimeoutError, type AgentExecutionCommand, type ComposeNetworkAttachmentAgentCommandV1, type ComposeNetworkAttachmentReceiptV1, type ComposeResourceCleanupAgentCommandV1, type ComposeResourceCleanupReceiptQueryV1, type ComposeResourceCleanupExecutionReceiptV1, type ComposeVolumeAttachmentAgentCommandV1, type ComposeVolumeAttachmentReceiptQueryV1, type ComposeVolumeAttachmentReceiptV1, type ComposeVolumeBackupAgentCommandV1, type ComposeVolumeBackupReceiptQueryV1, type ComposeVolumeBackupReceiptV1, type DeploymentSnapshotV1, type DeploymentStopAgentCommand, type DeploymentStopAgentReceipt, type LeaseV1, type ProjectControlAuthorityV1, type PromotionPolicy, type DeploymentExecutionAuthorityV1 } from "@deploylite/contracts";
@@ -26,14 +29,16 @@ export type AgentComposeVolumeAttachmentExecutor = { execute(command: ComposeVol
 export type AgentComposeResourceCleanupExecutor = { execute(command: ComposeResourceCleanupAgentCommandV1, signal: AbortSignal): Promise<ComposeResourceCleanupExecutionReceiptV1> };
 export type AgentDomainRouteApplyExecutor = { execute(command: DomainRouteApplyAgentCommandV1, authority: RuntimeExecutionAuthority, signal: AbortSignal): Promise<DomainRouteApplyReceiptV1> };
 export type AgentTransportPortApplyExecutor = { execute(command: TransportPortApplyAgentCommandV1, authority: RuntimeExecutionAuthority, signal: AbortSignal): Promise<TransportPortApplyReceiptV1> };
-export type AgentCommandReceiverOptions = Readonly<{ agentId: string; trustKey: string; capabilities: readonly string[]; dispatcher: AgentCommandDispatcher; stopDispatcher?: AgentStopDispatcher; networkAttachment?: AgentNetworkAttachmentExecutor; volumeBackup?: AgentVolumeBackupExecutor; volumeAttachment?: AgentComposeVolumeAttachmentExecutor; resourceCleanup?: AgentComposeResourceCleanupExecutor; domainRouteApply?: AgentDomainRouteApplyExecutor; transportPortApply?: AgentTransportPortApplyExecutor; resourceInspector?: ComposeResourceInspector; replayStore: AgentReplayStore; authorityValidator?: DeploymentAuthorityValidation; now?: () => number }>;
+export type AgentManagedDatabaseRuntimeExecutor = {apply(command: ManagedDatabaseRuntimeAgentCommandV1, authority: RuntimeExecutionAuthority, signal: AbortSignal): Promise<ManagedDatabaseRuntimeReceiptV1>};
+export type AgentCommandReceiverOptions = Readonly<{ agentId: string; trustKey: string; capabilities: readonly string[]; dispatcher: AgentCommandDispatcher; stopDispatcher?: AgentStopDispatcher; networkAttachment?: AgentNetworkAttachmentExecutor; volumeBackup?: AgentVolumeBackupExecutor; volumeAttachment?: AgentComposeVolumeAttachmentExecutor; resourceCleanup?: AgentComposeResourceCleanupExecutor; domainRouteApply?: AgentDomainRouteApplyExecutor; transportPortApply?: AgentTransportPortApplyExecutor; managedDatabaseRuntime?: AgentManagedDatabaseRuntimeExecutor; resourceInspector?: ComposeResourceInspector; replayStore: AgentReplayStore; authorityValidator?: DeploymentAuthorityValidation; now?: () => number }>;
 
 export class AuthenticatedAgentCommandReceiver {
   readonly #options: AgentCommandReceiverOptions;
   readonly #fences = new Map<string, FenceLease>();
   constructor(options: AgentCommandReceiverOptions) {
     validateAgentTransportKey(options.trustKey);
-    const capabilities = options.capabilities.filter(capability => (capability !== COMPOSE_RESOURCE_INSPECTION_CAPABILITY || Boolean(options.resourceInspector))
+    const capabilities = options.capabilities.filter(capability => (capability !== MANAGED_DATABASE_RUNTIME_CAPABILITY || Boolean(options.managedDatabaseRuntime && options.replayStore.durable === true && options.replayStore.lookup))
+      && (capability !== COMPOSE_RESOURCE_INSPECTION_CAPABILITY || Boolean(options.resourceInspector))
       && (capability !== COMPOSE_VOLUME_ATTACHMENT_CAPABILITY || Boolean(options.volumeAttachment))
       && (capability !== COMPOSE_RESOURCE_CLEANUP_CAPABILITY || Boolean(options.resourceCleanup))
       && (capability !== DOMAIN_ROUTE_APPLY_CAPABILITY || Boolean(options.domainRouteApply))
@@ -202,6 +207,7 @@ export class AuthenticatedAgentCommandReceiver {
     if (typeof body === "object" && body !== null && (body as { action?: string }).action === "compose.volume.backup") return this.receiveComposeVolumeBackup(body, signal);
     if (typeof body === "object" && body !== null && (body as { action?: string }).action === "compose.resource.cleanup") return this.receiveComposeResourceCleanup(body, signal);
     if (typeof body === "object" && body !== null && (body as { action?: string }).action === "domain.route.apply") return this.receiveDomainRouteApply(body, signal);
+    if (typeof body === "object" && body !== null && (body as {action?: string}).action === "database.runtime") return this.receiveManagedDatabaseRuntime(body, signal);
     if (typeof body === "object" && body !== null && (body as { action?: string }).action === "transport.port.apply") return this.receiveTransportPortApply(body, signal);
     if (typeof body === "object" && body !== null && (body as { action?: string }).action === "compose.network.attachment") return this.receiveComposeNetworkAttachment(body, signal);
     if (typeof body === "object" && body !== null && (body as { action?: string }).action === "deployment.stop") return this.receiveStop(body, signal);
@@ -552,6 +558,78 @@ export class AuthenticatedAgentCommandReceiver {
       configDigest: value.configDigest, stateDigest: value.stateDigest, key: value.key, runtimeName: value.runtimeName, service: value.service,
       attachmentAction: value.attachmentAction, containerId: value.containerId, alreadySatisfied: value.alreadySatisfied,
       correlationId: value.context.correlationId, authority: value.authority, lease: value.lease });
+  }
+  private databaseRuntimeDigest(value: ManagedDatabaseRuntimeAgentCommandV1 | ManagedDatabaseRuntimeReceiptQueryV1): string {
+    return managedDatabaseRuntimeExecutionDigest({schemaVersion: value.schemaVersion, projectId: value.projectId, databaseId: value.databaseId,
+      engine: value.engine, profileId: value.profileId, planDigest: value.planDigest, environmentFingerprint: value.environmentFingerprint});
+  }
+  private databaseRuntimeFingerprint(value: ManagedDatabaseRuntimeAgentCommandV1 | ManagedDatabaseRuntimeReceiptQueryV1): string {
+    return protocolPayloadFingerprint({action: value.action, agentId: value.agentId, commandId: value.commandId, projectId: value.projectId,
+      databaseId: value.databaseId, engine: value.engine, profileId: value.profileId, planDigest: value.planDigest, environmentFingerprint: value.environmentFingerprint,
+      idempotencyKey: value.idempotencyKey, inputDigest: value.inputDigest, correlationId: value.context.correlationId, authority: value.authority, lease: value.lease});
+  }
+  private matchesDatabaseRuntimeReceipt(value: ManagedDatabaseRuntimeAgentCommandV1 | ManagedDatabaseRuntimeReceiptQueryV1, receipt: ManagedDatabaseRuntimeReceiptV1): boolean {
+    const key = "db-" + value.databaseId;
+    return receipt.agentId === value.agentId && receipt.commandId === value.commandId && receipt.projectId === value.projectId
+      && receipt.databaseId === value.databaseId && receipt.engine === value.engine && receipt.inputDigest === value.inputDigest
+      && receipt.planDigest === value.planDigest && receipt.environmentFingerprint === value.environmentFingerprint && receipt.correlationId === value.context.correlationId
+      && receipt.volumeName === composeRuntimeResourceName(value.projectId, "volume", key) && receipt.networkName === composeRuntimeResourceName(value.projectId, "network", key);
+  }
+  async readManagedDatabaseRuntimeReceipt(body: unknown, signature: string | undefined, signal?: AbortSignal) {
+    if (signal?.aborted) throw new TransportCanceledError();
+    if (!this.verifyRequest(`POST ${MANAGED_DATABASE_RUNTIME_RECEIPT_PATH}\n${JSON.stringify(body)}`, signature)) throw new Error("agent authentication failed");
+    const query = managedDatabaseRuntimeReceiptQuerySchema.parse(structuredClone(body));
+    if (query.agentId !== this.#options.agentId || !this.#options.capabilities.includes(MANAGED_DATABASE_RUNTIME_CAPABILITY)
+      || this.databaseRuntimeDigest(query) !== query.inputDigest) throw new FenceError("Database cache scope rejected");
+    const raw = await this.lookupReplay(query.commandId, this.databaseRuntimeFingerprint(query), query.timeoutMs, signal);
+    const receipt = raw === null ? null : managedDatabaseRuntimeReceiptSchema.parse(raw);
+    if (receipt && !this.matchesDatabaseRuntimeReceipt(query, receipt)) throw new FenceError("Cached database receipt scope rejected");
+    return managedDatabaseRuntimeCachedReceiptSchema.parse({schemaVersion: 1, action: "database.runtime", agentId: this.#options.agentId,
+      commandId: query.commandId, correlationId: query.context.correlationId, receipt});
+  }
+  private async receiveManagedDatabaseRuntime(body: unknown, external?: AbortSignal): Promise<ManagedDatabaseRuntimeReceiptV1> {
+    const command = managedDatabaseRuntimeAgentCommandSchema.parse(structuredClone(body));
+    if (!this.#options.managedDatabaseRuntime || !this.#options.capabilities.includes(MANAGED_DATABASE_RUNTIME_CAPABILITY)) throw new CapabilityError(MANAGED_DATABASE_RUNTIME_CAPABILITY);
+    if (command.agentId !== this.#options.agentId || this.databaseRuntimeDigest(command) !== command.inputDigest) throw new FenceError("Database runtime scope rejected");
+    const controller = new AbortController(), cancel = () => controller.abort(new TransportCanceledError());
+    external?.addEventListener("abort", cancel, {once: true}); if (external?.aborted) cancel();
+    const timer = setTimeout(() => controller.abort(new TransportTimeoutError()), command.timeoutMs);
+    try {
+      const fingerprint = this.databaseRuntimeFingerprint(command);
+      const cached = await this.lookupReplay(command.commandId, fingerprint, command.timeoutMs, controller.signal);
+      if (cached) {
+        const receipt = managedDatabaseRuntimeReceiptSchema.parse(cached);
+        if (!this.matchesDatabaseRuntimeReceipt(command, receipt)) throw new FenceError("Cached database receipt scope rejected");
+        return receipt;
+      }
+      const now = this.#options.now ?? Date.now;
+      if (now() >= command.lease.expiresAt) throw new LeaseExpiredError();
+      this.validateFence(command.lease, command.projectId);
+      const validator = this.#options.authorityValidator?.validateProjectUpdateAuthority?.bind(this.#options.authorityValidator);
+      if (!validator) throw new FenceError("Persisted project update authority reader required");
+      const authority: RuntimeExecutionAuthority = {expiresAt: command.lease.expiresAt, assertValid: async () => {
+        await validator(structuredClone(command.authority), now());
+        if (now() >= command.lease.expiresAt) throw new LeaseExpiredError();
+        this.validateFence(command.lease, command.projectId);
+      }};
+      // Preserve the original durable claim after attempted execution or ambiguous completion.
+      const admission = this.admission(command.timeoutMs, command.lease, controller.signal);
+      try {
+        const claim = await this.claimReplay(command.commandId, fingerprint, command.lease, admission.signal);
+        if (!claim.claimed) {
+          const receipt = managedDatabaseRuntimeReceiptSchema.parse(claim.receipt ?? await awaitAbortable(() => this.#options.replayStore.wait(command.commandId), admission.signal));
+          if (!this.matchesDatabaseRuntimeReceipt(command, receipt)) throw new FenceError("Replayed database receipt scope rejected");
+          return receipt;
+        }
+        if (!claim.claimToken) throw new FenceError("Database replay claim token missing");
+        await awaitAbortable(() => authority.assertValid(), admission.signal);
+        const receipt = managedDatabaseRuntimeReceiptSchema.parse(await awaitAbortable(() => this.#options.managedDatabaseRuntime!.apply(command, authority, admission.signal), admission.signal));
+        if (!this.matchesDatabaseRuntimeReceipt(command, receipt)) throw new FenceError("Database receipt scope rejected");
+        await awaitAbortable(() => authority.assertValid(), admission.signal);
+        await awaitAbortable(() => this.#options.replayStore.complete(command.commandId, {fingerprint, claimToken: claim.claimToken!, receipt}), admission.signal);
+        return receipt;
+      } finally {admission.dispose();}
+    } finally {clearTimeout(timer); external?.removeEventListener("abort", cancel);}
   }
   private domainRouteApplyFingerprint(value: DomainRouteApplyAgentCommandV1 | import("@deploylite/contracts").DomainRouteApplyReceiptQueryV1): string {
     return protocolPayloadFingerprint({ action: value.action, agentId: value.agentId, commandId: value.commandId, projectId: value.projectId,

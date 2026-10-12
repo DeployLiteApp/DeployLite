@@ -52,8 +52,8 @@ export type ManagedDatabaseRuntimeReceiptQueryV1 = z.infer<typeof managedDatabas
 export type ManagedDatabaseRuntimeReceiptV1 = z.infer<typeof managedDatabaseRuntimeReceiptSchema>;
 export const managedDatabaseRuntimeCachedReceiptSchema = z.object({
     schemaVersion: z.literal(1), action: z.literal("database.runtime"), agentId: identity, commandId: id, correlationId: id,
-    receipt: managedDatabaseRuntimeReceiptSchema
+    receipt: managedDatabaseRuntimeReceiptSchema.nullable()
 }).strict().superRefine((cached, ctx) => {
-    if (cached.agentId !== cached.receipt.agentId || cached.commandId !== cached.receipt.commandId || cached.correlationId !== cached.receipt.correlationId)
+    if (cached.receipt && (cached.agentId !== cached.receipt.agentId || cached.commandId !== cached.receipt.commandId || cached.correlationId !== cached.receipt.correlationId))
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["receipt"], message: "Cached database receipt identity must match its wrapper" });
 });
