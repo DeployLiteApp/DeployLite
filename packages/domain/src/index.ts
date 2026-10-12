@@ -464,3 +464,4 @@ export * from "./managed-database-start-binding.js";
 
 export * from "./managed-database-health-binding.js";
 export * from "./managed-database-metrics-binding.js";
+export * from "./managed-database-logs-binding.js";
