@@ -1,4 +1,4 @@
-import { managedDatabaseRuntimePreparationSchema } from "@deploylite/contracts";
+import { managedDatabaseRuntimePreparationSchema, managedDatabaseRuntimeReceiptQuerySchema, protocolPayloadFingerprint } from "@deploylite/contracts";
 import { digestControlInput } from "./control-plane.js";
 /** Public immutable preparation only; the existing cipher/envelope carries actual environment values. */
 export function managedDatabaseRuntimeExecutionBinding(raw: unknown) {
@@ -12,4 +12,12 @@ export function managedDatabaseRuntimeExecutionBinding(raw: unknown) {
 }
 export function managedDatabaseRuntimeExecutionDigest(raw: unknown): string {
     return digestControlInput(managedDatabaseRuntimeExecutionBinding(raw));
+}
+
+/** Same immutable claim fingerprint used by the existing native apply receiver; read request/timeout may change. */
+export function managedDatabaseRuntimeReplayFingerprint(raw: unknown): string {
+    const value = managedDatabaseRuntimeReceiptQuerySchema.parse(raw);
+    return protocolPayloadFingerprint({action:value.action,agentId:value.agentId,commandId:value.commandId,projectId:value.projectId,
+        databaseId:value.databaseId,engine:value.engine,profileId:value.profileId,planDigest:value.planDigest,environmentFingerprint:value.environmentFingerprint,
+        idempotencyKey:value.idempotencyKey,inputDigest:value.inputDigest,correlationId:value.context.correlationId,authority:value.authority,lease:value.lease});
 }
