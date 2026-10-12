@@ -1213,7 +1213,9 @@
     "apps/agent/src/infrastructure/docker/managed-database-runtime-config.ts",
     "apps/agent/src/managed-database-bootstrap.test.ts",
     "apps/api/src/managed-database-runtime-transport.ts",
-    "apps/api/src/managed-database-runtime-transport.test.ts"
+    "apps/api/src/managed-database-runtime-transport.test.ts",
+    "apps/api/src/managed-database-runtime-preview.ts",
+    "apps/api/src/managed-database-runtime-preview.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,

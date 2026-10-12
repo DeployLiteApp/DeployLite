@@ -16,9 +16,13 @@ export type ManagedDatabaseCredentialPorts = Readonly<{
 export class ManagedDatabaseCredentialsError extends Error {
   constructor() { super("Managed database credentials are unavailable.");this.name="ManagedDatabaseCredentialsError"; }
 }
+/** Canonical existing encrypted-bundle slot; no secret access or authority is granted. */
+export function managedDatabaseCredentialKey(projectId: string, databaseId: string): string {
+  return "DEPLOYLITE_DATABASE_" + digestControlInput({projectId,databaseId}).toUpperCase();
+}
 /** Private decrypted payload for authorized server-side runtime preparation, never an API response. */
 export function readManagedDatabaseCredentialBundle(plan:ReturnType<typeof planManagedDatabaseProfile>,row:EncryptedEnvSecretValueRecord,cipher:EnvSecretCipher) {
-  const key="DEPLOYLITE_DATABASE_"+digestControlInput({projectId:plan.projectId,databaseId:plan.databaseId}).toUpperCase();
+  const key=managedDatabaseCredentialKey(plan.projectId,plan.databaseId);
   if (!row.id || row.projectId!==plan.projectId || row.key!==key || row.scope!=="project" || !row.valuePresent
     || row.keyVersion!==ENCRYPTION_KEY_VERSION || !Buffer.isBuffer(row.encryptedValue) || !row.encryptedValue.length) throw new ManagedDatabaseCredentialsError();
   const plaintext=cipher.decrypt(row.encryptedValue.toString("base64"));
@@ -34,7 +38,7 @@ export async function ensureManagedDatabaseCredentials(raw: unknown, profile: un
   try {
     const plan=planManagedDatabaseProfile(raw,profile,ports.imagePolicy);
     if (!await ports.authorize(plan.projectId)) throw new ManagedDatabaseCredentialsError();
-    const key="DEPLOYLITE_DATABASE_"+digestControlInput({projectId:plan.projectId,databaseId:plan.databaseId}).toUpperCase();
+    const key=managedDatabaseCredentialKey(plan.projectId,plan.databaseId);
     const inspect=(row:EncryptedEnvSecretValueRecord) => {
       readManagedDatabaseCredentialBundle(plan,row,ports.cipher);
       return {schemaVersion:1 as const,projectId:plan.projectId,databaseId:plan.databaseId,engine:plan.engine,
