@@ -6,7 +6,7 @@ import {resolve} from "node:path";
 import {readFile} from "node:fs/promises";
 import {execFileSync} from "node:child_process";
 import type {FastifyInstance} from "fastify";
-import {browserFixtureRequestFailure,type BrowserFixtureRequestStage,browserDeletionRecoveryFailure,validateBrowserProof,validateDeletionBrowserProof} from "./p5-browser-proof.js";
+import {browserFixtureRequestFailure,type BrowserFixtureRequestStage,browserDeletionRecoveryFailure,validateBrowserProof,validateDeletionBrowserProof,validateBackupBrowserProof} from "./p5-browser-proof.js";
 const root=resolve(import.meta.dirname,"../../../..");
 /** Compile the actual application stylesheet with its existing production plugin. */
 export async function buildDatabaseBrowserStyles(){
@@ -15,7 +15,8 @@ export async function buildDatabaseBrowserStyles(){
  return (await postcss([tailwind({base:resolve(root,"apps/web")})]).process(await readFile(from,"utf8"),{from})).css;
 }
 /** Browser library types are isolated CI tooling, not a production dependency. */
-export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:string;databaseId:string;engine:string;cookie:string;app():FastifyInstance}) {
+export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:string;databaseId:string;engine:string;actorId:string;cookie:string;app():FastifyInstance}) {
+ if(!/^[A-Za-z0-9_-]{1,200}$/.test(input.actorId))throw new Error("Current fixture actor required.");
  if(process.platform!=="linux"||process.env.GITHUB_ACTIONS!=="true"||process.env.RUNNER_ENVIRONMENT!=="github-hosted"
   ||process.env.GITHUB_JOB!=="p5-native-operator-acceptance"||process.env.DEPLOYLITE_P5_OPERATOR_RUNTIME_GRANT!=="P5_OPERATOR_CI_APPROVED")throw new Error("Hosted browser admission required.");
  const sourceCommit=input.sourceCommit;
@@ -25,11 +26,15 @@ export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:s
  const library=process.env.DEPLOYLITE_P5_BROWSER_LIBRARY;
  if(!library||library!==resolve(process.env.RUNNER_TEMP!,"deploylite-p5-browser-tooling/node_modules/playwright/index.mjs"))throw new Error("Scoped browser tooling required.");
  const require=createRequire(import.meta.url),viteRequire=createRequire(createRequire(require.resolve("vitest/package.json")).resolve("vite")),esbuild=viteRequire("esbuild");
- const entry=`import React from 'react';import {createRoot} from 'react-dom/client';import {ManagedDatabaseWorkbench} from './apps/web/src/components/managed-database-workbench';createRoot(document.getElementById('root')).render(React.createElement(ManagedDatabaseWorkbench,{projectId:${JSON.stringify(input.projectId)},apiBaseUrl:location.origin}));`;
+ const entry=`import React from 'react';import {createRoot} from 'react-dom/client';import {ManagedDatabaseWorkbench} from './apps/web/src/components/managed-database-workbench';createRoot(document.getElementById('root')).render(React.createElement(ManagedDatabaseWorkbench,{projectId:${JSON.stringify(input.projectId)},apiBaseUrl:location.origin,actorId:${JSON.stringify(input.actorId)}}));`;
  const bundle=await esbuild.build({stdin:{contents:entry,resolveDir:root,loader:"tsx"},bundle:true,write:false,format:"iife",platform:"browser",jsx:"automatic",
   alias:{"@":resolve(root,"apps/web/src"),"@deploylite/contracts":resolve(root,"packages/contracts/src/index.ts")},nodePaths:[resolve(root,"apps/web/node_modules")],define:{"process.env.NODE_ENV":'"production"'}});
  const script=bundle.outputFiles[0].text,styles=await buildDatabaseBrowserStyles();
- let requests=0,applyResponse:{statusCode:number;json():any}|undefined;
+ type ApiResponse={statusCode:number;body:string;json():any};
+ let requests=0,applyResponse:ApiResponse|undefined;
+ let originalBackup:{response:ApiResponse;key:string;body:Record<string,unknown>}|undefined,backupLostReply=false,backupRequestStart=0;
+ const getOriginalBackup=()=>originalBackup;
+ const backupCalls:{key:string;commandId:string;archiveId:string;actorId:string;status:number}[]=[];
  let deletionPreparation:{response:typeof applyResponse;key:string}|undefined,deletionRequestStart=0;
  const deletionCalls:{key:string;confirmationId:string;status:number}[]=[];
  const failures:Error[]=[],requestFailures:string[]=[];
@@ -44,8 +49,9 @@ export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:s
    if(!req.url?.startsWith(prefix)||!['GET','POST'].includes(req.method!))throw new Error("Unscoped browser API request.");
    stage="body";let bytes="";for await(const chunk of req){bytes+=chunk;if(Buffer.byteLength(bytes)>131072)throw new Error("Bounded browser request required.");}
    if(++requests>1000)throw new Error("Bounded browser request count required.");
-   const headers:{cookie:string;"idempotency-key"?:string}={cookie:input.cookie};
+   const headers:{cookie:string;"idempotency-key"?:string;"x-deploylite-expected-actor-id"?:string}={cookie:input.cookie};
    if(typeof req.headers['idempotency-key']==='string')headers['idempotency-key']=req.headers['idempotency-key'];
+   if(typeof req.headers['x-deploylite-expected-actor-id']==='string')headers['x-deploylite-expected-actor-id']=req.headers['x-deploylite-expected-actor-id'];
    stage="app";const currentApi=input.app();if(!currentApi)throw new Error("Owned browser API unavailable.");
    stage="inject";const response=await currentApi.inject({method:req.method as 'GET'|'POST',url:req.url,headers,...(bytes?{payload:JSON.parse(bytes)}:{})});
    stage="projection";if(req.url===prefix+`/${input.databaseId}/runtime/apply`&&response.statusCode===200)applyResponse=response;
@@ -53,6 +59,13 @@ export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:s
     if(!headers['idempotency-key'])throw new Error("Original deletion key required.");deletionPreparation={response,key:headers['idempotency-key']};
    }
    if(req.url===prefix+`/${input.databaseId}/runtime/delete/apply`)deletionCalls.push({key:headers['idempotency-key']!,confirmationId:JSON.parse(bytes).confirmationId,status:response.statusCode});
+   if(req.url===prefix+`/${input.databaseId}/runtime/backup`&&response.statusCode===200){
+    const data=response.json().data,key=headers['idempotency-key'],actor=headers['x-deploylite-expected-actor-id'];
+    if(!key||actor!==input.actorId||data.command.idempotencyKey!==key)throw new Error("Original backup actor/key required.");
+    originalBackup??={response,key,body:JSON.parse(bytes)};
+    backupCalls.push({key,commandId:data.command.id,archiveId:data.receipt.archiveId,actorId:actor,status:response.statusCode});
+    if(!backupLostReply){backupLostReply=true;res.writeHead(503,{"Content-Type":"application/json"});res.end('{"data":null,"error":{"code":"FIXTURE_LOST_REPLY"},"requestId":"fixture-lost-reply"}');return;}
+   }
    stage="response";res.writeHead(response.statusCode,{"Content-Type":"application/json"});res.end(response.body);
   }catch(error){
    const code=error instanceof Error?Object.getOwnPropertyDescriptor(error,"code")?.value:undefined;
@@ -75,8 +88,25 @@ export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:s
    async create(){
     await page.getByLabel('Database name').fill(input.databaseId);await page.getByLabel('Engine').selectOption(input.engine);
     await button('Prepare database').click();await enabled('Create database');await button('Create database').click();await enabled('Stop database');
-    await selected().waitFor();if(!applyResponse||failures.length)throw new Error("Browser creation failed.");
+    await selected().waitFor();await button('Create backup').waitFor();if(!applyResponse||failures.length)throw new Error("Browser creation failed.");
     await page.goto('about:blank');return applyResponse;
+   },
+   async backup(){
+    if(originalBackup||backupCalls.length)throw new Error("One original manual backup required.");
+    backupRequestStart=requests;await page.goto(origin);await selected().click();await enabled('Create backup');
+    if(backupCalls.length)throw new Error("No automatic backup allowed.");
+    await button('Create backup').click();await enabled('Retry backup confirmation');
+    if(!originalBackup||backupCalls.length!==1||!backupLostReply)throw new Error("Original successful backup reply must be lost.");
+    await page.reload();await selected().click();await enabled('Retry backup confirmation');
+    if(backupCalls.length!==1)throw new Error("Reload must not replay a backup.");
+    await button('Retry backup confirmation').click();await page.getByText('Backup completed.',{exact:true}).waitFor();
+    const captured=getOriginalBackup();if(!captured)throw new Error("Original manual backup response required.");
+    const data=captured.response.json().data;await page.getByText(data.receipt.archiveId,{exact:true}).waitFor();
+    const proof={sourceCommit,engine:input.engine,projectId:input.projectId,databaseId:input.databaseId,actorId:input.actorId,browser:'chromium',context:'isolated',requests:requests-backupRequestStart,
+     commandId:data.command.id,originalCommandId:data.receipt.originalCommandId,archiveId:data.receipt.archiveId,idempotencyKey:captured.key,destinationId:data.receipt.destinationId,
+     manual:'passed',originalSource:'passed',lostReply:'passed',reload:'passed',sameOriginalKey:'passed',inventory:'passed',calls:[...backupCalls]};
+    if(failures.length||!validateBackupBrowserProof(proof,sourceCommit))throw new Error("Incomplete original backup browser proof.");
+    await page.goto('about:blank');return {...captured,proof};
    },
    async cycle(persistence:()=>Promise<void>){
     await page.goto(origin);await selected().click();await enabled('Start database');

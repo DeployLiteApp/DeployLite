@@ -41,3 +41,16 @@ export function browserFixtureRequestFailure(value:Readonly<{stage:BrowserFixtur
  if(value.stage==="inject"&&value.code==="FST_ERR_REOPENED_CLOSE_SERVER")return "api-closed";
  return ["routing","body","app","inject","projection","response"].includes(value.stage)?value.stage:"request";
 }
+
+const backupBrowserSchema=schema.pick({sourceCommit:true,engine:true,projectId:true,databaseId:true,browser:true,context:true,requests:true}).extend({
+ actorId:z.string().regex(/^[A-Za-z0-9_-]{1,200}$/),commandId:z.string().min(1).max(256),originalCommandId:z.string().min(1).max(256),
+ archiveId:z.string().regex(/^backup_[a-f0-9]{32}$/),idempotencyKey:z.string().regex(/^[A-Za-z0-9_-]{1,200}$/),destinationId:z.string().regex(/^[A-Za-z0-9_-]{1,200}$/),
+ manual:passed,originalSource:passed,lostReply:passed,reload:passed,sameOriginalKey:passed,inventory:passed,
+ calls:z.array(z.object({key:z.string(),commandId:z.string(),archiveId:z.string(),actorId:z.string(),status:z.literal(200)}).strict()).length(2)
+}).strict();
+export function validateBackupBrowserProof(value:unknown,expectedSource:string):boolean{
+ const parsed=backupBrowserSchema.safeParse(value);if(!/^[a-f0-9]{40}$/.test(expectedSource)||!parsed.success)return false;
+ const proof=parsed.data;
+ return proof.sourceCommit===expectedSource&&proof.commandId!==proof.originalCommandId&&proof.calls.every(call=>
+  call.key===proof.idempotencyKey&&call.commandId===proof.commandId&&call.archiveId===proof.archiveId&&call.actorId===proof.actorId);
+}

@@ -84,7 +84,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
   let captureFailure:"before-capture"|"connection"|"identity"|"preexisting-lock"|"acquisition"|"acknowledgement"|"dump"|"cleanup"|"token"|"clock"|"shell"|"unknown"="before-capture";
   const redisSourceRoot=resolve(process.env.RUNNER_TEMP!,"deploylite-p5-redis-source-"+projectId),redisRoots=new Map<string,string>();
   let redisSourceInfo:Awaited<ReturnType<typeof lstat>>|undefined;
-  let redisBackupResponse:Awaited<ReturnType<FastifyInstance["inject"]>>|undefined;
+  let redisBackupResponse:{statusCode:number;body:string;json():any}|undefined;
   const redisSource=createLocalDirectoryComposeVolumeBackupSource(redisRoots);
   let browserFixture: Awaited<ReturnType<typeof openDatabaseBrowser>> | undefined;
   const logRequests: string[][] = [];
@@ -191,7 +191,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const {projectId:_project,databaseId:_database,...preparation} = preview.json().data.preparation;
     const connection = preview.json().data.connection;
     legacyPhase=false;
-    browserFixture=await openDatabaseBrowser({sourceCommit:scope.commit,projectId,databaseId,engine,cookie,app:()=>app!});
+    browserFixture=await openDatabaseBrowser({sourceCommit:scope.commit,projectId,databaseId,engine,actorId,cookie,app:()=>app!});
     const apply=await browserFixture.create(); legacyPhase=true; expect(apply.statusCode).toBe(200);
     expect(apply.json().data.command.status).toBe("completed");
     const receipt = managedDatabaseRuntimeReceiptSchema.parse(apply.json().data.receipt);
@@ -207,10 +207,15 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     for (const hostname of ["127.0.0.1",connection.hostname]) expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,hostname)],signal)).stdout.trim()).toBe(marker);
     const archiveVerifier=createPrivateNativeRestoreArchive({destinations:new Map([["private-native",backupRoot]]),expectedAgentId:agentId,clock:{now:Date.now},maxBytes:backupMaxBytes,maxDurationMs:5000});
     const verifyArchive=(backupReceipt:unknown)=>archiveVerifier.verify({schemaVersion:1,projectId,databaseId,...preparation,originalReceipt:receipt,originalReplayFingerprint:apply.json().data.originalReplayFingerprint,backupReceipt,maxBytes:backupMaxBytes},signal);
+    let browserBackup:Awaited<ReturnType<NonNullable<typeof browserFixture>["backup"]>>|undefined;
+    async function originalBrowserBackup(){
+      if(!browserBackup){legacyPhase=false;try{browserBackup=await browserFixture!.backup();}finally{legacyPhase=true;}return browserBackup.response;}
+      return app!.inject({method:"POST",url:`/api/v1/projects/${projectId}/databases/${databaseId}/runtime/backup`,headers:{cookie,"idempotency-key":browserBackup.key,"x-deploylite-expected-actor-id":actorId},payload:browserBackup.body});
+    }
     const sqlDump=engine==="mysql"||engine==="mariadb";
     if(sqlDump)await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,true,"127.0.0.1","CREATE TABLE p5_nontransactional(value varchar(64)) ENGINE=MyISAM; INSERT INTO p5_nontransactional VALUES ('p5-nontransactional-value');")],signal);
     if(dump&&engine!=="redis")nativeBackup=await dump.prove({captureFailure:()=>captureFailure,captureExit:()=>captureExit??{code:null,signal:null},captureError:()=>captureError,
-      call:()=>call("runtime/backup",{...preparation,originalReceipt:receipt,originalReplayFingerprint:apply.json().data.originalReplayFingerprint,destinationId:"private-native",maxBytes:backupMaxBytes}),
+      call:originalBrowserBackup,
       reopen:async()=>{await app!.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(true);app=await build(endpoint,"managed_database_fixture_key_1234567890");},
       verifyArchive,inventory:()=>new DbBackupInventoryStore(db.db,agentId),verify:()=>verifier.verify(input,pinned!,authority,signal),decode:bytes=>engine==="mongodb"?restoreNativeMongoFixture({bytes,containerId:originalContainerId,uid:ready.uid,signal}):(engine==="mysql"||engine==="mariadb")?restoreNativeSqlFixture({engine,bytes,containerId:originalContainerId,uid:ready.uid,signal}):decodeNativePostgresFixture({bytes,containerId:originalContainerId,uid:ready.uid,signal}),signal,captures:()=>backupCaptures,maxBytes:backupMaxBytes,originalContainerId:receipt.containerId,uid:ready.uid,
       ...((sqlDump||engine==="mongodb")?{writerProbe:async()=>{const resumed=AbortSignal.timeout(5000);await runner.run(["docker","exec",originalContainerId,"sh","-ec",probe(engine,true)],resumed);expect((await runner.run(["docker","exec",originalContainerId,"sh","-ec",probe(engine,false)],resumed)).stdout.trim()).toBe(marker);}}:{})
@@ -296,7 +301,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     if(engine==="redis"){
       await verifier.verifyStopped(input,pinned,authority,signal);await mkdir(redisSourceRoot,{mode:0o700});redisSourceInfo=await lstat(redisSourceRoot);
       await runner.run(["docker","container","cp",receipt.containerId+":/data/.",redisSourceRoot],signal);await verifier.verifyStopped(input,pinned,authority,signal);redisRoots.set(receipt.volumeName,redisSourceRoot);
-      redisBackupResponse=await call("runtime/backup",{...preparation,originalReceipt:receipt,originalReplayFingerprint,destinationId:"private-native",maxBytes:backupMaxBytes});expect(redisBackupResponse.statusCode).toBe(200);
+      const captured=await originalBrowserBackup();expect(captured.statusCode).toBe(200);redisBackupResponse=captured;
       await verifier.verifyStopped(input,pinned,authority,signal);
     }
     const stoppedHealth=await currentHealth("stopped");
@@ -330,13 +335,14 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     expect(await verifier.verify(input,pinned,authority,signal)).toEqual(ready);
     for (const hostname of ["127.0.0.1",connection.hostname]) expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,hostname)],signal)).stdout.trim()).toBe(marker);
     if(engine==="redis"&&dump){
-      let first=true;const backupInput={...preparation,originalReceipt:receipt,originalReplayFingerprint,destinationId:"private-native",maxBytes:backupMaxBytes};
-      nativeBackup=await dump.prove({call:async()=>{if(first){first=false;return redisBackupResponse!;}return call("runtime/backup",backupInput);},
+      let first=true;
+      nativeBackup=await dump.prove({call:async()=>{if(first){first=false;return redisBackupResponse!;}return originalBrowserBackup();},
         reopen:async()=>{await app!.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(true);app=await build(endpoint,"managed_database_fixture_key_1234567890");},
         verifyArchive,inventory:()=>new DbBackupInventoryStore(db.db,agentId),verify:()=>verifier.verify(input,pinned!,authority,signal),decode:bytes=>restoreNativeRedisFixture({bytes,containerId:originalContainerId,uid:ready.uid,signal}),
         signal,captures:()=>backupCaptures,maxBytes:backupMaxBytes,originalContainerId,uid:ready.uid,stoppedSource:true});
     }
-    if (!nativeBackup) throw new Error("Original native backup proof required.");
+    if (!nativeBackup || !browserBackup) throw new Error("Original native/browser backup proof required.");
+    nativeBackup.browserBackup=browserBackup.proof;
     const restoreBackup=managedDatabaseBackupReceiptSchema.parse(nativeBackup.receipt);
     const restoreSelection={...preparation,projectId,databaseId,originalReceipt:receipt,originalReplayFingerprint,
       archiveId:restoreBackup.archiveId,destinationId:restoreBackup.destinationId,expectedArchiveSha256:restoreBackup.archiveSha256,
