@@ -1,4 +1,5 @@
 """Explicit isolated five-engine fixture admission; no Docker execution or ambient credential lookup."""
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -45,6 +46,25 @@ def validate_profiles(manifest):
     for engine, profile in profiles.items():
         require(profile["engine"] == engine and re.fullmatch("docker.io/library/" + repositories[engine] + r"@sha256:[a-f0-9]{64}", profile["image"]), "exact_official_pinned_fixture_required")
     return profiles
+
+def validate_resource_receipt(result):
+    require(isinstance(result,dict), "original_native_resources_required")
+    receipt, original = result.get("receipt"), result.get("original")
+    require(isinstance(receipt,dict) and isinstance(original,dict), "original_native_resources_required")
+    volume, network = original.get("volume"), original.get("network")
+    require(isinstance(volume,dict) and isinstance(network,dict), "original_native_resources_required")
+    require(all(isinstance(receipt.get(key),str) and receipt[key] and receipt[key] == original.get(key)
+                for key in ("projectId","databaseId","commandId","planDigest")), "original_native_resource_scope_required")
+    require(isinstance(receipt.get("networkId"),str) and re.fullmatch(r"[a-f0-9]{64}",receipt["networkId"])
+            and receipt["networkId"] == network.get("id"), "original_native_network_identity_required")
+    created = receipt.get("volumeCreatedAt")
+    require(isinstance(created,str) and created == volume.get("createdAt"), "original_native_volume_identity_required")
+    try:
+        require(datetime.fromisoformat(created.replace("Z","+00:00")).tzinfo is not None, "native_volume_timestamp_required")
+    except ValueError:
+        require(False, "native_volume_timestamp_required")
+    require(all(isinstance(receipt.get(key),str) and receipt[key] and receipt[key] == resource.get("name")
+                for key,resource in (("volumeName",volume),("networkName",network))), "original_native_resource_names_required")
 
 def capture(env):
     require(sys.platform == "linux", "hosted_linux_required")
@@ -94,6 +114,7 @@ def verify(env):
     for engine,item in acceptance["engines"].items():
         result = item.get("result",{})
         receipt = result.get("receipt",{})
+        validate_resource_receipt(result)
         require(item.get("cleanup") == "verified" and all(result.get(key) == "passed" for key in ("authenticatedProbe","restart","persistence")), "native_persistence_cleanup_required")
         require(type(result.get("uid")) is int and 0 < result["uid"] <= 4294967294 and receipt.get("engine") == engine and receipt.get("status") == "ready"
                 and receipt.get("health") == "passed" and receipt.get("storage") == "verified" and receipt.get("redacted") is True, "ready_nonroot_native_receipt_required")

@@ -122,3 +122,11 @@ it("withholds terminal readiness for a changed daemon identity or final revoked 
     revoked.starter.start.mockImplementation(async () => {revoked.authority.assertValid.mockRejectedValue(new Error("revoked"));return {containerId,uid:999};});
     await expect(revoked.executor.apply(revoked.command,revoked.authority,new AbortController().signal)).rejects.toThrow();
 });
+
+it("preserves verified original network and volume identities in the durable receipt", async () => {
+  const f = fixture(), receipt = await f.executor.apply(f.command, f.authority, new AbortController().signal);
+  expect(receipt).toMatchObject({ networkId: f.original.network.id, volumeCreatedAt: f.original.volume.createdAt });
+  expect(managedDatabaseRuntimeReceiptSchema.parse(JSON.parse(JSON.stringify(receipt)))).toMatchObject({
+    networkId: f.original.network.id, volumeCreatedAt: f.original.volume.createdAt
+  });
+});

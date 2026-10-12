@@ -35,7 +35,7 @@ it("preserves original execution binding in cache-only queries without a secret 
 const receipt = { schemaVersion: 1, action: "database.runtime", agentId: "agent-a", commandId: "command-a", projectId: "project-a", databaseId: "orders", engine: "postgres",
     inputDigest: digest, planDigest: digest, environmentFingerprint: "b".repeat(32), correlationId: "correlation-a", containerId: digest,
     imageId: "sha256:" + digest, volumeName: "dl-" + "a".repeat(32) + "-vol-db-orders", networkName: "dl-" + "a".repeat(32) + "-net-db-orders",
-    observedAt: 1000, status: "ready", health: "passed", storage: "verified", idempotent: false, redacted: true };
+    networkId: "f".repeat(64), volumeCreatedAt: "2026-10-10T00:00:00Z", observedAt: 1000, status: "ready", health: "passed", storage: "verified", idempotent: false, redacted: true };
 it("accepts only physically corroborated readiness with secret-safe metadata", () => {
     expect(managedDatabaseRuntimeReceiptSchema.parse(receipt)).toEqual(receipt);
     for (const patch of [{ health: "failed" }, { storage: "unverified" }, { containerId: null }, { imageId: null }, { password: "plaintext" }, { localPath: "/private/data" }])
@@ -54,4 +54,16 @@ it("represents a missing original cached database receipt without authorizing ex
     const cached = {schemaVersion: 1, action: "database.runtime", agentId: "agent-a", commandId: "command-a", correlationId: "correlation-a", receipt: null};
     expect(managedDatabaseRuntimeCachedReceiptSchema.parse(cached)).toEqual(cached);
     expect(managedDatabaseRuntimeCachedReceiptSchema.safeParse({...cached, execute: true}).success).toBe(false);
+});
+
+it("rejects ready receipts missing the original persistent resource identities", () => {
+  const { networkId: _, volumeCreatedAt: __, ...legacy } = receipt as Record<string, unknown>;
+  expect(managedDatabaseRuntimeReceiptSchema.safeParse(legacy).success).toBe(false);
+});
+it("accepts the original resource pair and rejects malformed or absent identities", () => {
+  const original = { ...receipt, networkId: "f".repeat(64), volumeCreatedAt: "2026-10-10T00:00:00Z" };
+  expect(managedDatabaseRuntimeReceiptSchema.safeParse(original).success).toBe(true);
+  for (const patch of [{ networkId: null }, { volumeCreatedAt: null }, { networkId: "short" }, { volumeCreatedAt: "invalid" }]) {
+    expect(managedDatabaseRuntimeReceiptSchema.safeParse({ ...original, ...patch }).success).toBe(false);
+  }
 });

@@ -78,7 +78,7 @@ export function createManagedDatabaseRuntimeExecutor(supplied: Readonly<{
             if (!Number.isSafeInteger(observedAt) || observedAt < start || observedAt >= deadline) fail();
             return Object.freeze(managedDatabaseRuntimeReceiptSchema.parse({...request, action: "database.runtime", agentId: command.agentId, commandId: command.commandId,
                 inputDigest: command.inputDigest, planDigest: command.planDigest, environmentFingerprint: command.environmentFingerprint, correlationId: command.context.correlationId,
-                containerId, imageId: prepared.imageId, volumeName: original.volume.name, networkName: original.network.name, observedAt, status: "ready", health: "passed", storage: "verified", idempotent: false, redacted: true}));
+                containerId, imageId: prepared.imageId, volumeName: original.volume.name, networkName: original.network.name, networkId: original.network.id, volumeCreatedAt: original.volume.createdAt, observedAt, status: "ready", health: "passed", storage: "verified", idempotent: false, redacted: true}));
         } catch {return fail();}
         finally {if (timer !== undefined) clearTimeout(timer); external.removeEventListener("abort", cancel);}
     }};

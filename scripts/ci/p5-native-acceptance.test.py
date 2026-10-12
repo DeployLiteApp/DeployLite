@@ -63,6 +63,17 @@ class ReportAdmission(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 module.validate_report({**report,**mutation})
 
+class NativeResourceReceipt(unittest.TestCase):
+    def test_requires_original_resource_identities_in_the_persisted_receipt(self):
+        result = {"receipt":{"networkId":"f"*64,"volumeCreatedAt":"2026-10-10T00:00:00Z","volumeName":"volume-original","networkName":"network-original"},
+                  "original":{"volume":{"name":"volume-original","createdAt":"2026-10-10T00:00:00Z"},"network":{"name":"network-original","id":"f"*64}}}
+        scope = {"projectId":"project-original","databaseId":"orders","commandId":"command-original","planDigest":"a"*64}
+        result["receipt"].update(scope); result["original"].update(scope)
+        module.validate_resource_receipt(result)
+        for patch in [{"networkId":"e"*64},{"volumeCreatedAt":"2026-10-09T00:00:00Z"},{"networkId":None},{"volumeName":"foreign"}]:
+            with self.subTest(patch=patch), self.assertRaises(RuntimeError):
+                module.validate_resource_receipt({**result,"receipt":{**result["receipt"],**patch}})
+
 class NativeWorkflow(unittest.TestCase):
     def test_native_report_options_are_forwarded_to_vitest_and_verifier_always_runs(self):
         workflow = (Path(__file__).parents[2]/".github/workflows/baseline.yml").read_text()
