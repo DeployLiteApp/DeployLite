@@ -402,3 +402,5 @@ export * from './registry-configuration.js';
 export * from "./backup-retention.js";
 
 export * from "./managed-database-profile.js";
+
+export * from "./deployment-contract/managed-database-runtime.js";
