@@ -383,3 +383,10 @@ Configured stop actual failure and opaque original cache correction — 2026-10-
 Opaque cache correction full Node24 pnpm check exits0:2783 unit cases across8 projects, zero skipped/failed; Python proof12/12PASS. Hosted five-engine configured stop and SQL opaque-reader acceptance remain pending fresh exact-head CI.
 
 Authenticated API stop transport source verification: full Node24 pnpm check exit0,2791 unit cases across8 projects,zero skipped/failed. Local dependency reconciliation d001857 preserves source checkpoint6fa5524 and original-row digest correction2aba79b. Hosted exact-head gates and operator core/route activation remain pending.
+
+
+### S1 original project command read for native stop — 2026-10-11
+
+An optional existing project-control port reads an original command by exact project/update scope and ID, independently of the current operator. It preserves expired original evidence and all stored authority/history; current project authorization remains the caller's obligation. The DB adapter issues only a bounded read, never claims or mutates anything. Two prospective assertions observed RED, then25 focal cases PASS including23 prior redeploy/rollback cases. The existing PostgreSQL five-engine API case now corroborates allfive original authorities across client reopen, denies another project, and verifies complete command rows stay unchanged. Actual SQL and full source acceptance remain pending. Rollback removes only the unused reader/port/tests, preserving original rows and existing control operations.
+
+Original command reader source verification: full Node24 pnpm check exit0,2793 unit cases across8 projects,zero skipped/failed. The strengthened hosted SQL case and complete exact-head CI remain pending.
