@@ -1307,7 +1307,9 @@
     "apps/agent/src/infrastructure/docker/docker-managed-database-logs.ts",
     "apps/agent/src/infrastructure/docker/docker-managed-database-logs.test.ts",
     "packages/config/src/redaction.ts",
-    "packages/config/src/redaction.test.ts"
+    "packages/config/src/redaction.test.ts",
+    "packages/db/src/postgres-fixture-shutdown.ts",
+    "packages/db/src/postgres-fixture-shutdown.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
