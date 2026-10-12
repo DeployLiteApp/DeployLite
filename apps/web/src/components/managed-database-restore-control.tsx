@@ -1,7 +1,7 @@
 "use client";
 import {useEffect, useRef, useState} from "react";
 import {z} from "zod";
-import {managedDatabaseRestoreSelectionSchema, managedDatabaseRestoreReceiptSchema} from "@deploylite/contracts";
+import {managedDatabaseHealthPreparationSchema, managedDatabaseRestoreSelectionSchema, managedDatabaseRestoreReceiptSchema} from "@deploylite/contracts";
 import {prepareManagedDatabaseRestore, applyManagedDatabaseRestore, preparedManagedDatabaseRestoreSchema} from "@/lib/managed-database-restore";
 import {Dialog, DialogContent, DialogTitle, DialogDescription} from "@/components/ui/dialog";
 import {Button} from "@/components/ui/button";
@@ -11,6 +11,44 @@ const identity = z.string().regex(/^[A-Za-z0-9_-]{1,200}$/);
 const journalSchema = z.object({key: identity, selection: managedDatabaseRestoreSelectionSchema,
   prepared: preparedManagedDatabaseRestoreSchema.nullable(), uncertainApply: z.boolean(), confirmedReceipt: managedDatabaseRestoreReceiptSchema.nullable()}).strict();
 type Attempt = z.infer<typeof journalSchema>;
+function assertStoredBindings(saved: Attempt, selection: Attempt["selection"]) {
+  const prepared = saved.prepared, receipt = saved.confirmedReceipt;
+  if (JSON.stringify(saved.selection) !== JSON.stringify(selection) || (saved.uncertainApply && !prepared)
+    || (prepared && (JSON.stringify(prepared.selection) !== JSON.stringify(selection) || prepared.idempotencyKey !== saved.key
+      || prepared.command.idempotencyKey !== saved.key || prepared.command.scope.projectId !== selection.projectId
+      || prepared.command.id === selection.originalReceipt.commandId
+      || Date.parse(prepared.confirmation.expiresAt) > Date.parse(prepared.command.expiresAt)))) throw new Error("unavailable");
+  if (!receipt) return;
+  if (!prepared || saved.uncertainApply || receipt.commandId !== prepared.command.id || receipt.confirmationId !== prepared.confirmation.id
+    || receipt.inputDigest !== prepared.command.inputDigest || receipt.correlationId !== prepared.command.correlationId
+    || receipt.originalCommandId !== selection.originalReceipt.commandId || receipt.profileId !== selection.profileId
+    || receipt.archiveId !== selection.archiveId || receipt.archiveSha256 !== selection.expectedArchiveSha256
+    || receipt.manifestSha256 !== selection.expectedManifestSha256 || receipt.archiveBytes > selection.maxBytes
+    || receipt.observedAt < selection.originalReceipt.observedAt || receipt.observedAt >= Date.parse(prepared.command.expiresAt)
+    || receipt.observedAt > Date.now()
+    || (["schemaVersion", "projectId", "databaseId", "engine", "planDigest", "environmentFingerprint", "agentId", "containerId", "imageId", "volumeName", "networkName", "networkId", "volumeCreatedAt"] as const).some(key => receipt[key] !== selection.originalReceipt[key])) throw new Error("unavailable");
+}
+/** Recover public pending selectors only for this actor/API/original source; this grants no execution. */
+export function readRecoverableManagedDatabaseRestores(raw: unknown, apiBaseUrl: string, actorId: string) {
+  identity.parse(actorId); const source = managedDatabaseHealthPreparationSchema.parse(raw), namespace = "deploylite.native-restore:";
+  const prefix = namespace + JSON.stringify([apiBaseUrl, actorId]).slice(0, -1) + ",";
+  const count = sessionStorage.length; if (!Number.isSafeInteger(count) || count < 0 || count > 10000) throw new Error("unavailable");
+  const selections: z.infer<typeof managedDatabaseRestoreSelectionSchema>[] = []; let bytes = 0;
+  for (let index = 0; index < count; index++) {
+    const key = sessionStorage.key(index); if (!key?.startsWith(prefix)) continue;
+    let selection: z.infer<typeof managedDatabaseRestoreSelectionSchema>;
+    try {
+      const tuple = z.tuple([z.literal(apiBaseUrl), z.literal(actorId), managedDatabaseRestoreSelectionSchema]).parse(JSON.parse(key.slice(namespace.length)));
+      selection = tuple[2];
+      const {archiveId: _archive, destinationId: _destination, expectedArchiveSha256: _sha, expectedManifestSha256: _manifest, maxBytes: _bytes, ...original} = selection;
+      if (JSON.stringify(original) !== JSON.stringify(source)) continue;
+    } catch {continue;}
+    const raw = sessionStorage.getItem(key); if (raw === null || raw.length > 131072 || (bytes += raw.length) > 2097152) throw new Error("unavailable");
+    const saved = journalSchema.parse(JSON.parse(raw)); assertStoredBindings(saved, selection);
+    if (!saved.confirmedReceipt) selections.push(selection);
+  }
+  if (sessionStorage.length !== count) throw new Error("unavailable"); return selections;
+}
 /** Public original retry state is saved before either request; only explicit confirmation can apply. */
 export function ManagedDatabaseRestoreControl({selection, apiBaseUrl, actorId, currentState, disabled, onRestored, onBusyChange}: Props) {
   const scope = JSON.stringify([apiBaseUrl, actorId, selection]), slot = "deploylite.native-restore:" + scope;
@@ -25,11 +63,7 @@ export function ManagedDatabaseRestoreControl({selection, apiBaseUrl, actorId, c
       identity.parse(actorId); const source = managedDatabaseRestoreSelectionSchema.parse(selection), raw = sessionStorage.getItem(slot);
       if (raw !== null) {
         if (raw.length > 131072) throw new Error("unavailable");
-        const saved = journalSchema.parse(JSON.parse(raw)), prepared = saved.prepared;
-        if (JSON.stringify(saved.selection) !== JSON.stringify(source) || (saved.uncertainApply && !prepared)
-          || (prepared && (JSON.stringify(prepared.selection) !== JSON.stringify(source) || prepared.idempotencyKey !== saved.key
-            || prepared.command.idempotencyKey !== saved.key || prepared.command.scope.projectId !== source.projectId
-            || Date.parse(prepared.confirmation.expiresAt) > Date.parse(prepared.command.expiresAt)))) throw new Error("unavailable");
+        const saved = journalSchema.parse(JSON.parse(raw)); assertStoredBindings(saved, source);
         original.current = saved;
       }
     } catch {setBlocked(true); setMessage("The original restore request could not be recovered.");}
@@ -46,7 +80,8 @@ export function ManagedDatabaseRestoreControl({selection, apiBaseUrl, actorId, c
     const timer = setTimeout(() => setRevision(value => value + 1), Math.min(remaining, 60000)); return () => clearTimeout(timer);
   }, [opened, attempt?.prepared, attempt?.uncertainApply]);
   function persist(value: Attempt) {
-    const raw = JSON.stringify(journalSchema.parse(value)); sessionStorage.setItem(slot, raw);
+    const parsed = journalSchema.parse(value); assertStoredBindings(parsed, selection);
+    const raw = JSON.stringify(parsed); sessionStorage.setItem(slot, raw);
     if (sessionStorage.getItem(slot) !== raw) throw new Error("unavailable"); original.current = value; setRevision(value => value + 1);
   }
   function finish(controller: AbortController) {if (active.current === controller) {active.current = null; setBusy(false);}}

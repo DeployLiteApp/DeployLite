@@ -3,7 +3,7 @@ import {cleanup,fireEvent,render,screen,waitFor} from "@testing-library/react";
 import {afterEach,expect,it,vi} from "vitest";
 import {managedDatabaseBackupReceiptSchema,managedDatabaseHealthPreparationSchema,managedDatabaseRestoreReceiptSchema,type ManagedDatabaseEngineV1} from "@deploylite/contracts";
 import {prepareManagedDatabaseRestore,applyManagedDatabaseRestore} from "@/lib/managed-database-restore";
-import {ManagedDatabaseRestoreControl} from "./managed-database-restore-control";
+import {ManagedDatabaseRestoreControl, readRecoverableManagedDatabaseRestores} from "./managed-database-restore-control";
 vi.mock("@/lib/managed-database-restore",async importOriginal=>({...await importOriginal<object>(),prepareManagedDatabaseRestore:vi.fn(),applyManagedDatabaseRestore:vi.fn()}));
 const prepare=vi.mocked(prepareManagedDatabaseRestore),apply=vi.mocked(applyManagedDatabaseRestore);
 afterEach(()=>{cleanup();vi.resetAllMocks();vi.restoreAllMocks();sessionStorage.clear();});
@@ -120,4 +120,22 @@ it("aborts an old actor's apply and withholds its result from the replacement ac
 it("blocks malformed original journal state rather than silently creating another key",()=>{
  const f=setup(),scope=JSON.stringify([f.props.apiBaseUrl,f.props.actorId,f.selection]);sessionStorage.setItem("deploylite.native-restore:"+scope,'{"key":"foreign"}');
  render(<ManagedDatabaseRestoreControl {...f.props}/>);const button=screen.getByRole("button",{name:"Restore backup"});expect((button as HTMLButtonElement).disabled).toBe(true);fireEvent.click(button);expect(prepare).not.toHaveBeenCalled();expect(apply).not.toHaveBeenCalled();
+});
+
+it("recovers only this actor API and original source and preserves selectors without any RPC",()=>{
+ const f=setup(),saved={key:f.prepared.idempotencyKey,selection:f.selection,prepared:f.prepared,uncertainApply:true,confirmedReceipt:null};
+ const slot="deploylite.native-restore:"+JSON.stringify([f.props.apiBaseUrl,f.props.actorId,f.selection]);sessionStorage.setItem(slot,JSON.stringify(saved));
+ expect(readRecoverableManagedDatabaseRestores(f.source,f.props.apiBaseUrl,f.props.actorId)).toEqual([f.selection]);
+ expect(readRecoverableManagedDatabaseRestores(f.source,f.props.apiBaseUrl,"operator-b")).toEqual([]);
+ expect(readRecoverableManagedDatabaseRestores(f.source,"https://other.example.test",f.props.actorId)).toEqual([]);
+ expect(readRecoverableManagedDatabaseRestores({...f.source,originalReceipt:{...f.source.originalReceipt,containerId:"a".repeat(64)}},f.props.apiBaseUrl,f.props.actorId)).toEqual([]);
+ expect(prepare).not.toHaveBeenCalled();expect(apply).not.toHaveBeenCalled();
+});
+it("rejects a detached or contradictory completed receipt before clearing an original pending recovery",()=>{
+ for(const mode of ["nonce","uncertainty"]){
+  const f=setup(),receipt={...f.receipt,confirmationId:mode==="nonce"?"foreign":f.receipt.confirmationId};
+  const saved={key:f.prepared.idempotencyKey,selection:f.selection,prepared:f.prepared,uncertainApply:mode==="uncertainty",confirmedReceipt:receipt};
+  sessionStorage.setItem("deploylite.native-restore:"+JSON.stringify([f.props.apiBaseUrl,f.props.actorId,f.selection]),JSON.stringify(saved));
+  expect(()=>readRecoverableManagedDatabaseRestores(f.source,f.props.apiBaseUrl,f.props.actorId)).toThrow();expect(prepare).not.toHaveBeenCalled();expect(apply).not.toHaveBeenCalled();sessionStorage.clear();
+ }
 });
