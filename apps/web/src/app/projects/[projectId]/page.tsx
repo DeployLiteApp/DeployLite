@@ -275,7 +275,7 @@ export default async function ProjectDetailPage({ params }: { params: Promise<Pa
 
         {auth.user.role === "admin" || auth.user.role === "operator" ? <ComposePreviewCard key={project.id} projectId={project.id} apiBaseUrl={apiBaseUrl} /> : null}
 
-        {auth.user.role === "admin" || auth.user.role === "operator" ? <ManagedDatabaseWorkbench key={`${project.id}:${auth.user.id}`} projectId={project.id} apiBaseUrl={apiBaseUrl} /> : null}
+        {auth.user.role === "admin" || auth.user.role === "operator" ? <ManagedDatabaseWorkbench key={`${project.id}:${auth.user.id}`} projectId={project.id} apiBaseUrl={apiBaseUrl} actorId={auth.user.id} /> : null}
 
         {auth.user.role === "admin" || auth.user.role === "operator" ? <RegistryConfigurationCard projectId={project.id} apiBaseUrl={apiBaseUrl} /> : null}
         {auth.user.role === "admin" ? <RuntimeConfigurationCard projectId={project.id} apiBaseUrl={apiBaseUrl} cookieHeader={cookieHeader} /> : null}

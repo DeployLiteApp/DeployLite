@@ -2,14 +2,15 @@
 import {useCallback, useEffect, useRef, useState} from "react";
 import {readManagedDatabaseInventory, type ManagedDatabaseInventoryEntry} from "@/lib/managed-database-inventory";
 import {startManagedDatabase, stopManagedDatabase} from "@/lib/managed-database-lifecycle";
+import {ManagedDatabaseBackupPanel} from "./managed-database-backup-panel";
 import {ManagedDatabaseDeleteControl} from "./managed-database-delete-control";
 import {ManagedDatabaseTelemetryPanel} from "./managed-database-telemetry-panel";
 import {Button} from "@/components/ui/button";
 import {Card, CardContent, CardHeader, CardTitle} from "@/components/ui/card";
-type Props = {projectId: string; apiBaseUrl: string; refreshKey?: number; selectedDatabaseId?: string; onSelect?(databaseId: string): void};
+type Props = {actorId?: string; projectId: string; apiBaseUrl: string; refreshKey?: number; selectedDatabaseId?: string; onSelect?(databaseId: string): void};
 const engineNames = {postgres: "PostgreSQL", mysql: "MySQL", mariadb: "MariaDB", mongodb: "MongoDB", redis: "Redis"};
 /** Recover original metadata; only explicit controls and fresh observations authorize runtime actions. */
-export function ManagedDatabaseInventoryPanel({projectId, apiBaseUrl, refreshKey, selectedDatabaseId, onSelect}: Props) {
+export function ManagedDatabaseInventoryPanel({projectId, apiBaseUrl, refreshKey, selectedDatabaseId, onSelect, actorId}: Props) {
   const [entries, setEntries] = useState<ManagedDatabaseInventoryEntry[]>([]);
   const [loaded, setLoaded] = useState(false), [loading, setLoading] = useState(false);
   const [message, setMessage] = useState(""), [manual, setManual] = useState(0);
@@ -18,7 +19,7 @@ export function ManagedDatabaseInventoryPanel({projectId, apiBaseUrl, refreshKey
   const [telemetryRevision, setTelemetryRevision] = useState(0), [busy, setBusy] = useState(false);
   const command = useRef<AbortController | null>(null);
   const attempts = useRef(new Map<string, string>());
-  const scope = JSON.stringify([projectId, apiBaseUrl]);
+  const scope = JSON.stringify([projectId, apiBaseUrl, actorId]);
   const currentScope = useRef(scope); currentScope.current = scope;
   const loadedScope = useRef("");
   const selection = selectedDatabaseId ?? localSelection;
@@ -100,6 +101,8 @@ export function ManagedDatabaseInventoryPanel({projectId, apiBaseUrl, refreshKey
             <Button disabled={busy || (currentState !== "running" && !retryStop)} onClick={() => void control("stop")}>{retryStop ? "Retry stop confirmation" : "Stop database"}</Button>
             <Button disabled={busy || !selected.startPreparation || (currentState !== "stopped" && !retryStart)} onClick={() => void control("start")}>{retryStart ? "Retry start confirmation" : "Start database"}</Button>
           </div>
+          {actorId ? <ManagedDatabaseBackupPanel key={JSON.stringify([actorId, selected.source])} preparation={selected.source} apiBaseUrl={apiBaseUrl}
+            actorId={actorId} currentState={currentState} disabled={busy} onBusyChange={setBusy} /> : null}
           <ManagedDatabaseDeleteControl preparation={selected.source} apiBaseUrl={apiBaseUrl} disabled={busy} onBusyChange={setBusy} onDeleted={()=>{
             onSelect?onSelect(""):setLocalSelection("");setObservation(null);setManual(value=>value+1);
           }} />

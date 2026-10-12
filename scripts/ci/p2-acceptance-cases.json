@@ -1499,7 +1499,10 @@
     "apps/api/src/managed-database-backups-route.ts",
     "apps/api/src/managed-database-backups-route.test.ts",
     "apps/web/src/lib/managed-database-backup.ts",
-    "apps/web/src/lib/managed-database-backup.test.ts"
+    "apps/web/src/lib/managed-database-backup.test.ts",
+    "apps/api/src/managed-database-backup-browser.test.ts",
+    "apps/web/src/components/managed-database-backup-panel.tsx",
+    "apps/web/src/components/managed-database-backup-panel.test.tsx"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
