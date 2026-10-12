@@ -33,7 +33,7 @@ export function buildManagedDatabaseStorageInitializationArgv(input: ManagedData
             "--label","com.deploylite.compose.managed=v1","--label","com.deploylite.compose.service="+plan.volume.key,
             "--label","com.deploylite.compose.config-digest="+preview.configDigest,
             "--read-only", "--cap-drop=ALL", "--cap-add=CHOWN", "--security-opt=no-new-privileges", "--user", "0:0",
-            "--cpus", String(cpus), "--memory", String(memoryBytes), "--pids-limit", String(pidsLimit), "--restart=no", "--network", "none",
+            "--cpus", String(cpus), "--memory", String(memoryBytes), "--pids-limit", String(pidsLimit), "--restart=no", "--no-healthcheck", "--network", "none",
             "--mount", `type=volume,source=${plan.volume.runtimeName},target=${plan.volume.target},volume-nocopy`,
             ...(plan.engine === "mongodb" ? ["--tmpfs", "/data/configdb:rw,noexec,nosuid,nodev,mode=1777,size=8388608"] : []),
             "--entrypoint", "/bin/sh", plan.image, "-ec", script]);
