@@ -1303,7 +1303,9 @@
     "apps/api/src/managed-database-metrics.ts",
     "apps/api/src/managed-database-metrics.test.ts",
     "apps/api/src/managed-database-metrics-route.ts",
-    "apps/api/src/managed-database-metrics-route.test.ts"
+    "apps/api/src/managed-database-metrics-route.test.ts",
+    "packages/db/src/postgres-fixture-shutdown.ts",
+    "packages/db/src/postgres-fixture-shutdown.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
