@@ -1246,7 +1246,9 @@
     "apps/api/src/managed-database-stop.ts",
     "apps/api/src/managed-database-stop.test.ts",
     "apps/api/src/managed-database-stop-route.ts",
-    "apps/api/src/managed-database-stop-route.test.ts"
+    "apps/api/src/managed-database-stop-route.test.ts",
+    "scripts/ci/p5-operator-admission.py",
+    "scripts/ci/p5-operator-admission.test.py"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
