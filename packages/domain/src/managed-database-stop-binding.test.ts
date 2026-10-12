@@ -1,5 +1,6 @@
+import {protocolPayloadFingerprint} from "@deploylite/contracts";
 import {expect,it} from "vitest";
-import {managedDatabaseStopExecutionBinding,managedDatabaseStopExecutionDigest,managedDatabaseStopReceiptMatches} from "./managed-database-stop-binding.js";
+import {managedDatabaseStopExecutionBinding,managedDatabaseStopExecutionDigest,managedDatabaseStopReceiptMatches,managedDatabaseStopReplayFingerprint,managedDatabaseStopReplayFingerprintDigest} from "./managed-database-stop-binding.js";
 import {managedDatabaseRuntimeExecutionDigest} from "./managed-database-runtime-binding.js";
 import {composeRuntimeResourceName} from "./compose-preview.js";
 const input={schemaVersion:1,projectId:"project-a",databaseId:"orders",engine:"postgres",profileId:"profile-a",planDigest:"a".repeat(64),environmentFingerprint:"b".repeat(32)};
@@ -31,4 +32,17 @@ it("preserves stable stop identity across object insertion order while rejecting
     expect(managedDatabaseStopExecutionDigest(Object.fromEntries(Object.entries(preparation).reverse()))).toBe(digest());
     const forged={...query(),inputDigest:"1".repeat(64),authority:{...query().authority,inputDigest:"1".repeat(64)}};
     expect(managedDatabaseStopReceiptMatches(forged,{...receipt(),inputDigest:"1".repeat(64)})).toBe(false);
+});
+
+it("preserves the existing receiver canonical stop replay bytes as an opaque selector",()=>{
+    const value=query(),expected=protocolPayloadFingerprint({...preparation,action:value.action,agentId:value.agentId,commandId:value.commandId,
+        idempotencyKey:value.idempotencyKey,inputDigest:value.inputDigest,correlationId:value.context.correlationId,authority:value.authority,lease:value.lease});
+    expect(managedDatabaseStopReplayFingerprint(value)).toBe(expected);expect(managedDatabaseStopReplayFingerprintDigest(value)).toMatch(/^[a-f0-9]{64}$/);
+});
+it("ignores receipt read request/timeout while preserving every original proof and stop authority dimension",()=>{
+    const value=query(),fingerprint=managedDatabaseStopReplayFingerprint(value);
+    expect(managedDatabaseStopReplayFingerprint({...value,context:{...value.context,requestId:"new-read"},timeoutMs:1})).toBe(fingerprint);
+    expect(managedDatabaseStopReplayFingerprint({...value,context:{...value.context,correlationId:"foreign"}})).not.toBe(fingerprint);
+    expect(managedDatabaseStopReplayFingerprint({...value,originalReplayFingerprint:"0".repeat(64)})).not.toBe(fingerprint);
+    expect(()=>managedDatabaseStopReplayFingerprint({...value,password:"private"})).toThrow();
 });

@@ -1262,6 +1262,8 @@
     "apps/agent/src/infrastructure/docker/docker-managed-database-start-executor.test.ts",
     "apps/agent/src/managed-database-start-replay.test.ts",
     "apps/agent/src/managed-database-start-server.test.ts",
+    "apps/api/src/managed-database-start-transport.ts",
+    "apps/api/src/managed-database-start-transport.test.ts",
     "packages/db/src/postgres-fixture-shutdown.ts",
     "packages/db/src/postgres-fixture-shutdown.test.ts"
   ],
