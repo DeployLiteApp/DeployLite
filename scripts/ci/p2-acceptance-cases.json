@@ -1275,7 +1275,9 @@
     "packages/contracts/src/deployment-contract/managed-database-health.ts",
     "packages/contracts/src/deployment-contract/managed-database-health.test.ts",
     "packages/domain/src/managed-database-health-binding.ts",
-    "packages/domain/src/managed-database-health-binding.test.ts"
+    "packages/domain/src/managed-database-health-binding.test.ts",
+    "packages/db/src/postgres-fixture-shutdown.ts",
+    "packages/db/src/postgres-fixture-shutdown.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
