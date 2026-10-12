@@ -18,7 +18,7 @@ def exact(value, keys, reason):
     native.require(isinstance(value, dict) and set(value) == set(keys), reason)
 
 def validate_result(result, profile):
-    exact(result, {"receipt", "uid", "original", "nativeStop", "internalConnection", "authenticatedProbe", "restart", "persistence", "cleanup", "operator"}, "public_operator_result_required")
+    exact(result, {"receipt", "uid", "original", "nativeStop", "nativeStart", "internalConnection", "authenticatedProbe", "restart", "persistence", "cleanup", "operator"}, "public_operator_result_required")
     native.require(type(result["uid"]) is int and 0 < result["uid"] <= 4294967294
         and all(result[key] == "passed" for key in ("authenticatedProbe", "restart", "persistence"))
         and result["cleanup"] == "verified", "executed_operator_persistence_cleanup_required")
@@ -62,12 +62,30 @@ def validate_result(result, profile):
     native.require(ready["inputDigest"] == digest({**preparation, **authority, "operation": "database.runtime.apply"}), "original_apply_digest_required")
     preparation.update(originalReceipt=ready, originalReplayFingerprint=fingerprint)
     native.require(stopped["inputDigest"] == digest({**preparation, **authority, "operation": "database.runtime.stop"}), "operator_stop_digest_required")
+    exact(result["nativeStart"], {"receipt", "originalStopReplayFingerprint"}, "public_operator_start_required")
+    started = result["nativeStart"]["receipt"]
+    exact(started, set(ready) | {"originalCommandId", "originalStopCommandId", "profileId"}, "public_start_receipt_required")
+    native.require(all(started[key] == ready[key] for key in shared)
+        and started["originalCommandId"] == ready["commandId"] and started["originalStopCommandId"] == stopped["commandId"]
+        and isinstance(started["commandId"], str) and re.fullmatch(r"[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}", started["commandId"])
+        and len({ready["commandId"], stopped["commandId"], started["commandId"]}) == 3
+        and started["profileId"] == profile["profileId"] and started["action"] == "database.runtime.start"
+        and started["status"] == "ready" and started["health"] == "passed" and started["storage"] == "verified"
+        and started["redacted"] is True and type(started["idempotent"]) is bool
+        and type(started["observedAt"]) is int and started["observedAt"] >= stopped["observedAt"]
+        and isinstance(started["correlationId"], str) and 1 <= len(started["correlationId"]) <= 128,
+        "original_operator_start_identity_required")
+    stop_fingerprint = result["nativeStart"]["originalStopReplayFingerprint"]
+    native.require(isinstance(stop_fingerprint, str) and re.fullmatch(r"[a-f0-9]{64}", stop_fingerprint), "opaque_stopped_fingerprint_required")
+    preparation.update(originalStopReceipt=stopped, originalStopReplayFingerprint=stop_fingerprint)
+    native.require(started["inputDigest"] == digest({**preparation, **authority, "operation": "database.runtime.start"}), "operator_start_digest_required")
     operator = result["operator"]
     flags = {"signedHttp": "passed", "postgresReplay": "passed", "originalRows": "unchanged", "cipherRows": "unchanged", "atomicAudit": "passed", "cacheOnlyReplay": "passed", "executorRemoved": "passed"}
-    exact(operator, set(flags) | {"applyCommand", "stopCommand", "stopDispatches"}, "complete_operator_evidence_required")
+    flags.update(startAtomicAudit="passed", startCacheOnlyReplay="passed", startExecutorRemoved="passed", stoppedCacheNoRestart="passed")
+    exact(operator, set(flags) | {"applyCommand", "stopCommand", "startCommand", "stopDispatches", "startDispatches"}, "complete_operator_evidence_required")
     native.require(all(operator[key] == value for key, value in flags.items()) and type(operator["stopDispatches"]) is int
-        and operator["stopDispatches"] == 1, "executed_operator_boundaries_required")
-    for key, receipt in (("applyCommand", ready), ("stopCommand", stopped)):
+        and operator["stopDispatches"] == 1 and type(operator["startDispatches"]) is int and operator["startDispatches"] == 1, "executed_operator_boundaries_required")
+    for key, receipt in (("applyCommand", ready), ("stopCommand", stopped), ("startCommand", started)):
         exact(operator[key], {"id", "correlationId", "status"}, "public_operator_command_required")
         native.require(operator[key] == {"id": receipt["commandId"], "correlationId": receipt["correlationId"], "status": "completed"}, "completed_original_operator_command_required")
     return result
