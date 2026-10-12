@@ -1253,7 +1253,11 @@
     "apps/api/src/testing/p5-operator-session.test.ts",
     "scripts/ci/p5-operator-evidence.py",
     "scripts/ci/p5-operator-evidence.test.py",
-    "apps/api/src/p5-native-operator.physical.test.ts"
+    "apps/api/src/p5-native-operator.physical.test.ts",
+    "packages/contracts/src/deployment-contract/managed-database-start.ts",
+    "packages/contracts/src/deployment-contract/managed-database-start.test.ts",
+    "packages/domain/src/managed-database-start-binding.ts",
+    "packages/domain/src/managed-database-start-binding.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,

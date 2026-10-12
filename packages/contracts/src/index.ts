@@ -408,3 +408,4 @@ export * from "./deployment-contract/managed-database-runtime.js";
 export * from "./managed-database-runtime-configuration.js";
 
 export * from "./deployment-contract/managed-database-stop.js";
+export * from "./deployment-contract/managed-database-start.js";
