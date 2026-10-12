@@ -33,7 +33,8 @@ function redactDockerProtocolOutput(value: string, argv: readonly string[]): str
   const words = argv.slice(1);
   while ((words[0] === "--config" || words[0] === "--host") && words[1]) words.splice(0, 2);
   const op = words[0], format = words[words.indexOf("--format") + 1];
-  if (op === "run" || (op === "network" && words[1] === "create")) return /^[0-9a-f]{64}\n?$/.test(value) ? value : redactDockerDiagnostic(value);
+  const nativeInitializerCreate = op === "create" && /^dl-[a-f0-9]{32}-database-init$/.test(words[words.indexOf("--name") + 1] ?? "") && words.includes("com.deploylite.database.storage-init=v1");
+  if (op === "run" || nativeInitializerCreate || (op === "network" && words[1] === "create")) return /^[0-9a-f]{64}\n?$/.test(value) ? value : redactDockerDiagnostic(value);
   const nativeResourceFormat = format === MANAGED_DATABASE_NETWORK_INSPECT_FORMAT || format === MANAGED_DATABASE_VOLUME_INSPECT_FORMAT;
   const nativeScopeFormat = nativeResourceFormat || format === MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT;
   const composeFormat = COMPOSE_INSPECTION_FORMATS.has(format ?? "") || nativeResourceFormat;
@@ -54,7 +55,7 @@ function redactDockerProtocolOutput(value: string, argv: readonly string[]): str
         if (nativeResourceFormat && key === "resourceKey" && /^[a-z][a-z0-9_-]{0,62}$/.test(nested)) return nested;
       }
       if (format === MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT && path.length === 1) {
-        if (key === "name" && /^\/dl-[a-f0-9]{32}-database$/.test(nested)) return nested;
+        if (key === "name" && /^\/dl-[a-f0-9]{32}-database(?:-init)?$/.test(nested)) return nested;
         if (key === "planDigest" && /^[a-f0-9]{64}$/.test(nested)) return nested;
         if (key === "environmentFingerprint" && /^[a-f0-9]{32}$/.test(nested)) return nested;
       }

@@ -52,3 +52,7 @@ it.each(engines)("rejects a %s profile mounting outside its native data path", e
 it("covers the unused standalone MongoDB image config volume with explicit tmpfs", () => {
     expect(buildManagedDatabaseRunArgv(fixture("mongodb"))).toContain("/data/configdb:rw,noexec,nosuid,nodev,mode=1777,size=8388608");
 });
+
+it("preserves explicitly initialized storage instead of copying image data on startup",()=>{
+ for(const engine of engines){const argv=buildManagedDatabaseRunArgv(fixture(engine));expect(argv[argv.indexOf("--mount")+1]).toContain(",volume-nocopy");}
+});

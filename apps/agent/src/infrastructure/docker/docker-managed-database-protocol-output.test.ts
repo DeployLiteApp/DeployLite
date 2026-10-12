@@ -27,3 +27,19 @@ it("preserves only native projection identities and public keyed fingerprints wh
         }
     }
 });
+
+it("preserves only an exact labelled initializer name in the native container projection",async()=>{
+ const name="/dl-"+"a".repeat(32)+"-database-init",f=fakeProcess();
+ const promise=new DockerProcessRunner({spawn:()=>f.child}).run(["docker","container","inspect","--format",MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT,"b".repeat(64)],new AbortController().signal);
+ f.stdout.on.mock.calls[0]![1](JSON.stringify({name,note:{name}}));f.callbacks.get("close")!(0,null);
+ const value=JSON.parse((await promise).stdout);expect(value.name).toBe(name);expect(value.note.name).not.toBe(name);
+});
+
+it("preserves a labelled native initializer create ID while retaining generic redaction",async()=>{
+ const id="a".repeat(64);
+ for(const native of [true,false]){
+  const f=fakeProcess(),argv=native?["docker","create","--name","dl-"+"b".repeat(32)+"-database-init","--label","com.deploylite.database.storage-init=v1","image"]:["docker","create","image"];
+  const promise=new DockerProcessRunner({spawn:()=>f.child}).run(argv,new AbortController().signal);f.stdout.on.mock.calls[0]![1](id);f.callbacks.get("close")!(0,null);
+  if(native)expect((await promise).stdout).toBe(id);else expect((await promise).stdout).not.toBe(id);
+ }
+});
