@@ -143,3 +143,13 @@ Rollback is not permission to remove mandatory tests: preserve all case bodies a
 Verified correction reference: #406 `49ff6309fe843e84e3a4ec0589b593949a000efa`, CI38083327173,7/7 PASS; published unit2550/2550, P2 87/87+diagnostic2/2, DB69/69, API13/13, ComposePG15/15, P3 1/1, P4 3/3; all0pending/0failed with exact source hashes and cleanup. Earlier stack heads retain their own cases/counts; every propagated head needs fresh CI and is pending until observed. Historical44 missing-run lookups return0runs; evidence gaps remain unaccepted.
 
 The quality job now produces a JSON report for every configured unit workspace and rejects any skipped, failed, missing, empty or inconsistent execution. Unit-report guard: seven rejection assertions observed RED, one complete-report characterization; GREEN8/8, zero skipped. Every physical partition remains mandatory independently.
+
+### S1 original-daemon admission and readiness — 2026-10-10
+
+The native verifier now corroborates the original persistent volume/network, immutable image, exact daemon ID, command/environment binding, hardening and global consumers twice. A stopped daemon must pass this read-only admission before start; readiness additionally requires healthy native nonroot PID1, stable resource evidence and current authority. PostgreSQL, MySQL, MariaDB, MongoDB and Redis each have explicit injected coverage. MongoDB permits only the approved config tmpfs in addition to its persistent primary volume.
+
+Focused source tests: process identity 7/7 and admission/readiness 14/14 PASS, no skips; `/tmp/deploylite-p5-stopped-admission-green.log`. The two stopped-admission assertions observed RED because the behavior was absent, then GREEN; `/tmp/deploylite-p5-stopped-admission-red.log`. Five-engine fixture expansion is characterization, not implementation RED. Previous identity/readiness RED receipts remain preserved. Contracts/domain compilation and agent typecheck pass with Node 24.20.0. These are injected observations, not physical five-engine execution or whole-P5 acceptance.
+
+Rollback removes only the four new process-identity/readiness files and their explicit source-manifest entries. Existing inspectors, encrypted rows, resources and history remain. Native daemon creation/start orchestration, authenticated API/transport activation, lifecycle operations and actual five-engine acceptance remain pending. No Docker daemon, database service or live credential was accessed for this unit.
+
+Full Node24 `pnpm check` exits 0 for this original-daemon unit; `/tmp/deploylite-p5-original-daemon-check.log`. Hosted exact-head checks remain required before acceptance.
