@@ -16,6 +16,19 @@ export type ManagedDatabaseCredentialPorts = Readonly<{
 export class ManagedDatabaseCredentialsError extends Error {
   constructor() { super("Managed database credentials are unavailable.");this.name="ManagedDatabaseCredentialsError"; }
 }
+/** Private decrypted payload for authorized server-side runtime preparation, never an API response. */
+export function readManagedDatabaseCredentialBundle(plan:ReturnType<typeof planManagedDatabaseProfile>,row:EncryptedEnvSecretValueRecord,cipher:EnvSecretCipher) {
+  const key="DEPLOYLITE_DATABASE_"+digestControlInput({projectId:plan.projectId,databaseId:plan.databaseId}).toUpperCase();
+  if (!row.id || row.projectId!==plan.projectId || row.key!==key || row.scope!=="project" || !row.valuePresent
+    || row.keyVersion!==ENCRYPTION_KEY_VERSION || !Buffer.isBuffer(row.encryptedValue) || !row.encryptedValue.length) throw new ManagedDatabaseCredentialsError();
+  const plaintext=cipher.decrypt(row.encryptedValue.toString("base64"));
+  const bundle=managedDatabaseCredentialBundleSchema.parse(JSON.parse(plaintext));
+  if (bundle.projectId!==plan.projectId || bundle.databaseId!==plan.databaseId || bundle.engine!==plan.engine
+    || bundle.profileId!==plan.profileId || bundle.planDigest!==plan.planDigest
+    || JSON.stringify(Object.keys(bundle.credentials).sort())!==JSON.stringify(plan.credentialKeys)
+    || cipher.fingerprint(plaintext)!==row.valueFingerprint) throw new ManagedDatabaseCredentialsError();
+  return bundle;
+}
 /** Trusted application caller supplies project authority; only encrypted bytes cross the repository boundary. */
 export async function ensureManagedDatabaseCredentials(raw: unknown, profile: unknown, ports: ManagedDatabaseCredentialPorts) {
   try {
@@ -23,14 +36,7 @@ export async function ensureManagedDatabaseCredentials(raw: unknown, profile: un
     if (!await ports.authorize(plan.projectId)) throw new ManagedDatabaseCredentialsError();
     const key="DEPLOYLITE_DATABASE_"+digestControlInput({projectId:plan.projectId,databaseId:plan.databaseId}).toUpperCase();
     const inspect=(row:EncryptedEnvSecretValueRecord) => {
-      if (!row.id || row.projectId!==plan.projectId || row.key!==key || row.scope!=="project" || !row.valuePresent
-        || row.keyVersion!==ENCRYPTION_KEY_VERSION || !Buffer.isBuffer(row.encryptedValue) || !row.encryptedValue.length) throw new ManagedDatabaseCredentialsError();
-      const plaintext=ports.cipher.decrypt(row.encryptedValue.toString("base64"));
-      const bundle=managedDatabaseCredentialBundleSchema.parse(JSON.parse(plaintext));
-      if (bundle.projectId!==plan.projectId || bundle.databaseId!==plan.databaseId || bundle.engine!==plan.engine
-        || bundle.profileId!==plan.profileId || bundle.planDigest!==plan.planDigest
-        || JSON.stringify(Object.keys(bundle.credentials).sort())!==JSON.stringify(plan.credentialKeys)
-        || ports.cipher.fingerprint(plaintext)!==row.valueFingerprint) throw new ManagedDatabaseCredentialsError();
+      readManagedDatabaseCredentialBundle(plan,row,ports.cipher);
       return {schemaVersion:1 as const,projectId:plan.projectId,databaseId:plan.databaseId,engine:plan.engine,
         secretRefId:row.id,credentialKey:key,credentialsConfigured:true as const,redacted:true as const};
     };
