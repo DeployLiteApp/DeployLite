@@ -163,7 +163,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const originalReplayFingerprint: string = apply.json().data.originalReplayFingerprint;
     expect(originalReplayFingerprint).toBe(createHash("sha256").update(originalRows.cache[0].fingerprint).digest("hex"));
     expect(apply.json().data.command).not.toHaveProperty("projectExecutionAuthority");
-    const stopInput = {...preparation,originalReceipt:receipt,originalReplayFingerprint};
+    let stopInput = {...preparation,originalReceipt:receipt,originalReplayFingerprint};
     const ledgerSnapshot=async()=>({commands:(await db.pool.query("SELECT * FROM control_commands WHERE scope_kind='project' AND scope_key=$1 ORDER BY id",[projectId])).rows,
       cache:(await db.pool.query("SELECT replay.* FROM agent_replay replay JOIN control_commands command ON command.id::text=replay.command_id WHERE command.scope_kind='project' AND command.scope_key=$1 ORDER BY replay.command_id",[projectId])).rows,
       audit:(await db.pool.query("SELECT * FROM audit_events WHERE target_id=$1 ORDER BY id",[projectId])).rows,cipher:await encrypted()});
@@ -202,6 +202,28 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
       expect(Object.values(privateBundle.credentials).every(secret => !text.includes(secret))).toBe(true);
       expect(await ledgerSnapshot()).toEqual(beforeRows); return {observation, before, after, selection};
     }
+    async function recoveredInventory(stopReceipt: ReturnType<typeof managedDatabaseStopReceiptSchema.parse> | null, stopFingerprint?: string) {
+      const beforeRows = await ledgerSnapshot(), before = Date.now();
+      const response = await app!.inject({method:"GET",url:`/api/v1/projects/${projectId}/databases`,headers:{cookie}});
+      const after = Date.now(); expect(response.statusCode).toBe(200);
+      const body = response.json(); expect(body.data.databases).toHaveLength(1);
+      const entry = body.data.databases[0];
+      const fullBase = {...preparation,projectId,databaseId};
+      const expectedSource = {...fullBase,originalReceipt:receipt,originalReplayFingerprint};
+      expect(entry).toEqual({preparation:fullBase,connection,source:expectedSource,
+        startPreparation:stopReceipt ? {...expectedSource,originalStopReceipt:stopReceipt,originalStopReplayFingerprint:stopFingerprint} : null});
+      const afterRows = await ledgerSnapshot();
+      expect(afterRows.commands).toEqual(beforeRows.commands); expect(afterRows.cache).toEqual(beforeRows.cache); expect(afterRows.cipher).toEqual(beforeRows.cipher);
+      const previousIds = new Set(beforeRows.audit.map(row => row.id));
+      const added = afterRows.audit.filter(row => !previousIds.has(row.id)); expect(added).toHaveLength(1);
+      expect(added[0]).toMatchObject({actor_user_id:actorId,action:"database.inventory.read",target_id:projectId,
+        request_id:body.requestId,metadata:{databaseCount:1,redacted:true}});
+      expect(Object.entries(privateBundle.credentials).filter(([key]) => key.includes("PASSWORD")).every(([,secret]) => !JSON.stringify(body).includes(secret))).toBe(true);
+      return {entry,before,after,requestId:body.requestId,correlationId:added[0].correlation_id};
+    }
+    const inventoryBeforeStop = await recoveredInventory(null);
+    const {projectId:_recoveredProject,databaseId:_recoveredDatabase,...recoveredStop} = inventoryBeforeStop.entry.source;
+    stopInput = recoveredStop;
     const runningBeforeStop=await currentHealth("running");
     const runningMetricsBeforeStop=await currentMetrics("running");
     const runningLogsBeforeStop = await currentLogs("running");
@@ -223,7 +245,11 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const originalStopReplayFingerprint: string = stop.json().data.originalStopReplayFingerprint;
     expect(originalStopReplayFingerprint).toBe(createHash("sha256").update(stopReplayRows[0].fingerprint).digest("hex"));
     expect(stop.json().data.command).not.toHaveProperty("projectExecutionAuthority");
-    const startInput = {...stopInput,originalStopReceipt:stopped,originalStopReplayFingerprint};
+    await app.close(); app = undefined; await peer!.close(); peer = undefined;
+    await db.reopen(); endpoint = await startPeer(true); app = await build(endpoint,"managed_database_fixture_key_1234567890");
+    const inventoryStopped = await recoveredInventory(stopped,originalStopReplayFingerprint);
+    const {projectId:_startProject,databaseId:_startDatabase,...startInput} = inventoryStopped.entry.startPreparation;
+
     const start = await call("runtime/start",startInput); expect(start.statusCode).toBe(200);
     expect(start.json().data.command.status).toBe("completed");
     const started = managedDatabaseStartReceiptSchema.parse(start.json().data.receipt);
@@ -236,6 +262,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     expect((await db.pool.query("SELECT * FROM agent_replay WHERE command_id=$1",[stopped.commandId])).rows).toEqual(stopReplayRows);
     expect(await verifier.verify(input,pinned,authority,signal)).toEqual(ready);
     for (const hostname of ["127.0.0.1",connection.hostname]) expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,hostname)],signal)).stdout.trim()).toBe(marker);
+    const inventoryAfterStart = await recoveredInventory(stopped,originalStopReplayFingerprint);
     const runningAfterStart=await currentHealth("running");expect(healthDispatches).toBe(3);
     const runningMetricsAfterStart=await currentMetrics("running");expect(metricsDispatches).toBe(3);expect(statsDispatches).toBe(2);
     const runningLogsAfterStart = await currentLogs("running", new Date(Math.max(0, receipt.observedAt - 60000)).toISOString());
@@ -259,7 +286,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     expect((await db.pool.query("SELECT * FROM agent_replay WHERE command_id=$1",[stopped.commandId])).rows).toEqual(stopReplayRows);
     expect(await originals()).toEqual(originalRows); expect(await encrypted()).toEqual(cipherRows);
     const command = (value:typeof apply) => ({id:value.json().data.command.id,correlationId:value.json().data.command.correlationId,status:value.json().data.command.status});
-    result = {currentLogs: {runningBeforeStop: runningLogsBeforeStop, stopped: stoppedLogs, runningAfterStart: runningLogsAfterStart}, currentMetrics:{runningBeforeStop:runningMetricsBeforeStop,stopped:stoppedMetrics,runningAfterStart:runningMetricsAfterStart},currentHealth:{runningBeforeStop,stopped:stoppedHealth,runningAfterStart},receipt,uid:ready.uid,original:pinned,nativeStop:{receipt:stopped,originalReplayFingerprint},nativeStart:{receipt:started,originalStopReplayFingerprint},internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},
+    result = {inventoryRecovery:{views:{runningBeforeStop:inventoryBeforeStop,stopped:inventoryStopped,runningAfterStart:inventoryAfterStart},restart:"passed",sourcesUsed:"passed",commands:"unchanged",cache:"unchanged",cipher:"unchanged",audit:"passed"},currentLogs: {runningBeforeStop: runningLogsBeforeStop, stopped: stoppedLogs, runningAfterStart: runningLogsAfterStart}, currentMetrics:{runningBeforeStop:runningMetricsBeforeStop,stopped:stoppedMetrics,runningAfterStart:runningMetricsAfterStart},currentHealth:{runningBeforeStop,stopped:stoppedHealth,runningAfterStart},receipt,uid:ready.uid,original:pinned,nativeStop:{receipt:stopped,originalReplayFingerprint},nativeStart:{receipt:started,originalStopReplayFingerprint},internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},
       authenticatedProbe:"passed",restart:"passed",persistence:"passed",operator:{publicOriginalSelectors:"passed",logsDispatches,logReads,logsSignedHttp:"passed",logsNoLedgerWrites:"passed",logsExecutorRemoved:"passed",metricsDispatches,statsDispatches,metricsSignedHttp:"passed",metricsNoLedgerWrites:"passed",metricsExecutorRemoved:"passed",healthDispatches,healthSignedHttp:"passed",healthNoLedgerWrites:"passed",healthExecutorRemoved:"passed",applyCommand:command(apply),stopCommand:command(stop),startCommand:command(start),startDispatches,startAtomicAudit:"passed",startCacheOnlyReplay:"passed",startExecutorRemoved:"passed",stoppedCacheNoRestart:"passed",signedHttp:"passed",postgresReplay:"passed",
         originalRows:"unchanged",cipherRows:"unchanged",atomicAudit:"passed",stopDispatches,cacheOnlyReplay:"passed",executorRemoved:"passed"}};
   } finally {

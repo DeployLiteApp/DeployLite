@@ -95,8 +95,31 @@ def validate_current_metrics(result, shared, ready, stopped, started):
             native.require(all(isinstance(metrics[key],str) and re.fullmatch(quantity+r" / "+quantity,metrics[key]) for key in ("memoryUsage","networkIO","blockIO")),"rounded_public_metrics_pairs_required")
     native.require(len(contexts)==3,"distinct_current_metrics_requests_required")
 
+def validate_inventory_recovery(result, profile, ready, stopped, started):
+    proof = result["inventoryRecovery"]
+    exact(proof,{"views","restart","sourcesUsed","commands","cache","cipher","audit"},"complete_inventory_recovery_required")
+    native.require(all(proof[key]==value for key,value in {"restart":"passed","sourcesUsed":"passed","commands":"unchanged","cache":"unchanged","cipher":"unchanged","audit":"passed"}.items()),"executed_inventory_recovery_required")
+    views = proof["views"]
+    exact(views,{"runningBeforeStop","stopped","runningAfterStart"},"three_recovered_inventory_views_required")
+    base = {key:ready[key] for key in ("schemaVersion","projectId","databaseId","engine","planDigest","environmentFingerprint")}
+    base["profileId"] = profile["profileId"]
+    source = {**base,"originalReceipt":ready,"originalReplayFingerprint":result["nativeStop"]["originalReplayFingerprint"]}
+    start = {**source,"originalStopReceipt":stopped,"originalStopReplayFingerprint":result["nativeStart"]["originalStopReplayFingerprint"]}
+    contexts = set()
+    for name,lower,upper in (("runningBeforeStop",ready["observedAt"],stopped["observedAt"]),("stopped",stopped["observedAt"],started["observedAt"]),("runningAfterStart",started["observedAt"],9007199254740991)):
+        view = views[name]
+        exact(view,{"entry","before","after","requestId","correlationId"},"public_inventory_recovery_window_required")
+        entry = view["entry"]
+        exact(entry,{"preparation","connection","source","startPreparation"},"strict_public_inventory_entry_required")
+        native.require(entry=={"preparation":base,"connection":result["internalConnection"]["details"],"source":source,"startPreparation":None if name=="runningBeforeStop" else start},"original_inventory_sources_required")
+        before,after = view["before"],view["after"]
+        native.require(all(type(value) is int and 0<=value<=9007199254740991 for value in (before,after)) and lower<=before<=after<=upper and after-before<60000,"fresh_inventory_recovery_window_required")
+        native.require(all(isinstance(view[key],str) and 1<=len(view[key])<=256 for key in ("requestId","correlationId")),"correlated_inventory_recovery_required")
+        contexts.add((view["requestId"],view["correlationId"]))
+    native.require(len(contexts)==3,"distinct_inventory_recovery_requests_required")
+
 def validate_result(result, profile):
-    exact(result, {"receipt", "uid", "original", "nativeStop", "nativeStart", "currentHealth", "currentMetrics", "currentLogs", "internalConnection", "authenticatedProbe", "restart", "persistence", "cleanup", "operator"}, "public_operator_result_required")
+    exact(result, {"receipt", "uid", "original", "nativeStop", "nativeStart", "currentHealth", "currentMetrics", "currentLogs", "inventoryRecovery", "internalConnection", "authenticatedProbe", "restart", "persistence", "cleanup", "operator"}, "public_operator_result_required")
     native.require(type(result["uid"]) is int and 0 < result["uid"] <= 4294967294
         and all(result[key] == "passed" for key in ("authenticatedProbe", "restart", "persistence"))
         and result["cleanup"] == "verified", "executed_operator_persistence_cleanup_required")
@@ -182,6 +205,7 @@ def validate_result(result, profile):
     native.require(len(contexts)==3,"distinct_current_health_requests_required")
     validate_current_metrics(result,shared,ready,stopped,started)
     validate_current_logs(result,shared,ready,stopped,started)
+    validate_inventory_recovery(result,profile,ready,stopped,started)
     operator = result["operator"]
     flags = {"signedHttp": "passed", "postgresReplay": "passed", "originalRows": "unchanged", "cipherRows": "unchanged", "atomicAudit": "passed", "cacheOnlyReplay": "passed", "executorRemoved": "passed"}
     flags.update(publicOriginalSelectors="passed",logsSignedHttp="passed",logsNoLedgerWrites="passed",logsExecutorRemoved="passed",metricsSignedHttp="passed",metricsNoLedgerWrites="passed",metricsExecutorRemoved="passed",healthSignedHttp="passed",healthNoLedgerWrites="passed",healthExecutorRemoved="passed",startAtomicAudit="passed", startCacheOnlyReplay="passed", startExecutorRemoved="passed", stoppedCacheNoRestart="passed")
