@@ -1,3 +1,5 @@
+import {createHash} from "node:crypto";
+import {managedDatabaseDeleteReceiptQuerySchema,managedDatabaseDeleteReceiptSchema,protocolPayloadFingerprint} from "@deploylite/contracts";
 import {createConfirmation,createControlCommand,digestControlInput} from "./control-plane.js";
 import {managedDatabaseStopExecutionBinding} from "./managed-database-stop-binding.js";
 import {managedDatabaseStartExecutionBinding} from "./managed-database-start-binding.js";
@@ -35,3 +37,27 @@ export function prepareManagedDatabaseDeleteConfirmation(raw:unknown) {
   return Object.freeze({command,confirmation});
  }catch{return unavailable();}
 }
+
+/** All original resource, approval and execution dimensions must match before command completion. */
+export function managedDatabaseDeleteReceiptMatches(rawQuery:unknown,rawReceipt:unknown):boolean{
+ try {
+  const query=managedDatabaseDeleteReceiptQuerySchema.parse(rawQuery),receipt=managedDatabaseDeleteReceiptSchema.parse(rawReceipt);
+  const {action:_action,operation:_operation,storagePolicy:_storage,stopPolicy:_stop,confirmationId:_confirmation,agentId:_agent,commandId:_command,inputDigest:_digest,idempotencyKey:_key,requiredCapabilities:_caps,authority:_authority,lease:_lease,context:_context,timeoutMs:_timeout,...preparation}=query;
+  if(query.inputDigest!==managedDatabaseDeleteExecutionDigest(preparation))return false;
+  const original=query.originalReceipt;
+  return receipt.agentId===query.agentId&&receipt.commandId===query.commandId&&receipt.originalCommandId===original.commandId
+   &&receipt.originalStopCommandId===(query.originalStopReceipt?.commandId??null)&&receipt.confirmationId===query.confirmationId
+   &&receipt.projectId===query.projectId&&receipt.databaseId===query.databaseId&&receipt.engine===query.engine&&receipt.profileId===query.profileId
+   &&receipt.inputDigest===query.inputDigest&&receipt.planDigest===query.planDigest&&receipt.environmentFingerprint===query.environmentFingerprint
+   &&receipt.correlationId===query.context.correlationId&&receipt.containerId===original.containerId&&receipt.imageId===original.imageId
+   &&receipt.volumeName===original.volumeName&&receipt.networkName===original.networkName&&receipt.networkId===original.networkId
+   &&receipt.volumeCreatedAt===original.volumeCreatedAt&&receipt.observedAt>=Math.max(original.observedAt,query.originalStopReceipt?.observedAt??0);
+ }catch{return false;}
+}
+/** Canonical signed replay identity grants no effects and ignores only read request and timeout. */
+export function managedDatabaseDeleteReplayFingerprint(raw:unknown):string{
+ const value=managedDatabaseDeleteReceiptQuerySchema.parse(raw);
+ const {context,timeoutMs:_timeout,...identity}=value;
+ return protocolPayloadFingerprint({...identity,correlationId:context.correlationId});
+}
+export function managedDatabaseDeleteReplayFingerprintDigest(raw:unknown):string{return createHash("sha256").update(managedDatabaseDeleteReplayFingerprint(raw)).digest("hex");}
