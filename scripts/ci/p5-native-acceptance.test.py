@@ -127,5 +127,24 @@ class NativeWorkflow(unittest.TestCase):
         step = job.split("      - name: Refuse every omitted, skipped or incomplete native case\n",1)[1]
         self.assertTrue(step.startswith("        if: always()\n"))
 
+
+class NativeRemoval(unittest.TestCase):
+    def fixture(self):
+        original={"containerId":"a"*64,"volumeName":"volume-original","networkName":"network-original","networkId":"b"*64,"volumeCreatedAt":"2026-10-10T00:00:00Z","observedAt":1000}
+        return {"receipt":original,"daemonRemoval":{**{key:original[key] for key in ("containerId","volumeName","networkName","networkId","volumeCreatedAt")},"storage":"retained","observedAt":2000}}
+    def test_requires_actual_removal_proof(self):
+        result=self.fixture(); del result["daemonRemoval"]
+        with self.assertRaises(RuntimeError): module.validate_daemon_removal(result)
+    def test_accepts_exact_removed_original_and_retained_resources(self):
+        module.validate_daemon_removal(self.fixture())
+    def test_rejects_foreign_storage_unperformed_removal_and_private_fields(self):
+        for patch in ({"containerId":"c"*64},{"volumeName":"foreign"},{"networkId":"c"*64},{"networkName":"foreign"},{"volumeCreatedAt":"other"},{"storage":"not-run"},{"password":"private"}):
+            result=self.fixture(); result["daemonRemoval"].update(patch)
+            with self.subTest(patch=patch),self.assertRaises(RuntimeError): module.validate_daemon_removal(result)
+    def test_rejects_unsafe_or_old_removal_clock(self):
+        for value in (True,1.0,999,-1,9007199254740992):
+            result=self.fixture(); result["daemonRemoval"]["observedAt"]=value
+            with self.subTest(value=value),self.assertRaises(RuntimeError): module.validate_daemon_removal(result)
+
 if __name__ == "__main__":
     unittest.main()
