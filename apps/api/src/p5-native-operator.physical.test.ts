@@ -323,6 +323,32 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     expect((await db.pool.query("SELECT * FROM control_commands WHERE id=$1",[pending.id])).rows).toEqual(pendingRows);
     expect(await originals()).toEqual(originalRows);expect(await encrypted()).toEqual(cipherRows);
     result!.confirmationRecovery={projectId,pending:"passed",unique:"passed",reopen:"passed",unconsumed:"passed",noAuthority:"passed",detachedRejected:"passed",originalRows:"unchanged",cipher:"unchanged"};
+    const currentControls=new DbControlCommandRepository(db.db);
+    const blocker=(await currentControls.resolve({...createControlCommand({actorId,action:"project.update",scope:{kind:"project",projectId},
+      input:{operation:"ci.confirmation-blocker"},idempotencyKey:randomUUID(),correlationId:randomUUID(),expiresAt:pending.expiresAt}),status:"eligible"})).command;
+    const occupied=await currentControls.claimProjectUpdate(blocker);expect(occupied.claimed).toBe(true);expect(occupied.authority).toBeDefined();
+    expect(await currentControls.claimConfirmedProjectUpdate(pending,first!)).toMatchObject({accepted:false,claimed:false,reason:"project_busy"});
+    expect(await storedNonce()).toEqual(nonceRows);
+    await currentControls.completeProjectUpdate(occupied.command,occupied.authority!,{actorUserId:actorId,action:"ci.confirmation-blocker-completed",targetType:"project",targetId:projectId,requestId:randomUUID(),correlationId:occupied.command.correlationId});
+    const acceptedAudits=async()=>(await db.pool.query("SELECT * FROM control_command_audits WHERE command_id=$1",[pending.id])).rows;
+    await expect(new DbControlCommandRepository(db.db,()=>{throw new Error("injected confirmed claim rollback");}).claimConfirmedProjectUpdate(pending,first!)).rejects.toThrow("injected confirmed claim rollback");
+    expect(await storedNonce()).toEqual(nonceRows);expect(await acceptedAudits()).toHaveLength(0);
+    expect((await db.pool.query("SELECT * FROM control_commands WHERE id=$1",[pending.id])).rows).toEqual(pendingRows);
+    const concurrent=await Promise.all([currentControls.claimConfirmedProjectUpdate(pending,first!),currentControls.claimConfirmedProjectUpdate(pending,first!)]);
+    const winner=concurrent.filter(value=>value.claimed);expect(winner).toHaveLength(1);expect(concurrent.filter(value=>value.accepted)).toHaveLength(1);
+    const acceptedRows=await acceptedAudits(),consumedRows=await storedNonce();expect(acceptedRows).toHaveLength(1);
+    expect(acceptedRows[0]).toMatchObject({command_id:pending.id,confirmation_id:first!.id,correlation_id:pending.correlationId,outcome:"accepted"});
+    expect(consumedRows[0].id).toBe(first!.id);expect(consumedRows[0].consumed_at).toBeInstanceOf(Date);
+    expect(consumedRows[0].consumed_at.getTime()).toBeLessThan(first!.expiresAt.getTime());
+    const claimedRows=(await db.pool.query("SELECT * FROM control_commands WHERE id=$1",[pending.id])).rows;
+    expect(claimedRows[0]).toMatchObject({status:"dispatching",execution_authority:winner[0]!.authority});
+    await db.reopen();const recoveredControls=new DbControlCommandRepository(db.db);
+    expect(await recoveredControls.resolveProjectUpdateConfirmation(pending)).toBeNull();
+    expect(await recoveredControls.claimConfirmedProjectUpdate(pending,first!)).toMatchObject({accepted:false,claimed:false});
+    expect(await storedNonce()).toEqual(consumedRows);expect(await acceptedAudits()).toEqual(acceptedRows);
+    expect((await db.pool.query("SELECT * FROM control_commands WHERE id=$1",[pending.id])).rows).toEqual(claimedRows);
+    expect(await originals()).toEqual(originalRows);expect(await encrypted()).toEqual(cipherRows);
+    result!.confirmedClaim={projectId,originalNonce:"passed",uniqueAuthority:"passed",projectBusy:"passed",rollback:"passed",reopen:"passed",noRenewal:"passed",audit:"passed",originalRows:"unchanged",cipher:"unchanged"};
   } finally {
     await browserFixture?.close();
     if (app) await app.close(); if (peer) await peer.close(); vi.unstubAllGlobals();

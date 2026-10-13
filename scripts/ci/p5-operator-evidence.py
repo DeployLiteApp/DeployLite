@@ -133,13 +133,21 @@ def validate_confirmation_recovery(result):
     native.require(proof["projectId"]==result["receipt"]["projectId"] and all(proof[key]=="passed" for key in stages)
         and proof["originalRows"]=="unchanged" and proof["cipher"]=="unchanged","executed_scoped_confirmation_recovery_required")
 
+def validate_confirmed_claim(result):
+    proof=result["confirmedClaim"]
+    stages={"originalNonce","uniqueAuthority","projectBusy","rollback","reopen","noRenewal","audit"}
+    exact(proof,stages|{"projectId","originalRows","cipher"},"complete_confirmed_claim_required")
+    native.require(proof["projectId"]==result["receipt"]["projectId"] and all(proof[key]=="passed" for key in stages)
+        and proof["originalRows"]=="unchanged" and proof["cipher"]=="unchanged","executed_scoped_confirmed_claim_required")
+
 def validate_result(result, profile, source_commit="7e4875341dbb8e1afdeff23137403528f3af6382"):
-    exact(result, {"receipt", "uid", "original", "nativeStop", "nativeStart", "currentHealth", "currentMetrics", "currentLogs", "inventoryRecovery", "browserAcceptance", "confirmationRecovery", "internalConnection", "authenticatedProbe", "restart", "persistence", "cleanup", "operator"}, "public_operator_result_required")
+    exact(result, {"receipt", "uid", "original", "nativeStop", "nativeStart", "currentHealth", "currentMetrics", "currentLogs", "inventoryRecovery", "browserAcceptance", "confirmationRecovery", "confirmedClaim", "internalConnection", "authenticatedProbe", "restart", "persistence", "cleanup", "operator"}, "public_operator_result_required")
     native.require(type(result["uid"]) is int and 0 < result["uid"] <= 4294967294
         and all(result[key] == "passed" for key in ("authenticatedProbe", "restart", "persistence"))
         and result["cleanup"] == "verified", "executed_operator_persistence_cleanup_required")
     validate_browser_acceptance(result,source_commit)
     validate_confirmation_recovery(result)
+    validate_confirmed_claim(result)
     ready = result["receipt"]
     shared = {"schemaVersion", "projectId", "databaseId", "engine", "agentId", "planDigest", "environmentFingerprint", "containerId", "imageId", "volumeName", "networkName", "networkId", "volumeCreatedAt"}
     exact(ready, shared | {"action", "commandId", "inputDigest", "correlationId", "observedAt", "status", "health", "storage", "idempotent", "redacted"}, "public_ready_receipt_required")

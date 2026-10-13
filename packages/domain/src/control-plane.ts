@@ -76,6 +76,7 @@ export type ControlCommandRepository = {
 export type ProjectUpdateControlRepository = ControlCommandRepository & {
   /** Private pending destructive nonce recovery; current grants remain the caller’s responsibility. */
   resolveProjectUpdateConfirmation?(command: ControlCommand, now?: Date): Promise<ControlConfirmation | null>;
+  claimConfirmedProjectUpdate?(command: ControlCommand, confirmation: ControlConfirmation, now?: Date): Promise<ConfirmationOutcome & { claimed: boolean; authority?: ProjectControlAuthorityV1 }>;
   findProjectUpdateById?(projectId: string, commandId: string): Promise<ControlCommand | null>;
   /** Private scoped original history; current authorization remains the caller’s responsibility. */
   findProjectUpdatesByInputDigest?(projectId: string, inputDigest: string): Promise<ControlCommand[]>;
