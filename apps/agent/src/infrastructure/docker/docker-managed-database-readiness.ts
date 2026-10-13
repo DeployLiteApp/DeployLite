@@ -39,7 +39,7 @@ export function createManagedDatabaseReadinessVerifier(supplied: ManagedDatabase
             environmentFingerprint: string;
         }>, evidence: ManagedDatabaseFreshResources, authority: Readonly<{
             assertValid(): Promise<void>;
-        }>, external: AbortSignal, mode: "ready" | "running" | "stopped" = "ready"): Promise<Readonly<{
+        }>, external: AbortSignal, mode: "ready" | "running" | "stopped" | "retained" = "ready"): Promise<Readonly<{
             uid: number | null;
             containerId: string;
         }>> {
@@ -47,7 +47,7 @@ export function createManagedDatabaseReadinessVerifier(supplied: ManagedDatabase
             external.addEventListener("abort", cancel, { once: true });
             const timer = setTimeout(cancel, bounds.deadlineMs);
             try {
-                const input = structuredClone(raw), original = structuredClone(evidence), start = options.clock.now(), stopped = mode === "stopped";
+                const input = structuredClone(raw), original = structuredClone(evidence), start = options.clock.now(), stopped = mode === "stopped", retained = mode === "retained";
                 if (!Number.isSafeInteger(start) || start < 0 || !/^[a-f0-9]{64}$/.test(input.containerId) || !/^sha256:[a-f0-9]{64}$/.test(input.imageId)
                     || !/^[a-f0-9]{32}$/.test(input.environmentFingerprint) || !/^[A-Za-z0-9_-]{1,200}$/.test(input.commandId))
                     fail();
@@ -66,15 +66,15 @@ export function createManagedDatabaseReadinessVerifier(supplied: ManagedDatabase
                     const targets = [plan.volume.target, ...(plan.engine === "mongodb" ? ["/data/configdb"] : [])];
                     if (image.imageId !== input.imageId || (!image.declaredVolumes.includes(plan.volume.target) && !(plan.engine === "redis" && image.declaredVolumes.length === 0)) || image.declaredVolumes.some(path => !targets.includes(path)))
                         fail();
-                    const container = await call(() => options.nativeInspector.inspectContainer(input.containerId, controller.signal));
-                    if (container.id !== input.containerId || container.name !== "/" + managedDatabaseContainerName(plan.projectId, plan.databaseId) || container.imageId !== input.imageId || container.image !== plan.image
+                    const container = retained ? null : await call(() => options.nativeInspector.inspectContainer(input.containerId, controller.signal));
+                    if (container && (container.id !== input.containerId || container.name !== "/" + managedDatabaseContainerName(plan.projectId, plan.databaseId) || container.imageId !== input.imageId || container.image !== plan.image
                         || container.owner !== options.owner || container.projectId !== plan.projectId || container.databaseId !== plan.databaseId || container.engine !== plan.engine
                         || container.commandId !== input.commandId || container.planDigest !== plan.planDigest || container.environmentFingerprint !== input.environmentFingerprint
                         || container.storageInitialization !== null || container.networkMode !== plan.network.runtimeName || (stopped ? container.running : !container.running || mode === "ready" && container.health !== "healthy")
                         || container.user !== users[plan.engine] || !container.readOnly || container.privileged || (container.capAdd ?? []).length !== 0
                         || JSON.stringify(container.capDrop) !== '["ALL"]' || JSON.stringify(container.securityOpt) !== '["no-new-privileges"]'
                         || container.cpu !== Math.round(bounds.cpus * 1e9) || container.memory !== bounds.memoryBytes || container.pids !== bounds.pidsLimit
-                        || Object.values(container.ports ?? {}).some(bindings => bindings.length !== 0))
+                        || Object.values(container.ports ?? {}).some(bindings => bindings.length !== 0)))
                         fail();
                     const states: string[] = [];
                     for (const kind of ["volume", "network"] as const) {
@@ -84,7 +84,7 @@ export function createManagedDatabaseReadinessVerifier(supplied: ManagedDatabase
                             || value.configDigest !== preview.configDigest || value.observedAt < start || value.observedAt > options.clock.now() || value.stateDigest !== digestComposeResourceObservation(value))
                             fail();
                         const consumer = value.containers[0];
-                        if (value.containers.length !== 1 || !consumer || consumer.containerId !== input.containerId || consumer.service !== plan.volume.key || consumer.running !== !stopped || !consumer.attached
+                        if (retained ? value.containers.length !== 0 : value.containers.length !== 1 || !consumer || consumer.containerId !== input.containerId || consumer.service !== plan.volume.key || consumer.running !== !stopped || !consumer.attached
                             || consumer.composeConfigDigest !== preview.configDigest || consumer.composeEnvironmentDigest !== digestControlInput({ environmentFingerprint: input.environmentFingerprint })
                             || !consumer.networks || consumer.networks.length !== 1 || consumer.networks[0]?.name !== plan.network.runtimeName || (consumer.networks[0]?.networkId !== original.network.id && !(stopped && kind === "volume" && consumer.networks[0]?.networkId === ""))
                             || JSON.stringify(consumer.mounts) !== JSON.stringify(kind === "volume" ? [{ target: plan.volume.target, readOnly: false }] : []))
@@ -94,7 +94,7 @@ export function createManagedDatabaseReadinessVerifier(supplied: ManagedDatabase
                     return protocolPayloadFingerprint({ container, image, states });
                 }
                 const before = await snapshot();
-                if (stopped) {
+                if (stopped || retained) {
                     if (await snapshot() !== before) fail();
                     await call(() => authority.assertValid());
                     return Object.freeze({uid: null, containerId: input.containerId});
@@ -117,6 +117,10 @@ export function createManagedDatabaseReadinessVerifier(supplied: ManagedDatabase
             }
         }
     return {
+        async verifyRetained(...args: Parameters<typeof verify>) {
+            const result = await verify(args[0], args[1], args[2], args[3], "retained");
+            return Object.freeze({containerId: result.containerId});
+        },
         async verifyRunning(...args: Parameters<typeof verify>) {
             const result = await verify(args[0], args[1], args[2], args[3], "running");
             if (result.uid === null) fail();
