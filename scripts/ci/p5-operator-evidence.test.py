@@ -136,11 +136,14 @@ class OperatorProofTests(unittest.TestCase):
         with self.assertRaises(RuntimeError): module.validate_acceptance(acceptance, binding)
     def test_all_engine_acceptance_and_run_cleanup_binding(self):
         fixtures = {engine: fixture(engine) for engine in module.native.ENGINES}
+        for pair in fixtures.values(): pair[0]["browserAcceptance"]["sourceCommit"] = "a" * 40
         binding = {"commit": "a" * 40, "runId": "123", "runAttempt": "1", "nonce": "b" * 24,
             "databaseName": "deploylite_p5_operator_" + "b" * 24, "profiles": {engine: pair[1] for engine, pair in fixtures.items()}}
         acceptance = {"schemaVersion": 1, **{key: binding[key] for key in ("commit", "runId", "runAttempt", "nonce")},
             "engines": {engine: pair[0] for engine, pair in fixtures.items()}, "database": {"name": binding["databaseName"], "cleanup": "verified"}}
-        self.assertEqual(module.validate_acceptance(acceptance, binding), 5)
+        try: accepted = module.validate_acceptance(acceptance, binding)
+        except RuntimeError as error: accepted = str(error)
+        self.assertEqual(accepted, 5)
         for patch in [{"commit": "c" * 40}, {"runAttempt": "2"}, {"nonce": "c" * 24},
                 {"database": {"name": "foreign", "cleanup": "verified"}}, {"database": {"name": binding["databaseName"], "cleanup": "pending"}}, {"password": "private"}]:
             with self.subTest(patch=patch), self.assertRaises(RuntimeError): module.validate_acceptance({**acceptance, **patch}, binding)
@@ -282,5 +285,13 @@ class BrowserProofTests(unittest.TestCase):
             result,profile=fixture(engine)
             result["browserAcceptance"]={"sourceCommit":"7e4875341dbb8e1afdeff23137403528f3af6382","engine":engine,"projectId":result["receipt"]["projectId"],"databaseId":"orders","creation":"passed","selection":"passed","reload":"passed","telemetry":"passed","start":"passed","stop":"passed","persistence":"passed","browser":"chromium","context":"isolated","requests":12}
             with self.subTest(engine=engine):module.validate_result(result,profile)
+    def test_rejects_browser_source_detached_from_exact_run(self):
+        fixtures = {engine: fixture(engine) for engine in module.native.ENGINES}
+        binding = {"commit": "a" * 40, "runId": "123", "runAttempt": "1", "nonce": "b" * 24,
+            "databaseName": "deploylite_p5_operator_" + "b" * 24, "profiles": {engine: pair[1] for engine, pair in fixtures.items()}}
+        acceptance = {"schemaVersion": 1, **{key: binding[key] for key in ("commit", "runId", "runAttempt", "nonce")},
+            "engines": {engine: pair[0] for engine, pair in fixtures.items()}, "database": {"name": binding["databaseName"], "cleanup": "verified"}}
+        with self.assertRaises(RuntimeError): module.validate_acceptance(acceptance, binding)
+
 if __name__ == "__main__":
     unittest.main()

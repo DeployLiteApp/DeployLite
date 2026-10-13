@@ -83,3 +83,16 @@ it("preserves the exact pinned Traefik image only in its scoped inspection", asy
  });
 it("preserves only exact bounded single-container metrics projection",async()=>{const {MANAGED_DATABASE_STATS_FORMAT}=await import("./docker-managed-database-stats.js");const id="a".repeat(64),projection={id,cpu:"0.25%",memory:"5.629MiB / 512MiB",memoryPercent:"1.10%",network:"916B / 0B",block:"147kB / 0B",pids:"9"},fake=fakeProcess();const promise=new DockerProcessRunner({spawn:()=>fake.child}).run(["docker","stats","--no-stream","--no-trunc","--format",MANAGED_DATABASE_STATS_FORMAT,id],new AbortController().signal);fake.stdout.on.mock.calls[0]![1](JSON.stringify(projection)+"\n");fake.events.get("close")!(0,null);expect((await promise).stdout).toBe(JSON.stringify(projection)+"\n");});
 it("redacts unscoped, private, detached or malformed stats output completely",async()=>{const {MANAGED_DATABASE_STATS_FORMAT}=await import("./docker-managed-database-stats.js"),id="a".repeat(64),row={id,cpu:"0.25%",memory:"5.629MiB / 512MiB",memoryPercent:"1.10%",network:"916B / 0B",block:"147kB / 0B",pids:"9"};for(const [argv,value] of [[["docker","stats"],row],[["docker","stats","--no-trunc","--format",MANAGED_DATABASE_STATS_FORMAT,id],row],[["docker","stats","--no-stream","--no-trunc","--format",MANAGED_DATABASE_STATS_FORMAT,id],{...row,password:"private"}],[["docker","stats","--no-stream","--no-trunc","--format",MANAGED_DATABASE_STATS_FORMAT,id],{...row,id:"b".repeat(64)}]] as const){const fake=fakeProcess(),promise=new DockerProcessRunner({spawn:()=>fake.child}).run(argv,new AbortController().signal);fake.stdout.on.mock.calls[0]![1](JSON.stringify(value));fake.events.get("close")!(0,null);expect((await promise).stdout).toBe("[REDACTED]");}});
+
+it.each(["", "\n"])("retains only the exact full ID from non-forced single daemon removal %j",async newline=>{
+ const id="a".repeat(64),fake=fakeProcess(),promise=new DockerProcessRunner({spawn:()=>fake.child}).run(["docker","rm",id],new AbortController().signal);
+ fake.stdout.on.mock.calls[0]![1](id+newline);fake.events.get("close")!(0,null);
+ expect((await promise).stdout).toBe(id+newline);
+});
+it("keeps malformed detached forced storage and multi-container removal output redacted",async()=>{
+ const id="a".repeat(64),other="b".repeat(64);
+ for(const [argv,output] of [[["docker","rm",id],other],[["docker","rm",id],id+"\nprivate"],[["docker","rm","--force",id],id],[["docker","rm","-v",id],id],[["docker","rm",id,other],id],[["docker","rm","owned"],id]] as const){
+  const fake=fakeProcess(),promise=new DockerProcessRunner({spawn:()=>fake.child}).run(argv,new AbortController().signal);
+  fake.stdout.on.mock.calls[0]![1](output);fake.events.get("close")!(0,null);expect((await promise).stdout).not.toContain(id);expect((await promise).stdout).not.toContain(other);
+ }
+});

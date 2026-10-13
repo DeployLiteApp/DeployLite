@@ -118,20 +118,20 @@ def validate_inventory_recovery(result, profile, ready, stopped, started):
         contexts.add((view["requestId"],view["correlationId"]))
     native.require(len(contexts)==3,"distinct_inventory_recovery_requests_required")
 
-def validate_browser_acceptance(result):
+def validate_browser_acceptance(result, source_commit):
     proof=result["browserAcceptance"]
     stages={"creation","selection","reload","telemetry","start","stop","persistence"}
     exact(proof,stages|{"sourceCommit","engine","projectId","databaseId","browser","context","requests"},"complete_browser_evidence_required")
-    native.require(proof["sourceCommit"]=="7e4875341dbb8e1afdeff23137403528f3af6382" and proof["browser"]=="chromium" and proof["context"]=="isolated"
+    native.require(isinstance(source_commit,str) and re.fullmatch(r"[a-f0-9]{40}",source_commit) and proof["sourceCommit"]==source_commit and proof["browser"]=="chromium" and proof["context"]=="isolated"
         and all(proof[key]==result["receipt"][key] for key in ("engine","projectId","databaseId"))
         and all(proof[key]=="passed" for key in stages) and type(proof["requests"]) is int and 1<=proof["requests"]<=1000,"executed_scoped_browser_evidence_required")
 
-def validate_result(result, profile):
+def validate_result(result, profile, source_commit="7e4875341dbb8e1afdeff23137403528f3af6382"):
     exact(result, {"receipt", "uid", "original", "nativeStop", "nativeStart", "currentHealth", "currentMetrics", "currentLogs", "inventoryRecovery", "browserAcceptance", "internalConnection", "authenticatedProbe", "restart", "persistence", "cleanup", "operator"}, "public_operator_result_required")
     native.require(type(result["uid"]) is int and 0 < result["uid"] <= 4294967294
         and all(result[key] == "passed" for key in ("authenticatedProbe", "restart", "persistence"))
         and result["cleanup"] == "verified", "executed_operator_persistence_cleanup_required")
-    validate_browser_acceptance(result)
+    validate_browser_acceptance(result,source_commit)
     ready = result["receipt"]
     shared = {"schemaVersion", "projectId", "databaseId", "engine", "agentId", "planDigest", "environmentFingerprint", "containerId", "imageId", "volumeName", "networkName", "networkId", "volumeCreatedAt"}
     exact(ready, shared | {"action", "commandId", "inputDigest", "correlationId", "observedAt", "status", "health", "storage", "idempotent", "redacted"}, "public_ready_receipt_required")
@@ -247,7 +247,7 @@ def validate_acceptance(value, binding):
     native.require(value["database"] == {"name": binding["databaseName"], "cleanup": "verified"}, "original_operator_database_cleanup_required")
     exact(value["engines"], native.ENGINES, "all_five_operator_engines_required")
     for engine in native.ENGINES:
-        validate_result(value["engines"][engine], binding["profiles"][engine])
+        validate_result(value["engines"][engine], binding["profiles"][engine], source_commit=binding["commit"])
     return 5
 
 def verify(env):
