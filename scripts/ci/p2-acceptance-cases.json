@@ -1357,7 +1357,9 @@
     "apps/api/src/testing/p5-browser-proof.ts",
     "apps/api/src/testing/p5-browser-proof.test.ts",
     "packages/domain/src/managed-database-delete-binding.ts",
-    "packages/domain/src/managed-database-delete-binding.test.ts"
+    "packages/domain/src/managed-database-delete-binding.test.ts",
+    "packages/contracts/src/deployment-contract/managed-database-delete.ts",
+    "packages/contracts/src/deployment-contract/managed-database-delete.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,

@@ -15,7 +15,7 @@ function fixture(engine="postgres") {
 const request=(preparation=fixture())=>({preparation,actorId:"actor1",idempotencyKey:"delete-key",correlationId:"delete-correlation",now:3000,commandTtlMs:10000});
 it.each(["postgres","mysql","mariadb","mongodb","redis"])("binds %s deletion to both original commands and retained storage",engine=>{
  const preparation=fixture(engine), before=structuredClone(preparation),binding=managedDatabaseDeleteExecutionBinding(preparation);
- expect(binding).toEqual({...preparation,action:"project.update",scope:{kind:"project",projectId:"p1"},operation:"database.runtime.delete",storagePolicy:"retain-original"});
+ expect(binding).toEqual({...preparation,action:"project.update",scope:{kind:"project",projectId:"p1"},operation:"database.runtime.delete",storagePolicy:"retain-original",stopPolicy:"if-running"});
  expect(managedDatabaseDeleteExecutionDigest(preparation)).toBe(digestControlInput(binding));expect(managedDatabaseDeleteExecutionDigest(preparation)).not.toBe(managedDatabaseStartExecutionDigest(preparation));expect(preparation).toEqual(before);
 });
 it("issues only an unconsumed destructive pending confirmation with exact actor command scope digest and expiry",()=>{
@@ -34,4 +34,13 @@ it("refuses invalid actor keys clocks TTLs and future stopped evidence before is
 it("never validates changed actor scope digest classification expiry or consumed confirmation",()=>{
  const {command,confirmation}=prepareManagedDatabaseDeleteConfirmation(request());
  for(const patch of [{actorId:"foreign"},{scope:{kind:"project" as const,projectId:"foreign"}},{inputDigest:"0".repeat(64)},{classification:"normal" as const},{expiresAt:new Date(3000)},{consumedAt:new Date(3000)}])expect(()=>evaluateConfirmation(command,{...confirmation,...patch} as typeof confirmation,new Date(3000))).toThrow();
+});
+
+it.each(["postgres","mysql","mariadb","mongodb","redis"])("prepares confirmed %s removal from original ready source without manual STOP",engine=>{
+ const {originalStopReceipt:_stop,originalStopReplayFingerprint:_fingerprint,...source}=fixture(engine);
+ expect(()=>managedDatabaseDeleteExecutionBinding(source)).not.toThrow();
+ expect(managedDatabaseDeleteExecutionBinding(source)).toEqual({...source,action:"project.update",scope:{kind:"project",projectId:"p1"},operation:"database.runtime.delete",storagePolicy:"retain-original",stopPolicy:"if-running"});
+ const {command,confirmation}=prepareManagedDatabaseDeleteConfirmation({...request(),preparation:source});
+ expect(command.inputDigest).toBe(managedDatabaseDeleteExecutionDigest(source));expect(command.status).toBe("pending_confirmation");expect(confirmation.consumedAt).toBeNull();
+ expect(()=>prepareManagedDatabaseDeleteConfirmation({...request(),preparation:source,now:999})).toThrow();
 });
