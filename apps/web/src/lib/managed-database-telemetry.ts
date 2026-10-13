@@ -28,6 +28,17 @@ async function boundedJson(response: Response, signal: AbortSignal): Promise<unk
     return JSON.parse(new TextDecoder("utf-8", {fatal: true}).decode(bytes));
   } finally { void reader.cancel().catch(() => undefined); reader.releaseLock(); }
 }
+/** Shared bounded authenticated JSON transport; callers validate their public response contracts. */
+export async function requestManagedDatabaseJson(path: string, body: unknown, options: Pick<TelemetryOptions, "apiBaseUrl" | "fetchImpl" | "signal">, key?: string): Promise<unknown> {
+  if (!options.apiBaseUrl || options.signal?.aborted) throw new Error("unavailable");
+  const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(60000)]) : AbortSignal.timeout(60000);
+  const response = await abortable(signal, () => (options.fetchImpl ?? fetch)(new URL(path, options.apiBaseUrl!), {
+    method: "POST", credentials: "include", redirect: "error", cache: "no-store", signal,
+    headers: {"content-type": "application/json", ...(key ? {"idempotency-key": key} : {})}, body: JSON.stringify(body)
+  }));
+  if (!response.ok) throw new Error("unavailable");
+  const parsed = await boundedJson(response, signal); if (signal.aborted) throw new Error("cancelled"); return parsed;
+}
 /** Authenticated current reads consume public original evidence; no command or credential is created. */
 export async function readManagedDatabaseTelemetry(operation: "health" | "metrics" | "logs", options: TelemetryOptions, rawSelection?: unknown): Promise<TelemetryResult> {
   try {
@@ -36,17 +47,12 @@ export async function readManagedDatabaseTelemetry(operation: "health" | "metric
     const selection = operation === "logs" ? managedDatabaseLogsSelectionSchema.parse(rawSelection) : undefined;
     if (selection?.since && Date.parse(selection.since) > Date.now()) return unavailable();
     const {projectId, databaseId, ...body} = preparation;
-    const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(60000)]) : AbortSignal.timeout(60000);
-    const response = await abortable(signal, () => (options.fetchImpl ?? fetch)(new URL(`/api/v1/projects/${encodeURIComponent(projectId)}/databases/${encodeURIComponent(databaseId)}/runtime/${operation}`, options.apiBaseUrl!), {
-      method: "POST", credentials: "include", redirect: "error", cache: "no-store", signal,
-      headers: {"content-type": "application/json"}, body: JSON.stringify({...body, ...(selection ? {selection} : {})})
-    }));
-    if (!response.ok) return unavailable();
-    const parsed = envelope.parse(await boundedJson(response, signal));
+    const parsed = envelope.parse(await requestManagedDatabaseJson(`/api/v1/projects/${encodeURIComponent(projectId)}/databases/${encodeURIComponent(databaseId)}/runtime/${operation}`,
+      {...body, ...(selection ? {selection} : {})}, options));
     const schema = operation === "health" ? managedDatabaseHealthObservationSchema : operation === "metrics" ? managedDatabaseMetricsObservationSchema : managedDatabaseLogsObservationSchema;
     const observation = schema.parse(parsed.data.observation), original = preparation.originalReceipt;
     const shared = ["projectId", "databaseId", "engine", "planDigest", "environmentFingerprint", "agentId", "containerId", "imageId", "networkId", "networkName", "volumeName", "volumeCreatedAt"] as const;
-    if (signal.aborted || observation.action !== `database.runtime.${operation}` || observation.originalCommandId !== original.commandId
+    if (options.signal?.aborted || observation.action !== `database.runtime.${operation}` || observation.originalCommandId !== original.commandId
       || observation.profileId !== preparation.profileId || observation.context.requestId !== parsed.requestId || observation.observedAt < original.observedAt
       || shared.some(key => observation[key] !== original[key])) return unavailable();
     return {kind: "ready", observation};
