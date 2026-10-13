@@ -1340,7 +1340,9 @@
     "packages/domain/src/managed-database-inventory.test.ts",
     "packages/db/src/repositories/control-plane-digest-reader.test.ts",
     "apps/api/src/managed-database-source-recovery.ts",
-    "apps/api/src/managed-database-source-recovery.test.ts"
+    "apps/api/src/managed-database-source-recovery.test.ts",
+    "apps/api/src/managed-database-inventory-route.ts",
+    "apps/api/src/managed-database-inventory-route.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
