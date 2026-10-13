@@ -1327,7 +1327,9 @@
     "packages/db/src/postgres-fixture-shutdown.ts",
     "packages/db/src/postgres-fixture-shutdown.test.ts",
     "apps/web/src/lib/managed-database-telemetry.ts",
-    "apps/web/src/lib/managed-database-telemetry.test.ts"
+    "apps/web/src/lib/managed-database-telemetry.test.ts",
+    "apps/web/src/components/managed-database-telemetry-panel.tsx",
+    "apps/web/src/components/managed-database-telemetry-panel.test.tsx"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
