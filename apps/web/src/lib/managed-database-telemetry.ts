@@ -29,12 +29,12 @@ async function boundedJson(response: Response, signal: AbortSignal): Promise<unk
   } finally { void reader.cancel().catch(() => undefined); reader.releaseLock(); }
 }
 /** Shared bounded authenticated JSON transport; callers validate their public response contracts. */
-export async function requestManagedDatabaseJson(path: string, body: unknown, options: Pick<TelemetryOptions, "apiBaseUrl" | "fetchImpl" | "signal">, key?: string): Promise<unknown> {
-  if (!options.apiBaseUrl || options.signal?.aborted) throw new Error("unavailable");
+export async function requestManagedDatabaseJson(path: string, body: unknown, options: Pick<TelemetryOptions, "apiBaseUrl" | "fetchImpl" | "signal">, key?: string, method: "POST" | "GET" = "POST"): Promise<unknown> {
+  if (!options.apiBaseUrl || options.signal?.aborted || (method === "GET" && (body !== undefined || key !== undefined))) throw new Error("unavailable");
   const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(60000)]) : AbortSignal.timeout(60000);
   const response = await abortable(signal, () => (options.fetchImpl ?? fetch)(new URL(path, options.apiBaseUrl!), {
-    method: "POST", credentials: "include", redirect: "error", cache: "no-store", signal,
-    headers: {"content-type": "application/json", ...(key ? {"idempotency-key": key} : {})}, body: JSON.stringify(body)
+    method, credentials: "include", redirect: "error", cache: "no-store", signal,
+    ...(method === "GET" ? {headers: {accept: "application/json"}} : {headers: {"content-type": "application/json", ...(key ? {"idempotency-key": key} : {})}, body: JSON.stringify(body)})
   }));
   if (!response.ok) throw new Error("unavailable");
   const parsed = await boundedJson(response, signal); if (signal.aborted) throw new Error("cancelled"); return parsed;
