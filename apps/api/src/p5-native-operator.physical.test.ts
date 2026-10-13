@@ -8,7 +8,7 @@ import {AuthenticatedAgentCommandReceiver, startAgentServer} from "@deploylite/a
 import {approvedManagedDatabaseProfileSchema, InMemoryCapabilityRegistry, managedDatabaseRuntimeReceiptSchema, managedDatabaseStopReceiptSchema, managedDatabaseStartReceiptSchema,
   MANAGED_DATABASE_STOP_PATH, MANAGED_DATABASE_START_PATH, MANAGED_DATABASE_HEALTH_PATH, managedDatabaseHealthObservationSchema, MANAGED_DATABASE_METRICS_PATH, managedDatabaseMetricsObservationSchema, MANAGED_DATABASE_LOGS_PATH, managedDatabaseLogsObservationSchema, type ManagedDatabaseEngineV1} from "@deploylite/contracts";
 import {DbAgentReplayStore, DbControlCommandRepository, DbProjectRepository} from "@deploylite/db";
-import {managedDatabaseNativeImagePolicy} from "@deploylite/domain";
+import {createControlCommand, managedDatabaseNativeImagePolicy} from "@deploylite/domain";
 import {buildApiApp} from "./app.js";
 import {openDatabaseBrowser} from "./testing/p5-browser-fixture.js";
 import {openOperatorSession} from "./testing/p5-operator-session.js";
@@ -302,6 +302,27 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
       expect(await encrypted()).toEqual(cipherRows);
     });
     result!.browserAcceptance=browserAcceptance;
+    // Same owned PostgreSQL session; no deletion, confirmation consumption or lease effect.
+    const confirmations=new DbControlCommandRepository(db.db),now=new Date();
+    const candidate=createControlCommand({actorId,action:"project.update",scope:{kind:"project",projectId},
+      input:{operation:"ci.project-update-confirmation",engine},idempotencyKey:randomUUID(),correlationId:randomUUID(),expiresAt:new Date(now.getTime()+60000)});
+    const pending=(await confirmations.resolve(candidate)).command;
+    const [first,parallel]=await Promise.all([confirmations.resolveProjectUpdateConfirmation(pending,now),confirmations.resolveProjectUpdateConfirmation(pending,now)]);
+    expect(first).not.toBeNull();expect(parallel).toEqual(first);
+    expect(first).toMatchObject({commandId:pending.id,actorId,scope:pending.scope,inputDigest:pending.inputDigest,classification:"destructive",expiresAt:pending.expiresAt,consumedAt:null});
+    for(const patch of [{actorId:randomUUID()},{inputDigest:"0".repeat(64)},{scope:{kind:"project" as const,projectId:randomUUID()}},{status:"eligible" as const}])
+      expect(await confirmations.resolveProjectUpdateConfirmation({...pending,...patch},now)).toBeNull();
+    const storedNonce=async()=>(await db.pool.query("SELECT * FROM control_command_confirmations WHERE command_id=$1",[pending.id])).rows;
+    const nonceRows=await storedNonce();expect(nonceRows).toHaveLength(1);expect(nonceRows[0].consumed_at).toBeNull();
+    const pendingRows=(await db.pool.query("SELECT * FROM control_commands WHERE id=$1",[pending.id])).rows;
+    expect(pendingRows).toHaveLength(1);expect(pendingRows[0]).toMatchObject({status:"pending_confirmation",execution_authority:null});
+    expect((await db.pool.query("SELECT * FROM control_command_audits WHERE command_id=$1",[pending.id])).rows).toHaveLength(0);
+    await app.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();
+    expect(await new DbControlCommandRepository(db.db).resolveProjectUpdateConfirmation(pending,new Date())).toEqual(first);
+    expect(await storedNonce()).toEqual(nonceRows);
+    expect((await db.pool.query("SELECT * FROM control_commands WHERE id=$1",[pending.id])).rows).toEqual(pendingRows);
+    expect(await originals()).toEqual(originalRows);expect(await encrypted()).toEqual(cipherRows);
+    result!.confirmationRecovery={projectId,pending:"passed",unique:"passed",reopen:"passed",unconsumed:"passed",noAuthority:"passed",detachedRejected:"passed",originalRows:"unchanged",cipher:"unchanged"};
   } finally {
     await browserFixture?.close();
     if (app) await app.close(); if (peer) await peer.close(); vi.unstubAllGlobals();

@@ -1245,6 +1245,7 @@
     "apps/api/src/managed-database-stop-transport.ts",
     "apps/api/src/managed-database-stop-transport.test.ts",
     "packages/db/src/repositories/control-plane-project-reader.test.ts",
+    "packages/db/src/repositories/control-plane-project-confirmation.test.ts",
     "apps/api/src/managed-database-stop.ts",
     "apps/api/src/managed-database-stop.test.ts",
     "apps/api/src/managed-database-stop-route.ts",
