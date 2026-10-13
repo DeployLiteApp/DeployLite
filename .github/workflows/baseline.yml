@@ -421,12 +421,17 @@ jobs:
       DOCKER_CERT_PATH: ''
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with: { ref: '${{ github.event.pull_request.head.sha || github.sha }}' }
+        with: { ref: '${{ github.event.pull_request.head.sha || github.sha }}', fetch-depth: 0 }
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with: { version: 9.15.4 }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with: { node-version: 24.20.0, cache: pnpm }
       - run: corepack enable && pnpm install --frozen-lockfile
+      - name: Prepare isolated pinned Chromium tooling
+        run: |
+          npm install --prefix "$RUNNER_TEMP/deploylite-p5-browser-tooling" --no-save --package-lock=false playwright@1.56.1
+          "$RUNNER_TEMP/deploylite-p5-browser-tooling/node_modules/.bin/playwright" install --with-deps chromium
+          printf 'DEPLOYLITE_P5_BROWSER_LIBRARY=%s\n' "$RUNNER_TEMP/deploylite-p5-browser-tooling/node_modules/playwright/index.mjs" >> "$GITHUB_ENV"
       - name: Bind exact disposable operator database and source
         env:
           DOCKER_CONFIG: ${{ runner.temp }}/deploylite-p5-operator-empty-docker-config

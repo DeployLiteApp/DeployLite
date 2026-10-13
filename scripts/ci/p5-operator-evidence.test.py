@@ -72,6 +72,7 @@ def fixture(engine="postgres"):
         proof["selection"] = {"tail":100,**({"since":"1970-01-01T00:00:00.500Z"} if index else {})}
     result["currentLogs"] = current_logs
     result["operator"].update(publicOriginalSelectors="passed",logsDispatches=3,logReads=3,logsSignedHttp="passed",logsNoLedgerWrites="passed",logsExecutorRemoved="passed")
+    result["browserAcceptance"]={"sourceCommit":"7e4875341dbb8e1afdeff23137403528f3af6382","engine":engine,"projectId":project,"databaseId":"orders","creation":"passed","selection":"passed","reload":"passed","telemetry":"passed","start":"passed","stop":"passed","persistence":"passed","browser":"chromium","context":"isolated","requests":12}
     return with_inventory(result, profile), profile
 def with_inventory(result, profile):
     result = copy.deepcopy(result)
@@ -135,11 +136,14 @@ class OperatorProofTests(unittest.TestCase):
         with self.assertRaises(RuntimeError): module.validate_acceptance(acceptance, binding)
     def test_all_engine_acceptance_and_run_cleanup_binding(self):
         fixtures = {engine: fixture(engine) for engine in module.native.ENGINES}
+        for pair in fixtures.values(): pair[0]["browserAcceptance"]["sourceCommit"] = "a" * 40
         binding = {"commit": "a" * 40, "runId": "123", "runAttempt": "1", "nonce": "b" * 24,
             "databaseName": "deploylite_p5_operator_" + "b" * 24, "profiles": {engine: pair[1] for engine, pair in fixtures.items()}}
         acceptance = {"schemaVersion": 1, **{key: binding[key] for key in ("commit", "runId", "runAttempt", "nonce")},
             "engines": {engine: pair[0] for engine, pair in fixtures.items()}, "database": {"name": binding["databaseName"], "cleanup": "verified"}}
-        self.assertEqual(module.validate_acceptance(acceptance, binding), 5)
+        try: accepted = module.validate_acceptance(acceptance, binding)
+        except RuntimeError as error: accepted = str(error)
+        self.assertEqual(accepted, 5)
         for patch in [{"commit": "c" * 40}, {"runAttempt": "2"}, {"nonce": "c" * 24},
                 {"database": {"name": "foreign", "cleanup": "verified"}}, {"database": {"name": binding["databaseName"], "cleanup": "pending"}}, {"password": "private"}]:
             with self.subTest(patch=patch), self.assertRaises(RuntimeError): module.validate_acceptance({**acceptance, **patch}, binding)
@@ -265,6 +269,29 @@ class OperatorProofTests(unittest.TestCase):
         for key in ("requestId","correlationId"):
             changed["inventoryRecovery"]["views"]["stopped"][key] = changed["inventoryRecovery"]["views"]["runningBeforeStop"][key]
         with self.assertRaises(RuntimeError): module.validate_result(changed,profile)
+
+class BrowserProofTests(unittest.TestCase):
+    def test_requires_real_browser_boundary(self):
+        result,profile=fixture()
+        result.pop("browserAcceptance",None)
+        with self.assertRaises(RuntimeError):module.validate_result(result,profile)
+    def test_rejects_skipped_detached_private_or_shared_browser_proof(self):
+        result,profile=fixture()
+        for patch in ({"start":"skipped"},{"creation":"pending"},{"projectId":"foreign"},{"databaseId":"foreign"},{"engine":"redis"},{"context":"shared"},{"sourceCommit":"main"},{"requests":True},{"requests":1001},{"password":"private"}):
+            changed=copy.deepcopy(result);changed["browserAcceptance"].update(patch)
+            with self.subTest(patch=patch),self.assertRaises(RuntimeError):module.validate_result(changed,profile)
+    def test_accepts_five_engines_with_exact_browser_proof(self):
+        for engine in module.native.ENGINES:
+            result,profile=fixture(engine)
+            result["browserAcceptance"]={"sourceCommit":"7e4875341dbb8e1afdeff23137403528f3af6382","engine":engine,"projectId":result["receipt"]["projectId"],"databaseId":"orders","creation":"passed","selection":"passed","reload":"passed","telemetry":"passed","start":"passed","stop":"passed","persistence":"passed","browser":"chromium","context":"isolated","requests":12}
+            with self.subTest(engine=engine):module.validate_result(result,profile)
+    def test_rejects_browser_source_detached_from_exact_run(self):
+        fixtures = {engine: fixture(engine) for engine in module.native.ENGINES}
+        binding = {"commit": "a" * 40, "runId": "123", "runAttempt": "1", "nonce": "b" * 24,
+            "databaseName": "deploylite_p5_operator_" + "b" * 24, "profiles": {engine: pair[1] for engine, pair in fixtures.items()}}
+        acceptance = {"schemaVersion": 1, **{key: binding[key] for key in ("commit", "runId", "runAttempt", "nonce")},
+            "engines": {engine: pair[0] for engine, pair in fixtures.items()}, "database": {"name": binding["databaseName"], "cleanup": "verified"}}
+        with self.assertRaises(RuntimeError): module.validate_acceptance(acceptance, binding)
 
 if __name__ == "__main__":
     unittest.main()
