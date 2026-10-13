@@ -1331,7 +1331,11 @@
     "apps/web/src/components/managed-database-telemetry-panel.tsx",
     "apps/web/src/components/managed-database-telemetry-panel.test.tsx",
     "apps/web/src/lib/managed-database-lifecycle.ts",
-    "apps/web/src/lib/managed-database-lifecycle.test.ts"
+    "apps/web/src/lib/managed-database-lifecycle.test.ts",
+    "apps/web/src/components/managed-database-operator-card.tsx",
+    "apps/web/src/components/managed-database-operator-card.test.tsx",
+    "apps/web/src/app/projects/[projectId]/managed-database-page.test.tsx",
+    "apps/web/src/app/projects/[projectId]/page.tsx"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
