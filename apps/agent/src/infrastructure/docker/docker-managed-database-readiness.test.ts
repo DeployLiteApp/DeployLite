@@ -141,3 +141,25 @@ it("refuses stopped, foreign consumers and changed hardening in running admissio
         await expect(f.verifier.verifyRunning(f.input,f.original,f.authority,new AbortController().signal)).rejects.toThrow();
     }
 });
+
+function retainedFixture(engine: "postgres" | "mysql" | "mariadb" | "mongodb" | "redis" = "postgres") {
+    const f = fixture(engine), inspect = f.composeInspector.inspect.getMockImplementation()!;
+    f.composeInspector.inspect.mockImplementation(async input => {const value=await inspect(input); value.containers=[]; value.stateDigest=digestComposeResourceObservation(value); return value;});
+    return f;
+}
+it.each(["postgres","mysql","mariadb","mongodb","redis"] as const)("corroborates retained %s storage with no remaining global consumer or daemon/PID1 read", async engine => {
+    const f=retainedFixture(engine);
+    await expect(f.verifier.verifyRetained(f.input,f.original,f.authority,new AbortController().signal)).resolves.toEqual({containerId});
+    expect(f.composeInspector.inspect).toHaveBeenCalledTimes(4); expect(f.resourceVerifier.verifyFresh).toHaveBeenCalledTimes(2);
+    expect(f.nativeInspector.inspectContainer).not.toHaveBeenCalled(); expect(f.processIdentityReader.verify).not.toHaveBeenCalled();
+});
+it("rejects retained-storage adoption if a consumer appears or original identity/authority changes", async () => {
+    for(const mode of ["consumer","identity","authority"] as const) {
+        const f=retainedFixture(), inspect=f.composeInspector.inspect.getMockImplementation()!;
+        if(mode==="consumer") f.composeInspector.inspect.mockImplementation(async input=>{const value=await inspect(input); value.containers=[{containerId,service:"db-orders",running:false,attached:true}];value.stateDigest=digestComposeResourceObservation(value);return value;});
+        if(mode==="identity") f.resourceVerifier.verifyFresh.mockResolvedValue({...f.original,network:{...f.original.network,id:"f".repeat(64)}});
+        if(mode==="authority") f.authority.assertValid.mockRejectedValue(new Error("revoked"));
+        await expect(f.verifier.verifyRetained(f.input,f.original,f.authority,new AbortController().signal)).rejects.toThrow();
+        expect(f.nativeInspector.inspectContainer).not.toHaveBeenCalled(); expect(f.processIdentityReader.verify).not.toHaveBeenCalled();
+    }
+});

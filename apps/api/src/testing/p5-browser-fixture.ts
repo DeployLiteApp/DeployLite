@@ -5,13 +5,16 @@ import {pathToFileURL} from "node:url";
 import {resolve} from "node:path";
 import {execFileSync} from "node:child_process";
 import type {FastifyInstance} from "fastify";
-import {browserSourceCommit,validateBrowserProof} from "./p5-browser-proof.js";
+import {validateBrowserProof} from "./p5-browser-proof.js";
 const root=resolve(import.meta.dirname,"../../../..");
 /** Browser library types are isolated CI tooling, not a production dependency. */
-export async function openDatabaseBrowser(input:{projectId:string;databaseId:string;engine:string;cookie:string;app():FastifyInstance}) {
+export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:string;databaseId:string;engine:string;cookie:string;app():FastifyInstance}) {
  if(process.platform!=="linux"||process.env.GITHUB_ACTIONS!=="true"||process.env.RUNNER_ENVIRONMENT!=="github-hosted"
   ||process.env.GITHUB_JOB!=="p5-native-operator-acceptance"||process.env.DEPLOYLITE_P5_OPERATOR_RUNTIME_GRANT!=="P5_OPERATOR_CI_APPROVED")throw new Error("Hosted browser admission required.");
- if(execFileSync("git",["diff","--name-only",browserSourceCommit,"--","apps/web","packages/contracts"],{cwd:root,encoding:"utf8"}).trim())throw new Error("Browser must exercise exact481 web and contracts.");
+ const sourceCommit=input.sourceCommit;
+ if(!/^[a-f0-9]{40}$/.test(sourceCommit)||sourceCommit!==process.env.DEPLOYLITE_P5_EXPECTED_SHA
+  ||execFileSync("git",["rev-parse","HEAD"],{cwd:root,encoding:"utf8"}).trim()!==sourceCommit
+  ||execFileSync("git",["diff","--name-only",sourceCommit,"--","apps/web","packages/contracts"],{cwd:root,encoding:"utf8"}).trim())throw new Error("Browser must exercise exact bound current source.");
  const library=process.env.DEPLOYLITE_P5_BROWSER_LIBRARY;
  if(!library||library!==resolve(process.env.RUNNER_TEMP!,"deploylite-p5-browser-tooling/node_modules/playwright/index.mjs"))throw new Error("Scoped browser tooling required.");
  const require=createRequire(import.meta.url),viteRequire=createRequire(createRequire(require.resolve("vitest/package.json")).resolve("vite")),esbuild=viteRequire("esbuild");
@@ -67,8 +70,8 @@ export async function openDatabaseBrowser(input:{projectId:string;databaseId:str
     await button('Stop database').click();await enabled('Start database');await page.reload();await selected().click();await enabled('Start database');
     await button('Start database').click();await enabled('Stop database');await persistence();
     await page.goto('about:blank');
-    const proof={sourceCommit:browserSourceCommit,engine:input.engine,projectId:input.projectId,databaseId:input.databaseId,creation:'passed',selection:'passed',reload:'passed',telemetry:'passed',start:'passed',stop:'passed',persistence:'passed',browser:'chromium',context:'isolated',requests};
-    if(failures.length||!validateBrowserProof(proof))throw new Error("Incomplete browser acceptance.");return proof;
+    const proof={sourceCommit,engine:input.engine,projectId:input.projectId,databaseId:input.databaseId,creation:'passed',selection:'passed',reload:'passed',telemetry:'passed',start:'passed',stop:'passed',persistence:'passed',browser:'chromium',context:'isolated',requests};
+    if(failures.length||!validateBrowserProof(proof,sourceCommit))throw new Error("Incomplete browser acceptance.");return proof;
    },close
   };
  }catch(error){await context?.close();await browser?.close();server.closeAllConnections();await new Promise<void>(done=>server.close(()=>done()));throw error;}
