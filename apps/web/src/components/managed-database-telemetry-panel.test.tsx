@@ -76,3 +76,10 @@ it("starts each live read after the previous read settles and cancels polling on
   fireEvent.click(screen.getByRole("button", {name: "Pause live"}));
   await act(async () => { await vi.advanceTimersByTimeAsync(20000); }); expect(read).toHaveBeenCalledTimes(2);
 });
+it("reports only fresh observed state and clears it after a rejected observation", async () => {
+  const f = fixture(), onState = vi.fn(); render(<ManagedDatabaseTelemetryPanel {...f.props} onState={onState} />);
+  await screen.findByText("Healthy"); expect(onState).toHaveBeenLastCalledWith("running");
+  read.mockResolvedValueOnce({kind: "error", message: "private-detail"});
+  fireEvent.click(screen.getByRole("button", {name: "Refresh"}));
+  await waitFor(() => expect(onState).toHaveBeenLastCalledWith(null));
+});
