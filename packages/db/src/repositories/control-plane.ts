@@ -1,5 +1,5 @@
 import { FenceError, deploymentExecutionAuthoritySchema, projectControlAuthoritySchema, protocolPayloadFingerprint, type DeploymentExecutionAuthorityV1, type ProjectControlAuthorityV1 } from "@deploylite/contracts";
-import { and, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
 import type { AuditEventInput, ConfirmedDeploymentRedeployInput, ConfirmedDeploymentRedeployOutcome, ConfirmedDeploymentStopInput, ConfirmedDeploymentStopOutcome, ConfirmedProjectDeleteInput, ConfirmedProjectDeleteOutcome, ControlCommand, ControlCommandRepository, ControlConfirmation, ControlConfirmationRepository, ControlDeleteRepository, ControlGrant, ControlGrantRepository, ConfirmationOutcome, ControlRollbackRepository, ControlRedeployRepository, ControlStopRepository, ProjectUpdateControlRepository } from "@deploylite/domain";
 import { redactSecrets } from "@deploylite/config";
 import { claimDeploymentAuthority, claimProjectUpdateAuthority, validateProjectUpdateAuthority as validateProjectUpdateAuthorityInMemory, validateStopCompletion, validateDeploymentAuthority, validateInitialExecution, validateRollbackReservation, isRollbackAdmissionBound, isRollbackClaimBound, createConfirmation, evaluateConfirmation, ConfirmationRejectedError, IdempotencyConflictError, scopeKey } from "@deploylite/domain";
@@ -205,6 +205,16 @@ export class DbControlCommandRepository implements ControlDeleteRepository, Cont
       eq(controlCommands.scopeKind, "project"), eq(controlCommands.scopeKey, projectId)
     )).limit(1);
     return row ? toCommand(row) : null;
+  }
+
+  /** Private history only; no current actor filter, lease renewal, execution or truncated evidence. */
+  async findProjectUpdatesByInputDigest(projectId: string, inputDigest: string): Promise<ControlCommand[]> {
+    if (!/^[A-Za-z0-9_-]{1,200}$/.test(projectId) || !/^[a-f0-9]{64}$/.test(inputDigest)) throw new Error("Database original history is unavailable.");
+    const rows = await this.db.select().from(controlCommands).where(and(
+      eq(controlCommands.action, "project.update"), eq(controlCommands.scopeKind, "project"), eq(controlCommands.scopeKey, projectId),
+      eq(controlCommands.inputDigest, inputDigest), eq(controlCommands.status, "completed")
+    )).orderBy(asc(controlCommands.createdAt), asc(controlCommands.id));
+    return rows.map(toCommand);
   }
 
   async findProjectUpdateByIdempotency(actorId: string, projectId: string, idempotencyKey: string): Promise<ControlCommand | null> {
