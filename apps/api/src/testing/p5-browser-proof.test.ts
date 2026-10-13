@@ -6,3 +6,15 @@ it("refuses missing stages, fabricated source, shared browser and unbounded evid
  for(const patch of [{start:"skipped"},{creation:"pending"},{sourceCommit:"main"},{context:"shared"},{requests:0},{requests:1001},{password:"private"},{engine:"sqlite"}])expect(validateBrowserProof({...proof(),...patch})).toBe(false);
  for(const key of Object.keys(proof())){const value:Record<string,unknown>={...proof()};delete value[key];expect(validateBrowserProof(value)).toBe(false);}
 });
+
+
+// A compatible call boundary exercises the new argument without claiming a type error as RED.
+const validateCurrent:(value:unknown,expectedSource?:string)=>boolean=validateBrowserProof;
+it.each(["postgres","mysql","mariadb","mongodb","redis"])("accepts exact bound current-source %s browser evidence",engine=>{
+ const current="a".repeat(40);expect(validateCurrent({...proof(),engine,sourceCommit:current},current)).toBe(true);
+});
+it("rejects detached or invalid expected browser source while retaining historical default compatibility",()=>{
+ expect(validateCurrent(proof(),"a".repeat(40))).toBe(false);
+ for(const expected of ["","main","A".repeat(40)])expect(validateCurrent(proof(),expected)).toBe(false);
+ expect(validateCurrent({...proof(),sourceCommit:"a".repeat(40)},undefined)).toBe(false);
+});

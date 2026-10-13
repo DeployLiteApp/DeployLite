@@ -1352,6 +1352,7 @@
     "apps/web/src/lib/managed-database-inventory.ts",
     "apps/web/src/lib/managed-database-inventory.test.ts",
     "apps/api/src/testing/p5-browser-fixture.ts",
+    "apps/api/src/testing/p5-browser-fixture.test.ts",
     "apps/api/src/testing/p5-browser-proof.ts",
     "apps/api/src/testing/p5-browser-proof.test.ts"
   ],
