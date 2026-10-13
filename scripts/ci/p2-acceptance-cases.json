@@ -1325,7 +1325,9 @@
     "apps/api/src/managed-database-logs-route.ts",
     "apps/api/src/managed-database-logs-route.test.ts",
     "packages/db/src/postgres-fixture-shutdown.ts",
-    "packages/db/src/postgres-fixture-shutdown.test.ts"
+    "packages/db/src/postgres-fixture-shutdown.test.ts",
+    "apps/web/src/lib/managed-database-telemetry.ts",
+    "apps/web/src/lib/managed-database-telemetry.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
