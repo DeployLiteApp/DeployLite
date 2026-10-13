@@ -64,3 +64,13 @@ it("cancels pending operations on unmount and withholds operation controls until
   await waitFor(() => expect(prepareManagedDatabase).toHaveBeenCalledOnce()); const signal = vi.mocked(prepareManagedDatabase).mock.calls[0]![1].signal!;
   ui.unmount(); expect(signal.aborted).toBe(true);
 });
+it("hands a confirmed creation to the stored inventory once and clears stale creation controls", async () => {
+  const f = fixture(), onCreated = vi.fn(); render(<ManagedDatabaseOperatorCard {...f.props} {...{onCreated}} />);
+  fireEvent.change(screen.getByLabelText("Database name"), {target: {value: "orders"}});
+  fireEvent.click(screen.getByRole("button", {name: "Prepare database"})); await screen.findByText("db-orders:5432");
+  fireEvent.click(screen.getByRole("button", {name: "Create database"}));
+  await waitFor(() => expect(onCreated).toHaveBeenCalledExactlyOnceWith("orders"));
+  expect(screen.queryByRole("button", {name: "Create database"})).toBeNull();
+  expect(screen.queryByRole("button", {name: "Stop database"})).toBeNull();
+  expect((screen.getByLabelText("Database name") as HTMLInputElement).value).toBe("");
+});
