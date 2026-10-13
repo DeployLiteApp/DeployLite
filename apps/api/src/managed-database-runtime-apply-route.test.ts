@@ -72,6 +72,7 @@ async function fixture(settings: { engine?: ManagedDatabaseEngineV1; allowed?: b
 it.each(["postgres", "mysql", "mariadb", "mongodb", "redis"] as const)("applies %s from encrypted preview binding and returns only public evidence", async engine => {
   const f = await fixture({ engine }), response = await f.post(); expect(response.statusCode).toBe(200);
   expect(response.json().data).toMatchObject({ applied: true, command: { status: "completed" }, receipt: { engine, redacted: true } });
+  expect(response.json().data.originalReplayFingerprint).toMatch(/^[a-f0-9]{64}$/);
   expect(f.transport.dispatch).toHaveBeenCalledTimes(1); expect(f.secrets.createIfAbsent).not.toHaveBeenCalled();
   expect(response.body).not.toContain("13".repeat(32)); expect(response.body).not.toContain([...f.rows.values()][0]!.encryptedValue.toString("base64"));
 });

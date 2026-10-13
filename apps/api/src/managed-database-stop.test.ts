@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import { managedDatabaseStopReplayFingerprintDigest } from "@deploylite/domain";
 import { MANAGED_DATABASE_RUNTIME_CAPABILITY, type ManagedDatabaseStopReceiptV1 } from "@deploylite/contracts";
 import { composeRuntimeResourceName, createControlCommand, managedDatabaseRuntimeExecutionBinding,
   managedDatabaseRuntimeReplayFingerprintDigest, resolveControlCommandInMemory,
@@ -169,4 +170,18 @@ it("rejects changed preparations on an existing stop key without repeated effect
   f.input.preparation.originalReplayFingerprint = "0".repeat(64);
   await expect(stopManagedDatabaseRuntime(f.options, f.input)).rejects.toThrow();
   expect(f.transport.dispatch).toHaveBeenCalledTimes(1); expect(f.controls.claimProjectUpdate).toHaveBeenCalledTimes(1);
+});
+
+it("returns the existing opaque STOP selector and preserves it on expired cache-only replay", async () => {
+  const f = fixture(), outcome = await stopManagedDatabaseRuntime(f.options, f.input);
+  const command = outcome.command;
+  const expected = managedDatabaseStopReplayFingerprintDigest({ ...f.input.preparation, action: "database.runtime.stop", operation: "database.runtime.stop",
+    agentId: f.options.agentId, commandId: command.id, idempotencyKey: command.idempotencyKey, inputDigest: command.inputDigest,
+    requiredCapabilities: ["database.runtime.stop.v1"], authority: command.projectExecutionAuthority, lease: command.projectExecutionAuthority!.projectLease,
+    context: f.input.context, timeoutMs: f.options.deadlineMs });
+  expect(outcome).toHaveProperty("originalStopReplayFingerprint", expected);
+  f.advance(); f.input.context = { requestId: "new-request", correlationId: "new-correlation" };
+  f.transport.dispatch.mockClear();
+  expect(await stopManagedDatabaseRuntime(f.options, f.input)).toHaveProperty("originalStopReplayFingerprint", expected);
+  expect(f.transport.dispatch).not.toHaveBeenCalled();
 });

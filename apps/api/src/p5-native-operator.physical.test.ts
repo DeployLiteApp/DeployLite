@@ -160,7 +160,9 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const originalRows = await originals(), cipherRows = await encrypted(); expect(cipherRows).toHaveLength(1);
     const fixtureCipher = createEnvSecretCipher(loadEnvSecretKey("managed_database_fixture_key_1234567890"));
     const privateBundle = JSON.parse(fixtureCipher.decrypt(Buffer.from(cipherRows[0].encrypted_value).toString("base64"))) as {credentials: Record<string, string>};
-    const originalReplayFingerprint = createHash("sha256").update(originalRows.cache[0].fingerprint).digest("hex");
+    const originalReplayFingerprint: string = apply.json().data.originalReplayFingerprint;
+    expect(originalReplayFingerprint).toBe(createHash("sha256").update(originalRows.cache[0].fingerprint).digest("hex"));
+    expect(apply.json().data.command).not.toHaveProperty("projectExecutionAuthority");
     const stopInput = {...preparation,originalReceipt:receipt,originalReplayFingerprint};
     const ledgerSnapshot=async()=>({commands:(await db.pool.query("SELECT * FROM control_commands WHERE scope_kind='project' AND scope_key=$1 ORDER BY id",[projectId])).rows,
       cache:(await db.pool.query("SELECT replay.* FROM agent_replay replay JOIN control_commands command ON command.id::text=replay.command_id WHERE command.scope_kind='project' AND command.scope_key=$1 ORDER BY replay.command_id",[projectId])).rows,
@@ -218,7 +220,9 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
       networkId:"[REDACTED]",networkName:"dl-[REDACTED]-net-db-orders",volumeName:"dl-[REDACTED]-vol-db-orders"}); expect(audits[0].correlation_id).toBe(stopped.correlationId);
     const stopReplayRows = (await db.pool.query("SELECT * FROM agent_replay WHERE command_id=$1",[stopped.commandId])).rows;
     expect(stopReplayRows).toHaveLength(1);
-    const originalStopReplayFingerprint = createHash("sha256").update(stopReplayRows[0].fingerprint).digest("hex");
+    const originalStopReplayFingerprint: string = stop.json().data.originalStopReplayFingerprint;
+    expect(originalStopReplayFingerprint).toBe(createHash("sha256").update(stopReplayRows[0].fingerprint).digest("hex"));
+    expect(stop.json().data.command).not.toHaveProperty("projectExecutionAuthority");
     const startInput = {...stopInput,originalStopReceipt:stopped,originalStopReplayFingerprint};
     const start = await call("runtime/start",startInput); expect(start.statusCode).toBe(200);
     expect(start.json().data.command.status).toBe("completed");
@@ -256,7 +260,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     expect(await originals()).toEqual(originalRows); expect(await encrypted()).toEqual(cipherRows);
     const command = (value:typeof apply) => ({id:value.json().data.command.id,correlationId:value.json().data.command.correlationId,status:value.json().data.command.status});
     result = {currentLogs: {runningBeforeStop: runningLogsBeforeStop, stopped: stoppedLogs, runningAfterStart: runningLogsAfterStart}, currentMetrics:{runningBeforeStop:runningMetricsBeforeStop,stopped:stoppedMetrics,runningAfterStart:runningMetricsAfterStart},currentHealth:{runningBeforeStop,stopped:stoppedHealth,runningAfterStart},receipt,uid:ready.uid,original:pinned,nativeStop:{receipt:stopped,originalReplayFingerprint},nativeStart:{receipt:started,originalStopReplayFingerprint},internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},
-      authenticatedProbe:"passed",restart:"passed",persistence:"passed",operator:{logsDispatches,logReads,logsSignedHttp:"passed",logsNoLedgerWrites:"passed",logsExecutorRemoved:"passed",metricsDispatches,statsDispatches,metricsSignedHttp:"passed",metricsNoLedgerWrites:"passed",metricsExecutorRemoved:"passed",healthDispatches,healthSignedHttp:"passed",healthNoLedgerWrites:"passed",healthExecutorRemoved:"passed",applyCommand:command(apply),stopCommand:command(stop),startCommand:command(start),startDispatches,startAtomicAudit:"passed",startCacheOnlyReplay:"passed",startExecutorRemoved:"passed",stoppedCacheNoRestart:"passed",signedHttp:"passed",postgresReplay:"passed",
+      authenticatedProbe:"passed",restart:"passed",persistence:"passed",operator:{publicOriginalSelectors:"passed",logsDispatches,logReads,logsSignedHttp:"passed",logsNoLedgerWrites:"passed",logsExecutorRemoved:"passed",metricsDispatches,statsDispatches,metricsSignedHttp:"passed",metricsNoLedgerWrites:"passed",metricsExecutorRemoved:"passed",healthDispatches,healthSignedHttp:"passed",healthNoLedgerWrites:"passed",healthExecutorRemoved:"passed",applyCommand:command(apply),stopCommand:command(stop),startCommand:command(start),startDispatches,startAtomicAudit:"passed",startCacheOnlyReplay:"passed",startExecutorRemoved:"passed",stoppedCacheNoRestart:"passed",signedHttp:"passed",postgresReplay:"passed",
         originalRows:"unchanged",cipherRows:"unchanged",atomicAudit:"passed",stopDispatches,cacheOnlyReplay:"passed",executorRemoved:"passed"}};
   } finally {
     if (app) await app.close(); if (peer) await peer.close(); vi.unstubAllGlobals();
