@@ -6,14 +6,18 @@ const current="a".repeat(40);
 const platform=Object.getOwnPropertyDescriptor(process,"platform")!;
 const boundary=vi.hoisted(()=>({
  git:vi.fn(),build:vi.fn(),server:vi.fn(),launch:vi.fn(),inject:vi.fn(),
+ postcss:vi.fn(),tailwind:vi.fn(),processStyles:vi.fn(),readStyles:vi.fn(),
  contextClose:vi.fn(),browserClose:vi.fn(),serverClose:vi.fn(),
  request:undefined as undefined|((request:object,response:object)=>Promise<void>)
 }));
 
 vi.mock("node:child_process",()=>({execFileSync:boundary.git}));
 vi.mock("node:http",()=>({createServer:boundary.server}));
+vi.mock("node:fs/promises",()=>({readFile:boundary.readStyles}));
 vi.mock("node:module",()=>({createRequire:()=>Object.assign((name:string)=>{
  if(name==="esbuild")return {build:boundary.build};
+ if(name==="postcss")return boundary.postcss;
+ if(name==="@tailwindcss/postcss")return boundary.tailwind;
  throw new Error("Unexpected mocked compiler dependency.");
 },{resolve:(name:string)=>name})}));
 // The existing proof module carries the mock browser export; its real validator is retained.
@@ -32,6 +36,10 @@ beforeEach(()=>{
   DEPLOYLITE_P5_BROWSER_LIBRARY:"/scoped-runner-temp/deploylite-p5-browser-tooling/node_modules/playwright/index.mjs"}))vi.stubEnv(name,value);
  boundary.git.mockImplementation((_command:string,args:string[])=>args[0]==="rev-parse"?current+"\n":"");
  boundary.build.mockResolvedValue({outputFiles:[{text:"/* mocked bundle */"}]});
+ boundary.tailwind.mockReturnValue({postcssPlugin:"mock-tailwind"});
+ boundary.postcss.mockReturnValue({process:boundary.processStyles});
+ boundary.readStyles.mockResolvedValue("/* mocked globals */");
+ boundary.processStyles.mockResolvedValue({css:"/* mocked styles */"});
  boundary.inject.mockResolvedValue({statusCode:200,body:"{}",json:()=>({})});
  boundary.server.mockImplementation((request:typeof boundary.request)=>{
   boundary.request=request;
@@ -69,6 +77,10 @@ it("opens and closes the unchanged fixture using only mocked effect ports",async
   expect(proof.requests).toBeGreaterThan(0);
   expect(boundary.inject).toHaveBeenCalledWith(expect.objectContaining({headers:{cookie:"fixture-cookie"}}));
   expect(boundary.build).toHaveBeenCalledTimes(1);
+  expect(boundary.tailwind).toHaveBeenCalledWith({base:expect.stringMatching(/apps\/web$/)});
+  expect(boundary.postcss).toHaveBeenCalledWith([{postcssPlugin:"mock-tailwind"}]);
+  expect(boundary.readStyles).toHaveBeenCalledWith(expect.stringMatching(/globals\.css$/),"utf8");
+  expect(boundary.processStyles).toHaveBeenCalledWith("/* mocked globals */",{from:expect.stringMatching(/globals\.css$/)});
   expect(boundary.server).toHaveBeenCalledTimes(1);
   expect(boundary.launch).toHaveBeenCalledTimes(1);
  }finally{await fixture.close();}
@@ -81,6 +93,10 @@ async function expectAdmissionBeforeEffects(value:ReturnType<typeof input>){
  const result=await openDatabaseBrowser(value).then(fixture=>({fixture}),error=>({error}));
  if("fixture" in result)await result.fixture.close();
  expect(boundary.build).not.toHaveBeenCalled();
+ expect(boundary.tailwind).not.toHaveBeenCalled();
+ expect(boundary.postcss).not.toHaveBeenCalled();
+ expect(boundary.readStyles).not.toHaveBeenCalled();
+ expect(boundary.processStyles).not.toHaveBeenCalled();
  expect(boundary.server).not.toHaveBeenCalled();
  expect(boundary.launch).not.toHaveBeenCalled();
  expect(result).toHaveProperty("error",expect.any(Error));
