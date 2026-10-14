@@ -1,3 +1,4 @@
+import {managedDatabaseDeleteReceiptMatches,managedDatabaseDeleteExecutionDigest,managedDatabaseStopReplayFingerprintDigest} from "@deploylite/domain";
 import {afterAll, expect, it} from "vitest";
 import {createHash, randomBytes} from "node:crypto";
 import {readFileSync, lstatSync, writeFileSync} from "node:fs";
@@ -11,7 +12,6 @@ import type {DockerCliRunner} from "./docker-cli-image-transport.js";
 import {createConfiguredManagedDatabaseRuntime} from "./managed-database-runtime-config.js";
 import {createManagedDatabaseDockerInspector} from "./docker-managed-database-inspection.js";
 import {createManagedDatabaseResourceMaterializer, type ManagedDatabaseFreshResources} from "./docker-managed-database-resources.js";
-import {createManagedDatabaseDaemonRemover} from "./docker-managed-database-daemon-remove.js";
 import {createManagedDatabaseReadinessVerifier} from "./docker-managed-database-readiness.js";
 import {createManagedDatabaseProcessIdentityReader} from "./docker-managed-database-process-identity.js";
 import {createDockerComposeResourceInspector} from "./docker-compose-resource-inspector.js";
@@ -91,7 +91,7 @@ for (const engine of engines) {
         }};
         const imagePolicy = {policyVersion:"ci-native-1",trustedHosts:["docker.io"],allowTags:false,allowDigests:true};
         const clock = {now:Date.now}, limits = {deadlineMs:60000,maxOutputBytes:131072,maxContainers:64,pollIntervalMs:100,cpus:1,memoryBytes:536870912,pidsLimit:256};
-        const shared = {runner,imagePolicy,clock,limits,owner:scope.owner,agentId,capabilities:new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.stop.v1"])};
+        const shared = {runner,imagePolicy,clock,limits,owner:scope.owner,agentId,capabilities:new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.stop.v1","database.runtime.delete.v1"])};
         const inspector = createManagedDatabaseDockerInspector(shared), resources = createManagedDatabaseResourceMaterializer(shared);
         const original = (): ManagedDatabaseFreshResources => {
             if (!volume || !network) throw new Error("Original fixture storage unavailable.");
@@ -150,13 +150,24 @@ for (const engine of engines) {
             expect(restarted).toEqual(ready);
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false)],signal)).stdout.trim()).toBe(marker);
             expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,connection.hostname)],signal)).stdout.trim()).toBe(marker);
-            await runner.run(["docker","stop","--timeout","10",receipt.containerId],signal);
-            const remover=createManagedDatabaseDaemonRemover({runner,verifier,clock,limits:{deadlineMs:60000,maxOutputBytes:131072}});
-            const removed=await remover.remove(nativeInput,pinned,authority,signal);
-            expect(removed).toEqual({containerId:receipt.containerId,storage:"retained"});
+            const runningBefore=!(engine==="mysql"||engine==="redis");
+            if(!runningBefore)await runner.run(["docker","stop","--timeout","10",receipt.containerId],signal);
+            expect((await inspector.inspectContainer(receipt.containerId,signal)).running).toBe(runningBefore);
+            const {cancellationRequested:_stopCanceled,...stopQuery}=stopCommand;
+            const deletePreparation={...stopPreparation,...(engine==="postgres"?{originalStopReceipt:stopped,originalStopReplayFingerprint:managedDatabaseStopReplayFingerprintDigest(stopQuery)}:{})};
+            const deleteId=commandId+"-delete",confirmationId=commandId+"-approval",deleteDigest=managedDatabaseDeleteExecutionDigest(deletePreparation);
+            const deleteLease={projectId:request.projectId,leaseId:deleteId,fence:3,expiresAt:Date.now()+60000};
+            const deleteQuery={...deletePreparation,action:"database.runtime.delete",operation:"database.runtime.delete",storagePolicy:"retain-original",stopPolicy:"if-running",confirmationId,agentId,commandId:deleteId,idempotencyKey:deleteId,inputDigest:deleteDigest,requiredCapabilities:["database.runtime.delete.v1"],authority:{schemaVersion:1,projectId:request.projectId,commandId:deleteId,action:"project.update",inputDigest:deleteDigest,projectLease:deleteLease},lease:deleteLease,context:{requestId:deleteId,correlationId:deleteId},timeoutMs:60000};
+            let confirmationChecks=0;
+            if(!executor.delete)throw new Error("Explicit configured deletion required.");
+            const deleted=await executor.delete({...deleteQuery,cancellationRequested:false},{...authority,assertConfirmed:async(submitted:unknown,id:string)=>{expect(submitted).toEqual(deleteQuery.authority);expect(id).toBe(confirmationId);confirmationChecks++;}},signal);
+            expect(managedDatabaseDeleteReceiptMatches(deleteQuery,deleted)).toBe(true);
+            expect(confirmationChecks).toBeGreaterThanOrEqual(3);
+            const removed={containerId:deleted.containerId,storage:deleted.storage};
+            const nativeDelete={receipt:deleted,query:deleteQuery,confirmationChecks,authoritySource:"injected-direct-port",runningBefore};
             expect(await resources.verifyFresh({request,profile,commandId},pinned,authority,signal)).toEqual(pinned);
             const daemonRemoval={...removed,volumeName:pinned.volume.name,volumeCreatedAt:pinned.volume.createdAt,networkName:pinned.network.name,networkId:pinned.network.id,observedAt:Date.now()};
-            result = {daemonRemoval,receipt,original:pinned,uid:ready.uid,daemonStop:{containerId:stopped.containerId,status:"passed"},nativeStop:{receipt:stopped,originalReplayFingerprint},internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},authenticatedProbe:"passed",restart:"passed",persistence:"passed"};
+            result = {nativeDelete,daemonRemoval,receipt,original:pinned,uid:ready.uid,daemonStop:{containerId:stopped.containerId,status:"passed"},nativeStop:{receipt:stopped,originalReplayFingerprint},internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},authenticatedProbe:"passed",restart:"passed",persistence:"passed"};
         } catch (error) {
             writeFileSync(resolve(directory,`diagnostic-${engine}.json`),JSON.stringify({engine,lastOperation,lastProjection,processFailure:processFailure ?? null,stopReply:stopReply ?? null,observation:lastObservation ?? null,composeObservations,expected:{plan:runtime.plan,environmentFingerprint:runtime.environmentFingerprint}},null,2)+"\n",{mode:0o600});
             throw error;

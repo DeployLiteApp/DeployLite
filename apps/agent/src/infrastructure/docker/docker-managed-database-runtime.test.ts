@@ -60,3 +60,15 @@ it("composes retained scoped logs only with explicit capability and no Docker ef
   expect(createManagedDatabaseRuntime(f.options)).not.toHaveProperty("logs");
   expect(f.runner.run).not.toHaveBeenCalled();
 });
+
+it("composes confirmed removal only with explicit deletion and STOP capabilities and grace",()=>{
+ const f=fixture(),capabilities=new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.stop.v1","database.runtime.delete.v1"]);
+ const runtime=createManagedDatabaseRuntime({...f.options,capabilities,limits:{...f.options.limits,stopGraceSeconds:10}});
+ expect(typeof (runtime as typeof runtime&{delete?:unknown}).delete).toBe("function");expect(createManagedDatabaseRuntime(f.options)).not.toHaveProperty("delete");
+ expect(()=>createManagedDatabaseRuntime({...f.options,capabilities})).toThrow();expect(f.runner.run).not.toHaveBeenCalled();
+});
+
+it("rejects deletion capability without explicitly configured STOP grace before effects",()=>{
+ const f=fixture(),capabilities=new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.stop.v1","database.runtime.delete.v1"]);
+ expect(()=>createManagedDatabaseRuntime({...f.options,capabilities})).toThrow();expect(f.runner.run).not.toHaveBeenCalled();
+});

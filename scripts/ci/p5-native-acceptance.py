@@ -94,6 +94,23 @@ def validate_daemon_removal(result):
     require(all(type(value) is int and 0<=value<=9007199254740991 for value in (proof["observedAt"],original.get("observedAt")))
         and proof["observedAt"]>=original["observedAt"],"original_daemon_removal_clock_required")
 
+def validate_configured_delete(result, profile):
+    proof, original = result.get("nativeDelete"), result.get("receipt")
+    require(isinstance(proof,dict) and set(proof)=={"receipt","query","confirmationChecks","authoritySource","runningBefore"} and isinstance(original,dict),"configured_delete_required")
+    removed, query=proof["receipt"],proof["query"]
+    fields={"schemaVersion","projectId","databaseId","engine","agentId","planDigest","environmentFingerprint","containerId","imageId","volumeName","networkName","networkId","volumeCreatedAt"}
+    keys=fields|{"action","commandId","originalCommandId","originalStopCommandId","confirmationId","profileId","inputDigest","correlationId","observedAt","status","storage","redacted"}
+    require(isinstance(removed,dict) and set(removed)==keys and isinstance(query,dict) and query.get("originalReceipt")==original,"configured_delete_original_required")
+    require(all(removed[key]==original.get(key) for key in fields) and removed["originalCommandId"]==original.get("commandId") and removed["commandId"]!=original.get("commandId"),"configured_delete_identity_required")
+    require(removed["profileId"]==profile.get("profileId") and removed["action"]=="database.runtime.delete" and removed["status"]=="removed" and removed["storage"]=="retained" and removed["redacted"] is True,"configured_delete_retained_required")
+    require(all(removed[key]==query.get(key) for key in ("confirmationId","commandId","agentId","inputDigest")) and isinstance(query.get("context"),dict) and removed["correlationId"]==query["context"].get("correlationId"),"configured_delete_approval_binding_required")
+    require(query.get("storagePolicy")=="retain-original" and query.get("stopPolicy")=="if-running" and not any(key in query for key in ("force","deleteVolumes","environment","sealedEnvironment")),"configured_delete_policy_required")
+    stop=query.get("originalStopReceipt")
+    require(removed["originalStopCommandId"]==(stop.get("commandId") if isinstance(stop,dict) else None),"configured_delete_stop_binding_required")
+    clocks=(removed["observedAt"],original.get("observedAt"),query.get("lease",{}).get("expiresAt"))
+    require(all(type(value) is int and 0<=value<=9007199254740991 for value in clocks) and clocks[1]<=clocks[0]<clocks[2] and (not isinstance(stop,dict) or clocks[0]>=stop.get("observedAt",9007199254740992)),"configured_delete_clock_required")
+    require(type(proof["confirmationChecks"]) is int and proof["confirmationChecks"]>=3 and proof["authoritySource"]=="injected-direct-port" and type(proof["runningBefore"]) is bool,"configured_delete_direct_boundary_required")
+
 def validate_daemon_stop(result):
     stop, receipt = result.get("daemonStop"), result.get("receipt")
     require(isinstance(stop,dict) and set(stop) == {"containerId","status"} and isinstance(receipt,dict)
@@ -176,6 +193,7 @@ def verify(env):
         validate_daemon_stop(result)
         validate_daemon_removal(result)
         validate_configured_stop(result,binding["profiles"][engine])
+        validate_configured_delete(result,binding["profiles"][engine])
         require(item.get("cleanup") == "verified" and all(result.get(key) == "passed" for key in ("authenticatedProbe","restart","persistence")), "native_persistence_cleanup_required")
         require(type(result.get("uid")) is int and 0 < result["uid"] <= 4294967294 and receipt.get("engine") == engine and receipt.get("status") == "ready"
                 and receipt.get("health") == "passed" and receipt.get("storage") == "verified" and receipt.get("redacted") is True, "ready_nonroot_native_receipt_required")

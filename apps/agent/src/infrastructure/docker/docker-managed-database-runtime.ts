@@ -1,3 +1,5 @@
+import {createManagedDatabaseDeleteExecutor} from "./docker-managed-database-delete-executor.js";
+import {createManagedDatabaseDaemonRemover} from "./docker-managed-database-daemon-remove.js";
 import {createManagedDatabaseLogsExecutor} from "./docker-managed-database-logs-executor.js";
 import {createManagedDatabaseLogsObserver} from "./docker-managed-database-log-observer.js";
 import {createManagedDatabaseLogReader} from "./docker-managed-database-logs.js";
@@ -10,7 +12,7 @@ import {createManagedDatabaseStartExecutor} from "./docker-managed-database-star
 import {createManagedDatabaseDaemonStopper} from "./docker-managed-database-daemon-stop.js";
 import {createManagedDatabaseStopExecutor} from "./docker-managed-database-stop-executor.js";
 import {validateAgentTransportKey} from "@deploylite/config";
-import {COMPOSE_RESOURCE_INSPECTION_CAPABILITY, MANAGED_DATABASE_LOGS_CAPABILITY, MANAGED_DATABASE_METRICS_CAPABILITY, MANAGED_DATABASE_HEALTH_CAPABILITY, MANAGED_DATABASE_RUNTIME_CAPABILITY, MANAGED_DATABASE_START_CAPABILITY, MANAGED_DATABASE_STOP_CAPABILITY, type CapabilityRegistry, type Clock, type ImageReferencePolicyV1} from "@deploylite/contracts";
+import {MANAGED_DATABASE_DELETE_CAPABILITY, type ProjectControlAuthorityV1, COMPOSE_RESOURCE_INSPECTION_CAPABILITY, MANAGED_DATABASE_LOGS_CAPABILITY, MANAGED_DATABASE_METRICS_CAPABILITY, MANAGED_DATABASE_HEALTH_CAPABILITY, MANAGED_DATABASE_RUNTIME_CAPABILITY, MANAGED_DATABASE_START_CAPABILITY, MANAGED_DATABASE_STOP_CAPABILITY, type CapabilityRegistry, type Clock, type ImageReferencePolicyV1} from "@deploylite/contracts";
 import {validateManagedDatabaseRuntimeProfiles} from "@deploylite/domain";
 import type {DockerCliRunner} from "./docker-cli-image-transport.js";
 import {createDockerComposeResourceInspector} from "./docker-compose-resource-inspector.js";
@@ -43,6 +45,7 @@ export function createManagedDatabaseRuntime(supplied: Readonly<{
         }
         capabilities();
         const stopGrace=options.limits.stopGraceSeconds;
+        if(options.capabilities.has(MANAGED_DATABASE_DELETE_CAPABILITY)&&stopGrace===undefined)fail();
         if(stopGrace!==undefined && (!Number.isSafeInteger(stopGrace)||stopGrace<1||stopGrace>30||!options.capabilities.has(MANAGED_DATABASE_STOP_CAPABILITY)))fail();
         const profiles = validateManagedDatabaseRuntimeProfiles(options.profiles, options.imagePolicy);
         const shared = {...options, profiles};
@@ -72,8 +75,10 @@ export function createManagedDatabaseRuntime(supplied: Readonly<{
         const starter = createManagedDatabaseDaemonStarter({...shared, nativeInspector, verifier});
         const start=options.capabilities.has(MANAGED_DATABASE_START_CAPABILITY)?createManagedDatabaseStartExecutor({...shared,starter}):undefined;
         const executor = createManagedDatabaseRuntimeExecutor({...shared, preparation, resources, storage, starter});
-        const stop=stopGrace===undefined?undefined:createManagedDatabaseStopExecutor({...shared,stopper:createManagedDatabaseDaemonStopper({
-            runner:options.runner,verifier,clock:options.clock,limits:{deadlineMs:options.limits.deadlineMs,maxOutputBytes:options.limits.maxOutputBytes,stopGraceSeconds:stopGrace}})});
+        const stopper=stopGrace===undefined?undefined:createManagedDatabaseDaemonStopper({runner:options.runner,verifier,clock:options.clock,limits:{deadlineMs:options.limits.deadlineMs,maxOutputBytes:options.limits.maxOutputBytes,stopGraceSeconds:stopGrace}});
+        const stop=stopper?createManagedDatabaseStopExecutor({...shared,stopper}):undefined;
+        const deletion=options.capabilities.has(MANAGED_DATABASE_DELETE_CAPABILITY)&&stopper?createManagedDatabaseDeleteExecutor({...shared,stopper,inspector:nativeInspector,
+            remover:createManagedDatabaseDaemonRemover({runner:options.runner,verifier,clock:options.clock,limits:{deadlineMs:options.limits.deadlineMs,maxOutputBytes:options.limits.maxOutputBytes}})}):undefined;
         return Object.freeze({apply: async (...args: Parameters<typeof executor.apply>) => executor.apply(args[0], {assertValid: async () => {
             capabilities(); await args[1].assertValid(); capabilities();
         }}, args[2]),...(stop?{stop:async(...args:Parameters<typeof stop.stop>)=>stop.stop(args[0],{assertValid:async()=>{
@@ -92,6 +97,12 @@ export function createManagedDatabaseRuntime(supplied: Readonly<{
         }}, args[2])} : {}), ...(metrics?{metrics:async(...args:Parameters<typeof metrics.observe>)=>metrics.observe(args[0],{assertValid:async()=>{
             capabilities();if(!options.capabilities.has(MANAGED_DATABASE_METRICS_CAPABILITY))fail();await args[1].assertValid();capabilities();
             if(!options.capabilities.has(MANAGED_DATABASE_METRICS_CAPABILITY))fail();
-        }},args[2])}:{})});
+        }},args[2])}:{}),...(deletion?{delete:async(...args:Parameters<typeof deletion.delete>)=>{
+            const authority=args[1] as {assertValid?:()=>Promise<void>;assertConfirmed?:(authority:ProjectControlAuthorityV1,id:string)=>Promise<void>}|null;
+            if(typeof authority?.assertValid!=="function"||typeof authority.assertConfirmed!=="function")fail();
+            const valid=authority.assertValid.bind(authority),confirmed=authority.assertConfirmed.bind(authority);
+            const check=()=>{capabilities();if(!options.capabilities.has(MANAGED_DATABASE_DELETE_CAPABILITY)||!options.capabilities.has(MANAGED_DATABASE_STOP_CAPABILITY))fail();};
+            check();return deletion.delete(args[0],{assertValid:async()=>{check();await valid();check();},assertConfirmed:async(authority:ProjectControlAuthorityV1,id:string)=>{check();await confirmed(authority,id);check();}},args[2]);
+        }}:{})});
     } catch {return fail();}
 }
