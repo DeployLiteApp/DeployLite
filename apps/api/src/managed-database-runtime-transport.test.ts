@@ -121,3 +121,15 @@ it("bounds stalled cache-body recovery and rejects foreign cached identity", asy
   const foreign = fixture(); foreign.fetcher.mockImplementationOnce(foreign.fetchResponse).mockResolvedValueOnce(new Response(JSON.stringify({ schemaVersion: 1, action: "database.runtime", agentId: "foreign", commandId: foreign.command.id, correlationId: foreign.command.correlationId, receipt: null })));
   await expect(foreign.transport.readReceipt(foreign.prepared, foreign.authority, foreign.context)).rejects.toThrow();
 });
+
+it("reads original signed cache after execution capability withdrawal without sending an execution",async()=>{
+  const f=fixture();f.fetcher.mockImplementationOnce(async(_url,init)=>new Response(JSON.stringify({schemaVersion:1,agentId:"agent-a",capabilities:[],protocolVersions:[1]}),{headers:{"x-deploylite-request-signature":String((init?.headers as Record<string,string>)["x-deploylite-signature"])}}));
+  expect(await f.transport.readReceipt(f.prepared,f.authority,f.context)).toEqual(f.receipt);
+  expect(f.fetcher.mock.calls.map(([url])=>String(url))).toEqual(["https://agent.test/capabilities","https://agent.test/databases/runtime/receipt"]);
+});
+it("still requires exact signed agent identity and protocol for cache-only recovery",async()=>{
+  for(const patch of [{agentId:"foreign"},{protocolVersions:[2]}]){
+    const f=fixture();f.fetcher.mockImplementationOnce(async(_url,init)=>new Response(JSON.stringify({schemaVersion:1,agentId:"agent-a",capabilities:[],protocolVersions:[1],...patch}),{headers:{"x-deploylite-request-signature":String((init?.headers as Record<string,string>)["x-deploylite-signature"])}}));
+    await expect(f.transport.readReceipt(f.prepared,f.authority,f.context)).rejects.toThrow();expect(f.fetcher).toHaveBeenCalledOnce();
+  }
+});
