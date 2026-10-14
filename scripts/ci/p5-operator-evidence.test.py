@@ -321,6 +321,7 @@ class BrowserProofTests(unittest.TestCase):
         acceptance = {"schemaVersion": 1, **{key: binding[key] for key in ("commit", "runId", "runAttempt", "nonce")},
             "engines": {engine: pair[0] for engine, pair in fixtures.items()}, "database": {"name": binding["databaseName"], "cleanup": "verified"}}
         with self.assertRaises(RuntimeError): module.validate_acceptance(acceptance, binding)
+
 class ConfirmedDeletionProof(unittest.TestCase):
     def test_requires_actual_signed_confirmed_deletion(self):
         result,profile=fixture();del result["confirmedDeletion"]
