@@ -141,3 +141,10 @@ it("offers original-nonce preparation only with both private origin and confirma
  Object.assign(f.controls,{resolveProjectUpdateConfirmation:vi.fn(async()=>null)});const configured=await createConfiguredManagedDatabaseApi(f.input);expect([...configured.deletePreparations.keys()]).toEqual(["project-a","project-b"]);
  expect(configured.deletePreparations.get("project-a")!.controls).toBe(f.controls);expect(configured.deletePreparations.get("project-a")!.originalTransport.available()).toBe(true);expect(f.controls.claimProjectUpdate).not.toHaveBeenCalled();expect(f.secrets.find).not.toHaveBeenCalled();
 });
+
+it("withholds deletion without bounded STOP and every original confirmation/completion/history port",async()=>{
+ const f=fixture();expect(await createConfiguredManagedDatabaseApi(f.input)).toHaveProperty("deleteExecutions",new Map());
+ Object.assign(f.controls,{findProjectUpdateById:vi.fn(async()=>null),resolveProjectUpdateConfirmation:vi.fn(async()=>null),claimConfirmedProjectUpdate:vi.fn(),completeManagedDatabaseDelete:vi.fn(),validateConfirmedProjectUpdateAuthority:vi.fn(),findManagedDatabaseRemovals:vi.fn(async()=>[])});
+ expect((await createConfiguredManagedDatabaseApi(f.input)).deleteExecutions.size).toBe(0);Object.assign(f.input.parsed.configuration.limits,{stopGraceSeconds:10});
+ const configured=await createConfiguredManagedDatabaseApi(f.input);expect([...configured.deleteExecutions.keys()]).toEqual(["project-a","project-b"]);expect(configured.deleteExecutions.get("project-a")!.controls).toBe(f.controls);expect(f.controls.claimProjectUpdate).not.toHaveBeenCalled();expect(f.secrets.find).not.toHaveBeenCalled();
+});
