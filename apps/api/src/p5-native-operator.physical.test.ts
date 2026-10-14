@@ -407,7 +407,15 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     expect((await applyManagedDatabaseDelete({...recoveryAccess,now:()=>deletePending.expiresAt.getTime()+1},applyInput)).command).toEqual(completed);
     expect(await finalControls.findManagedDatabaseRemovals(projectId)).toEqual([completed]);const completedAudits=await completionAudits();expect(completedAudits).toHaveLength(1);expect(completedAudits[0].metadata.receipt.containerId).toBe("[REDACTED]");expect(await deleteNonce()).toEqual(originalConsumed);
     expect(await originals()).toEqual(originalRows);expect(await encrypted()).toEqual(cipherRows);
-    result!.confirmedDeletion={projectId,receipt:deleted,originalSources:"passed",apiTransport:"passed",prepareControl:"passed",prepareRoute:"passed",applyControl:"passed",applyRoute:"passed",signatureRejected:"passed",confirmationRejected:"passed",originalNonce:"passed",signedHttp:"passed",effects:deleteEffects,rollback:"passed",cacheOnlyReopen:"passed",executorRemoved:"passed",retirement:"passed",retainedStorage:"passed",audit:"passed",originalRows:"unchanged",cipher:"unchanged"};
+    const retiredInventory = async () => {
+      const response = await app!.inject({method:"GET",url:`/api/v1/projects/${projectId}/databases`,headers:{cookie,"x-correlation-id":randomUUID()}});
+      expect(response.statusCode).toBe(200);expect(response.json().data.databases).toEqual([]);
+      expect(response.body).not.toMatch(/encryptedValue|sealedEnvironment|DATABASE_PASSWORD/);
+      expect(await finalControls.findManagedDatabaseRemovals(projectId)).toEqual([completed]);
+      expect(await originals()).toEqual(originalRows);expect(await encrypted()).toEqual(cipherRows);expect(deleteEffects).toBe(1);
+    };
+    await retiredInventory();await app.close();app=await build(endpoint,"managed_database_fixture_key_1234567890");await retiredInventory();
+    result!.confirmedDeletion={projectId,receipt:deleted,originalSources:"passed",apiTransport:"passed",prepareControl:"passed",prepareRoute:"passed",applyControl:"passed",applyRoute:"passed",inventoryRetirement:"passed",signatureRejected:"passed",confirmationRejected:"passed",originalNonce:"passed",signedHttp:"passed",effects:deleteEffects,rollback:"passed",cacheOnlyReopen:"passed",executorRemoved:"passed",retirement:"passed",retainedStorage:"passed",audit:"passed",originalRows:"unchanged",cipher:"unchanged"};
   } finally {
     await browserFixture?.close();
     if (app) await app.close(); if (peer) await peer.close(); vi.unstubAllGlobals();

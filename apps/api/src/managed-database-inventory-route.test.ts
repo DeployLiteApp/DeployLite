@@ -111,3 +111,44 @@ it("registers inventory in the actual API bootstrap behind authentication", asyn
   const app = await buildApiApp({env: {NODE_ENV: "test"}}); apps.push(app);
   expect((await app.inject({method: "GET", url: "/api/v1/projects/project-a/databases"})).statusCode).toBe(401);
 });
+
+async function readyInventory() {
+  const f = await fixture();
+  const preparation = (await f.call()).json().data.databases[0].preparation;
+  const {createControlCommand, managedDatabaseRuntimeExecutionBinding, composeRuntimeResourceName, createConfirmation, managedDatabaseDeleteExecutionBinding} = await import("@deploylite/domain");
+  const command = createControlCommand({actorId: "creator", action: "project.update", scope: {kind: "project", projectId: "project-a"}, input: managedDatabaseRuntimeExecutionBinding(preparation), idempotencyKey: "original", correlationId: "original", expiresAt: new Date(Date.now() + 60000)});
+  const authority = {schemaVersion: 1 as const, projectId: "project-a", commandId: command.id, action: "project.update" as const, inputDigest: command.inputDigest, projectLease: {leaseId: "lease-original", projectId: "project-a", fence: 1, expiresAt: command.expiresAt.getTime()}};
+  const {profileId: _profile, ...base} = preparation;
+  const receipt = {...base, action: "database.runtime", agentId: "agent-a", commandId: command.id, inputDigest: command.inputDigest, correlationId: command.correlationId, containerId: "c".repeat(64), imageId: "sha256:" + "d".repeat(64), volumeName: composeRuntimeResourceName("project-a", "volume", "db-" + preparation.databaseId), networkName: composeRuntimeResourceName("project-a", "network", "db-" + preparation.databaseId), networkId: "e".repeat(64), volumeCreatedAt: "2026-10-10T00:00:00Z", observedAt: Date.now() - 1000, status: "ready", health: "passed", storage: "verified", idempotent: false, redacted: true};
+  f.controls.findProjectUpdatesByInputDigest.mockImplementation(async (...args: unknown[]) => args[1] === command.inputDigest ? [{...command, status: "completed", projectExecutionAuthority: authority}] as never : []);
+  f.originalTransport.readReceipt.mockResolvedValue(receipt as never);
+  Object.assign(f.controls, {findManagedDatabaseRemovals: async () => []});
+  const source = (await f.call()).json().data.databases.find((entry: any) => entry.preparation.databaseId === preparation.databaseId).source;
+  const removal = createControlCommand({actorId: "deleter", action: "project.update", scope: {kind: "project", projectId: "project-a"}, input: managedDatabaseDeleteExecutionBinding(source), idempotencyKey: "remove", correlationId: "remove", expiresAt: command.expiresAt});
+  const nonce = createConfirmation({command: removal, classification: "destructive"});
+  const {health: _health, idempotent: _idempotent, ...physical} = receipt;
+  const completed = {...removal, status: "completed", projectExecutionAuthority: {...authority, commandId: removal.id, inputDigest: removal.inputDigest}, result: {...physical, action: "database.runtime.delete", profileId: preparation.profileId, commandId: removal.id, inputDigest: removal.inputDigest, correlationId: removal.correlationId, originalCommandId: command.id, originalStopCommandId: null, confirmationId: nonce.id, observedAt: Date.now(), status: "removed", storage: "retained"}};
+  const history = vi.fn(async (_projectId: string) => [completed]);
+  Object.assign(f.controls, {findManagedDatabaseRemovals: history});
+  f.append.mockClear();
+  return {...f, history, completed};
+}
+it("retires the exact original from inventory while preserving encrypted rows and history", async () => {
+  const f = await readyInventory(), before = f.rows.map(row => ({...row, encryptedValue: Buffer.from(row.encryptedValue)}));
+  const response = await f.call(); expect(response.statusCode).toBe(200); expect(response.json().data.databases).toHaveLength(4);
+  expect(f.rows).toEqual(before); expect(f.history).toHaveBeenCalledTimes(2); expect(f.history).toHaveBeenCalledWith("project-a");
+  expect(f.append).toHaveBeenCalledWith(expect.objectContaining({metadata: {databaseCount: 4, redacted: true}}));
+});
+it("requires retirement history for an existing original and rejects foreign history", async () => {
+  for (const mode of ["missing", "foreign"]) {
+    const f = await readyInventory();
+    if (mode === "missing") Object.assign(f.controls, {findManagedDatabaseRemovals: undefined});
+    else f.history.mockResolvedValue([{...f.completed, scope: {kind: "project", projectId: "foreign"}}]);
+    expect((await f.call()).statusCode).toBe(503);
+  }
+});
+it("withholds inventory when immutable retirement history changes during read audit", async () => {
+  const f = await readyInventory(), append = f.append.getMockImplementation()!;
+  f.append.mockImplementation(async input => {const result = await append(input); f.history.mockResolvedValue([]); return result;});
+  expect((await f.call()).statusCode).toBe(503);
+});

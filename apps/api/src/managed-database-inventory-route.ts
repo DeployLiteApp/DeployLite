@@ -7,6 +7,7 @@ import type { ManagedDatabaseRuntimePreviewOptions } from "./managed-database-ru
 import type { ManagedDatabaseRuntimeApplyAccess } from "./managed-database-runtime-apply.js";
 import type { ManagedDatabaseStopAccess } from "./managed-database-stop.js";
 import { recoverManagedDatabaseSources } from "./managed-database-source-recovery.js";
+import {validateManagedDatabaseRemovalHistory, isOriginalManagedDatabaseRemoved} from "./managed-database-inventory-removals.js";
 export type ManagedDatabaseInventoryRouteOptions = ManagedDatabaseRuntimePreviewOptions & Readonly<{
   inventory: Pick<EnvSecretValueRepository, "listEncryptedByProject">;
   runtimeExecutions?: ReadonlyMap<string, ManagedDatabaseRuntimeApplyAccess>;
@@ -41,6 +42,7 @@ export function registerManagedDatabaseInventoryRoute(app: FastifyInstance, opti
       const profiles = configuration.profiles, configuredStore = configuration.store, profileDigest = digestControlInput([...profiles]);
       const policy = structuredClone(options.imagePolicy), policyDigest = digestControlInput(policy);
       const inventory = options.inventory, list = inventory.listEncryptedByProject, find = store.find, decrypt = cipher.decrypt, fingerprint = cipher.fingerprint;
+      const removalReader = runtime.controls.findManagedDatabaseRemovals;
       const runtimeSnapshot = {...runtime}, stopSnapshot = {...stop};
       const current = () => {
         try {return !controller.signal.aborted && Date.now() >= startedAt && Date.now() < startedAt + deadlineMs!
@@ -50,6 +52,7 @@ export function registerManagedDatabaseInventoryRoute(app: FastifyInstance, opti
           && options.cipher === cipher && cipher.decrypt === decrypt && cipher.fingerprint === fingerprint
           && digestControlInput(options.imagePolicy) === policyDigest && options.inventory === inventory && inventory.listEncryptedByProject === list
           && options.runtimeExecutions?.get(projectId) === runtime && options.stopExecutions?.get(projectId) === stop
+          && runtime.controls.findManagedDatabaseRemovals === removalReader
           && Object.entries(runtimeSnapshot).every(([key, value]) => runtime[key as keyof typeof runtime] === value)
           && Object.entries(stopSnapshot).every(([key, value]) => stop[key as keyof typeof stop] === value);
         } catch {return false;}
@@ -71,18 +74,28 @@ export function registerManagedDatabaseInventoryRoute(app: FastifyInstance, opti
       await fence();
       const rows = await readRows(), initialDigest = rowsDigest(rows);
       const prepared = prepareManagedDatabaseInventory(projectId, rows, {cipher, imagePolicy: policy, profiles}); await fence();
+      const readRemovals = async () => {
+        if (!removalReader) return null;
+        const commands = await bounded(() => removalReader.call(runtime.controls, projectId)); await fence();
+        return validateManagedDatabaseRemovalHistory(projectId, commands);
+      };
+      const removals = await readRemovals();
       const databases = [];
       for (const item of prepared) {
         await sameSelectedRow(item, rows);
         const sources = await recoverManagedDatabaseSources({controls: runtime.controls, originalTransport: runtime.transport, stopTransport: stop.transport,
           agentId: runtime.agentId, deadlineMs: runtime.deadlineMs, now: runtime.now}, {preparation: item.preparation, context, authorize, current, signal: controller.signal});
-        await fence(); databases.push({...item, ...sources});
+        await fence();
+        if (sources.source && !removals) throw new Error("Retirement history is unavailable");
+        if (!sources.source || !isOriginalManagedDatabaseRemoved(sources.source, removals!.receipts)) databases.push({...item, ...sources});
       }
       await bounded(() => options.audit.append({actorUserId: user.id, action: "database.inventory.read", targetType: "project", targetId: projectId,
         ...context, metadata: {databaseCount: databases.length, redacted: true}})); await fence();
       const freshRows = await readRows();
       if (rowsDigest(freshRows) !== initialDigest || digestControlInput(prepareManagedDatabaseInventory(projectId, freshRows, {cipher, imagePolicy: policy, profiles})) !== digestControlInput(prepared)) throw new Error("unavailable");
       for (const item of prepared) await sameSelectedRow(item, freshRows);
+      const freshRemovals = await readRemovals();
+      if (freshRemovals?.fingerprint !== removals?.fingerprint) throw new Error("Retirement history changed");
       await fence();
       const response = options.ok(request, {databases});
       if (Buffer.byteLength(JSON.stringify(response), "utf8") > 2 * 1024 * 1024) throw new Error("unavailable");

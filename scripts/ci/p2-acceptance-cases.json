@@ -1362,6 +1362,8 @@
     "apps/api/src/managed-database-source-recovery.test.ts",
     "apps/api/src/managed-database-inventory-route.ts",
     "apps/api/src/managed-database-inventory-route.test.ts",
+    "apps/api/src/managed-database-inventory-removals.ts",
+    "apps/api/src/managed-database-inventory-removals.test.ts",
     "apps/web/src/lib/managed-database-inventory.ts",
     "apps/web/src/lib/managed-database-inventory.test.ts",
     "apps/api/src/testing/p5-browser-fixture.ts",
