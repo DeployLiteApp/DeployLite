@@ -147,8 +147,24 @@ def validate_confirmed_authority(result):
     native.require(proof["projectId"]==result["receipt"]["projectId"] and all(proof[key]=="passed" for key in stages)
         and proof["originalRows"]=="unchanged" and proof["cipher"]=="unchanged","executed_scoped_confirmed_authority_required")
 
+def validate_confirmed_deletion(result,profile):
+    proof=result.get("confirmedDeletion")
+    stages={"signatureRejected","confirmationRejected","originalNonce","signedHttp","rollback","cacheOnlyReopen","executorRemoved","retirement","retainedStorage","audit"}
+    exact(proof,stages|{"projectId","receipt","effects","originalRows","cipher"},"confirmed_deletion_required")
+    native.require(proof["projectId"]==result["receipt"]["projectId"] and all(proof[key]=="passed" for key in stages)
+        and type(proof["effects"]) is int and proof["effects"]==1 and proof["originalRows"]=="unchanged" and proof["cipher"]=="unchanged","actual_one_confirmed_deletion_required")
+    removed,original=proof["receipt"],result["receipt"]
+    shared={"schemaVersion","projectId","databaseId","engine","agentId","planDigest","environmentFingerprint","containerId","imageId","volumeName","networkName","networkId","volumeCreatedAt"}
+    exact(removed,shared|{"action","commandId","originalCommandId","originalStopCommandId","confirmationId","profileId","inputDigest","correlationId","observedAt","status","storage","redacted"},"strict_confirmed_deleted_receipt_required")
+    native.require(all(removed[key]==original[key] for key in shared) and removed["originalCommandId"]==original["commandId"] and removed["originalStopCommandId"] is None
+        and removed["commandId"]!=original["commandId"] and removed["profileId"]==profile["profileId"] and removed["action"]=="database.runtime.delete"
+        and removed["status"]=="removed" and removed["storage"]=="retained" and removed["redacted"] is True,"confirmed_delete_original_storage_required")
+    native.require(isinstance(removed["confirmationId"],str) and re.fullmatch(r"[A-Za-z0-9_-]{1,200}",removed["confirmationId"])
+        and isinstance(removed["inputDigest"],str) and re.fullmatch(r"[a-f0-9]{64}",removed["inputDigest"])
+        and type(removed["observedAt"]) is int and original["observedAt"]<=removed["observedAt"]<=9007199254740991,"confirmed_deleted_binding_required")
+
 def validate_result(result, profile, source_commit="7e4875341dbb8e1afdeff23137403528f3af6382"):
-    exact(result, {"receipt", "uid", "original", "nativeStop", "nativeStart", "currentHealth", "currentMetrics", "currentLogs", "inventoryRecovery", "browserAcceptance", "confirmationRecovery", "confirmedClaim", "confirmedAuthority", "internalConnection", "authenticatedProbe", "restart", "persistence", "cleanup", "operator"}, "public_operator_result_required")
+    exact(result, {"receipt", "uid", "original", "nativeStop", "nativeStart", "currentHealth", "currentMetrics", "currentLogs", "inventoryRecovery", "browserAcceptance", "confirmationRecovery", "confirmedClaim", "confirmedAuthority", "confirmedDeletion", "internalConnection", "authenticatedProbe", "restart", "persistence", "cleanup", "operator"}, "public_operator_result_required")
     native.require(type(result["uid"]) is int and 0 < result["uid"] <= 4294967294
         and all(result[key] == "passed" for key in ("authenticatedProbe", "restart", "persistence"))
         and result["cleanup"] == "verified", "executed_operator_persistence_cleanup_required")
@@ -156,6 +172,7 @@ def validate_result(result, profile, source_commit="7e4875341dbb8e1afdeff2313740
     validate_confirmation_recovery(result)
     validate_confirmed_claim(result)
     validate_confirmed_authority(result)
+    validate_confirmed_deletion(result,profile)
     ready = result["receipt"]
     shared = {"schemaVersion", "projectId", "databaseId", "engine", "agentId", "planDigest", "environmentFingerprint", "containerId", "imageId", "volumeName", "networkName", "networkId", "volumeCreatedAt"}
     exact(ready, shared | {"action", "commandId", "inputDigest", "correlationId", "observedAt", "status", "health", "storage", "idempotent", "redacted"}, "public_ready_receipt_required")

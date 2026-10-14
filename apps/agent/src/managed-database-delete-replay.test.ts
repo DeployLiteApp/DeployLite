@@ -81,6 +81,12 @@ it("serves signed deletion and cache HTTP on dedicated paths and refuses action/
             expect(response.status).toBe(403);
         }
         expect(f.remove).not.toHaveBeenCalled();expect(f.replayStore.claim).not.toHaveBeenCalled();
+        const unauthenticated=await fetch(base+MANAGED_DATABASE_DELETE_PATH,{method:"POST",headers:{"content-type":"application/json","x-deploylite-signature":"invalid"},body:JSON.stringify(f.command)});
+        expect(unauthenticated.status).toBe(401);
+        f.confirmed.mockRejectedValueOnce(new Error("Confirmed project authority is unavailable"));
+        const unconfirmed=await fetch(base+MANAGED_DATABASE_DELETE_PATH,{method:"POST",headers:{"content-type":"application/json","x-deploylite-signature":f.signature(f.command)},body:JSON.stringify(f.command)});
+        expect(unconfirmed.status).toBe(400);expect(await unconfirmed.json()).toEqual({error:"Confirmed project authority is unavailable"});
+        expect(f.remove).not.toHaveBeenCalled();expect(f.replayStore.claim).not.toHaveBeenCalled();
         const response=await fetch(base+MANAGED_DATABASE_DELETE_PATH,{method:"POST",headers:{"content-type":"application/json","x-deploylite-signature":f.signature(f.command)},body:JSON.stringify(f.command)});
         expect(response.status).toBe(200);expect(await response.json()).toEqual(f.receipt);
         const cached=await fetch(base+MANAGED_DATABASE_DELETE_RECEIPT_PATH,{method:"POST",headers:{"content-type":"application/json","x-deploylite-signature":signAgentTransport(`POST ${MANAGED_DATABASE_DELETE_RECEIPT_PATH}\n${JSON.stringify(f.query)}`,f.options.trustKey)},body:JSON.stringify(f.query)});
