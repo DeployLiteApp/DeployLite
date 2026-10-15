@@ -144,3 +144,33 @@ it("refuses changed original resource and archive binding",()=>{
  expect(()=>managedDatabaseRestoreArchiveSourceBinding({...f.query,backupReceipt:{...f.query.backupReceipt,containerId:"0".repeat(64)}})).toThrow("Restore archive source is unavailable.");
  expect(()=>managedDatabaseRestoreArchiveSourceBinding({...f.query,backupReceipt:{...f.query.backupReceipt,archiveBytes:f.query.maxBytes+1}})).toThrow("Restore archive source is unavailable.");
 });
+
+import {managedDatabaseRestoreAgentCommandSchema,managedDatabaseRestoreReceiptQuerySchema,managedDatabaseRestoreReceiptSchema,managedDatabaseRestoreCachedReceiptSchema} from "@deploylite/contracts";
+import {managedDatabaseRestoreReceiptMatches,managedDatabaseRestoreReplayFingerprint} from "./managed-database-restore-receipt-binding.js";
+function restoreReceiptFixture(engine:typeof engines[number]="postgres"){
+ const {preparation,input}=fixture(engine),intent=prepareManagedDatabaseRestoreConfirmation(input),command=intent.command,original=preparation.originalReceipt,backup=preparation.backupReceipt;
+ const authority={schemaVersion:1,projectId:preparation.projectId,commandId:command.id,action:"project.update",inputDigest:command.inputDigest,projectLease:{leaseId:"restore-lease",projectId:preparation.projectId,fence:1,expiresAt:command.expiresAt.getTime()}};
+ const query={...preparation,action:"database.runtime.restore",operation:"database.runtime.restore",confirmationId:intent.confirmation.id,agentId:"agent-a",commandId:command.id,inputDigest:command.inputDigest,idempotencyKey:command.idempotencyKey,requiredCapabilities:["database.runtime.restore.v1"],authority,lease:authority.projectLease,context:{requestId:"restore-request",correlationId:command.correlationId},timeoutMs:10000};
+ const receipt={schemaVersion:1,projectId:preparation.projectId,databaseId:preparation.databaseId,engine,profileId:preparation.profileId,action:query.action,agentId:query.agentId,commandId:query.commandId,originalCommandId:original.commandId,backupCommandId:backup.commandId,confirmationId:query.confirmationId,inputDigest:query.inputDigest,planDigest:preparation.planDigest,environmentFingerprint:preparation.environmentFingerprint,correlationId:query.context.correlationId,
+  containerId:original.containerId,imageId:original.imageId,volumeName:original.volumeName,networkName:original.networkName,networkId:original.networkId,volumeCreatedAt:original.volumeCreatedAt,
+  archiveId:backup.archiveId,archiveBytes:backup.archiveBytes,archiveSha256:backup.archiveSha256,manifestSha256:backup.manifestSha256,format:backup.format,observedAt:3000,status:"restored",storage:"original",health:"passed",redacted:true};
+ const cache={schemaVersion:1,action:query.action,agentId:query.agentId,commandId:query.commandId,confirmationId:query.confirmationId,correlationId:query.context.correlationId,receipt};
+ return {query,receipt,cache,intent};
+}
+it.each(engines)("accepts strict %s restore command and immutable correlated receipt grammar without issuing authority",engine=>{
+ const f=restoreReceiptFixture(engine);expect(managedDatabaseRestoreAgentCommandSchema.safeParse({...f.query,cancellationRequested:false}).success).toBe(true);
+ expect(managedDatabaseRestoreReceiptQuerySchema.safeParse(f.query).success).toBe(true);expect(managedDatabaseRestoreReceiptSchema.safeParse(f.receipt).success).toBe(true);expect(managedDatabaseRestoreCachedReceiptSchema.safeParse(f.cache).success).toBe(true);
+ expect(f.intent.confirmation.consumedAt).toBeNull();expect(f.intent.command).not.toHaveProperty("projectExecutionAuthority");
+});
+it.each(engines)("matches %s original source archive approval and receipt before completion",engine=>{const f=restoreReceiptFixture(engine);expect(managedDatabaseRestoreReceiptMatches(f.query,f.receipt)).toBe(true);});
+it.each([{agentId:"foreign"},{commandId:"foreign"},{confirmationId:"foreign"},{originalCommandId:"foreign"},{backupCommandId:"foreign"},{projectId:"foreign"},{databaseId:"foreign"},{engine:"redis"},{profileId:"foreign"},{inputDigest:"0".repeat(64)},{correlationId:"foreign"},{containerId:"0".repeat(64)},{imageId:"sha256:"+"0".repeat(64)},{volumeName:"foreign"},{networkName:"foreign"},{networkId:"0".repeat(64)},{volumeCreatedAt:"2026-10-09T00:00:00Z"},{archiveId:"backup_"+"0".repeat(32)},{archiveBytes:5},{archiveSha256:"0".repeat(64)},{manifestSha256:"0".repeat(64)},{format:"mysql-sql-gzip"},{observedAt:1999},{status:"unknown"},{storage:"replaced"},{health:"unknown"},{path:"private"},{bytes:"private"}])("refuses detached restore completion %j",patch=>{const f=restoreReceiptFixture();expect(managedDatabaseRestoreReceiptMatches(f.query,{...f.receipt,...patch})).toBe(false);});
+it("keeps replay identity stable only across readonly request and timeout changes",()=>{
+ const f=restoreReceiptFixture(),base=managedDatabaseRestoreReplayFingerprint(f.query);
+ expect(managedDatabaseRestoreReplayFingerprint({...f.query,context:{...f.query.context,requestId:"retry"},timeoutMs:5})).toBe(base);
+ for(const patch of [{confirmationId:"other"},{inputDigest:"0".repeat(64),authority:{...f.query.authority,inputDigest:"0".repeat(64)}},{context:{...f.query.context,correlationId:"other"}},{backupReceipt:{...f.query.backupReceipt,archiveSha256:"0".repeat(64)}}])expect(managedDatabaseRestoreReplayFingerprint({...f.query,...patch})).not.toBe(base);
+});
+it.each([{authority:{projectId:"foreign"}},{lease:{leaseId:"foreign"}},{confirmationId:""},{requiredCapabilities:[]},{operation:"database.runtime.delete"},{cancellationRequested:true},{password:"private"},{argv:["private"]},{archivePath:"private"}])("rejects malformed or private confirmed command %j",patch=>{const f=restoreReceiptFixture();expect(managedDatabaseRestoreAgentCommandSchema.safeParse({...f.query,cancellationRequested:false,...patch}).success).toBe(false);});
+it("refuses mismatched cached approval and archive source digest",()=>{
+ const f=restoreReceiptFixture();expect(managedDatabaseRestoreCachedReceiptSchema.safeParse({...f.cache,confirmationId:"foreign"}).success).toBe(false);
+ expect(managedDatabaseRestoreReceiptMatches({...f.query,backupReceipt:{...f.query.backupReceipt,sourceDigest:"0".repeat(64)}},f.receipt)).toBe(false);
+});
