@@ -27,6 +27,7 @@ export function nativeDumpFixture(root:string) {
       reopen():Promise<void>;
       inventory():DbBackupInventoryStore;
       verify():Promise<unknown>;
+      verifyArchive(receipt:unknown):Promise<unknown>;
       decode(bytes:Buffer):Promise<void>;
       signal:AbortSignal;
       captures():number;
@@ -40,6 +41,7 @@ export function nativeDumpFixture(root:string) {
       captureFailure?():"before-capture"|"connection"|"identity"|"preexisting-lock"|"acquisition"|"acknowledgement"|"dump"|"cleanup"|"token"|"clock"|"shell"|"unknown";
     }>) {
       if(!Number.isSafeInteger(input.uid)||input.uid<1||input.uid>4294967294)throw new Error("Corroborated non-root decoder required.");
+      if(typeof input.verifyArchive!=="function")throw new Error("Private native archive verification failed.");
       const first=await input.call();
       if(first.statusCode!==200){
         const stage=input.captureFailure?.();
@@ -59,6 +61,15 @@ export function nativeDumpFixture(root:string) {
       expect(first.statusCode).toBe(200);
       const data=first.json().data,receipt=managedDatabaseBackupReceiptSchema.parse(data.receipt);
       expect(data).toMatchObject({backupCreated:true,idempotent:false});
+      const verifyArchive=async()=>{
+        try{
+          const expected={archiveId:receipt.archiveId,archiveBytes:receipt.archiveBytes,archiveSha256:receipt.archiveSha256,manifestSha256:receipt.manifestSha256,format:receipt.format,integrity:"verified",redacted:true};
+          const value=await input.verifyArchive(receipt),keys=Object.keys(expected);
+          if(!value||typeof value!=="object"||Reflect.ownKeys(value).length!==keys.length)throw new Error("unavailable");
+          for(const key of keys){const descriptor=Object.getOwnPropertyDescriptor(value,key);
+            if(!descriptor||!("value" in descriptor)||descriptor.value!==expected[key as keyof typeof expected])throw new Error("unavailable");}
+        }catch{throw new Error("Private native archive verification failed.");}
+      };
       const sql=receipt.engine==="mysql"||receipt.engine==="mariadb",redis=receipt.engine==="redis",mongo=receipt.engine==="mongodb";
       expect(receipt).toMatchObject({format:mongo?"mongodb-archive-gzip":redis?"volume-tar":sql?receipt.engine+"-sql-gzip":"postgres-custom-gzip",consistency:mongo?"quiesced-writes":redis?"all-consumers-stopped":sql?"global-read-lock":"native-snapshot",status:"created",containerId:input.originalContainerId});
       expect(data.command).not.toHaveProperty("projectExecutionAuthority");
@@ -86,6 +97,7 @@ export function nativeDumpFixture(root:string) {
         expect(decoded.subarray(0,5).toString()).toBe("PGDMP");
       }
       await input.verify();
+      await verifyArchive();
       try {await input.decode(bytes);}catch {throw new Error("Private native dump fixture failed at restore.");}
       await input.verify();
       const before=await input.inventory().list(receipt.projectId,receipt.volumeKey,receipt.destinationId);expect(before).toHaveLength(1);expect(before[0]!.receipt).toEqual(receipt);
@@ -96,7 +108,8 @@ export function nativeDumpFixture(root:string) {
       expect(await input.inventory().list(receipt.projectId,receipt.volumeKey,receipt.destinationId)).toEqual(before);
       if(createHash("sha256").update(await readFile(archive)).digest("hex")!==receipt.archiveSha256)throw new Error("Private native archive changed.");
       if(createHash("sha256").update(await readFile(manifest)).digest("hex")!==receipt.manifestSha256)throw new Error("Private native manifest changed.");
-      proof={...(redis?{stoppedSource:"passed",sourceCleanup:"pending"}:{}),...((sql||mongo)?{writersResumed:"passed"}:{}),restoredData:"passed",restoreCleanup:"passed",receipt,maxBytes:input.maxBytes,captures:input.captures(),signedHttp:"passed",formatValidated:"passed",seededRow:"passed",inventoryReopen:"passed",replay:"passed",privateFiles:"passed",cleanup:"pending"};
+      await verifyArchive();
+      proof={archiveIntegrity:"passed",...(redis?{stoppedSource:"passed",sourceCleanup:"pending"}:{}),...((sql||mongo)?{writersResumed:"passed"}:{}),restoredData:"passed",restoreCleanup:"passed",receipt,maxBytes:input.maxBytes,captures:input.captures(),signedHttp:"passed",formatValidated:"passed",seededRow:"passed",inventoryReopen:"passed",replay:"passed",privateFiles:"passed",cleanup:"pending"};
       return proof;
     },
     async close() {

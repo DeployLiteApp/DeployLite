@@ -1,3 +1,4 @@
+import {createPrivateNativeRestoreArchive} from "../../agent/src/infrastructure/docker/docker-managed-database-restore-archive.js";
 import {spawn} from "node:child_process";
 import {restoreNativeMongoFixture} from "./testing/p5-native-mongo-decoder.js";
 import {restoreNativeRedisFixture} from "./testing/p5-native-redis-decoder.js";
@@ -190,12 +191,14 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const ready = await verifier.verify(input,pinned,authority,signal); expect(ready.uid).toBeGreaterThan(0);
     await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,true)],signal);
     for (const hostname of ["127.0.0.1",connection.hostname]) expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,hostname)],signal)).stdout.trim()).toBe(marker);
+    const archiveVerifier=createPrivateNativeRestoreArchive({destinations:new Map([["private-native",backupRoot]]),expectedAgentId:agentId,clock:{now:Date.now},maxBytes:backupMaxBytes,maxDurationMs:5000});
+    const verifyArchive=(backupReceipt:unknown)=>archiveVerifier.verify({schemaVersion:1,projectId,databaseId,...preparation,originalReceipt:receipt,originalReplayFingerprint:apply.json().data.originalReplayFingerprint,backupReceipt,maxBytes:backupMaxBytes},signal);
     const sqlDump=engine==="mysql"||engine==="mariadb";
     if(sqlDump)await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,true,"127.0.0.1","CREATE TABLE p5_nontransactional(value varchar(64)) ENGINE=MyISAM; INSERT INTO p5_nontransactional VALUES ('p5-nontransactional-value');")],signal);
     if(dump&&engine!=="redis")nativeBackup=await dump.prove({captureFailure:()=>captureFailure,captureExit:()=>captureExit??{code:null,signal:null},captureError:()=>captureError,
       call:()=>call("runtime/backup",{...preparation,originalReceipt:receipt,originalReplayFingerprint:apply.json().data.originalReplayFingerprint,destinationId:"private-native",maxBytes:backupMaxBytes}),
       reopen:async()=>{await app!.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(true);app=await build(endpoint,"managed_database_fixture_key_1234567890");},
-      inventory:()=>new DbBackupInventoryStore(db.db,agentId),verify:()=>verifier.verify(input,pinned!,authority,signal),decode:bytes=>engine==="mongodb"?restoreNativeMongoFixture({bytes,containerId:originalContainerId,uid:ready.uid,signal}):(engine==="mysql"||engine==="mariadb")?restoreNativeSqlFixture({engine,bytes,containerId:originalContainerId,uid:ready.uid,signal}):decodeNativePostgresFixture({bytes,containerId:originalContainerId,uid:ready.uid,signal}),signal,captures:()=>backupCaptures,maxBytes:backupMaxBytes,originalContainerId:receipt.containerId,uid:ready.uid,
+      verifyArchive,inventory:()=>new DbBackupInventoryStore(db.db,agentId),verify:()=>verifier.verify(input,pinned!,authority,signal),decode:bytes=>engine==="mongodb"?restoreNativeMongoFixture({bytes,containerId:originalContainerId,uid:ready.uid,signal}):(engine==="mysql"||engine==="mariadb")?restoreNativeSqlFixture({engine,bytes,containerId:originalContainerId,uid:ready.uid,signal}):decodeNativePostgresFixture({bytes,containerId:originalContainerId,uid:ready.uid,signal}),signal,captures:()=>backupCaptures,maxBytes:backupMaxBytes,originalContainerId:receipt.containerId,uid:ready.uid,
       ...((sqlDump||engine==="mongodb")?{writerProbe:async()=>{const resumed=AbortSignal.timeout(5000);await runner.run(["docker","exec",originalContainerId,"sh","-ec",probe(engine,true)],resumed);expect((await runner.run(["docker","exec",originalContainerId,"sh","-ec",probe(engine,false)],resumed)).stdout.trim()).toBe(marker);}}:{})
     });
     const originals = async () => ({commands:(await db.pool.query("SELECT * FROM control_commands WHERE id=$1",[receipt.commandId])).rows,
@@ -316,7 +319,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
       let first=true;const backupInput={...preparation,originalReceipt:receipt,originalReplayFingerprint,destinationId:"private-native",maxBytes:backupMaxBytes};
       nativeBackup=await dump.prove({call:async()=>{if(first){first=false;return redisBackupResponse!;}return call("runtime/backup",backupInput);},
         reopen:async()=>{await app!.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(true);app=await build(endpoint,"managed_database_fixture_key_1234567890");},
-        inventory:()=>new DbBackupInventoryStore(db.db,agentId),verify:()=>verifier.verify(input,pinned!,authority,signal),decode:bytes=>restoreNativeRedisFixture({bytes,containerId:originalContainerId,uid:ready.uid,signal}),
+        verifyArchive,inventory:()=>new DbBackupInventoryStore(db.db,agentId),verify:()=>verifier.verify(input,pinned!,authority,signal),decode:bytes=>restoreNativeRedisFixture({bytes,containerId:originalContainerId,uid:ready.uid,signal}),
         signal,captures:()=>backupCaptures,maxBytes:backupMaxBytes,originalContainerId,uid:ready.uid,stoppedSource:true});
     }
     const inventoryAfterStart = await recoveredInventory(stopped,originalStopReplayFingerprint);

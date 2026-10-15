@@ -10,6 +10,7 @@ const identity=z.string().regex(/^[A-Za-z0-9_-]{1,200}$/),digest=z.string().rege
 const bindingSchema=z.object({projectId:identity,commandId:identity,inputDigest:digest,agentId:identity,correlationId:identity,destinationId:identity,sourceDigest:digest,
  format:z.enum(["postgres-custom-gzip","mysql-sql-gzip","mariadb-sql-gzip","mongodb-archive-gzip","volume-tar"])}).strict();
 const manifestSchema=bindingSchema.extend({schemaVersion:z.literal(1),archiveBytes:positive,archiveSha256:digest}).strict();
+export {manifestSchema as nativeBackupArchiveManifestSchema};
 export type NativeBackupArchiveBinding=z.infer<typeof bindingSchema>;
 export type NativeBackupProducer=(write:(bytes:Uint8Array)=>Promise<void>,signal:AbortSignal)=>Promise<{bytes:number;sha256:string}>;
 function fail():never {throw new Error("Native archive is unavailable.");}

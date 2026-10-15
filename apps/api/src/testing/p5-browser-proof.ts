@@ -17,3 +17,17 @@ export function validateDeletionBrowserProof(value:unknown,expectedSource:string
  const parsed=deletionSchema.safeParse(value);
  return /^[a-f0-9]{40}$/.test(expectedSource)&&parsed.success&&parsed.data.sourceCommit===expectedSource;
 }
+
+export type BrowserDeletionRecoveryObservation = Readonly<{
+ calls: readonly Readonly<{key:string;confirmationId:string;status:number}>[];
+ key:string; confirmationId:string; failures:readonly ("request"|"application"|"foreign")[];
+}>;
+/** Fixed metadata only; never reflect keys, nonce identifiers or browser diagnostics. */
+export function browserDeletionRecoveryFailure(value:BrowserDeletionRecoveryObservation):string|null {
+ if(value.calls.length!==2)return "count";
+ if(value.calls[0]!.status!==503||value.calls[1]!.status!==200)return "status";
+ if(value.calls.some(call=>call.key!==value.key))return "key";
+ if(value.calls.some(call=>call.confirmationId!==value.confirmationId))return "confirmation";
+ for(const kind of ["foreign","application","request"] as const)if(value.failures.includes(kind))return kind;
+ return null;
+}

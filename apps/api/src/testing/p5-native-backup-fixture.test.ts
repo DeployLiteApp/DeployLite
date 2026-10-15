@@ -20,7 +20,8 @@ async function fixture(engine:"postgres"|"mysql"|"mariadb"|"mongodb"|"redis"="po
   const call=vi.fn(async()=>{const data={receipt,command:{id:receipt.commandId},backupCreated:true,idempotent:calls++>0};return {statusCode:200,body:JSON.stringify({data}),json:()=>({data})};});
   const run=vi.fn(async(_bytes:Buffer)=>{});
   const records=[{schemaVersion:1 as const,receipt,createdAtMs:2000}];
-  const input={call,reopen:vi.fn(async()=>{}),inventory:()=>({list:async()=>records}) as any,verify:vi.fn(async()=>({uid:999})),decode:run,signal:new AbortController().signal,captures:()=>1,maxBytes:2097152,originalContainerId:receipt.containerId,uid:999,stoppedSource:engine==="redis",writerProbe:vi.fn(async()=>{})};
+  const verifyArchive=vi.fn(async(_receipt:unknown)=>({archiveId:receipt.archiveId,archiveBytes:receipt.archiveBytes,archiveSha256:receipt.archiveSha256,manifestSha256:receipt.manifestSha256,format:receipt.format,integrity:"verified",redacted:true}));
+  const input={verifyArchive,call,reopen:vi.fn(async()=>{}),inventory:()=>({list:async()=>records}) as any,verify:vi.fn(async()=>({uid:999})),decode:run,signal:new AbortController().signal,captures:()=>1,maxBytes:2097152,originalContainerId:receipt.containerId,uid:999,stoppedSource:engine==="redis",writerProbe:vi.fn(async()=>{})};
   return {dump,input,run,directory:archive,copied:"/tmp/dl-native-backup-"+receipt.commandId+".gz"};
 }
 it("gives private bytes only to the corroborated non-root decoder",async()=>{
@@ -84,4 +85,28 @@ it("reports a fixed shell diagnostic class without reflecting private output",as
 it("observes diagnostic kind once so a changing reader cannot reflect private text",async()=>{
  const f=await fixture();f.input.call.mockResolvedValue({statusCode:503,body:"private",json:()=>({data:{}})} as any);const captureError=vi.fn().mockReturnValueOnce("syntax").mockReturnValue("password=fake-private");
  await expect(f.dump.prove({...f.input,captureFailure:()=>"shell" as const,captureExit:()=>({code:31,signal:null}),captureError})).rejects.toThrow("Private native capture failed at shell (exit=31, signal=none) [shell=syntax].");expect(captureError).toHaveBeenCalledOnce();await f.dump.close();
+});
+
+it.each(["postgres","mysql","mariadb","mongodb","redis"] as const)("requires private %s integrity before decode and after durable replay",async engine=>{
+ const f=await fixture(engine),proof=await f.dump.prove(f.input);
+ expect(f.input.verifyArchive).toHaveBeenCalledTimes(2);expect(proof.archiveIntegrity).toBe("passed");
+ expect(f.input.verifyArchive.mock.invocationCallOrder[0]).toBeLessThan(f.run.mock.invocationCallOrder[0]!);
+ expect(f.input.verifyArchive.mock.invocationCallOrder[1]).toBeGreaterThan(f.input.reopen.mock.invocationCallOrder[0]!);await f.dump.close();
+});
+it("requires an integrity verifier before admitting capture or decode",async()=>{
+ const f=await fixture();await expect(f.dump.prove({...f.input,verifyArchive:undefined} as any)).rejects.toThrow("Private native archive verification failed.");
+ expect(f.input.call).not.toHaveBeenCalled();expect(f.run).not.toHaveBeenCalled();await f.dump.close();
+});
+it.each([{archiveId:"backup_"+"0".repeat(32)},{archiveBytes:1},{archiveSha256:"0".repeat(64)},{manifestSha256:"0".repeat(64)},{format:"volume-tar"},{integrity:"pending"},{redacted:false},{privatePath:"private-fixture"}])("refuses detached private integrity $archiveId/$integrity",async patch=>{
+ const f=await fixture(),view=await f.input.verifyArchive({});f.input.verifyArchive.mockImplementation(async()=>({...view,...patch}) as any);
+ await expect(f.dump.prove(f.input)).rejects.toThrow("Private native archive verification failed.");expect(f.run).not.toHaveBeenCalled();await f.dump.close();
+});
+it("does not invoke an integrity getter or reflect a verifier's private error",async()=>{
+ const f=await fixture(),view=await f.input.verifyArchive({}),getter=vi.fn(()=>"private-fixture");Object.defineProperty(view,"archiveSha256",{get:getter});
+ f.input.verifyArchive.mockImplementation(async()=>view);await expect(f.dump.prove(f.input)).rejects.toThrow("Private native archive verification failed.");expect(getter).not.toHaveBeenCalled();expect(f.run).not.toHaveBeenCalled();
+ await f.dump.close();const g=await fixture();g.input.verifyArchive.mockImplementation(async()=>{throw new Error("password=private-fixture");});await expect(g.dump.prove(g.input)).rejects.toThrow("Private native archive verification failed.");expect(g.run).not.toHaveBeenCalled();await g.dump.close();
+});
+it("refuses integrity lost after reopening instead of publishing a passed proof",async()=>{
+ const f=await fixture();f.input.reopen.mockImplementation(async()=>{f.input.verifyArchive.mockImplementation(async()=>{throw new Error("private-fixture");});});
+ await expect(f.dump.prove(f.input)).rejects.toThrow("Private native archive verification failed.");expect(f.run).toHaveBeenCalledTimes(1);await f.dump.close();
 });
