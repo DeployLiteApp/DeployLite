@@ -33,8 +33,25 @@ export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:s
  let deletionPreparation:{response:typeof applyResponse;key:string}|undefined,deletionRequestStart=0;
  const deletionCalls:{key:string;confirmationId:string;status:number}[]=[];
  const failures:Error[]=[],requestFailures:string[]=[];
+ // Only the explicit owner may suspend admission; all admitted bodies/injections must finish first.
+ const admitted = new Set<Promise<void>>();
+ let closed = false;
+ let reopening: {ready: Promise<boolean>; release(ready: boolean): void} | undefined;
+ async function admitRequest(): Promise<() => void> {
+  if (closed) throw new Error("Owned browser API unavailable.");
+  const transition = reopening;
+  if (transition) {
+   if (!await transition.ready) throw new Error("Owned browser API unavailable.");
+   return admitRequest();
+  }
+  let finish!: () => void;
+  const completion = new Promise<void>(done => { finish = done; });
+  admitted.add(completion);
+  return () => { admitted.delete(completion); finish(); };
+ }
  const server=createServer(async(req,res)=>{
   let stage:BrowserFixtureRequestStage="routing";
+  let releaseRequest: (() => void) | undefined;
   try{
    if(req.url==="/"&&req.method==="GET"){res.setHeader("Content-Type","text/html");res.end('<!doctype html><link rel="stylesheet" href="/fixture.css"><div id="root"></div><script src="/fixture.js"></script>');return;}
    if(req.url==="/fixture.css"&&req.method==="GET"){res.setHeader("Content-Type","text/css");res.end(styles);return;}
@@ -42,6 +59,7 @@ export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:s
    if(req.url==="/favicon.ico"){res.writeHead(204);res.end();return;}
    const prefix=`/api/v1/projects/${input.projectId}/databases`;
    if(!req.url?.startsWith(prefix)||!['GET','POST'].includes(req.method!))throw new Error("Unscoped browser API request.");
+   stage="app";releaseRequest=await admitRequest();
    stage="body";let bytes="";for await(const chunk of req){bytes+=chunk;if(Buffer.byteLength(bytes)>131072)throw new Error("Bounded browser request required.");}
    if(++requests>1000)throw new Error("Bounded browser request count required.");
    const headers:{cookie:string;"idempotency-key"?:string}={cookie:input.cookie};
@@ -57,6 +75,7 @@ export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:s
   }catch(error){
    const code=error instanceof Error?Object.getOwnPropertyDescriptor(error,"code")?.value:undefined;
    requestFailures.push(browserFixtureRequestFailure({stage,aborted:req.aborted,code}));failures.push(new Error("Browser fixture request failed."));res.writeHead(500);res.end('{"error":"Fixture unavailable"}');}
+  finally { releaseRequest?.(); }
  });
  let browser:any,context:any,page:any;
  await new Promise<void>((done,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',done);});
@@ -70,8 +89,25 @@ export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:s
   const button=(name:string)=>page.getByRole('button',{name,exact:true});
   const enabled=async(name:string)=>{await button(name).waitFor();await page.waitForFunction(`Array.from(document.querySelectorAll('button')).some(button=>button.textContent===${JSON.stringify(name)}&&!button.disabled)`);};
   const selected=()=>button(`${input.databaseId} (${({postgres:'PostgreSQL',mysql:'MySQL',mariadb:'MariaDB',mongodb:'MongoDB',redis:'Redis'} as Record<string,string>)[input.engine]})`);
-  const close=async()=>{await context?.close();await browser?.close();server.closeAllConnections();await new Promise<void>((done,reject)=>server.close(error=>error?reject(error):done()));};
+  const close=async()=>{closed=true;reopening?.release(false);await context?.close();await browser?.close();server.closeAllConnections();await new Promise<void>((done,reject)=>server.close(error=>error?reject(error):done()));};
   return {
+   async reopenApplication<T>(reopen: () => Promise<T>): Promise<T> {
+    if (closed || reopening) throw new Error("Owned browser application reopen unavailable.");
+    let resume!: (ready: boolean) => void;
+    const transition = {ready: new Promise<boolean>(done => { resume = done; }), release: (ready: boolean) => resume(ready)};
+    reopening = transition;
+    let ready = false;
+    try {
+     await Promise.all(admitted);
+     const result = await reopen();
+     if (closed || !input.app()) throw new Error("Owned browser API unavailable.");
+     ready = true;
+     return result;
+    } finally {
+     reopening = undefined;
+     transition.release(ready);
+    }
+   },
    async create(){
     await page.getByLabel('Database name').fill(input.databaseId);await page.getByLabel('Engine').selectOption(input.engine);
     await button('Prepare database').click();await enabled('Create database');await button('Create database').click();await enabled('Stop database');
