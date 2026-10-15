@@ -78,6 +78,7 @@ def fixture(engine="postgres"):
     result["browserAcceptance"]={"sourceCommit":"7e4875341dbb8e1afdeff23137403528f3af6382","engine":engine,"projectId":project,"databaseId":"orders","creation":"passed","selection":"passed","reload":"passed","telemetry":"passed","start":"passed","stop":"passed","persistence":"passed","browser":"chromium","context":"isolated","requests":12}
     deleted={**{key:value for key,value in ready.items() if key not in ("health","idempotent","commandId","observedAt","inputDigest","correlationId","status","storage","action")},"action":"database.runtime.delete","commandId":"delete1","originalCommandId":ready["commandId"],"originalStopCommandId":None,"confirmationId":"approval1","profileId":profile["profileId"],"inputDigest":"f"*64,"correlationId":"delete-correlation","observedAt":2000,"status":"removed","storage":"retained"}
     result["confirmedDeletion"]={"projectId":project,"receipt":deleted,"originalSources":"passed","apiTransport":"passed","prepareControl":"passed","prepareRoute":"passed","applyControl":"passed","applyRoute":"passed","inventoryRetirement":"passed","signatureRejected":"passed","confirmationRejected":"passed","originalNonce":"passed","signedHttp":"passed","effects":1,"rollback":"passed","cacheOnlyReopen":"passed","executorRemoved":"passed","retirement":"passed","retainedStorage":"passed","audit":"passed","originalRows":"unchanged","cipher":"unchanged"}
+    result["confirmedDeletion"]["browserDeletion"]={**{key:result["browserAcceptance"][key] for key in ("sourceCommit","engine","projectId","databaseId","browser","context")},"preparation":"passed","confirmation":"passed","recovery":"passed","sameOriginalKey":"passed","inventory":"passed","reload":"passed","retainedStorage":"passed","requests":7}
     return with_inventory(result, profile), profile
 def with_inventory(result, profile):
     result = copy.deepcopy(result)
@@ -141,7 +142,9 @@ class OperatorProofTests(unittest.TestCase):
         with self.assertRaises(RuntimeError): module.validate_acceptance(acceptance, binding)
     def test_all_engine_acceptance_and_run_cleanup_binding(self):
         fixtures = {engine: fixture(engine) for engine in module.native.ENGINES}
-        for pair in fixtures.values(): pair[0]["browserAcceptance"]["sourceCommit"] = "a" * 40
+        for pair in fixtures.values():
+            pair[0]["browserAcceptance"]["sourceCommit"] = "a" * 40
+            pair[0]["confirmedDeletion"]["browserDeletion"]["sourceCommit"] = "a" * 40
         binding = {"commit": "a" * 40, "runId": "123", "runAttempt": "1", "nonce": "b" * 24,
             "databaseName": "deploylite_p5_operator_" + "b" * 24, "profiles": {engine: pair[1] for engine, pair in fixtures.items()}}
         acceptance = {"schemaVersion": 1, **{key: binding[key] for key in ("commit", "runId", "runAttempt", "nonce")},
@@ -340,9 +343,19 @@ class ConfirmedDeletionProof(unittest.TestCase):
 
 class ConfirmedDeletionTransportProof(unittest.TestCase):
     def test_requires_actual_api_transport_and_original_source_corroboration(self):
-        for key in ("originalSources","apiTransport","prepareControl","prepareRoute","applyControl","applyRoute","inventoryRetirement"):
+        for key in ("originalSources","apiTransport","prepareControl","prepareRoute","applyControl","applyRoute","inventoryRetirement","browserDeletion"):
             result,profile=fixture();result["confirmedDeletion"].pop(key,None)
             with self.assertRaises(RuntimeError):module.validate_confirmed_deletion(result,profile)
+
+class DestructiveBrowserEvidence(unittest.TestCase):
+    def test_rejects_foreign_shared_or_omitted_destructive_browser(self):
+        result,profile=fixture()
+        for patch in ({"sourceCommit":"a"*40},{"context":"shared"},{"sameOriginalKey":"skipped"},{"recovery":"pending"},{"requests":0},{"projectId":"foreign"},{"password":"private"}):
+            changed=copy.deepcopy(result);changed["confirmedDeletion"]["browserDeletion"].update(patch)
+            with self.assertRaises(RuntimeError):module.validate_confirmed_deletion(changed,profile)
+        for key in result["confirmedDeletion"]["browserDeletion"]:
+            changed=copy.deepcopy(result);changed["confirmedDeletion"]["browserDeletion"].pop(key)
+            with self.assertRaises(RuntimeError):module.validate_confirmed_deletion(changed,profile)
 
 if __name__ == "__main__":
     unittest.main()

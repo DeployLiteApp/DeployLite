@@ -9,3 +9,11 @@ export function validateBrowserProof(value:unknown,expectedSource=browserSourceC
  const parsed=schema.safeParse(value);
  return /^[a-f0-9]{40}$/.test(expectedSource)&&parsed.success&&parsed.data.sourceCommit===expectedSource;
 }
+
+const deletionSchema=schema.pick({sourceCommit:true,engine:true,projectId:true,databaseId:true,browser:true,context:true,requests:true}).extend({
+ preparation:passed,confirmation:passed,recovery:passed,sameOriginalKey:passed,inventory:passed,reload:passed,retainedStorage:passed
+}).strict();
+export function validateDeletionBrowserProof(value:unknown,expectedSource:string):boolean{
+ const parsed=deletionSchema.safeParse(value);
+ return /^[a-f0-9]{40}$/.test(expectedSource)&&parsed.success&&parsed.data.sourceCommit===expectedSource;
+}

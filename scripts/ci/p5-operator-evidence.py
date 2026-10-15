@@ -150,9 +150,14 @@ def validate_confirmed_authority(result):
 def validate_confirmed_deletion(result,profile):
     proof=result.get("confirmedDeletion")
     stages={"originalSources","apiTransport","prepareControl","prepareRoute","applyControl","applyRoute","inventoryRetirement","signatureRejected","confirmationRejected","originalNonce","signedHttp","rollback","cacheOnlyReopen","executorRemoved","retirement","retainedStorage","audit"}
-    exact(proof,stages|{"projectId","receipt","effects","originalRows","cipher"},"confirmed_deletion_required")
+    exact(proof,stages|{"projectId","receipt","effects","originalRows","cipher","browserDeletion"},"confirmed_deletion_required")
     native.require(proof["projectId"]==result["receipt"]["projectId"] and all(proof[key]=="passed" for key in stages)
         and type(proof["effects"]) is int and proof["effects"]==1 and proof["originalRows"]=="unchanged" and proof["cipher"]=="unchanged","actual_one_confirmed_deletion_required")
+    browser=proof["browserDeletion"];browser_stages={"preparation","confirmation","recovery","sameOriginalKey","inventory","reload","retainedStorage"}
+    exact(browser,browser_stages|{"sourceCommit","engine","projectId","databaseId","browser","context","requests"},"complete_destructive_browser_required")
+    native.require(browser["sourceCommit"]==result["browserAcceptance"]["sourceCommit"] and browser["browser"]=="chromium" and browser["context"]=="isolated"
+        and all(browser[key]==result["receipt"][key] for key in ("projectId","databaseId","engine")) and all(browser[key]=="passed" for key in browser_stages)
+        and type(browser["requests"]) is int and 1<=browser["requests"]<=1000,"actual_original_confirmation_browser_recovery_required")
     removed,original=proof["receipt"],result["receipt"]
     shared={"schemaVersion","projectId","databaseId","engine","agentId","planDigest","environmentFingerprint","containerId","imageId","volumeName","networkName","networkId","volumeCreatedAt"}
     exact(removed,shared|{"action","commandId","originalCommandId","originalStopCommandId","confirmationId","profileId","inputDigest","correlationId","observedAt","status","storage","redacted"},"strict_confirmed_deleted_receipt_required")
