@@ -148,3 +148,23 @@ it("withholds deletion without bounded STOP and every original confirmation/comp
  expect((await createConfiguredManagedDatabaseApi(f.input)).deleteExecutions.size).toBe(0);Object.assign(f.input.parsed.configuration.limits,{stopGraceSeconds:10});
  const configured=await createConfiguredManagedDatabaseApi(f.input);expect([...configured.deleteExecutions.keys()]).toEqual(["project-a","project-b"]);expect(configured.deleteExecutions.get("project-a")!.controls).toBe(f.controls);expect(f.controls.claimProjectUpdate).not.toHaveBeenCalled();expect(f.secrets.find).not.toHaveBeenCalled();
 });
+it("composes native backup maps from the existing inventory factory only under an explicit archive budget",async()=>{
+ const f=fixture();Object.assign(f.parsed.configuration.limits,{backupMaxBytes:2*1024*1024});Object.assign(f.controls,{findProjectUpdateById:vi.fn(async()=>null)});
+ const writer={available:()=>true,recordAuthenticatedReceipt:vi.fn(async()=>{throw new Error("Unexpected inventory write");})};const backupInventory=vi.fn(()=>writer);
+ const result=await createConfiguredManagedDatabaseApi({...f.input,backupInventory});
+ expect([...result.backupExecutions.keys()]).toEqual(["project-a","project-b"]);expect(result.backupExecutions.get("project-a")).toMatchObject({controls:f.controls,inventory:writer,agentId:"agent-a",maxBytes:2*1024*1024});
+ expect(writer.recordAuthenticatedReceipt).not.toHaveBeenCalled();expect(f.secrets.find).not.toHaveBeenCalled();expect(backupInventory).toHaveBeenCalledWith("agent-a");
+});
+it("rejects requested native backup bootstrap without its existing original-reader and inventory ports",async()=>{
+ for(const missing of ["reader","inventory","unavailable"]){const f=fixture();Object.assign(f.parsed.configuration.limits,{backupMaxBytes:1024});
+  if(missing!=="reader")Object.assign(f.controls,{findProjectUpdateById:vi.fn(async()=>null)});
+  const backupInventory=missing==="inventory"?undefined:()=>({available:()=>missing!=="unavailable",recordAuthenticatedReceipt:vi.fn(async()=>{throw new Error("Unexpected write");})});
+  await expect(createConfiguredManagedDatabaseApi({...f.input,backupInventory})).rejects.toThrow("Database API configuration is invalid.");expect(f.secrets.createIfAbsent).not.toHaveBeenCalled();
+ }
+});
+it("preserves authenticated native backup cache access with a zero fresh-capture cap after budget withdrawal",async()=>{
+ const f=fixture();Object.assign(f.controls,{findProjectUpdateById:vi.fn(async()=>null)});
+ const writer={available:()=>true,recordAuthenticatedReceipt:vi.fn(async()=>{throw new Error("Unexpected inventory write");})};
+ const result=await createConfiguredManagedDatabaseApi({...f.input,backupInventory:()=>writer});
+ expect(result.backupExecutions.get("project-a")).toMatchObject({maxBytes:0,inventory:writer});expect(writer.recordAuthenticatedReceipt).not.toHaveBeenCalled();
+});

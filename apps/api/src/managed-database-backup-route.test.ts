@@ -45,7 +45,7 @@ it("withholds success when the captured destination changes and redacts private 
  const f=await fixture();core.hook=()=>{f.destination.maxBytes=1;};const r=await f.call();expect(r.statusCode).toBe(503);expect(r.body).not.toMatch(/private stale profile|lease-secret/);
 });
 it("permits original completed cache repair after fresh execution configuration is withdrawn",async()=>{
- const f=await fixture();core.replay=true;Reflect.set(f.options,"configuration",undefined);Reflect.set(f.options,"planning",undefined);expect((await f.call()).statusCode).toBe(200);expect(core.run).toHaveBeenCalledOnce();
+ const f=await fixture();core.replay=true;Reflect.set(f.options.executions!.get("project-a")!,"maxBytes",0);Reflect.set(f.options,"configuration",undefined);Reflect.set(f.options,"planning",undefined);expect((await f.call()).statusCode).toBe(200);expect(core.run).toHaveBeenCalledOnce();
 });
 it("rejects private-path fields and malformed preparation before control",async()=>{
  const f=await fixture();expect((await f.call({...f.body,path:"/private/archive"})).statusCode).toBe(400);expect(core.run).not.toHaveBeenCalled();
@@ -56,4 +56,7 @@ it("rejects a destination owned by another runtime before admission",async()=>{
 it("registers authenticated native backup in the actual API bootstrap",async()=>{
  const {buildApiApp}=await import("./app.js");const app=await buildApiApp({env:{NODE_ENV:"test"}});apps.push(app);
  const f=await fixture();expect((await app.inject({method:"POST",url:"/api/v1/projects/project-a/databases/orders/runtime/backup",headers:{"idempotency-key":"backup-key"},payload:f.body})).statusCode).toBe(401);
+});
+it("rejects a requested archive above the configured native byte cap before capture admission",async()=>{
+ const f=await fixture();Reflect.set(f.options.executions!.get("project-a")!,"maxBytes",63);expect((await f.call()).statusCode).toBe(503);
 });
