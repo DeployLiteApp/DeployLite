@@ -1,6 +1,7 @@
 import {MANAGED_DATABASE_STATS_FORMAT,parseManagedDatabaseStats} from "./docker-managed-database-stats.js";
 import { MANAGED_DATABASE_NETWORK_INSPECT_FORMAT, MANAGED_DATABASE_VOLUME_INSPECT_FORMAT } from "./docker-managed-database-resource-argv.js";
 import { MANAGED_DATABASE_CONTAINER_INSPECT_FORMAT, MANAGED_DATABASE_IMAGE_INSPECT_FORMAT } from "./docker-managed-database-inspection-argv.js";
+import { createHash } from "node:crypto";
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { redactSecrets } from "@deploylite/config";
 
@@ -122,10 +123,63 @@ export type SpawnedProcess = Pick<ChildProcess, "stdout" | "stderr" | "once" | "
 export type SpawnProcess = (file: string, args: readonly string[], options: { shell: false; detached: boolean; stdio: ["ignore", "pipe", "pipe"]; env?: NodeJS.ProcessEnv }) => SpawnedProcess;
 const defaultSpawn: SpawnProcess = (file, args, options) => nodeSpawn(file, args, options);
 
+/** Binary failures intentionally carry no partial output or diagnostic result. */
+export class DockerBinaryProcessError extends Error {
+  constructor(readonly kind: DockerProcessError["kind"]) { super(`docker binary process ${kind}`); this.name = "DockerBinaryProcessError"; }
+}
 export type DockerProcessRunnerOptions = Readonly<{ spawn?: SpawnProcess; timeoutMs?: number; maxOutputBytes?: number }>;
 export class DockerProcessRunner {
   readonly #spawn: SpawnProcess; readonly #timeoutMs: number; readonly #maxOutputBytes: number;
   constructor(options: DockerProcessRunnerOptions = {}) { this.#spawn = options.spawn ?? defaultSpawn; this.#timeoutMs = options.timeoutMs ?? 30_000; this.#maxOutputBytes = options.maxOutputBytes ?? 64 * 1024; }
+  /** Private archive bytes go only to the caller-owned sink; diagnostics never enter the result. */
+  runBinaryToSink(argv: readonly string[], signal: AbortSignal, sink: (bytes: Uint8Array) => Promise<void>): Promise<Readonly<{ bytes: number; sha256: string }>> {
+    if (signal.aborted) return Promise.reject(new DockerBinaryProcessError("canceled"));
+    if (!argv.length || argv.some(part => typeof part !== "string" || part.includes("\u0000")) || typeof sink !== "function"
+      || !Number.isSafeInteger(this.#maxOutputBytes) || this.#maxOutputBytes < 1 || !Number.isSafeInteger(this.#timeoutMs) || this.#timeoutMs < 1)
+      return Promise.reject(new DockerBinaryProcessError("failed"));
+    return new Promise((resolve, reject) => {
+      let child: SpawnedProcess;
+      try { child = this.#spawn(argv[0]!, argv.slice(1), { shell: false, detached: true, stdio: ["ignore", "pipe", "pipe"] }); }
+      catch { reject(new DockerBinaryProcessError("failed")); return; }
+      let settled = false, bytes = 0, diagnostics = 0;
+      const hash = createHash("sha256"); let writes = Promise.resolve();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const cleanup = () => { if (timer) clearTimeout(timer); signal.removeEventListener("abort", abort); };
+      const fail = (kind: DockerProcessError["kind"]) => {
+        if (settled) return; settled = true; cleanup();
+        try { child.kill("SIGKILL"); } catch { /* owned child may already be gone */ }
+        if (child.pid && process.platform !== "win32") { try { process.kill(-child.pid, "SIGKILL"); } catch { /* owned group may already be gone */ } }
+        reject(new DockerBinaryProcessError(kind));
+      };
+      const abort = () => fail("canceled");
+      child.stdout?.on("data", (chunk: unknown) => {
+        if (settled) return;
+        if (!Buffer.isBuffer(chunk)) { fail("failed"); return; }
+        if (chunk.length > this.#maxOutputBytes - bytes) { fail("output-limit"); return; }
+        bytes += chunk.length; const copy = Buffer.from(chunk); child.stdout!.pause();
+        writes = writes.then(async () => {
+          if (settled) return; hash.update(copy); await sink(copy);
+          if (!settled) child.stdout!.resume();
+        }).catch(() => fail("failed"));
+      });
+      child.stderr?.on("data", (chunk: unknown) => {
+        if (settled) return;
+        if (!Buffer.isBuffer(chunk)) { fail("failed"); return; }
+        diagnostics += chunk.length; if (diagnostics > 65536) fail("output-limit");
+      });
+      child.stdout?.once("error", () => fail("failed")); child.stderr?.once("error", () => fail("failed"));
+      child.once("error", () => fail("failed"));
+      child.once("close", (code: number | null, exitSignal: NodeJS.Signals | null) => {
+        if (settled) return;
+        if (code !== 0 || exitSignal !== null || bytes === 0) { fail("failed"); return; }
+        void writes.then(() => {
+          if (settled) return; settled = true; cleanup(); resolve({ bytes, sha256: hash.digest("hex") });
+        });
+      });
+      signal.addEventListener("abort", abort, { once: true }); timer = setTimeout(() => fail("timeout"), this.#timeoutMs);
+      if (signal.aborted) abort();
+    });
+  }
   run(argv: readonly string[], signal: AbortSignal, environment?: Readonly<Record<string, string>>): Promise<DockerProcessExit> {
     if (argv.length === 0 || argv.some((part) => typeof part !== "string")) return Promise.reject(new DockerProcessError("failed"));
     const injected = environment ? { ...environment } : undefined;
