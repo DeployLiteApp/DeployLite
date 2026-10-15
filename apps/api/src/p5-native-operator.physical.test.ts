@@ -521,11 +521,14 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const completionAudits=async()=>(await db.pool.query("SELECT * FROM audit_events WHERE action='database.runtime.removed' AND correlation_id=$1",[deletePending.correlationId])).rows;
     const deleteNonce=async()=>(await db.pool.query("SELECT * FROM control_command_confirmations WHERE command_id=$1",[deletePending.id])).rows,originalConsumed=await deleteNonce();expect(originalConsumed).toHaveLength(1);expect(originalConsumed[0].consumed_at).not.toBeNull();
     expect(await completionAudits()).toHaveLength(0);expect((await db.pool.query("SELECT status,result FROM control_commands WHERE id=$1",[deletePending.id])).rows).toEqual([{status:"dispatching",result:null}]);
-    await app.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(false);
-    const recoveredDeleteTransport=new AuthenticatedManagedDatabaseDeleteTransport({...transportOptions,endpoint}),cachedDelete=await recoveredDeleteTransport.readReceipt({command:issued.command,input:removalSource,agentId,confirmationId:approval.id},deleteQuery.authority,{...deleteQuery.context,signal});
-    expect(cachedDelete).toEqual(deleted);expect((await sendDelete(deleteCommand)).status).toBe(403);expect(deleteEffects).toBe(1);
-    const finalControls=new DbControlCommandRepository(db.db),recoveryAccess={controls:finalControls,transport:recoveredDeleteTransport,originalTransport:new AuthenticatedManagedDatabaseRuntimeTransport({...transportOptions,endpoint}),agentId,deadlineMs:60000,now:Date.now};
-    app=await build(endpoint,"managed_database_fixture_key_1234567890");
+    const {finalControls,recoveryAccess}=await browserFixture.reopenApplication(async()=>{
+      await app.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(false);
+      const recoveredDeleteTransport=new AuthenticatedManagedDatabaseDeleteTransport({...transportOptions,endpoint}),cachedDelete=await recoveredDeleteTransport.readReceipt({command:issued.command,input:removalSource,agentId,confirmationId:approval.id},deleteQuery.authority,{...deleteQuery.context,signal});
+      expect(cachedDelete).toEqual(deleted);expect((await sendDelete(deleteCommand)).status).toBe(403);expect(deleteEffects).toBe(1);
+      const finalControls=new DbControlCommandRepository(db.db),recoveryAccess={controls:finalControls,transport:recoveredDeleteTransport,originalTransport:new AuthenticatedManagedDatabaseRuntimeTransport({...transportOptions,endpoint}),agentId,deadlineMs:60000,now:Date.now};
+      app=await build(endpoint,"managed_database_fixture_key_1234567890");
+      return {finalControls,recoveryAccess};
+    });
     const retained=pinned;if(!retained)throw new Error("Original retained storage required.");
     const browserDeletion=await browserFixture.recoverRemoval(async()=>{expect(await resources.verifyFresh({request:input.request,profile,commandId:receipt.commandId},retained,authority,signal)).toEqual(retained);expect(await encrypted()).toEqual(cipherRows);expect(deleteEffects).toBe(1);});
     const recoveredApply=await applyDelete();expect(recoveredApply.statusCode).toBe(200);expect(recoveredApply.json().data).toMatchObject({removed:true,idempotent:true,receipt:deleted});
