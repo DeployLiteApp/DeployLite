@@ -1427,7 +1427,11 @@
     "packages/db/migrations/0028_backup_inventory_native_receipts.sql",
     "packages/db/src/native-backup-inventory.test.ts",
     "packages/domain/src/native-backup-inventory.test.ts",
-    "packages/db/src/inventory-fixture-shutdown.test.ts"
+    "packages/db/src/inventory-fixture-shutdown.test.ts",
+    "apps/api/src/managed-database-backup-transport.ts",
+    "apps/api/src/managed-database-backup-transport.test.ts",
+    "apps/api/src/managed-database-backup.ts",
+    "apps/api/src/managed-database-backup.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
