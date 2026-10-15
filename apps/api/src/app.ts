@@ -1,3 +1,4 @@
+import {DbBackupRestoreProtectionStore} from "@deploylite/db";
 import {registerManagedDatabaseRestorePrepareRoute} from "./managed-database-restore-prepare-route.js";
 import type {ManagedDatabaseRestorePreparationAccess} from "./managed-database-restore-prepare.js";
 import {registerManagedDatabaseBackupRoute} from "./managed-database-backup-route.js";
@@ -223,6 +224,7 @@ type ApiRepositories = {
   shouldSeedMockData: boolean;
   composeResourceCleanupStore?: ComposeResourceCleanupStore;
   backupInventoryForAgent?: (agentId: string) => BackupInventoryReader & BackupInventoryWriter;
+  restoreProtectionForAgent?: (agentId:string)=>ManagedDatabaseRestorePreparationAccess["protection"];
   databaseCredentialCreation?: ManagedDatabaseCredentialCreationRepository;
   close?: () => Promise<void>;
 };
@@ -1085,6 +1087,7 @@ function createDbAuthAdapters(env: DeployLiteEnv, options: BuildApiAppOptions): 
   return {
     composeResourceCleanupStore: new DbComposeResourceCleanupStore(db),
     backupInventoryForAgent: agentId => new DbBackupInventoryStore(db, agentId),
+    restoreProtectionForAgent: agentId => new DbBackupRestoreProtectionStore(db,agentId),
     databaseCredentialCreation: new DbManagedDatabaseCredentialCreationRepository(db),
     auth: {
       audit: new DbAuditRepository(db),
@@ -2388,7 +2391,7 @@ export async function buildApiApp(options: BuildApiAppOptions = {}): Promise<Fas
   let configuredResourceRuntime: Awaited<ReturnType<typeof createProjectScopedComposeResourceRuntime>> | undefined;
   try {
     configuredDatabaseRuntime = nativeDatabaseConfiguration ? await createConfiguredManagedDatabaseApi({ parsed: nativeDatabaseConfiguration,
-      projects: repositories.state.projects, controls: repositories.state.controlDeletes, secrets: repositories.databaseCredentialCreation, backupInventory: repositories.backupInventoryForAgent,
+      projects: repositories.state.projects, controls: repositories.state.controlDeletes, secrets: repositories.databaseCredentialCreation, backupInventory: repositories.backupInventoryForAgent, restoreProtection:repositories.restoreProtectionForAgent,
       agent: { endpoint: env.DEPLOYLITE_AGENT_URL, agentId: env.DEPLOYLITE_AGENT_ID, trustKey: env.DEPLOYLITE_AGENT_TRUST_KEY } }) : undefined;
     configuredResourceRuntime = composeResourceProjectAgents.length > 0
       ? await createProjectScopedComposeResourceRuntime({ bindings: composeResourceProjectAgents, projects: repositories.state.projects,
@@ -2410,7 +2413,7 @@ export async function buildApiApp(options: BuildApiAppOptions = {}): Promise<Fas
     ? new Map([...(configuredResourceRuntime ? (composeResourceCleanupExecutions?.keys() ?? []) : composeResourceInspection.keys())]
       .map(projectId => [projectId, { store: repositories.composeResourceCleanupStore!, confirmationTtlMs: 60_000 }] as const))
     : undefined);
-  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE, options.imagePolicy ?? { policyVersion: "deployment-v1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }, composeResourceInspection, options.composeVolumeBackupPlans, cleanupPlans, options.composeVolumeBackupExecutions, composeNetworkAttachmentExecutions, composeResourceCleanupExecutions, composeVolumeAttachmentExecutions, domainRouteApplyExecutions, transportPortApplyExecutions, repositories.backupInventoryForAgent, options.backupRetentionPreviews, options.managedDatabaseCredentials ?? configuredDatabaseRuntime?.credentials, repositories.databaseCredentialCreation, options.managedDatabaseRuntimeExecutions ?? configuredDatabaseRuntime?.executions, configuredDatabaseRuntime?.imagePolicy, options.managedDatabaseStopExecutions ?? configuredDatabaseRuntime?.stopExecutions, options.managedDatabaseStartExecutions ?? configuredDatabaseRuntime?.startExecutions, options.managedDatabaseHealthExecutions ?? configuredDatabaseRuntime?.healthExecutions, options.managedDatabaseMetricsExecutions ?? configuredDatabaseRuntime?.metricsExecutions, options.managedDatabaseLogsExecutions ?? configuredDatabaseRuntime?.logsExecutions, options.managedDatabaseDeletePreparations ?? configuredDatabaseRuntime?.deletePreparations, options.managedDatabaseDeleteExecutions ?? configuredDatabaseRuntime?.deleteExecutions, options.managedDatabaseBackupExecutions ?? configuredDatabaseRuntime?.backupExecutions, options.managedDatabaseRestorePreparations);
+  registerRoutes(app, repositories.state, repositories.auth, authConfig, env.DEPLOYLITE_CONTROL_PLANE_CONFIRMED_DELETE, options.imagePolicy ?? { policyVersion: "deployment-v1", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true }, composeResourceInspection, options.composeVolumeBackupPlans, cleanupPlans, options.composeVolumeBackupExecutions, composeNetworkAttachmentExecutions, composeResourceCleanupExecutions, composeVolumeAttachmentExecutions, domainRouteApplyExecutions, transportPortApplyExecutions, repositories.backupInventoryForAgent, options.backupRetentionPreviews, options.managedDatabaseCredentials ?? configuredDatabaseRuntime?.credentials, repositories.databaseCredentialCreation, options.managedDatabaseRuntimeExecutions ?? configuredDatabaseRuntime?.executions, configuredDatabaseRuntime?.imagePolicy, options.managedDatabaseStopExecutions ?? configuredDatabaseRuntime?.stopExecutions, options.managedDatabaseStartExecutions ?? configuredDatabaseRuntime?.startExecutions, options.managedDatabaseHealthExecutions ?? configuredDatabaseRuntime?.healthExecutions, options.managedDatabaseMetricsExecutions ?? configuredDatabaseRuntime?.metricsExecutions, options.managedDatabaseLogsExecutions ?? configuredDatabaseRuntime?.logsExecutions, options.managedDatabaseDeletePreparations ?? configuredDatabaseRuntime?.deletePreparations, options.managedDatabaseDeleteExecutions ?? configuredDatabaseRuntime?.deleteExecutions, options.managedDatabaseBackupExecutions ?? configuredDatabaseRuntime?.backupExecutions, options.managedDatabaseRestorePreparations ?? configuredDatabaseRuntime?.restorePreparations);
   app.addHook("onClose", () => {
     repositories.state.deployRunner.cancelTimers();
   });

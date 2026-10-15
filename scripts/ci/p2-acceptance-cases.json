@@ -1324,6 +1324,8 @@
     "apps/api/src/managed-database-delete-origins.ts",
     "apps/api/src/managed-database-delete-origins.test.ts",
     "apps/api/src/managed-database-delete-prepare.ts",
+    "apps/api/src/managed-database-restore-archive-transport.ts",
+    "apps/api/src/managed-database-restore-archive-transport.test.ts",
     "apps/api/src/managed-database-restore-prepare.ts",
     "apps/api/src/managed-database-restore-prepare-route.ts",
     "apps/api/src/managed-database-restore-prepare-route.test.ts",
