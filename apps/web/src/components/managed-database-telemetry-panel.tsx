@@ -13,12 +13,14 @@ export function ManagedDatabaseTelemetryPanel({preparation, apiBaseUrl, onState}
   const [live, setLive] = useState(true), [manual, setManual] = useState(0);
   const [tail, setTail] = useState(100), [since, setSince] = useState(""), [search, setSearch] = useState("");
   const [observation, setObservation] = useState<TelemetryObservation | null>(null);
+  const [exportStatus, setExportStatus] = useState("");
   const [message, setMessage] = useState(""), [busy, setBusy] = useState(false);
   const stateCallback = useRef(onState); stateCallback.current = onState;
   const previousKey = useRef(""), previousManual = useRef(0);
   const sourceKey = JSON.stringify([apiBaseUrl, preparation, view, tail, since]);
+  const exportScope = useRef(sourceKey); exportScope.current = sourceKey;
   useEffect(() => {
-    if (previousKey.current !== sourceKey) { setObservation(null); stateCallback.current?.(null); setMessage(""); previousKey.current = sourceKey; }
+    if (previousKey.current !== sourceKey) { setObservation(null); stateCallback.current?.(null); setMessage(""); setExportStatus(""); previousKey.current = sourceKey; }
     if (!live && manual === previousManual.current) { setBusy(false); return; }
     previousManual.current = manual;
     const controller = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined;
@@ -46,6 +48,22 @@ export function ManagedDatabaseTelemetryPanel({preparation, apiBaseUrl, onState}
   }, [apiBaseUrl, preparation, view, tail, since, live, manual, sourceKey]);
   const logs = observation?.action === "database.runtime.logs" ? [observation.logs.stdout, observation.logs.stderr].filter(Boolean).join("\n") : "";
   const filteredLogs = search ? logs.split("\n").filter(line => line.toLocaleLowerCase().includes(search.toLocaleLowerCase())).join("\n") : logs;
+  async function copyLogs() {
+    if (!filteredLogs) return;
+    const selection = sourceKey;
+    try {await navigator.clipboard.writeText(filteredLogs); if (exportScope.current === selection) setExportStatus("Logs copied.");}
+    catch {if (exportScope.current === selection) setExportStatus("Logs could not be copied.");}
+  }
+  function downloadLogs() {
+    if (!filteredLogs) return;
+    let url: string | undefined; const anchor = document.createElement("a");
+    try {
+      url = URL.createObjectURL(new Blob([filteredLogs], {type: "text/plain;charset=utf-8"}));
+      anchor.href = url; anchor.download = "database-logs.txt"; document.body.appendChild(anchor); anchor.click();
+      setExportStatus("Logs downloaded.");
+    } catch {setExportStatus("Logs could not be downloaded.");}
+    finally {anchor.remove(); if (url) URL.revokeObjectURL(url);}
+  }
   return <Card>
     <CardHeader><CardTitle>Database telemetry</CardTitle></CardHeader>
     <CardContent className="space-y-4">
@@ -61,8 +79,13 @@ export function ManagedDatabaseTelemetryPanel({preparation, apiBaseUrl, onState}
           {[100, 300, 500, 1000, 5000].map(value => <option key={value} value={value}>{value}</option>)}
         </select></label>
         <label className="space-y-1 text-sm">Since (local time)<Input aria-label="Since (local time)" type="datetime-local" value={since} onChange={event => setSince(event.target.value)} /></label>
-        <label className="space-y-1 text-sm">Search logs<Input aria-label="Search logs" value={search} onChange={event => setSearch(event.target.value)} /></label>
+        <label className="space-y-1 text-sm">Search logs<Input aria-label="Search logs" value={search} onChange={event => {setSearch(event.target.value); setExportStatus("");}} /></label>
       </div> : null}
+      {view === "logs" ? <div className="flex gap-2">
+        <Button variant="outline" disabled={!filteredLogs} onClick={() => void copyLogs()}>Copy logs</Button>
+        <Button variant="outline" disabled={!filteredLogs} onClick={downloadLogs}>Download logs</Button>
+      </div> : null}
+      {exportStatus ? <p role="status" className="text-sm text-muted-foreground">{exportStatus}</p> : null}
       {message ? <p role="status" className="text-sm text-muted-foreground">{message}</p> : null}
       {observation ? <>
         <div className="flex flex-wrap items-center gap-3 text-sm">
