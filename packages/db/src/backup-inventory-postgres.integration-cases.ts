@@ -7,12 +7,14 @@ import { readdir, readFile } from "node:fs/promises";
 import pg from "pg";
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
 import { createDbClient, createDbPool, closeDbPool } from "./client.js";
+import { trackPostgresFixtureShutdown } from "./postgres-fixture-shutdown.js";
 import { DbBackupInventoryStore } from "./repositories/backup-inventory.js";
 
 const enabled = process.env.DEPLOYLITE_DB_INTEGRATION === "1";
 const configured = enabled ? process.env.DATABASE_URL : undefined;
 if (enabled && !configured) throw new Error("DATABASE_URL must be set when DEPLOYLITE_DB_INTEGRATION=1.");
 let maintenance: pg.Client, pool: pg.Pool, databaseName: string, databaseUrl: string;
+let closeFixturePool: (() => Promise<void>) | undefined;
 const store = (connection = pool) => new DbBackupInventoryStore(createDbClient(connection), "agent-1");
 async function seed(projectId = randomUUID(), archiveId: string = randomUUID()) {
   const actorId = randomUUID(), commandId = randomUUID(), correlationId = randomUUID(), auditId = randomUUID();
@@ -38,9 +40,10 @@ async function count(projectId: string) {
     try { for (const file of (await readdir(new URL("../migrations/", import.meta.url))).filter(name => name.endsWith(".sql")).sort()) await migrationClient.query(await readFile(new URL(`../migrations/${file}`, import.meta.url), "utf8")); }
     finally { await migrationClient.end(); }
     pool = createDbPool(databaseUrl, {max: 3});
+    closeFixturePool = trackPostgresFixtureShutdown(pool);
   }, 30_000);
   afterAll(async () => {
-    if (pool) await closeDbPool(pool);
+    await closeFixturePool?.();
     if (maintenance) { try { if (databaseName) await maintenance.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`); } finally { await maintenance.end(); } }
   }, 30_000);
   defineManagedDatabaseCredentialCases(() => pool, () => databaseUrl);
