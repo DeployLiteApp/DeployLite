@@ -1,3 +1,5 @@
+import {decodeNativePostgresFixture} from "./testing/p5-native-postgres-decoder.js";
+import {nativeDumpFixture} from "./testing/p5-native-backup-fixture.js";
 import {applyManagedDatabaseDelete,type ManagedDatabaseDeleteApplyAccess} from "./managed-database-delete-apply.js";
 import {AuthenticatedManagedDatabaseDeleteTransport} from "./managed-database-delete-transport.js";
 import {AuthenticatedManagedDatabaseRuntimeTransport} from "./managed-database-runtime-transport.js";
@@ -10,7 +12,7 @@ import type {FastifyInstance} from "fastify";
 import {AuthenticatedAgentCommandReceiver, startAgentServer} from "@deploylite/agent";
 import {managedDatabaseDeleteReceiptQuerySchema, managedDatabaseDeleteReceiptSchema, MANAGED_DATABASE_DELETE_PATH, MANAGED_DATABASE_DELETE_RECEIPT_PATH, approvedManagedDatabaseProfileSchema, InMemoryCapabilityRegistry, managedDatabaseRuntimeReceiptSchema, managedDatabaseStopReceiptSchema, managedDatabaseStartReceiptSchema,
   MANAGED_DATABASE_STOP_PATH, MANAGED_DATABASE_START_PATH, MANAGED_DATABASE_HEALTH_PATH, managedDatabaseHealthObservationSchema, MANAGED_DATABASE_METRICS_PATH, managedDatabaseMetricsObservationSchema, MANAGED_DATABASE_LOGS_PATH, managedDatabaseLogsObservationSchema, type ManagedDatabaseEngineV1} from "@deploylite/contracts";
-import {DbAgentReplayStore, DbControlCommandRepository, DbProjectRepository} from "@deploylite/db";
+import {DbAgentReplayStore, DbBackupInventoryStore, DbControlCommandRepository, DbProjectRepository} from "@deploylite/db";
 import {planManagedDatabaseProfile,type ControlCommand,managedDatabaseDeleteExecutionDigest,managedDatabaseDeleteReceiptMatches,createControlCommand, managedDatabaseNativeImagePolicy} from "@deploylite/domain";
 import {buildApiApp} from "./app.js";
 import {openDatabaseBrowser} from "./testing/p5-browser-fixture.js";
@@ -57,7 +59,10 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
   const signal = AbortSignal.timeout(200000), created = new Set<string>(), profile = profiles[engine]!;
   let pinned: ManagedDatabaseFreshResources | undefined, volume: ManagedDatabaseFreshResources["volume"] | undefined;
   let network: ManagedDatabaseFreshResources["network"] | undefined, originalCommandId: string | undefined, originalPlanDigest: string | undefined;
-  let statsDispatches=0, logReads=0, legacyPhase=true;
+  let statsDispatches=0, logReads=0, legacyPhase=true, backupCaptures=0;
+  const backupMaxBytes=2097152, backupRoot=resolve(process.env.RUNNER_TEMP!,"deploylite-p5-native-private-"+projectId);
+  const dump=engine==="postgres"?nativeDumpFixture(backupRoot):undefined;
+  let nativeBackup:Record<string,unknown>|undefined;
   let browserFixture: Awaited<ReturnType<typeof openDatabaseBrowser>> | undefined;
   const logRequests: string[][] = [];
   const processRunner = new DockerProcessRunner({timeoutMs:60000,maxOutputBytes:131072});
@@ -81,12 +86,12 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     return {projectId,databaseId,commandId:originalCommandId,planDigest:originalPlanDigest,volume,network};
   };
   const trustKey = "ci-operator-" + randomBytes(32).toString("hex"), imagePolicy = managedDatabaseNativeImagePolicy();
-  const limits = {deadlineMs:60000,maxOutputBytes:131072,maxContainers:64,pollIntervalMs:100,cpus:1,memoryBytes:536870912,pidsLimit:256,stopGraceSeconds:10};
+  const limits = {deadlineMs:60000,maxOutputBytes:131072,maxContainers:64,pollIntervalMs:100,cpus:1,memoryBytes:536870912,pidsLimit:256,stopGraceSeconds:10,...(dump?{backupMaxBytes}:{})};
   const raw = JSON.stringify({profiles,limits}), clock = {now:Date.now};
-  const capabilities = new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.stop.v1","database.runtime.start.v1","database.runtime.health.v1","database.runtime.metrics.v1","database.runtime.logs.v1","database.runtime.delete.v1"]);
+  const capabilities = new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.stop.v1","database.runtime.start.v1","database.runtime.health.v1","database.runtime.metrics.v1","database.runtime.logs.v1","database.runtime.delete.v1",...(dump?["database.runtime.backup.v1" as const]:[])]);
   const shared = {runner,imagePolicy,clock,limits,owner:projectId,agentId,trustKey,capabilities};
   const inspector = createManagedDatabaseDockerInspector(shared), resources = createManagedDatabaseResourceMaterializer(shared);
-  const native = createConfiguredManagedDatabaseRuntime(raw, shared)!;
+  const native = createConfiguredManagedDatabaseRuntime(raw, {...shared,...(dump?{backup:{destinations:new Map([["private-native",backupRoot]]),replayStore:new DbAgentReplayStore(db.db,"operator-"+projectId),maxBytes:backupMaxBytes,runner:{runBinaryToSink:async(...args:Parameters<DockerProcessRunner["runBinaryToSink"]>)=>{backupCaptures++;return new DockerProcessRunner({timeoutMs:60000,maxOutputBytes:131072,maxBinaryBytes:backupMaxBytes}).runBinaryToSink(...args);}}}}:{})})!;
   const stopExecutor = native.stop ? {stop:native.stop} : undefined;
   const startExecutor = native.start ? {start:native.start} : undefined;
   if (!startExecutor) throw new Error("Explicit native start required.");
@@ -103,6 +108,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
   async function startPeer(enabled:boolean) {
     const replayStore = new DbAgentReplayStore(db.db, "operator-" + projectId);
     const receiver = new AuthenticatedAgentCommandReceiver({agentId,trustKey,replayStore,capabilities:enabled ? capabilities.list() : [],
+      managedDatabaseBackup:enabled&&native.backup?{execute:native.backup}:undefined,
       managedDatabaseDelete:enabled&&native.delete?{delete:async(...args)=>{deleteEffects++;return native.delete!(...args);}}:undefined,managedDatabaseRuntime:enabled ? native : undefined, managedDatabaseStop:enabled ? stopExecutor : undefined, managedDatabaseStart:enabled ? startExecutor : undefined, managedDatabaseHealth:enabled?healthReader:undefined, managedDatabaseMetrics:enabled?metricsReader:undefined, managedDatabaseLogs:enabled?logsReader:undefined,
       dispatcher:{dispatch:async () => {throw new Error("Unexpected deployment.");}},authorityValidator:new DbControlCommandRepository(db.db)});
     peer = await startAgentServer({host:"127.0.0.1",port:0,production:false,receiver,replayStore});
@@ -110,11 +116,13 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     return "http://127.0.0.1:" + address.port;
   }
   const build = (endpoint:string, key?:string,deleteOverride?:ReadonlyMap<string,ManagedDatabaseDeleteApplyAccess>) => buildApiApp({
+    ...(dump?{composeVolumeBackupPlans:new Map([[projectId,{profiles:new Map([["private-native",{owner:"deploylite" as const,projectId,agentId,profileId:"private-native",destinationId:"private-native",maxBytes:backupMaxBytes,maxEntries:100,maxDurationMs:60000,planTtlMs:60000}]]),store:{available:()=>true,save:async()=>{throw new Error("Compose planning is outside this fixture.");}}}]])}:{}),
     ...(deleteOverride?{managedDatabaseDeleteExecutions:deleteOverride,managedDatabaseCredentials:{profiles:new Map(engines.map(engine=>[engine,profiles[engine]!])),projectIds:new Set([projectId]),deadlineMs:60000},imagePolicy}:{}),db:{pool:db.pool,client:db.db},authConfig:{cookieName:"dl_operator_session",cookieSecure:false,sessionTtlSeconds:3600},
     env:{...process.env,NODE_ENV:"test",DATABASE_URL:"postgres://deploylite:deploylite-ci-only@127.0.0.1:" + scope.postgresPort + "/" + db.databaseName,DEPLOYLITE_BCRYPT_COST:"10",DEPLOYLITE_SECRET_KEY:key,DEPLOYLITE_AGENT_URL:endpoint,
       DEPLOYLITE_AGENT_ID:agentId,DEPLOYLITE_AGENT_TRUST_KEY:trustKey,DEPLOYLITE_MANAGED_DATABASE_RUNTIME:deleteOverride?undefined:raw,
       DEPLOYLITE_MANAGED_DATABASE_PROJECT_AGENTS_JSON:deleteOverride?undefined:JSON.stringify([{projectId,agentId}])}});
   try {
+    await dump?.open();
     await runner.run(["docker","pull",profile.image],signal);
     await new DbProjectRepository(db.db).save({id:projectId,name:"Operator fixture",repoUrl:"https://example.test/repo",defaultBranch:"main",buildCommand:null,runCommand:null,port:null,description:null,imageTag:null});
     let endpoint = await startPeer(true);
@@ -142,7 +150,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const login = await app.inject({method:"POST",url:"/api/v1/auth/login",payload:{email:"admin@example.test",password:adminPassword}});
     expect(login.statusCode).toBe(200); const cookie = login.headers["set-cookie"] as string, actorId = login.json().data.user.id;
     const call = (operation:string,payload:unknown) => app!.inject({method:"POST",url:`/api/v1/projects/${projectId}/databases/${databaseId}/${operation}`,
-      headers:{cookie,"idempotency-key":operation === "runtime/stop" ? "native-stop-" + engine : operation === "runtime/start" ? "native-start-" + engine : "native-" + engine},payload:payload as Record<string,unknown>});
+      headers:{cookie,"idempotency-key":operation === "runtime/stop" ? "native-stop-" + engine : operation === "runtime/start" ? "native-start-" + engine : operation === "runtime/backup" ? "native-backup-"+engine : "native-" + engine},payload:payload as Record<string,unknown>});
     expect((await call("credentials",{schemaVersion:1,engine})).statusCode).toBe(403);
     await db.pool.query("INSERT INTO control_grants(actor_user_id,action,scope_kind,scope_key) VALUES($1,'project.update','project',$2)",[actorId,projectId]);
     expect((await call("credentials",{schemaVersion:1,engine})).statusCode).toBe(200);
@@ -163,6 +171,11 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const ready = await verifier.verify(input,pinned,authority,signal); expect(ready.uid).toBeGreaterThan(0);
     await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,true)],signal);
     for (const hostname of ["127.0.0.1",connection.hostname]) expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,hostname)],signal)).stdout.trim()).toBe(marker);
+    if(dump)nativeBackup=await dump.prove({
+      call:()=>call("runtime/backup",{...preparation,originalReceipt:receipt,originalReplayFingerprint:apply.json().data.originalReplayFingerprint,destinationId:"private-native",maxBytes:backupMaxBytes}),
+      reopen:async()=>{await app!.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(true);app=await build(endpoint,"managed_database_fixture_key_1234567890");},
+      inventory:()=>new DbBackupInventoryStore(db.db,agentId),verify:()=>verifier.verify(input,pinned!,authority,signal),decode:bytes=>decodeNativePostgresFixture({bytes,containerId:receipt.containerId!,uid:ready.uid,signal}),signal,captures:()=>backupCaptures,maxBytes:backupMaxBytes,originalContainerId:receipt.containerId,uid:ready.uid
+    });
     const originals = async () => ({commands:(await db.pool.query("SELECT * FROM control_commands WHERE id=$1",[receipt.commandId])).rows,
       cache:(await db.pool.query("SELECT * FROM agent_replay WHERE command_id=$1",[receipt.commandId])).rows});
     const encrypted = async () => (await db.pool.query("SELECT id,encrypted_value,value_fingerprint FROM env_secret_values WHERE project_id=$1 ORDER BY id",[projectId])).rows;
@@ -295,7 +308,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     expect((await db.pool.query("SELECT * FROM agent_replay WHERE command_id=$1",[stopped.commandId])).rows).toEqual(stopReplayRows);
     expect(await originals()).toEqual(originalRows); expect(await encrypted()).toEqual(cipherRows);
     const command = (value:typeof apply) => ({id:value.json().data.command.id,correlationId:value.json().data.command.correlationId,status:value.json().data.command.status});
-    result = {inventoryRecovery:{views:{runningBeforeStop:inventoryBeforeStop,stopped:inventoryStopped,runningAfterStart:inventoryAfterStart},restart:"passed",sourcesUsed:"passed",commands:"unchanged",cache:"unchanged",cipher:"unchanged",audit:"passed"},currentLogs: {runningBeforeStop: runningLogsBeforeStop, stopped: stoppedLogs, runningAfterStart: runningLogsAfterStart}, currentMetrics:{runningBeforeStop:runningMetricsBeforeStop,stopped:stoppedMetrics,runningAfterStart:runningMetricsAfterStart},currentHealth:{runningBeforeStop,stopped:stoppedHealth,runningAfterStart},receipt,uid:ready.uid,original:pinned,nativeStop:{receipt:stopped,originalReplayFingerprint},nativeStart:{receipt:started,originalStopReplayFingerprint},internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},
+    result = {...(nativeBackup?{nativeBackup}:{}),inventoryRecovery:{views:{runningBeforeStop:inventoryBeforeStop,stopped:inventoryStopped,runningAfterStart:inventoryAfterStart},restart:"passed",sourcesUsed:"passed",commands:"unchanged",cache:"unchanged",cipher:"unchanged",audit:"passed"},currentLogs: {runningBeforeStop: runningLogsBeforeStop, stopped: stoppedLogs, runningAfterStart: runningLogsAfterStart}, currentMetrics:{runningBeforeStop:runningMetricsBeforeStop,stopped:stoppedMetrics,runningAfterStart:runningMetricsAfterStart},currentHealth:{runningBeforeStop,stopped:stoppedHealth,runningAfterStart},receipt,uid:ready.uid,original:pinned,nativeStop:{receipt:stopped,originalReplayFingerprint},nativeStart:{receipt:started,originalStopReplayFingerprint},internalConnection:{details:connection,authenticatedRead:"passed",afterRestart:"passed"},
       authenticatedProbe:"passed",restart:"passed",persistence:"passed",operator:{publicOriginalSelectors:"passed",logsDispatches,logReads,logsSignedHttp:"passed",logsNoLedgerWrites:"passed",logsExecutorRemoved:"passed",metricsDispatches,statsDispatches,metricsSignedHttp:"passed",metricsNoLedgerWrites:"passed",metricsExecutorRemoved:"passed",healthDispatches,healthSignedHttp:"passed",healthNoLedgerWrites:"passed",healthExecutorRemoved:"passed",applyCommand:command(apply),stopCommand:command(stop),startCommand:command(start),startDispatches,startAtomicAudit:"passed",startCacheOnlyReplay:"passed",startExecutorRemoved:"passed",stoppedCacheNoRestart:"passed",signedHttp:"passed",postgresReplay:"passed",
         originalRows:"unchanged",cipherRows:"unchanged",atomicAudit:"passed",stopDispatches,cacheOnlyReplay:"passed",executorRemoved:"passed"}};
     legacyPhase=false;
@@ -424,6 +437,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
   } finally {
     await browserFixture?.close();
     if (app) await app.close(); if (peer) await peer.close(); vi.unstubAllGlobals();
+    await dump?.close();
     const cleanup = AbortSignal.timeout(60000);
     for (const id of created) {
       let observation;

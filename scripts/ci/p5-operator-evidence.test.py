@@ -79,7 +79,9 @@ def fixture(engine="postgres"):
     deleted={**{key:value for key,value in ready.items() if key not in ("health","idempotent","commandId","observedAt","inputDigest","correlationId","status","storage","action")},"action":"database.runtime.delete","commandId":"delete1","originalCommandId":ready["commandId"],"originalStopCommandId":None,"confirmationId":"approval1","profileId":profile["profileId"],"inputDigest":"f"*64,"correlationId":"delete-correlation","observedAt":2000,"status":"removed","storage":"retained"}
     result["confirmedDeletion"]={"projectId":project,"receipt":deleted,"originalSources":"passed","apiTransport":"passed","prepareControl":"passed","prepareRoute":"passed","applyControl":"passed","applyRoute":"passed","inventoryRetirement":"passed","signatureRejected":"passed","confirmationRejected":"passed","originalNonce":"passed","signedHttp":"passed","effects":1,"rollback":"passed","cacheOnlyReopen":"passed","executorRemoved":"passed","retirement":"passed","retainedStorage":"passed","audit":"passed","originalRows":"unchanged","cipher":"unchanged"}
     result["confirmedDeletion"]["browserDeletion"]={**{key:result["browserAcceptance"][key] for key in ("sourceCommit","engine","projectId","databaseId","browser","context")},"preparation":"passed","confirmation":"passed","recovery":"passed","sameOriginalKey":"passed","inventory":"passed","reload":"passed","retainedStorage":"passed","requests":7}
-    return with_inventory(result, profile), profile
+    result=with_inventory(result,profile)
+    if engine=="postgres":add_native_backup(result,profile)
+    return result,profile
 def with_inventory(result, profile):
     result = copy.deepcopy(result)
     ready, stopped = result["receipt"], result["nativeStop"]["receipt"]
@@ -356,6 +358,42 @@ class DestructiveBrowserEvidence(unittest.TestCase):
         for key in result["confirmedDeletion"]["browserDeletion"]:
             changed=copy.deepcopy(result);changed["confirmedDeletion"]["browserDeletion"].pop(key)
             with self.assertRaises(RuntimeError):module.validate_confirmed_deletion(changed,profile)
+
+def add_native_backup(result,profile):
+    ready=result["receipt"]
+    keys=("schemaVersion","projectId","databaseId","engine","agentId","planDigest","environmentFingerprint","containerId","imageId","volumeName","networkName","networkId","volumeCreatedAt","storage","redacted")
+    receipt={key:ready[key] for key in keys}
+    source={key:ready[key] for key in ("schemaVersion","projectId","databaseId","engine","planDigest","environmentFingerprint")}
+    source.update(profileId=profile["profileId"],originalReceipt=ready,originalReplayFingerprint=result["nativeStop"]["originalReplayFingerprint"])
+    receipt.update(action="database.runtime.backup",commandId="66666666-6666-4666-8666-666666666666",originalCommandId=ready["commandId"],profileId=profile["profileId"],
+        inputDigest=digest({**source,"action":"project.update","scope":{"kind":"project","projectId":ready["projectId"]},"operation":"database.runtime.backup","destinationId":"private-native","maxBytes":2097152}),
+        correlationId="backup-correlation",volumeKey="db-orders",observedAt=1500,destinationId="private-native",sourceDigest=digest(source),format="postgres-custom-gzip",consistency="native-snapshot",
+        status="created",archiveId="backup_"+hashlib.sha256((ready["projectId"]+"\0"+"66666666-6666-4666-8666-666666666666"+"\0private-native").encode()).hexdigest()[:32],archiveBytes=512,archiveSha256="2"*64,manifestSha256="3"*64,idempotent=False)
+    proof={"receipt":receipt,"maxBytes":2097152,"captures":1,**{key:"passed" for key in ("signedHttp","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup")}}
+    result["nativeBackup"]=proof
+    return result,profile
+
+def native_backup_fixture():
+    return fixture()
+
+class NativeBackupProof(unittest.TestCase):
+    def test_accepts_exact_private_postgres_capture(self):
+        result,profile=native_backup_fixture();module.validate_native_backup(result,profile)
+    def test_requires_every_actual_dump_proof(self):
+        result,profile=native_backup_fixture()
+        for key in result["nativeBackup"]:
+            changed=copy.deepcopy(result);del changed["nativeBackup"][key]
+            with self.assertRaises(RuntimeError):module.validate_native_backup(changed,profile)
+    def test_refuses_omitted_or_reexecuted_capture(self):
+        result,profile=native_backup_fixture()
+        for patch in ({"captures":2},{"captures":True},{"formatValidated":"skipped"},{"seededRow":"pending"},{"restoredData":"pending"},{"restoreCleanup":"pending"},{"cleanup":"unknown"},{"privatePath":"private"}):
+            changed=copy.deepcopy(result);changed["nativeBackup"].update(patch)
+            with self.assertRaises(RuntimeError):module.validate_native_backup(changed,profile)
+    def test_refuses_detached_receipt_or_oversized_archive(self):
+        result,profile=native_backup_fixture()
+        for patch in ({"containerId":"0"*64},{"sourceDigest":"0"*64},{"inputDigest":"0"*64},{"originalCommandId":"foreign"},{"archiveBytes":2097153},{"format":"mysql-sql-gzip"},{"idempotent":True},{"password":"private"}):
+            changed=copy.deepcopy(result);changed["nativeBackup"]["receipt"].update(patch)
+            with self.assertRaises(RuntimeError):module.validate_native_backup(changed,profile)
 
 if __name__ == "__main__":
     unittest.main()
