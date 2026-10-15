@@ -62,7 +62,7 @@ it("withholds capture on failed ownership and publication on authority withdrawa
   }
 });
 it.each(["mysql","mariadb","mongodb","redis"] as const)("refuses unsupported or uncorroborated %s capture before private effects",async engine=>{
-  const f=await fixture(engine);if(engine==="mysql"||engine==="mariadb")f.replayStore.durable=false;await expect(f.executor.execute(f.command,f.authority,new AbortController().signal)).rejects.toThrow();
+  const f=await fixture(engine);if(engine==="mysql"||engine==="mariadb"||engine==="mongodb")f.replayStore.durable=false;await expect(f.executor.execute(f.command,f.authority,new AbortController().signal)).rejects.toThrow();
   expect(f.runner.runBinaryToSink).not.toHaveBeenCalled();expect(await readdir(f.root)).toEqual([]);
 });
 
@@ -94,4 +94,13 @@ it("refuses Redis backup when the original stopped-state proof fails",async()=>{
  const f=await fixture("redis"),source=createLocalDirectoryComposeVolumeBackupSource(new Map());
  const executor=createManagedDatabaseBackupExecutor({...f.options,verifier:{...f.verifier,verifyStopped:vi.fn(async()=>{throw new Error("running or foreign");})},volumeSource:source});
  await expect(executor.execute(f.command,f.authority,new AbortController().signal)).rejects.toThrow();expect(await readdir(f.root)).toEqual([]);expect(f.runner.runBinaryToSink).not.toHaveBeenCalled();
+});
+
+it("captures corroborated MongoDB only through the balanced fresh-lock command",async()=>{
+ const f=await fixture("mongodb"),receipt=await f.executor.execute(f.command,f.authority,new AbortController().signal);
+ expect(receipt).toMatchObject({format:"mongodb-archive-gzip",consistency:"quiesced-writes"});
+ expect(f.runner.runBinaryToSink).toHaveBeenCalledOnce();expect(f.verifier.verify).toHaveBeenCalledTimes(2);
+ const script=f.runner.runBinaryToSink.mock.calls[0]![0].at(-1)!;
+ expect(script).toContain("fsyncUnlock");expect(script).toContain("topologyVersion");
+ expect(script).toContain('token=""; DEPLOYLITE_MONGO_BACKUP_PROCESS_ID="$ownedToken"');
 });

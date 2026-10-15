@@ -1,3 +1,4 @@
+import {buildMongoNativeDumpArgv} from "./docker-managed-database-mongo-dump.js";
 import {managedDatabaseHealthPreparationSchema,type ImageReferencePolicyV1} from "@deploylite/contracts";
 import {planManagedDatabaseProfile,managedDatabaseRuntimeExecutionDigest} from "@deploylite/domain";
 const commands={
@@ -29,6 +30,7 @@ export function buildManagedDatabaseBackupSource(raw:unknown,options:{agentId:st
 /** SQL read locks live inside the daemon; killing only its host Docker client cannot bound them. */
 export function buildConsistentManagedDatabaseBackupArgv(source:ReturnType<typeof buildManagedDatabaseBackupSource>,deadline:number):readonly string[] {
  if(!Number.isSafeInteger(deadline)||deadline<1||!source.argv)fail();
+ if(source.engine==="mongodb")return buildMongoNativeDumpArgv(source.containerId,deadline);
  if(source.engine!=="mysql"&&source.engine!=="mariadb")return source.argv;
  const command=source.argv.at(-1)!;
  if(source.consistencyRequirement!=="global-read-lock"||!command.includes("--lock-all-tables")||command.includes("'"))fail();

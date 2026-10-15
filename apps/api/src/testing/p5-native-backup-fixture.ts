@@ -7,6 +7,16 @@ import {expect} from "vitest";
 import {managedDatabaseBackupReceiptSchema} from "@deploylite/contracts";
 import type {DbBackupInventoryStore} from "@deploylite/db";
 
+/** Only a fixed diagnostic kind leaves this hosted fixture; bytes remain private. */
+export function nativeCaptureErrorKind(bytes:Uint8Array){
+  if(!(bytes instanceof Uint8Array)||bytes.byteLength>4096)return "unknown";
+  const text=Buffer.from(bytes).toString("utf8");
+  const kinds=[[/\bSyntaxError:/,"syntax"],[/\bReferenceError:/,"reference"],[/\bTypeError:/,"type"],
+    [/\bMongoServerError:/,"server"],[/\bMongoNetworkError:/,"network"],[/\b(?:EACCES|EROFS)\b/,"permission"]] as const;
+  for(const [pattern,kind] of kinds)if(pattern.test(text))return kind;
+  return "unknown";
+}
+
 export function nativeDumpFixture(root:string) {
   let owned:Awaited<ReturnType<typeof lstat>>|undefined;
   let proof:Record<string,unknown>|undefined;
@@ -25,13 +35,32 @@ export function nativeDumpFixture(root:string) {
       uid:number;
       writerProbe?():Promise<void>;
       stoppedSource?:boolean;
+      captureError?():ReturnType<typeof nativeCaptureErrorKind>;
+      captureExit?():Readonly<{code:number|null;signal:string|null}>;
+      captureFailure?():"before-capture"|"connection"|"identity"|"preexisting-lock"|"acquisition"|"acknowledgement"|"dump"|"cleanup"|"token"|"clock"|"shell"|"unknown";
     }>) {
       if(!Number.isSafeInteger(input.uid)||input.uid<1||input.uid>4294967294)throw new Error("Corroborated non-root decoder required.");
-      const first=await input.call();expect(first.statusCode).toBe(200);
+      const first=await input.call();
+      if(first.statusCode!==200){
+        const stage=input.captureFailure?.();
+        const stages=["before-capture","connection","identity","preexisting-lock","acquisition","acknowledgement","dump","cleanup","token","clock","shell","unknown"];
+        if(stage&&stages.includes(stage)){
+          const exit=input.captureExit?.();
+          const code=exit&&Number.isInteger(exit.code)&&exit.code!==null&&exit.code>=0&&exit.code<=255?String(exit.code):"unknown";
+          const signal=exit?.signal===null?"none":["SIGTERM","SIGKILL","SIGABRT","SIGSEGV","SIGPIPE"].includes(exit?.signal??"")?exit!.signal:"unknown";
+          const observedKind=input.captureError?.();
+          const kinds=["syntax","reference","type","server","network","permission","unknown"];
+          const kind=observedKind&&kinds.includes(observedKind)?observedKind:"unknown";
+          const processExit=exit?" (exit="+code+", signal="+signal+")":"";
+          const diagnostic=input.captureError?" [shell="+kind+"]":"";
+          throw new Error("Private native capture failed at "+stage+processExit+diagnostic+".");
+        }
+      }
+      expect(first.statusCode).toBe(200);
       const data=first.json().data,receipt=managedDatabaseBackupReceiptSchema.parse(data.receipt);
       expect(data).toMatchObject({backupCreated:true,idempotent:false});
-      const sql=receipt.engine==="mysql"||receipt.engine==="mariadb",redis=receipt.engine==="redis";
-      expect(receipt).toMatchObject({format:redis?"volume-tar":sql?receipt.engine+"-sql-gzip":"postgres-custom-gzip",consistency:redis?"all-consumers-stopped":sql?"global-read-lock":"native-snapshot",status:"created",containerId:input.originalContainerId});
+      const sql=receipt.engine==="mysql"||receipt.engine==="mariadb",redis=receipt.engine==="redis",mongo=receipt.engine==="mongodb";
+      expect(receipt).toMatchObject({format:mongo?"mongodb-archive-gzip":redis?"volume-tar":sql?receipt.engine+"-sql-gzip":"postgres-custom-gzip",consistency:mongo?"quiesced-writes":redis?"all-consumers-stopped":sql?"global-read-lock":"native-snapshot",status:"created",containerId:input.originalContainerId});
       expect(data.command).not.toHaveProperty("projectExecutionAuthority");
       expect(first.body).not.toMatch(/encryptedValue|sealedEnvironment|DATABASE_PASSWORD|privatePath/);
       const directory=join(root,receipt.archiveId),archive=join(directory,"archive.bin"),manifest=join(directory,"manifest.json");
@@ -49,6 +78,10 @@ export function nativeDumpFixture(root:string) {
         expect(contents.includes("p5-persistent-value")&&contents.includes("p5-nontransactional-value")&&contents.includes("MyISAM")&&contents.includes("CREATE TABLE")).toBe(true);
         if(!input.writerProbe)throw new Error("Native SQL writer probe required.");
         try {await input.writerProbe();}catch {throw new Error("Native SQL writers did not resume.");}
+      }else if(mongo){
+        expect(decoded.length>=4&&decoded.readUInt32LE(0)===0x8199e26d).toBe(true);
+        if(!input.writerProbe)throw new Error("Native Mongo writer probe required.");
+        try{await input.writerProbe();}catch{throw new Error("Native Mongo writers did not resume.");}
       }else{
         expect(decoded.subarray(0,5).toString()).toBe("PGDMP");
       }
@@ -63,7 +96,7 @@ export function nativeDumpFixture(root:string) {
       expect(await input.inventory().list(receipt.projectId,receipt.volumeKey,receipt.destinationId)).toEqual(before);
       if(createHash("sha256").update(await readFile(archive)).digest("hex")!==receipt.archiveSha256)throw new Error("Private native archive changed.");
       if(createHash("sha256").update(await readFile(manifest)).digest("hex")!==receipt.manifestSha256)throw new Error("Private native manifest changed.");
-      proof={...(redis?{stoppedSource:"passed",sourceCleanup:"pending"}:{}),...(sql?{writersResumed:"passed"}:{}),restoredData:"passed",restoreCleanup:"passed",receipt,maxBytes:input.maxBytes,captures:input.captures(),signedHttp:"passed",formatValidated:"passed",seededRow:"passed",inventoryReopen:"passed",replay:"passed",privateFiles:"passed",cleanup:"pending"};
+      proof={...(redis?{stoppedSource:"passed",sourceCleanup:"pending"}:{}),...((sql||mongo)?{writersResumed:"passed"}:{}),restoredData:"passed",restoreCleanup:"passed",receipt,maxBytes:input.maxBytes,captures:input.captures(),signedHttp:"passed",formatValidated:"passed",seededRow:"passed",inventoryReopen:"passed",replay:"passed",privateFiles:"passed",cleanup:"pending"};
       return proof;
     },
     async close() {
