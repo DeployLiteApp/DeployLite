@@ -560,3 +560,17 @@ export const backupInventory = pgTable("backup_inventory", {
     ) is true`),
   check("backup_inventory_created_valid", sql`${table.createdAt} >= timestamptz 'epoch'`)
 ]);
+
+// Durable archive protection for the existing pending restore lane; no automatic expiry/release.
+export const backupRestoreProtections=pgTable("backup_restore_protections",{
+ restoreCommandId:uuid("restore_command_id").primaryKey().references(()=>controlCommands.id,{onDelete:"restrict",onUpdate:"cascade"}),
+ confirmationId:uuid("confirmation_id").notNull().references(()=>controlCommandConfirmations.id,{onDelete:"restrict",onUpdate:"cascade"}),
+ projectId:uuid("project_id").notNull(),volumeKey:text("volume_key").notNull(),destinationId:text("destination_id").notNull(),archiveId:text("archive_id").notNull(),
+ backupCommandId:uuid("backup_command_id").notNull().references(()=>controlCommands.id,{onDelete:"restrict",onUpdate:"cascade"}),
+ inputDigest:text("input_digest").notNull(),archiveSha256:text("archive_sha256").notNull(),manifestSha256:text("manifest_sha256").notNull(),createdAt:timestamp("created_at",{withTimezone:true}).notNull()
+},table=>[
+ foreignKey({columns:[table.projectId,table.volumeKey,table.destinationId,table.archiveId],foreignColumns:[backupInventory.projectId,backupInventory.volumeKey,backupInventory.destinationId,backupInventory.archiveId]}).onDelete("restrict").onUpdate("cascade"),
+ index("backup_restore_protections_scope_idx").on(table.projectId,table.volumeKey,table.destinationId),
+ check("backup_restore_protections_binding_valid",sql`${table.archiveSha256} ~ '^[a-f0-9]{64}$' and ${table.manifestSha256} ~ '^[a-f0-9]{64}$' and ${table.inputDigest} ~ '^[a-f0-9]{64}$' and ${table.archiveId} ~ '^backup_[a-f0-9]{32}$' and ${table.volumeKey} ~ '^db-[A-Za-z0-9_-]{1,63}$' and ${table.destinationId} ~ '^[A-Za-z0-9_-]{1,200}$' and ${table.restoreCommandId} <> ${table.backupCommandId}`),
+ check("backup_restore_protections_created_valid",sql`${table.createdAt} >= timestamptz 'epoch'`)
+]);

@@ -14,3 +14,5 @@ export * from "./transport-port-apply.js";
 export * from "./backup-inventory.js";
 
 export * from "./managed-database-credentials.js";
+
+export * from "./backup-restore-protection.js";

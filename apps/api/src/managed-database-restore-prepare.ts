@@ -1,10 +1,11 @@
 import {managedDatabaseDeletePreparationSchema,managedDatabaseRestoreSelectionSchema} from "@deploylite/contracts";
-import {awaitAbortable,evaluateConfirmation,managedDatabaseRestoreExecutionDigest,prepareVerifiedManagedDatabaseRestoreConfirmation,type ControlCommand} from "@deploylite/domain";
+import {awaitAbortable,evaluateConfirmation,managedDatabaseRestoreExecutionDigest,prepareVerifiedManagedDatabaseRestoreConfirmation,type ControlCommand,type ControlConfirmation} from "@deploylite/domain";
 import {corroborateManagedDatabaseDeleteOrigins} from "./managed-database-delete-origins.js";
 import type {BackupInventoryReader} from "@deploylite/domain";
 import type {ManagedDatabaseDeleteOriginsAccess} from "./managed-database-delete-origins.js";
 export type ManagedDatabaseRestorePreparationAccess = ManagedDatabaseDeleteOriginsAccess & Readonly<{
  inventory: BackupInventoryReader;
+ protection:Readonly<{protect(preparation:unknown,command:ControlCommand,confirmation:ControlConfirmation):Promise<void>}>;
  archive: Readonly<{verify(preparation:unknown,signal:AbortSignal):Promise<unknown>}>;
  now():number;
  commandTtlMs:number;
@@ -31,13 +32,13 @@ export async function prepareManagedDatabaseRestore(
   const options={...supplied},request={...input,context:{...input.context}},controls=options.controls;
   const find=controls.findProjectUpdateByIdempotency,resolve=controls.resolve,recover=controls.resolveProjectUpdateConfirmation;
   const originalRead=options.originalTransport.readReceipt,originalFind=controls.findProjectUpdateById;
-  const list=options.inventory.list,available=options.inventory.available,verify=options.archive.verify;
-  if(!recover||!Number.isSafeInteger(options.deadlineMs)||options.deadlineMs<1||options.deadlineMs>60000)unavailable();
+  const list=options.inventory.list,available=options.inventory.available,verify=options.archive.verify,protect=options.protection?.protect;
+  if(!protect||!recover||!Number.isSafeInteger(options.deadlineMs)||options.deadlineMs<1||options.deadlineMs>60000)unavailable();
   const start=options.now(),deadline=start+options.deadlineMs;let lastNow=start;
   const changed=()=>Object.entries(options).some(([key,value])=>supplied[key as keyof typeof supplied]!==value)
    ||controls.findProjectUpdateByIdempotency!==find||controls.resolve!==resolve||controls.resolveProjectUpdateConfirmation!==recover
    ||controls.findProjectUpdateById!==originalFind||options.originalTransport.readReceipt!==originalRead
-   ||options.inventory.list!==list||options.inventory.available!==available||options.archive.verify!==verify;
+   ||options.inventory.list!==list||options.inventory.available!==available||options.archive.verify!==verify||options.protection.protect!==protect;
   const now=()=>{
    const value=options.now();if(!Number.isSafeInteger(start)||start<0||!Number.isSafeInteger(deadline)
     ||!Number.isSafeInteger(value)||value<lastNow||value>=deadline)unavailable();lastNow=value;return value;
@@ -70,6 +71,8 @@ export async function prepareManagedDatabaseRestore(
   else {const resolved=await bounded(()=>resolve.call(controls,selected.command));await fence();command=validate(resolved.command);created=resolved.created;}
   const confirmation=await bounded(()=>recover.call(controls,structuredClone(command!),new Date(now())));await fence();
   if(!confirmation||!/^[A-Za-z0-9_-]{1,200}$/.test(confirmation.id))unavailable();
+  evaluateConfirmation(command,confirmation,new Date(now()));validate(command);
+  await bounded(()=>protect.call(options.protection,structuredClone(selected.preparation),structuredClone(command),structuredClone(confirmation)));await fence();
   evaluateConfirmation(command,confirmation,new Date(now()));validate(command);
   return {preparation:selected.preparation,command,confirmation:structuredClone(confirmation),idempotent:!created};
  }catch{return unavailable();}

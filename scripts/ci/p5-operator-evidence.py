@@ -201,7 +201,7 @@ def validate_native_backup(result, profile):
 def validate_pending_restore(proof,ready,profile,source):
     pending=proof["pendingRestore"]
     exact(pending,{"commandId","confirmationId","actorId","projectId","databaseId","engine","inputDigest","idempotencyKey","correlationId","expiresAt",
-        "status","classification","consumedAt","reopen","sameOriginalKey","sameOriginalNonce","dispatches","authenticatedApi"},"strict_original_pending_restore_required")
+        "status","classification","consumedAt","reopen","sameOriginalKey","sameOriginalNonce","dispatches","authenticatedApi","protectedArchive"},"strict_original_pending_restore_required")
     uuid=r"[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}"
     native.require(all(isinstance(pending[key],str) and re.fullmatch(uuid,pending[key]) for key in ("commandId","confirmationId"))
         and isinstance(pending["actorId"],str) and re.fullmatch(r"[A-Za-z0-9_-]{1,200}",pending["actorId"])
@@ -211,7 +211,7 @@ def validate_pending_restore(proof,ready,profile,source):
         and pending["idempotencyKey"]=="fixture_restore_pending_"+profile["engine"] and pending["correlationId"]=="fixture-restore-pending-"+profile["engine"]
         and type(pending["expiresAt"]) is int and proof["receipt"]["observedAt"]<pending["expiresAt"]<=proof["receipt"]["observedAt"]+200000
         and pending["status"]=="pending_confirmation" and pending["classification"]=="destructive" and pending["consumedAt"] is None
-        and all(pending[key]=="passed" for key in ("reopen","sameOriginalKey","sameOriginalNonce","authenticatedApi"))
+        and all(pending[key]=="passed" for key in ("reopen","sameOriginalKey","sameOriginalNonce","authenticatedApi","protectedArchive"))
         and type(pending["dispatches"]) is int and pending["dispatches"]==0,"durable_original_pending_restore_required")
 
 
