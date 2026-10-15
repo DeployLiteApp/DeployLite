@@ -5,7 +5,7 @@ import {join} from "node:path";
 import {afterEach,expect,it,vi} from "vitest";
 import {composeRuntimeResourceName,managedDatabaseRuntimeExecutionDigest,managedDatabaseBackupExecutionDigest,managedDatabaseBackupSourceDigest} from "@deploylite/domain";
 import {createPrivateNativeBackupArchive} from "./docker-managed-database-backup-archive.js";
-import {createPrivateNativeRestoreArchive} from "./docker-managed-database-restore-archive.js";
+import {createPrivateNativeRestoreArchive,createPrivateNativeRestoreArchiveObserver} from "./docker-managed-database-restore-archive.js";
 const roots:string[]=[];
 afterEach(async()=>{vi.restoreAllMocks();await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})));});
 const engines=["postgres","mysql","mariadb","mongodb","redis"] as const;
@@ -73,4 +73,26 @@ it("binds manifest fields even when a detached manifest has its own matching exp
 });
 it("pins the configured destination map before a caller mutates its original map",async()=>{
  const f=await fixture(),verifier=createPrivateNativeRestoreArchive(f.options);f.options.destinations.clear();await expect(verifier.verify(f.preparation,f.signal)).resolves.toMatchObject({integrity:"verified"});
+});
+
+it.each(engines)("observes %s original private archive with bounded public metadata and readonly authority",async engine=>{
+ const f=await fixture(engine),query={...f.preparation,action:"database.runtime.restore.archive",agentId:"agent-a",requiredCapabilities:["database.runtime.restore.archive.v1"],context:{requestId:"archive-request",correlationId:"archive-correlation"},timeoutMs:5000};
+ const assertValid=vi.fn(async()=>{});
+ const pending=createPrivateNativeRestoreArchiveObserver(f.options).observe(query,{assertValid},f.signal);
+ await expect(pending).resolves.toMatchObject({integrity:"verified",redacted:true});const observation=await pending;
+ expect(observation).toMatchObject({schemaVersion:1,action:query.action,agentId:query.agentId,context:query.context,archiveId:f.preparation.backupReceipt.archiveId,integrity:"verified",redacted:true});
+ expect(assertValid).toHaveBeenCalledTimes(2);expect(Object.keys(observation as object)).toHaveLength(16);
+ expect(JSON.stringify(observation)).not.toContain(f.root);expect(JSON.stringify(observation)).not.toContain(f.data.toString());
+});
+it("does not observe private archive when readonly source authority refuses",async()=>{
+ const f=await fixture(),assertValid=vi.fn(async()=>{throw new Error("private-fixture");});
+ const query={...f.preparation,action:"database.runtime.restore.archive",agentId:"agent-a",requiredCapabilities:["database.runtime.restore.archive.v1"],context:{requestId:"archive-request",correlationId:"archive-correlation"},timeoutMs:5000};
+ await expect(createPrivateNativeRestoreArchiveObserver(f.options).observe(query,{assertValid},f.signal)).rejects.toThrow(/^Native restore archive is unavailable\.$/);
+ expect(assertValid).toHaveBeenCalledTimes(1);
+});
+
+it("bounds a hung readonly archive authority without returning metadata",async()=>{
+ const f=await fixture(),query={...f.preparation,action:"database.runtime.restore.archive",agentId:"agent-a",requiredCapabilities:["database.runtime.restore.archive.v1"],context:{requestId:"archive-request",correlationId:"archive-correlation"},timeoutMs:5};
+ const outcome=createPrivateNativeRestoreArchiveObserver(f.options).observe(query,{assertValid:()=>new Promise(()=>{})},f.signal).then(()=>"resolved",()=>"refused");
+ expect(await Promise.race([outcome,new Promise(resolve=>setTimeout(()=>resolve("hung"),30))])).toBe("refused");
 });

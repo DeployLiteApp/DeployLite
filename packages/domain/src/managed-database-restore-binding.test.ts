@@ -105,3 +105,42 @@ it("refuses an intent whose own short expiry elapses before it can be returned",
  const f=verifiedFixture();let now=3000;f.ports.clock.now=()=>now++;
  await expect(prepareVerifiedManagedDatabaseRestoreConfirmation({...f.request,commandTtlMs:1},f.ports)).rejects.toThrow("Verified database restore confirmation is unavailable.");
 });
+
+import {managedDatabaseRestoreArchiveSourceBinding,managedDatabaseRestoreArchiveObservationMatches} from "./managed-database-restore-archive-binding.js";
+import {managedDatabaseRestoreExecutionDigest} from "./managed-database-restore-binding.js";
+function archiveChannelFixture(engine:typeof engines[number]="postgres") {
+ const {preparation}=fixture(engine);
+ const query={...preparation,action:"database.runtime.restore.archive",agentId:"agent-a",requiredCapabilities:["database.runtime.restore.archive.v1"],context:{requestId:"request-a",correlationId:"correlation-a"},timeoutMs:1000};
+ const backup=query.backupReceipt;
+ const observation={schemaVersion:1,action:query.action,agentId:query.agentId,projectId:query.projectId,databaseId:query.databaseId,engine,
+  inputDigest:managedDatabaseRestoreExecutionDigest(preparation),context:query.context,observedAt:3001,
+  archiveId:backup.archiveId,archiveBytes:backup.archiveBytes,archiveSha256:backup.archiveSha256,manifestSha256:backup.manifestSha256,format:backup.format,integrity:"verified",redacted:true};
+ return {query,observation};
+}
+it.each(engines)("binds the %s archive channel to original source and current request without authority",engine=>{
+ const f=archiveChannelFixture(engine);expect(()=>managedDatabaseRestoreArchiveSourceBinding(f.query)).not.toThrow();
+ expect(managedDatabaseRestoreArchiveSourceBinding(f.query)).toEqual(f.query);
+ expect(managedDatabaseRestoreArchiveObservationMatches(f.query,f.observation,3000,3002)).toBe(true);
+ expect(f.observation).not.toHaveProperty("path");expect(f.observation).not.toHaveProperty("projectExecutionAuthority");
+});
+it.each([
+ {agentId:"foreign"},{projectId:"foreign"},{databaseId:"foreign"},{engine:"redis"},{inputDigest:"0".repeat(64)},
+ {context:{requestId:"other",correlationId:"correlation-a"}},{context:{requestId:"request-a",correlationId:"other"}},
+ {archiveId:"backup_"+"0".repeat(32)},{archiveBytes:5},{archiveSha256:"0".repeat(64)},{manifestSha256:"0".repeat(64)},
+ {format:"mysql-sql-gzip"},{integrity:"unknown"},{redacted:false},{observedAt:2999},{observedAt:3003},
+ {path:"private-fixture"},{bytes:"private-fixture"},{projectExecutionAuthority:{}},{context:{requestId:"request-a",correlationId:"correlation-a",secret:"private"}}
+])("refuses detached or private archive observation %j",patch=>{
+ const f=archiveChannelFixture();expect(managedDatabaseRestoreArchiveObservationMatches(f.query,{...f.observation,...patch},3000,3002)).toBe(false);
+});
+it.each([[1999,2001],[3000,2999],[3000,4000],[3000,3001.5],[NaN,3002]])("refuses invalid archive observation time fence %s/%s",(before,after)=>{
+ const f=archiveChannelFixture();expect(managedDatabaseRestoreArchiveObservationMatches(f.query,f.observation,before,after)).toBe(false);
+});
+it.each([{agentId:"foreign"},{requiredCapabilities:[]},{requiredCapabilities:["database.runtime.restore.archive.v1","extra"]},
+ {timeoutMs:0},{timeoutMs:60001},{action:"database.runtime.restore"},{password:"private"},{projectExecutionAuthority:{}}])("refuses archive query authority or invalid source %j",patch=>{
+ const f=archiveChannelFixture();expect(()=>managedDatabaseRestoreArchiveSourceBinding({...f.query,...patch})).toThrow("Restore archive source is unavailable.");
+});
+it("refuses changed original resource and archive binding",()=>{
+ const f=archiveChannelFixture();
+ expect(()=>managedDatabaseRestoreArchiveSourceBinding({...f.query,backupReceipt:{...f.query.backupReceipt,containerId:"0".repeat(64)}})).toThrow("Restore archive source is unavailable.");
+ expect(()=>managedDatabaseRestoreArchiveSourceBinding({...f.query,backupReceipt:{...f.query.backupReceipt,archiveBytes:f.query.maxBytes+1}})).toThrow("Restore archive source is unavailable.");
+});

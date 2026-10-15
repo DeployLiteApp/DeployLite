@@ -1,6 +1,9 @@
+import {MANAGED_DATABASE_RESTORE_ARCHIVE_PATH,MANAGED_DATABASE_RESTORE_ARCHIVE_CAPABILITY,managedDatabaseRestoreArchiveObservationSchema} from "@deploylite/contracts";
+import {managedDatabaseRestoreArchiveObservationMatches} from "@deploylite/domain";
+import {verifyAgentTransport} from "@deploylite/config";
 import {DbBackupRestoreProtectionStore} from "@deploylite/db";
 import {prepareManagedDatabaseRestore,type ManagedDatabaseRestorePreparationAccess} from "./managed-database-restore-prepare.js";
-import {createPrivateNativeRestoreArchive} from "../../agent/src/infrastructure/docker/docker-managed-database-restore-archive.js";
+import {createPrivateNativeRestoreArchive,createPrivateNativeRestoreArchiveObserver} from "../../agent/src/infrastructure/docker/docker-managed-database-restore-archive.js";
 import {spawn} from "node:child_process";
 import {restoreNativeMongoFixture} from "./testing/p5-native-mongo-decoder.js";
 import {restoreNativeRedisFixture} from "./testing/p5-native-redis-decoder.js";
@@ -104,7 +107,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
   const trustKey = "ci-operator-" + randomBytes(32).toString("hex"), imagePolicy = managedDatabaseNativeImagePolicy();
   const limits = {deadlineMs:60000,maxOutputBytes:131072,maxContainers:64,pollIntervalMs:100,cpus:1,memoryBytes:536870912,pidsLimit:256,stopGraceSeconds:10,...(dump?{backupMaxBytes}:{})};
   const raw = JSON.stringify({profiles,limits}), clock = {now:Date.now};
-  const capabilities = new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.stop.v1","database.runtime.start.v1","database.runtime.health.v1","database.runtime.metrics.v1","database.runtime.logs.v1","database.runtime.delete.v1",...(dump?["database.runtime.backup.v1" as const]:[])]);
+  const capabilities = new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.stop.v1","database.runtime.start.v1","database.runtime.health.v1","database.runtime.metrics.v1","database.runtime.logs.v1","database.runtime.delete.v1",...(dump?["database.runtime.backup.v1" as const,MANAGED_DATABASE_RESTORE_ARCHIVE_CAPABILITY]:[])]);
   const shared = {runner,imagePolicy,clock,limits,owner:projectId,agentId,trustKey,capabilities};
   const inspector = createManagedDatabaseDockerInspector(shared), resources = createManagedDatabaseResourceMaterializer(shared);
   const native = createConfiguredManagedDatabaseRuntime(raw, {...shared,...(dump?{backup:{...(engine==="redis"?{volumeSource:{resolveVolume:async(name:string,abort:AbortSignal)=>{const source=await redisSource.resolveVolume(name,abort);return {...source,entries:()=>{backupCaptures++;return source.entries();}};}}}:{}),destinations:new Map([["private-native",backupRoot]]),replayStore:new DbAgentReplayStore(db.db,"operator-"+projectId),maxBytes:backupMaxBytes,runner:{runBinaryToSink:async(...args:Parameters<DockerProcessRunner["runBinaryToSink"]>)=>{backupCaptures++;captureFailure="unknown";captureExit=undefined;captureError="unknown";let prefix=Buffer.alloc(0);return new DockerProcessRunner({timeoutMs:60000,maxOutputBytes:131072,maxBinaryBytes:backupMaxBytes,spawn:(file,args,options)=>{const child=spawn(file,args,options);child.stderr?.on("data",chunk=>{
@@ -126,9 +129,11 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
   let peer: Awaited<ReturnType<typeof startAgentServer>> | undefined, app: FastifyInstance | undefined;
   let deleteEffects=0;
   let stopDispatches = 0, startDispatches = 0, healthDispatches = 0, metricsDispatches = 0, logsDispatches = 0, lostStop = false, lostStart = false, result: Record<string,unknown> | undefined;
+  const archiveObserver=createPrivateNativeRestoreArchiveObserver({destinations:new Map([["private-native",backupRoot]]),expectedAgentId:agentId,clock:{now:Date.now},maxBytes:backupMaxBytes,maxDurationMs:5000});
   async function startPeer(enabled:boolean) {
     const replayStore = new DbAgentReplayStore(db.db, "operator-" + projectId);
     const receiver = new AuthenticatedAgentCommandReceiver({agentId,trustKey,replayStore,capabilities:enabled ? capabilities.list() : [],
+      managedDatabaseRestoreArchive:enabled&&native.backup?archiveObserver:undefined,
       managedDatabaseBackup:enabled&&native.backup?{execute:native.backup}:undefined,
       managedDatabaseDelete:enabled&&native.delete?{delete:async(...args)=>{deleteEffects++;return native.delete!(...args);}}:undefined,managedDatabaseRuntime:enabled ? native : undefined, managedDatabaseStop:enabled ? stopExecutor : undefined, managedDatabaseStart:enabled ? startExecutor : undefined, managedDatabaseHealth:enabled?healthReader:undefined, managedDatabaseMetrics:enabled?metricsReader:undefined, managedDatabaseLogs:enabled?logsReader:undefined,
       dispatcher:{dispatch:async () => {throw new Error("Unexpected deployment.");}},authorityValidator:new DbControlCommandRepository(db.db)});
@@ -338,6 +343,16 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     expect(evaluateConfirmation(restoreIntent.command,restoreIntent.confirmation)).toEqual({eligible:true});
     expect(restoreIntent.confirmation.consumedAt).toBeNull();expect(restoreIntent.command).not.toHaveProperty("projectExecutionAuthority");
     expect((await db.pool.query("SELECT id,status,input_digest FROM control_commands ORDER BY id")).rows).toEqual(commandsBeforeRestoreIntent);
+    const readSignedArchive=async()=>{
+      const query={...restoreIntent.preparation,action:"database.runtime.restore.archive",agentId,requiredCapabilities:[MANAGED_DATABASE_RESTORE_ARCHIVE_CAPABILITY],context:{requestId:randomUUID(),correlationId:randomUUID()},timeoutMs:5000};
+      const payload=JSON.stringify(query),before=Date.now();
+      const response=await fetch(endpoint+MANAGED_DATABASE_RESTORE_ARCHIVE_PATH,{method:"POST",headers:{"content-type":"application/json","x-deploylite-signature":signAgentTransport(`POST ${MANAGED_DATABASE_RESTORE_ARCHIVE_PATH}\n${payload}`,trustKey)},body:payload,redirect:"error",signal});
+      expect(response.status).toBe(200);const text=await response.text();
+      expect(verifyAgentTransport(`POST ${MANAGED_DATABASE_RESTORE_ARCHIVE_PATH}\n${payload}\n${text}`,response.headers.get("x-deploylite-response-signature")??undefined,trustKey)).toBe(true);
+      const observation=managedDatabaseRestoreArchiveObservationSchema.parse(JSON.parse(text));expect(Object.keys(observation)).toHaveLength(16);
+      expect(managedDatabaseRestoreArchiveObservationMatches(query,observation,before,Date.now())).toBe(true);expect(text).not.toContain(backupRoot);
+    };
+    await readSignedArchive();
     nativeBackup.restorePreparation="passed";
     const pendingRestoreInput={selection:restoreSelection,actorId,idempotencyKey:"fixture_restore_pending_"+engine,
       context:{requestId:randomUUID(),correlationId:"fixture-restore-pending-"+engine},signal,current:()=>!signal.aborted,
@@ -361,6 +376,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     expect(Object.keys(pendingApi).sort()).toEqual(["command","confirmation","idempotent"]);expect(pendingApi.command).not.toHaveProperty("projectExecutionAuthority");
     await app!.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(true);app=await build(endpoint,"managed_database_fixture_key_1234567890",undefined,new Map([[projectId,restoreAccess()]]));
     const reopenedApiPending=await restorePrepareCall();expect(reopenedApiPending.statusCode).toBe(200);expect(reopenedApiPending.json().data).toEqual(pendingApi);
+    await readSignedArchive();
     const samePendingRestore=await prepareManagedDatabaseRestore(restoreAccess(),{...pendingRestoreInput,context:{requestId:randomUUID(),correlationId:randomUUID()}});
     expect(samePendingRestore.command).toEqual(pendingRestore.command);expect(samePendingRestore.confirmation).toEqual(pendingRestore.confirmation);expect(samePendingRestore.preparation).toEqual(pendingRestore.preparation);expect(samePendingRestore.idempotent).toBe(true);
     expect((await db.pool.query("SELECT consumed_at FROM control_command_confirmations WHERE command_id=$1",[pendingRestore.command.id])).rows).toEqual([{consumed_at:null}]);
@@ -372,7 +388,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const pendingCommand=pendingRestore.command;
     nativeBackup.pendingRestore={commandId:pendingCommand.id,confirmationId:pendingRestore.confirmation.id,actorId,projectId,databaseId,engine,
       inputDigest:pendingCommand.inputDigest,idempotencyKey:pendingCommand.idempotencyKey,correlationId:pendingCommand.correlationId,expiresAt:pendingCommand.expiresAt.getTime(),
-      status:"pending_confirmation",classification:"destructive",consumedAt:null,reopen:"passed",sameOriginalKey:"passed",sameOriginalNonce:"passed",dispatches:0,authenticatedApi:"passed",protectedArchive:"passed"};
+      status:"pending_confirmation",classification:"destructive",consumedAt:null,reopen:"passed",sameOriginalKey:"passed",sameOriginalNonce:"passed",dispatches:0,authenticatedApi:"passed",protectedArchive:"passed",signedArchive:"passed"};
     await app!.close();app=undefined;app=await build(endpoint,"managed_database_fixture_key_1234567890");
 
     const inventoryAfterStart = await recoveredInventory(stopped,originalStopReplayFingerprint);

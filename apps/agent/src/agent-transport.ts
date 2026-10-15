@@ -1,3 +1,5 @@
+import {MANAGED_DATABASE_RESTORE_ARCHIVE_CAPABILITY,MANAGED_DATABASE_RESTORE_ARCHIVE_PATH,managedDatabaseRestoreArchiveObservationSchema,type ManagedDatabaseRestoreArchiveAgentQueryV1,type ManagedDatabaseRestoreArchiveObservationV1} from "@deploylite/contracts";
+import {managedDatabaseRestoreArchiveSourceBinding,managedDatabaseRestoreArchiveObservationMatches} from "@deploylite/domain";
 import {MANAGED_DATABASE_BACKUP_CAPABILITY, MANAGED_DATABASE_BACKUP_RECEIPT_PATH, managedDatabaseBackupAgentCommandSchema, managedDatabaseBackupPreparationSchema, managedDatabaseBackupReceiptQuerySchema, managedDatabaseBackupReceiptSchema, managedDatabaseBackupCachedReceiptSchema, type ManagedDatabaseBackupAgentCommandV1, type ManagedDatabaseBackupReceiptQueryV1, type ManagedDatabaseBackupReceiptV1} from "@deploylite/contracts";
 import {managedDatabaseBackupExecutionDigest, managedDatabaseBackupReceiptMatches, managedDatabaseBackupReplayFingerprint} from "@deploylite/domain";
 import {MANAGED_DATABASE_DELETE_CAPABILITY,MANAGED_DATABASE_DELETE_RECEIPT_PATH,managedDatabaseDeleteAgentCommandSchema,managedDatabaseDeleteReceiptQuerySchema,managedDatabaseDeleteReceiptSchema,managedDatabaseDeleteCachedReceiptSchema,type ManagedDatabaseDeleteAgentCommandV1,type ManagedDatabaseDeleteReceiptQueryV1,type ManagedDatabaseDeleteReceiptV1} from "@deploylite/contracts";
@@ -49,13 +51,14 @@ export type AgentDomainRouteApplyExecutor = { execute(command: DomainRouteApplyA
 export type AgentTransportPortApplyExecutor = { execute(command: TransportPortApplyAgentCommandV1, authority: RuntimeExecutionAuthority, signal: AbortSignal): Promise<TransportPortApplyReceiptV1> };
 export type AgentManagedDatabaseLogsReader = {observe(query: ManagedDatabaseLogsAgentQueryV1, authority: RuntimeExecutionAuthority, signal: AbortSignal): Promise<ManagedDatabaseLogsObservationV1>};
 export type AgentManagedDatabaseMetricsReader = {observe(query:ManagedDatabaseMetricsAgentQueryV1,authority:RuntimeExecutionAuthority,signal:AbortSignal):Promise<ManagedDatabaseMetricsObservationV1>};
+export type AgentManagedDatabaseRestoreArchiveReader={observe(query:ManagedDatabaseRestoreArchiveAgentQueryV1,authority:RuntimeExecutionAuthority,signal:AbortSignal):Promise<ManagedDatabaseRestoreArchiveObservationV1>};
 export type AgentManagedDatabaseHealthReader = {observe(query:ManagedDatabaseHealthAgentQueryV1,authority:RuntimeExecutionAuthority,signal:AbortSignal):Promise<ManagedDatabaseHealthObservationV1>};
 export type AgentManagedDatabaseStartExecutor = {start(command:ManagedDatabaseStartAgentCommandV1,authority:RuntimeExecutionAuthority,signal:AbortSignal):Promise<ManagedDatabaseStartReceiptV1>};
 export type AgentManagedDatabaseDeleteExecutor={delete(command:ManagedDatabaseDeleteAgentCommandV1,authority:RuntimeExecutionAuthority & {assertConfirmed(authority:ProjectControlAuthorityV1,id:string):Promise<void>},signal:AbortSignal):Promise<ManagedDatabaseDeleteReceiptV1>};
 export type AgentManagedDatabaseStopExecutor = {stop(command:ManagedDatabaseStopAgentCommandV1,authority:RuntimeExecutionAuthority,signal:AbortSignal):Promise<ManagedDatabaseStopReceiptV1>};
 export type AgentManagedDatabaseRuntimeExecutor = {apply(command: ManagedDatabaseRuntimeAgentCommandV1, authority: RuntimeExecutionAuthority, signal: AbortSignal): Promise<ManagedDatabaseRuntimeReceiptV1>};
 export type AgentManagedDatabaseBackupExecutor = {execute(command:ManagedDatabaseBackupAgentCommandV1,authority:ComposeVolumeBackupAuthority,signal:AbortSignal):Promise<ManagedDatabaseBackupReceiptV1>};
-export type AgentCommandReceiverOptions = Readonly<{ agentId: string; trustKey: string; capabilities: readonly string[]; dispatcher: AgentCommandDispatcher; stopDispatcher?: AgentStopDispatcher; networkAttachment?: AgentNetworkAttachmentExecutor; volumeBackup?: AgentVolumeBackupExecutor; volumeAttachment?: AgentComposeVolumeAttachmentExecutor; resourceCleanup?: AgentComposeResourceCleanupExecutor; domainRouteApply?: AgentDomainRouteApplyExecutor; transportPortApply?: AgentTransportPortApplyExecutor; managedDatabaseRuntime?: AgentManagedDatabaseRuntimeExecutor; managedDatabaseStop?: AgentManagedDatabaseStopExecutor; managedDatabaseBackup?:AgentManagedDatabaseBackupExecutor; managedDatabaseDelete?:AgentManagedDatabaseDeleteExecutor; managedDatabaseStart?: AgentManagedDatabaseStartExecutor; managedDatabaseHealth?: AgentManagedDatabaseHealthReader; managedDatabaseMetrics?: AgentManagedDatabaseMetricsReader; managedDatabaseLogs?: AgentManagedDatabaseLogsReader; resourceInspector?: ComposeResourceInspector; replayStore: AgentReplayStore; authorityValidator?: DeploymentAuthorityValidation; now?: () => number }>;
+export type AgentCommandReceiverOptions = Readonly<{ agentId: string; trustKey: string; capabilities: readonly string[]; dispatcher: AgentCommandDispatcher; stopDispatcher?: AgentStopDispatcher; networkAttachment?: AgentNetworkAttachmentExecutor; volumeBackup?: AgentVolumeBackupExecutor; volumeAttachment?: AgentComposeVolumeAttachmentExecutor; resourceCleanup?: AgentComposeResourceCleanupExecutor; domainRouteApply?: AgentDomainRouteApplyExecutor; transportPortApply?: AgentTransportPortApplyExecutor; managedDatabaseRuntime?: AgentManagedDatabaseRuntimeExecutor; managedDatabaseStop?: AgentManagedDatabaseStopExecutor; managedDatabaseBackup?:AgentManagedDatabaseBackupExecutor; managedDatabaseDelete?:AgentManagedDatabaseDeleteExecutor; managedDatabaseStart?: AgentManagedDatabaseStartExecutor; managedDatabaseRestoreArchive?:AgentManagedDatabaseRestoreArchiveReader; managedDatabaseHealth?: AgentManagedDatabaseHealthReader; managedDatabaseMetrics?: AgentManagedDatabaseMetricsReader; managedDatabaseLogs?: AgentManagedDatabaseLogsReader; resourceInspector?: ComposeResourceInspector; replayStore: AgentReplayStore; authorityValidator?: DeploymentAuthorityValidation; now?: () => number }>;
 
 export class AuthenticatedAgentCommandReceiver {
   readonly #options: AgentCommandReceiverOptions;
@@ -63,6 +66,7 @@ export class AuthenticatedAgentCommandReceiver {
   constructor(options: AgentCommandReceiverOptions) {
     validateAgentTransportKey(options.trustKey);
     const capabilities = options.capabilities.filter(capability => (capability !== MANAGED_DATABASE_RUNTIME_CAPABILITY || Boolean(options.managedDatabaseRuntime && options.replayStore.durable === true && options.replayStore.lookup))
+      && (capability !== MANAGED_DATABASE_RESTORE_ARCHIVE_CAPABILITY || Boolean(options.managedDatabaseRestoreArchive && options.replayStore.durable === true && typeof options.replayStore.lookupByFingerprintDigest === "function"))
       && (capability !== MANAGED_DATABASE_HEALTH_CAPABILITY || Boolean(options.managedDatabaseHealth && options.replayStore.durable === true && typeof options.replayStore.lookupByFingerprintDigest === "function"))
       && (capability !== MANAGED_DATABASE_LOGS_CAPABILITY || Boolean(options.managedDatabaseLogs && options.replayStore.durable === true && typeof options.replayStore.lookupByFingerprintDigest === "function"))
       && (capability !== MANAGED_DATABASE_METRICS_CAPABILITY || Boolean(options.managedDatabaseMetrics && options.replayStore.durable === true && typeof options.replayStore.lookupByFingerprintDigest === "function"))
@@ -265,6 +269,39 @@ export class AuthenticatedAgentCommandReceiver {
       return observation;
     } catch { throw new Error("Database metrics source is unavailable."); }
     finally { clearTimeout(timer); signal?.removeEventListener("abort", cancel); }
+  }
+  async observeManagedDatabaseRestoreArchive(body: unknown, signature: string | undefined, signal?: AbortSignal): Promise<ManagedDatabaseRestoreArchiveObservationV1> {
+    if (signal?.aborted) throw new TransportCanceledError();
+    if (!this.verifyRequest(`POST ${MANAGED_DATABASE_RESTORE_ARCHIVE_PATH}\n${JSON.stringify(body)}`, signature)) throw new Error("agent authentication failed");
+    const query = managedDatabaseRestoreArchiveSourceBinding(structuredClone(body));
+    const reader = this.#options.managedDatabaseRestoreArchive, observe = reader?.observe;
+    const store = this.#options.replayStore, lookup = store.lookupByFingerprintDigest;
+    const clock = this.#options.now ?? Date.now, start = clock(), deadline = start + query.timeoutMs; let lastNow = start;
+    const controller = new AbortController(), cancel = () => controller.abort(new TransportCanceledError());
+    const current = () => {
+      const now = clock();
+      if (controller.signal.aborted || signal?.aborted || !Number.isSafeInteger(start) || start < query.backupReceipt.observedAt
+        || !Number.isSafeInteger(deadline) || !Number.isSafeInteger(now) || now < lastNow || now >= deadline
+        || query.agentId !== this.#options.agentId || !reader || !observe || reader.observe !== observe
+        || this.#options.managedDatabaseRestoreArchive !== reader || this.#options.replayStore !== store || (this.#options.now ?? Date.now) !== clock || store.durable !== true || !lookup || store.lookupByFingerprintDigest !== lookup
+        || !this.#options.capabilities.includes(MANAGED_DATABASE_RESTORE_ARCHIVE_CAPABILITY)) throw new Error("Database restore archive source is unavailable.");
+      lastNow = now; return now;
+    };
+    signal?.addEventListener("abort", cancel, {once:true});
+    if (signal?.aborted) cancel();
+    const timer = setTimeout(() => controller.abort(new TransportTimeoutError()), query.timeoutMs);
+    try {
+      current();
+      const cached = await awaitAbortable(() => lookup!.call(store, query.originalReceipt.commandId, query.originalReplayFingerprint), controller.signal);
+      current();
+      const original = managedDatabaseRuntimeReceiptSchema.parse(cached);
+      if (protocolPayloadFingerprint(original) !== protocolPayloadFingerprint(query.originalReceipt)) throw new Error("detached");
+      const authority:RuntimeExecutionAuthority = {assertValid:async()=>{current();}};
+      const observation = managedDatabaseRestoreArchiveObservationSchema.parse(await awaitAbortable(() => observe!.call(reader!, structuredClone(query), authority, controller.signal), controller.signal));
+      if (!managedDatabaseRestoreArchiveObservationMatches(query, observation, start, current())) throw new Error("detached");
+      return observation;
+    } catch { throw new Error("Database restore archive source is unavailable."); }
+    finally { controller.abort(); clearTimeout(timer); signal?.removeEventListener("abort", cancel); }
   }
   async observeManagedDatabaseHealth(body: unknown, signature: string | undefined, signal?: AbortSignal): Promise<ManagedDatabaseHealthObservationV1> {
     if (signal?.aborted) throw new TransportCanceledError();

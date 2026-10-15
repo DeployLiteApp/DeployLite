@@ -1,3 +1,5 @@
+import {managedDatabaseRestoreArchiveObservationSchema,type ManagedDatabaseRestoreArchiveObservationV1} from "@deploylite/contracts";
+import {managedDatabaseRestoreArchiveSourceBinding,managedDatabaseRestoreArchiveObservationMatches,managedDatabaseRestoreExecutionDigest} from "@deploylite/domain";
 import {createHash} from "node:crypto";
 import {constants,type Stats} from "node:fs";
 import {lstat,open,type FileHandle} from "node:fs/promises";
@@ -65,5 +67,26 @@ export function createPrivateNativeRestoreArchive(supplied:Options){
    current();return Object.freeze({archiveId:receipt.archiveId,archiveBytes:receipt.archiveBytes,archiveSha256:receipt.archiveSha256,manifestSha256:receipt.manifestSha256,format:receipt.format,integrity:"verified" as const,redacted:true as const});
   }catch{return unavailable();}
   finally{controller.abort();if(timer)clearTimeout(timer);external.removeEventListener("abort",cancel);await Promise.allSettled([...handles].map(handle=>handle.close()));}
+ }};
+}
+
+/** Public current metadata over the existing authenticated channel; no archive bytes or effect permission. */
+export function createPrivateNativeRestoreArchiveObserver(options:Options){
+ const archive=createPrivateNativeRestoreArchive(options),clock=options.clock,now=clock.now;
+ return {async observe(raw:unknown,authority:{assertValid():Promise<void>},signal:AbortSignal):Promise<ManagedDatabaseRestoreArchiveObservationV1>{
+  const controller=new AbortController(),cancel=()=>controller.abort();let timer:ReturnType<typeof setTimeout>|undefined;
+  signal.addEventListener("abort",cancel,{once:true});if(signal.aborted)cancel();
+  try{
+   const query=managedDatabaseRestoreArchiveSourceBinding(raw);
+   const {action:_action,agentId:_agent,requiredCapabilities:_caps,context:_context,timeoutMs:_timeout,...preparation}=query;
+   const start=now.call(clock),deadline=start+query.timeoutMs,assertValid=authority.assertValid;let lastNow=start;
+   function current(){const value=now.call(clock);if(controller.signal.aborted||signal.aborted||clock.now!==now||authority.assertValid!==assertValid||!Number.isSafeInteger(start)||start<query.backupReceipt.observedAt||!Number.isSafeInteger(deadline)||!Number.isSafeInteger(value)||value<lastNow||value>=deadline)unavailable();lastNow=value;return value;}
+   current();timer=setTimeout(cancel,query.timeoutMs);await awaitAbortable(()=>assertValid.call(authority),controller.signal);current();
+   const metadata=await archive.verify(preparation,controller.signal);current();
+   await awaitAbortable(()=>assertValid.call(authority),controller.signal);const observedAt=current();
+   const observation=managedDatabaseRestoreArchiveObservationSchema.parse({...metadata,schemaVersion:1,action:query.action,agentId:query.agentId,projectId:query.projectId,databaseId:query.databaseId,engine:query.engine,inputDigest:managedDatabaseRestoreExecutionDigest(preparation),context:query.context,observedAt});
+   if(!managedDatabaseRestoreArchiveObservationMatches(query,observation,start,current()))unavailable();return observation;
+  }catch{return unavailable();}
+  finally{controller.abort();if(timer)clearTimeout(timer);signal.removeEventListener("abort",cancel);}
  }};
 }
