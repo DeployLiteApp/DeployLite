@@ -72,3 +72,24 @@ it("rejects deletion capability without explicitly configured STOP grace before 
  const f=fixture(),capabilities=new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.stop.v1","database.runtime.delete.v1"]);
  expect(()=>createManagedDatabaseRuntime({...f.options,capabilities})).toThrow();expect(f.runner.run).not.toHaveBeenCalled();
 });
+
+it("requires explicit private archive and durable origin ports for the backup capability before effects",()=>{
+  const f=fixture(),capabilities=new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.backup.v1"]);
+  expect(()=>createManagedDatabaseRuntime({...f.options,capabilities})).toThrow();expect(f.runner.run).not.toHaveBeenCalled();
+});
+it("composes backup only from explicit existing destination/source/binary ports without touching paths",()=>{
+  const f=fixture(),capabilities=new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.backup.v1"]);
+  const runner={runBinaryToSink:vi.fn(async()=>{throw new Error("no capture expected");})};
+  const replayStore={durable:true,lookupByFingerprintDigest:vi.fn(async()=>null)};
+  const backup={destinations:new Map([["destination-a","/private/configured-archive"]]),runner,replayStore,maxBytes:10000};
+  const runtime=createManagedDatabaseRuntime({...f.options,capabilities,backup} as any);
+  expect(typeof (runtime as any).backup).toBe("function");expect(Object.keys(runtime)).toEqual(["apply","backup"]);
+  expect(f.runner.run).not.toHaveBeenCalled();expect(runner.runBinaryToSink).not.toHaveBeenCalled();expect(replayStore.lookupByFingerprintDigest).not.toHaveBeenCalled();
+});
+it("rejects malformed backup ports/budgets or absent capability without discovering a destination",()=>{
+  const f=fixture(),capabilities=new InMemoryCapabilityRegistry(["database.runtime.v1","compose.resource.inspect.v1","database.runtime.backup.v1"]);
+  const backup={destinations:new Map([["destination-a","/private/configured-archive"]]),runner:{runBinaryToSink:vi.fn(async()=>{throw new Error("no capture expected");})},replayStore:{durable:true,lookupByFingerprintDigest:vi.fn(async()=>null)},maxBytes:10000};
+  for(const patch of [{maxBytes:0},{replayStore:{...backup.replayStore,durable:false}},{replayStore:{durable:true}},{runner:{}}])
+    expect(()=>createManagedDatabaseRuntime({...f.options,capabilities,backup:{...backup,...patch}} as any)).toThrow();
+  expect(()=>createManagedDatabaseRuntime({...f.options,backup} as any)).toThrow();expect(f.runner.run).not.toHaveBeenCalled();
+});
