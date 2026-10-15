@@ -1,3 +1,5 @@
+import {MANAGED_DATABASE_BACKUP_CAPABILITY, MANAGED_DATABASE_BACKUP_RECEIPT_PATH, managedDatabaseBackupAgentCommandSchema, managedDatabaseBackupPreparationSchema, managedDatabaseBackupReceiptQuerySchema, managedDatabaseBackupReceiptSchema, managedDatabaseBackupCachedReceiptSchema, type ManagedDatabaseBackupAgentCommandV1, type ManagedDatabaseBackupReceiptQueryV1, type ManagedDatabaseBackupReceiptV1} from "@deploylite/contracts";
+import {managedDatabaseBackupExecutionDigest, managedDatabaseBackupReceiptMatches, managedDatabaseBackupReplayFingerprint} from "@deploylite/domain";
 import {MANAGED_DATABASE_DELETE_CAPABILITY,MANAGED_DATABASE_DELETE_RECEIPT_PATH,managedDatabaseDeleteAgentCommandSchema,managedDatabaseDeleteReceiptQuerySchema,managedDatabaseDeleteReceiptSchema,managedDatabaseDeleteCachedReceiptSchema,type ManagedDatabaseDeleteAgentCommandV1,type ManagedDatabaseDeleteReceiptQueryV1,type ManagedDatabaseDeleteReceiptV1} from "@deploylite/contracts";
 import {managedDatabaseDeleteExecutionDigest,managedDatabaseDeleteReceiptMatches,managedDatabaseDeleteReplayFingerprint} from "@deploylite/domain";
 import {MANAGED_DATABASE_LOGS_CAPABILITY, MANAGED_DATABASE_LOGS_PATH, managedDatabaseLogsObservationSchema, type ManagedDatabaseLogsAgentQueryV1, type ManagedDatabaseLogsObservationV1} from "@deploylite/contracts";
@@ -52,7 +54,8 @@ export type AgentManagedDatabaseStartExecutor = {start(command:ManagedDatabaseSt
 export type AgentManagedDatabaseDeleteExecutor={delete(command:ManagedDatabaseDeleteAgentCommandV1,authority:RuntimeExecutionAuthority & {assertConfirmed(authority:ProjectControlAuthorityV1,id:string):Promise<void>},signal:AbortSignal):Promise<ManagedDatabaseDeleteReceiptV1>};
 export type AgentManagedDatabaseStopExecutor = {stop(command:ManagedDatabaseStopAgentCommandV1,authority:RuntimeExecutionAuthority,signal:AbortSignal):Promise<ManagedDatabaseStopReceiptV1>};
 export type AgentManagedDatabaseRuntimeExecutor = {apply(command: ManagedDatabaseRuntimeAgentCommandV1, authority: RuntimeExecutionAuthority, signal: AbortSignal): Promise<ManagedDatabaseRuntimeReceiptV1>};
-export type AgentCommandReceiverOptions = Readonly<{ agentId: string; trustKey: string; capabilities: readonly string[]; dispatcher: AgentCommandDispatcher; stopDispatcher?: AgentStopDispatcher; networkAttachment?: AgentNetworkAttachmentExecutor; volumeBackup?: AgentVolumeBackupExecutor; volumeAttachment?: AgentComposeVolumeAttachmentExecutor; resourceCleanup?: AgentComposeResourceCleanupExecutor; domainRouteApply?: AgentDomainRouteApplyExecutor; transportPortApply?: AgentTransportPortApplyExecutor; managedDatabaseRuntime?: AgentManagedDatabaseRuntimeExecutor; managedDatabaseStop?: AgentManagedDatabaseStopExecutor; managedDatabaseDelete?:AgentManagedDatabaseDeleteExecutor; managedDatabaseStart?: AgentManagedDatabaseStartExecutor; managedDatabaseHealth?: AgentManagedDatabaseHealthReader; managedDatabaseMetrics?: AgentManagedDatabaseMetricsReader; managedDatabaseLogs?: AgentManagedDatabaseLogsReader; resourceInspector?: ComposeResourceInspector; replayStore: AgentReplayStore; authorityValidator?: DeploymentAuthorityValidation; now?: () => number }>;
+export type AgentManagedDatabaseBackupExecutor = {execute(command:ManagedDatabaseBackupAgentCommandV1,authority:ComposeVolumeBackupAuthority,signal:AbortSignal):Promise<ManagedDatabaseBackupReceiptV1>};
+export type AgentCommandReceiverOptions = Readonly<{ agentId: string; trustKey: string; capabilities: readonly string[]; dispatcher: AgentCommandDispatcher; stopDispatcher?: AgentStopDispatcher; networkAttachment?: AgentNetworkAttachmentExecutor; volumeBackup?: AgentVolumeBackupExecutor; volumeAttachment?: AgentComposeVolumeAttachmentExecutor; resourceCleanup?: AgentComposeResourceCleanupExecutor; domainRouteApply?: AgentDomainRouteApplyExecutor; transportPortApply?: AgentTransportPortApplyExecutor; managedDatabaseRuntime?: AgentManagedDatabaseRuntimeExecutor; managedDatabaseStop?: AgentManagedDatabaseStopExecutor; managedDatabaseBackup?:AgentManagedDatabaseBackupExecutor; managedDatabaseDelete?:AgentManagedDatabaseDeleteExecutor; managedDatabaseStart?: AgentManagedDatabaseStartExecutor; managedDatabaseHealth?: AgentManagedDatabaseHealthReader; managedDatabaseMetrics?: AgentManagedDatabaseMetricsReader; managedDatabaseLogs?: AgentManagedDatabaseLogsReader; resourceInspector?: ComposeResourceInspector; replayStore: AgentReplayStore; authorityValidator?: DeploymentAuthorityValidation; now?: () => number }>;
 
 export class AuthenticatedAgentCommandReceiver {
   readonly #options: AgentCommandReceiverOptions;
@@ -65,6 +68,7 @@ export class AuthenticatedAgentCommandReceiver {
       && (capability !== MANAGED_DATABASE_METRICS_CAPABILITY || Boolean(options.managedDatabaseMetrics && options.replayStore.durable === true && typeof options.replayStore.lookupByFingerprintDigest === "function"))
       && (capability !== MANAGED_DATABASE_START_CAPABILITY || Boolean(options.managedDatabaseStart && options.replayStore.durable === true && options.replayStore.lookup && options.replayStore.lookupByFingerprintDigest))
       && (capability !== MANAGED_DATABASE_DELETE_CAPABILITY || Boolean(options.managedDatabaseDelete&&options.replayStore.durable===true&&options.replayStore.lookup&&options.replayStore.lookupByFingerprintDigest&&options.authorityValidator?.validateProjectUpdateAuthority&&options.authorityValidator?.validateConfirmedProjectUpdateAuthority))
+      && (capability !== MANAGED_DATABASE_BACKUP_CAPABILITY || Boolean(options.managedDatabaseBackup && options.replayStore.durable === true && options.replayStore.lookup && options.replayStore.lookupByFingerprintDigest && options.authorityValidator?.validateProjectUpdateAuthority))
       && (capability !== MANAGED_DATABASE_STOP_CAPABILITY || Boolean(options.managedDatabaseStop && options.replayStore.durable === true && options.replayStore.lookup && options.replayStore.lookupByFingerprintDigest))
       && (capability !== COMPOSE_RESOURCE_INSPECTION_CAPABILITY || Boolean(options.resourceInspector))
       && (capability !== COMPOSE_VOLUME_ATTACHMENT_CAPABILITY || Boolean(options.volumeAttachment))
@@ -336,6 +340,7 @@ export class AuthenticatedAgentCommandReceiver {
     if (typeof body === "object" && body !== null && (body as { action?: string }).action === "domain.route.apply") return this.receiveDomainRouteApply(body, signal);
     if (typeof body === "object" && body !== null && (body as {action?: string}).action === "database.runtime.start") return this.receiveManagedDatabaseStart(body, signal);
     if(typeof body==="object"&&body!==null&&(body as {action?:string}).action==="database.runtime.delete")return this.receiveManagedDatabaseDelete(body,signal);
+    if (typeof body === "object" && body !== null && (body as {action?: string}).action === "database.runtime.backup") return this.receiveManagedDatabaseBackup(body, signal);
     if (typeof body === "object" && body !== null && (body as {action?: string}).action === "database.runtime.stop") return this.receiveManagedDatabaseStop(body, signal);
     if (typeof body === "object" && body !== null && (body as {action?: string}).action === "database.runtime") return this.receiveManagedDatabaseRuntime(body, signal);
     if (typeof body === "object" && body !== null && (body as { action?: string }).action === "transport.port.apply") return this.receiveTransportPortApply(body, signal);
@@ -844,6 +849,75 @@ export class AuthenticatedAgentCommandReceiver {
         await awaitAbortable(()=>authority.assertValid(),admission.signal);
         const receipt=managedDatabaseDeleteReceiptSchema.parse(await awaitAbortable(()=>this.#options.managedDatabaseDelete!.delete(command,authority,admission.signal),admission.signal));
         if(!this.matchesDatabaseDeleteReceipt(command,receipt))throw new FenceError("Database deletion receipt scope rejected");
+        await awaitAbortable(()=>authority.assertValid(),admission.signal);
+        await awaitAbortable(()=>this.#options.replayStore.complete(command.commandId,{fingerprint,claimToken:claim.claimToken!,receipt}),admission.signal);
+        return receipt;
+      } finally {admission.dispose();}
+    } finally {clearTimeout(timer);external?.removeEventListener("abort",cancel);}
+  }
+  private databaseBackupPreparation(value:ManagedDatabaseBackupAgentCommandV1|ManagedDatabaseBackupReceiptQueryV1) {
+    return managedDatabaseBackupPreparationSchema.parse(Object.fromEntries(
+      Object.keys(managedDatabaseBackupPreparationSchema.innerType().shape).map(key=>[key,value[key as keyof typeof value]])
+    ));
+  }
+  private databaseBackupQuery(value:ManagedDatabaseBackupAgentCommandV1|ManagedDatabaseBackupReceiptQueryV1) {
+    const {cancellationRequested:_cancel,...query}=value as ManagedDatabaseBackupAgentCommandV1;
+    return managedDatabaseBackupReceiptQuerySchema.parse(query);
+  }
+  async readManagedDatabaseBackupReceipt(body:unknown,signature:string|undefined,signal?:AbortSignal) {
+    if(signal?.aborted)throw new TransportCanceledError();
+    if(!this.verifyRequest(`POST ${MANAGED_DATABASE_BACKUP_RECEIPT_PATH}\n${JSON.stringify(body)}`,signature))throw new Error("agent authentication failed");
+    const query=managedDatabaseBackupReceiptQuerySchema.parse(structuredClone(body));
+    if(query.agentId!==this.#options.agentId || query.inputDigest!==managedDatabaseBackupExecutionDigest(this.databaseBackupPreparation(query))
+      || this.#options.replayStore.durable!==true || !this.#options.replayStore.lookup)throw new FenceError("Database backup cache scope rejected");
+    const raw=await this.lookupReplay(query.commandId,managedDatabaseBackupReplayFingerprint(query),query.timeoutMs,signal);
+    const receipt=raw===null?null:managedDatabaseBackupReceiptSchema.parse(raw);
+    if(receipt&&!managedDatabaseBackupReceiptMatches(query,receipt))throw new FenceError("Cached database backup evidence rejected");
+    return managedDatabaseBackupCachedReceiptSchema.parse({schemaVersion:1,action:query.action,agentId:this.#options.agentId,
+      commandId:query.commandId,correlationId:query.context.correlationId,receipt});
+  }
+  private async receiveManagedDatabaseBackup(body:unknown,external?:AbortSignal):Promise<ManagedDatabaseBackupReceiptV1> {
+    const command=managedDatabaseBackupAgentCommandSchema.parse(structuredClone(body));
+    if(!this.#options.managedDatabaseBackup||!this.#options.capabilities.includes(MANAGED_DATABASE_BACKUP_CAPABILITY))throw new CapabilityError(MANAGED_DATABASE_BACKUP_CAPABILITY);
+    if(command.agentId!==this.#options.agentId||command.inputDigest!==managedDatabaseBackupExecutionDigest(this.databaseBackupPreparation(command)))throw new FenceError("Database backup scope rejected");
+    const query=this.databaseBackupQuery(command),fingerprint=managedDatabaseBackupReplayFingerprint(query);
+    const controller=new AbortController(),cancel=()=>controller.abort(new TransportCanceledError());
+    external?.addEventListener("abort",cancel,{once:true});if(external?.aborted)cancel();
+    const timer=setTimeout(()=>controller.abort(new TransportTimeoutError()),command.timeoutMs);
+    try {
+      const cached=await this.lookupReplay(command.commandId,fingerprint,command.timeoutMs,controller.signal);
+      if(cached){
+        const receipt=managedDatabaseBackupReceiptSchema.parse(cached);
+        if(!managedDatabaseBackupReceiptMatches(query,receipt))throw new FenceError("Cached database backup evidence rejected");
+        return receipt;
+      }
+      const now=this.#options.now??Date.now;
+      if(now()>=command.lease.expiresAt)throw new LeaseExpiredError();
+      this.validateFence(command.lease,command.projectId);
+      const validator=this.#options.authorityValidator?.validateProjectUpdateAuthority?.bind(this.#options.authorityValidator);
+      if(!validator)throw new FenceError("Persisted project update authority reader required");
+      const authority:ComposeVolumeBackupAuthority={projectId:command.projectId,commandId:command.commandId,inputDigest:command.inputDigest,expiresAt:command.lease.expiresAt,
+        assertValid:async()=>{
+          await validator(structuredClone(command.authority),now());
+          if(now()>=command.lease.expiresAt)throw new LeaseExpiredError();
+          this.validateFence(command.lease,command.projectId);
+        }};
+      const admission=this.admission(command.timeoutMs,command.lease,controller.signal);
+      try {
+        await awaitAbortable(()=>authority.assertValid(),admission.signal);
+        const original=await awaitAbortable(()=>this.#options.replayStore.lookupByFingerprintDigest!(command.originalReceipt.commandId,command.originalReplayFingerprint),admission.signal);
+        if(original===null||protocolPayloadFingerprint(managedDatabaseRuntimeReceiptSchema.parse(original))!==protocolPayloadFingerprint(command.originalReceipt))throw new FenceError("Original database ready cache required");
+        await awaitAbortable(()=>authority.assertValid(),admission.signal);
+        const claim=await this.claimReplay(command.commandId,fingerprint,command.lease,admission.signal);
+        if(!claim.claimed){
+          const receipt=managedDatabaseBackupReceiptSchema.parse(claim.receipt??await awaitAbortable(()=>this.#options.replayStore.wait(command.commandId),admission.signal));
+          if(!managedDatabaseBackupReceiptMatches(query,receipt))throw new FenceError("Replayed database backup evidence rejected");
+          return receipt;
+        }
+        if(!claim.claimToken)throw new FenceError("Database backup replay claim token missing");
+        await awaitAbortable(()=>authority.assertValid(),admission.signal);
+        const receipt=managedDatabaseBackupReceiptSchema.parse(await awaitAbortable(()=>this.#options.managedDatabaseBackup!.execute(command,authority,admission.signal),admission.signal));
+        if(!managedDatabaseBackupReceiptMatches(query,receipt))throw new FenceError("Database backup evidence rejected");
         await awaitAbortable(()=>authority.assertValid(),admission.signal);
         await awaitAbortable(()=>this.#options.replayStore.complete(command.commandId,{fingerprint,claimToken:claim.claimToken!,receipt}),admission.signal);
         return receipt;
