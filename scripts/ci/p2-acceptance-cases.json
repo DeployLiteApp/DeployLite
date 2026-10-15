@@ -1431,7 +1431,9 @@
     "apps/api/src/managed-database-backup-transport.ts",
     "apps/api/src/managed-database-backup-transport.test.ts",
     "apps/api/src/managed-database-backup.ts",
-    "apps/api/src/managed-database-backup.test.ts"
+    "apps/api/src/managed-database-backup.test.ts",
+    "apps/api/src/managed-database-backup-route.ts",
+    "apps/api/src/managed-database-backup-route.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
