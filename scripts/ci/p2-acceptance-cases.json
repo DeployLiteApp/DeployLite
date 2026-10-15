@@ -1483,7 +1483,9 @@
     "apps/api/src/managed-database-backup-route.ts",
     "apps/api/src/managed-database-backup-route.test.ts",
     "packages/db/src/repositories/control-plane-database-restore.test.ts",
-    "packages/db/src/managed-database-restore-postgres.cases.ts"
+    "packages/db/src/managed-database-restore-postgres.cases.ts",
+    "apps/api/src/managed-database-restore-transport.ts",
+    "apps/api/src/managed-database-restore-transport.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
