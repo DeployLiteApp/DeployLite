@@ -1,4 +1,4 @@
-import {prepareManagedDatabaseRestore} from "./managed-database-restore-prepare.js";
+import {prepareManagedDatabaseRestore,type ManagedDatabaseRestorePreparationAccess} from "./managed-database-restore-prepare.js";
 import {createPrivateNativeRestoreArchive} from "../../agent/src/infrastructure/docker/docker-managed-database-restore-archive.js";
 import {spawn} from "node:child_process";
 import {restoreNativeMongoFixture} from "./testing/p5-native-mongo-decoder.js";
@@ -135,12 +135,12 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const address = peer.server.address(); if (!address || typeof address === "string") throw new Error("Owned peer address required.");
     return "http://127.0.0.1:" + address.port;
   }
-  const build = (endpoint:string, key?:string,deleteOverride?:ReadonlyMap<string,ManagedDatabaseDeleteApplyAccess>) => buildApiApp({
+  const build = (endpoint:string, key?:string,deleteOverride?:ReadonlyMap<string,ManagedDatabaseDeleteApplyAccess>,restoreOverride?:ReadonlyMap<string,ManagedDatabaseRestorePreparationAccess>) => buildApiApp({
     ...(dump?{composeVolumeBackupPlans:new Map([[projectId,{profiles:new Map([["private-native",{owner:"deploylite" as const,projectId,agentId,profileId:"private-native",destinationId:"private-native",maxBytes:backupMaxBytes,maxEntries:100,maxDurationMs:60000,planTtlMs:60000}]]),store:{available:()=>true,save:async()=>{throw new Error("Compose planning is outside this fixture.");}}}]])}:{}),
-    ...(deleteOverride?{managedDatabaseDeleteExecutions:deleteOverride,managedDatabaseCredentials:{profiles:new Map(engines.map(engine=>[engine,profiles[engine]!])),projectIds:new Set([projectId]),deadlineMs:60000},imagePolicy}:{}),db:{pool:db.pool,client:db.db},authConfig:{cookieName:"dl_operator_session",cookieSecure:false,sessionTtlSeconds:3600},
+    ...((deleteOverride||restoreOverride)?{managedDatabaseRestorePreparations:restoreOverride,managedDatabaseDeleteExecutions:deleteOverride,managedDatabaseCredentials:{profiles:new Map(engines.map(engine=>[engine,profiles[engine]!])),projectIds:new Set([projectId]),deadlineMs:60000},imagePolicy}:{}),db:{pool:db.pool,client:db.db},authConfig:{cookieName:"dl_operator_session",cookieSecure:false,sessionTtlSeconds:3600},
     env:{...process.env,NODE_ENV:"test",DATABASE_URL:"postgres://deploylite:deploylite-ci-only@127.0.0.1:" + scope.postgresPort + "/" + db.databaseName,DEPLOYLITE_BCRYPT_COST:"10",DEPLOYLITE_SECRET_KEY:key,DEPLOYLITE_AGENT_URL:endpoint,
-      DEPLOYLITE_AGENT_ID:agentId,DEPLOYLITE_AGENT_TRUST_KEY:trustKey,DEPLOYLITE_MANAGED_DATABASE_RUNTIME:deleteOverride?undefined:raw,
-      DEPLOYLITE_MANAGED_DATABASE_PROJECT_AGENTS_JSON:deleteOverride?undefined:JSON.stringify([{projectId,agentId}])}});
+      DEPLOYLITE_AGENT_ID:agentId,DEPLOYLITE_AGENT_TRUST_KEY:trustKey,DEPLOYLITE_MANAGED_DATABASE_RUNTIME:(deleteOverride||restoreOverride)?undefined:raw,
+      DEPLOYLITE_MANAGED_DATABASE_PROJECT_AGENTS_JSON:(deleteOverride||restoreOverride)?undefined:JSON.stringify([{projectId,agentId}])}});
   try {
     await dump?.open();
     await runner.run(["docker","pull",profile.image],signal);
@@ -346,7 +346,14 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
       originalTransport:new AuthenticatedManagedDatabaseRuntimeTransport({endpoint,agentId,trustKey,timeoutMs:5000,allowInsecureInternal:true}),agentId,deadlineMs:5000,now:Date.now,commandTtlMs:10000});
     const pendingRestore=await prepareManagedDatabaseRestore(restoreAccess(),pendingRestoreInput);
     expect(pendingRestore.idempotent).toBe(false);expect(pendingRestore.confirmation.consumedAt).toBeNull();expect(pendingRestore.command).not.toHaveProperty("projectExecutionAuthority");
-    await app!.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(true);app=await build(endpoint,"managed_database_fixture_key_1234567890");
+    const restorePrepareCall=()=>app!.inject({method:"POST",url:`/api/v1/projects/${projectId}/databases/${databaseId}/runtime/restore/prepare`,headers:{cookie,"idempotency-key":pendingRestoreInput.idempotencyKey},
+      payload:(({projectId:_project,databaseId:_database,...body})=>body)(restoreSelection)});
+    await app!.close();app=undefined;app=await build(endpoint,"managed_database_fixture_key_1234567890",undefined,new Map([[projectId,restoreAccess()]]));
+    const originalApiPending=await restorePrepareCall();expect(originalApiPending.statusCode).toBe(200);const pendingApi=originalApiPending.json().data;
+    expect(pendingApi).toMatchObject({idempotent:true,command:{id:pendingRestore.command.id,status:"pending_confirmation"},confirmation:{id:pendingRestore.confirmation.id,classification:"destructive",consumedAt:null}});
+    expect(Object.keys(pendingApi).sort()).toEqual(["command","confirmation","idempotent"]);expect(pendingApi.command).not.toHaveProperty("projectExecutionAuthority");
+    await app!.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(true);app=await build(endpoint,"managed_database_fixture_key_1234567890",undefined,new Map([[projectId,restoreAccess()]]));
+    const reopenedApiPending=await restorePrepareCall();expect(reopenedApiPending.statusCode).toBe(200);expect(reopenedApiPending.json().data).toEqual(pendingApi);
     const samePendingRestore=await prepareManagedDatabaseRestore(restoreAccess(),{...pendingRestoreInput,context:{requestId:randomUUID(),correlationId:randomUUID()}});
     expect(samePendingRestore.command).toEqual(pendingRestore.command);expect(samePendingRestore.confirmation).toEqual(pendingRestore.confirmation);expect(samePendingRestore.preparation).toEqual(pendingRestore.preparation);expect(samePendingRestore.idempotent).toBe(true);
     expect((await db.pool.query("SELECT consumed_at FROM control_command_confirmations WHERE command_id=$1",[pendingRestore.command.id])).rows).toEqual([{consumed_at:null}]);
@@ -354,7 +361,8 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const pendingCommand=pendingRestore.command;
     nativeBackup.pendingRestore={commandId:pendingCommand.id,confirmationId:pendingRestore.confirmation.id,actorId,projectId,databaseId,engine,
       inputDigest:pendingCommand.inputDigest,idempotencyKey:pendingCommand.idempotencyKey,correlationId:pendingCommand.correlationId,expiresAt:pendingCommand.expiresAt.getTime(),
-      status:"pending_confirmation",classification:"destructive",consumedAt:null,reopen:"passed",sameOriginalKey:"passed",sameOriginalNonce:"passed",dispatches:0};
+      status:"pending_confirmation",classification:"destructive",consumedAt:null,reopen:"passed",sameOriginalKey:"passed",sameOriginalNonce:"passed",dispatches:0,authenticatedApi:"passed"};
+    await app!.close();app=undefined;app=await build(endpoint,"managed_database_fixture_key_1234567890");
 
     const inventoryAfterStart = await recoveredInventory(stopped,originalStopReplayFingerprint);
     const runningAfterStart=await currentHealth("running");expect(healthDispatches).toBe(3);
