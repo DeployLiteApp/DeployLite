@@ -80,7 +80,7 @@ def fixture(engine="postgres"):
     result["confirmedDeletion"]={"projectId":project,"receipt":deleted,"originalSources":"passed","apiTransport":"passed","prepareControl":"passed","prepareRoute":"passed","applyControl":"passed","applyRoute":"passed","inventoryRetirement":"passed","signatureRejected":"passed","confirmationRejected":"passed","originalNonce":"passed","signedHttp":"passed","effects":1,"rollback":"passed","cacheOnlyReopen":"passed","executorRemoved":"passed","retirement":"passed","retainedStorage":"passed","audit":"passed","originalRows":"unchanged","cipher":"unchanged"}
     result["confirmedDeletion"]["browserDeletion"]={**{key:result["browserAcceptance"][key] for key in ("sourceCommit","engine","projectId","databaseId","browser","context")},"preparation":"passed","confirmation":"passed","recovery":"passed","sameOriginalKey":"passed","inventory":"passed","reload":"passed","retainedStorage":"passed","requests":7}
     result=with_inventory(result,profile)
-    if engine=="postgres":add_native_backup(result,profile)
+    if engine in ("postgres","mysql","mariadb"):add_native_backup(result,profile)
     return result,profile
 def with_inventory(result, profile):
     result = copy.deepcopy(result)
@@ -367,9 +367,11 @@ def add_native_backup(result,profile):
     source.update(profileId=profile["profileId"],originalReceipt=ready,originalReplayFingerprint=result["nativeStop"]["originalReplayFingerprint"])
     receipt.update(action="database.runtime.backup",commandId="66666666-6666-4666-8666-666666666666",originalCommandId=ready["commandId"],profileId=profile["profileId"],
         inputDigest=digest({**source,"action":"project.update","scope":{"kind":"project","projectId":ready["projectId"]},"operation":"database.runtime.backup","destinationId":"private-native","maxBytes":2097152}),
-        correlationId="backup-correlation",volumeKey="db-orders",observedAt=1500,destinationId="private-native",sourceDigest=digest(source),format="postgres-custom-gzip",consistency="native-snapshot",
+        correlationId="backup-correlation",volumeKey="db-orders",observedAt=1500,destinationId="private-native",sourceDigest=digest(source),format="postgres-custom-gzip" if profile["engine"]=="postgres" else profile["engine"]+"-sql-gzip",consistency="native-snapshot" if profile["engine"]=="postgres" else "global-read-lock",
         status="created",archiveId="backup_"+hashlib.sha256((ready["projectId"]+"\0"+"66666666-6666-4666-8666-666666666666"+"\0private-native").encode()).hexdigest()[:32],archiveBytes=512,archiveSha256="2"*64,manifestSha256="3"*64,idempotent=False)
     proof={"receipt":receipt,"maxBytes":2097152,"captures":1,**{key:"passed" for key in ("signedHttp","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup")}}
+    if profile["engine"] in ("mysql","mariadb"):proof["writersResumed"]="passed"
+    else:proof.update(restoredData="passed",restoreCleanup="passed")
     result["nativeBackup"]=proof
     return result,profile
 
@@ -394,6 +396,23 @@ class NativeBackupProof(unittest.TestCase):
         for patch in ({"containerId":"0"*64},{"sourceDigest":"0"*64},{"inputDigest":"0"*64},{"originalCommandId":"foreign"},{"archiveBytes":2097153},{"format":"mysql-sql-gzip"},{"idempotent":True},{"password":"private"}):
             changed=copy.deepcopy(result);changed["nativeBackup"]["receipt"].update(patch)
             with self.assertRaises(RuntimeError):module.validate_native_backup(changed,profile)
+
+class SqlNativeBackupProof(unittest.TestCase):
+    def test_accepts_actual_mysql_dump_and_resumed_writers(self):
+        result,profile=fixture("mysql");add_native_backup(result,profile);self.assertEqual(module.validate_result(result,profile),result)
+    def test_accepts_actual_mariadb_dump_and_resumed_writers(self):
+        result,profile=fixture("mariadb");add_native_backup(result,profile);self.assertEqual(module.validate_result(result,profile),result)
+    def test_refuses_unproved_writer_resume(self):
+        for engine in ("mysql","mariadb"):
+            result,profile=fixture(engine);add_native_backup(result,profile)
+            for value in (None,"skipped","pending"):
+                changed=copy.deepcopy(result)
+                if value is None:del changed["nativeBackup"]["writersResumed"]
+                else:changed["nativeBackup"]["writersResumed"]=value
+                with self.assertRaises(RuntimeError):module.validate_native_backup(changed,profile)
+    def test_does_not_accept_sql_global_lock_for_other_engines(self):
+        result,profile=fixture();result["nativeBackup"]["receipt"]["consistency"]="global-read-lock"
+        with self.assertRaises(RuntimeError):module.validate_native_backup(result,profile)
 
 if __name__ == "__main__":
     unittest.main()

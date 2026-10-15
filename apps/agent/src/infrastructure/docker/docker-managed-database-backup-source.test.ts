@@ -1,7 +1,7 @@
 import {expect,it} from "vitest";
 import {managedDatabaseRuntimeReceiptSchema,type ManagedDatabaseEngineV1} from "@deploylite/contracts";
 import {planManagedDatabaseProfile,managedDatabaseRuntimeExecutionDigest} from "@deploylite/domain";
-import {buildManagedDatabaseBackupSource} from "./docker-managed-database-backup-source.js";
+import {buildManagedDatabaseBackupSource,buildConsistentManagedDatabaseBackupArgv} from "./docker-managed-database-backup-source.js";
 const engines=["postgres","mysql","mariadb","mongodb","redis"] as const;
 function fixture(engine:ManagedDatabaseEngineV1="postgres"){
  const imagePolicy={policyVersion:"images-1",trustedHosts:["registry.example.com"],allowTags:false,allowDigests:true};
@@ -31,6 +31,23 @@ it("keeps database credentials out of host argv and requires real dump pipeline 
  const m=buildManagedDatabaseBackupSource(fixture("mongodb").source,fixture("mongodb").options)!;expect(m.argv?.at(-1)).toContain("--config=/dev/stdin");
 });
 it("does not turn native dump metadata into a database consistency claim",()=>{
- const expected={postgres:"native-snapshot",mysql:"transactional-tables",mariadb:"transactional-tables",mongodb:"quiesced-writes",redis:"all-consumers-stopped"};
+ const expected={postgres:"native-snapshot",mysql:"global-read-lock",mariadb:"global-read-lock",mongodb:"quiesced-writes",redis:"all-consumers-stopped"};
  for(const engine of engines){const f=fixture(engine);expect(buildManagedDatabaseBackupSource(f.source,f.options)).toMatchObject({consistencyRequirement:expected[engine],executionAllowed:false});}
 });
+
+it.each(["mysql","mariadb"] as const)("requires %s whole dump read lock and container-owned authority deadline",engine=>{
+ const f=fixture(engine),source=buildManagedDatabaseBackupSource(f.source,f.options);
+ expect(source.consistencyRequirement).toBe("global-read-lock");
+ const argv=buildConsistentManagedDatabaseBackupArgv(source,5000),script=argv.at(-1)!;
+ expect(argv.slice(0,-1)).toEqual(source.argv!.slice(0,-1));expect(script).toContain("--lock-all-tables");expect(script).not.toContain("--single-transaction");
+ expect(script).toContain("date +%s%3N");expect(script).toContain("5000");expect(script).toContain("timeout --signal=TERM --kill-after=1s");expect(script).toContain("pipefail");
+ expect(script).toContain("remaining");expect(script).toContain("1000");expect(script).toContain("exec timeout");
+});
+it("refuses a SQL capture with an invalid authority deadline before process dispatch",()=>{
+ const f=fixture("mysql"),source=buildManagedDatabaseBackupSource(f.source,f.options);
+ for(const deadline of [0,-1,1.2,NaN,Number.MAX_SAFE_INTEGER+1])expect(()=>buildConsistentManagedDatabaseBackupArgv(source,deadline)).toThrow();
+});
+
+it("keeps MariaDB native archive database-neutral for isolated restore",()=>{const f=fixture("mariadb");expect(buildManagedDatabaseBackupSource(f.source,f.options).argv!.at(-1)).not.toContain("--databases");});
+
+it("omits global GTID mutation from scoped MySQL restore archive",()=>{const f=fixture("mysql");expect(buildManagedDatabaseBackupSource(f.source,f.options).argv!.at(-1)).toContain("--set-gtid-purged=OFF");});

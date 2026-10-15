@@ -5,7 +5,7 @@ import type {DockerProcessRunner} from "./docker-process-runner.js";
 import type {createManagedDatabaseReadinessVerifier} from "./docker-managed-database-readiness.js";
 import type {createPrivateNativeBackupArchive} from "./docker-managed-database-backup-archive.js";
 import type {ComposeVolumeBackupAuthority} from "./docker-compose-volume-backup.js";
-import {buildManagedDatabaseBackupSource} from "./docker-managed-database-backup-source.js";
+import {buildManagedDatabaseBackupSource,buildConsistentManagedDatabaseBackupArgv} from "./docker-managed-database-backup-source.js";
 
 type Verifier = ReturnType<typeof createManagedDatabaseReadinessVerifier>;
 function fail():never {throw new Error("Database backup execution is unavailable.");}
@@ -35,7 +35,7 @@ export function createManagedDatabaseBackupExecutor(supplied:Readonly<{
       const preparation=managedDatabaseBackupPreparationSchema.parse(Object.fromEntries(
         Object.keys(managedDatabaseBackupPreparationSchema.innerType().shape).map(key=>[key,command[key as keyof typeof command]])
       ));
-      if (command.engine !== "postgres" || command.inputDigest !== managedDatabaseBackupExecutionDigest(preparation)
+      if (!["postgres","mysql","mariadb"].includes(command.engine) || command.inputDigest !== managedDatabaseBackupExecutionDigest(preparation)
         || command.maxBytes > options.limits.maxBytes || !options.replayStore.durable
         || typeof options.replayStore.lookupByFingerprintDigest !== "function") fail();
       const original=command.originalReceipt,start=options.clock.now();
@@ -58,7 +58,7 @@ export function createManagedDatabaseBackupExecutor(supplied:Readonly<{
       const profile=options.profiles[command.engine];
       const {destinationId:_destination,maxBytes:_bytes,...originalPreparation}=preparation;
       const source=buildManagedDatabaseBackupSource(originalPreparation,{agentId:options.agentId,profile,imagePolicy:options.imagePolicy});
-      if (!source.argv || source.consistencyRequirement !== "native-snapshot") fail();
+      if (!source.argv || !["native-snapshot","global-read-lock"].includes(source.consistencyRequirement)) fail();
       const input={request:{schemaVersion:1 as const,projectId:command.projectId,databaseId:command.databaseId,engine:command.engine},profile,
         commandId:original.commandId,imageId:source.imageId,containerId:source.containerId,environmentFingerprint:source.environmentFingerprint};
       const resources={projectId:command.projectId,databaseId:command.databaseId,commandId:original.commandId,planDigest:source.planDigest,
@@ -80,7 +80,7 @@ export function createManagedDatabaseBackupExecutor(supplied:Readonly<{
             current();if(!(chunk instanceof Uint8Array)||chunk.length>command.maxBytes-bytes)fail();
             bytes+=chunk.length;await write(chunk);current();
           };
-          const captured=await call(()=>options.runner.runBinaryToSink(source.argv!,signal,boundedWrite));
+          const captured=await call(()=>options.runner.runBinaryToSink(buildConsistentManagedDatabaseBackupArgv(source,deadline),signal,boundedWrite));
           if(captured.bytes!==bytes)fail();
           await verify();return captured;
         },boundedAuthority,controller.signal));
@@ -90,7 +90,7 @@ export function createManagedDatabaseBackupExecutor(supplied:Readonly<{
         inputDigest:command.inputDigest,planDigest:command.planDigest,environmentFingerprint:command.environmentFingerprint,correlationId:command.context.correlationId,
         containerId:source.containerId,imageId:source.imageId,volumeName:source.volumeName,networkName:source.networkName,networkId:source.networkId,
         volumeCreatedAt:source.volumeCreatedAt,volumeKey:"db-"+command.databaseId,observedAt:current(),destinationId:command.destinationId,sourceDigest,format:source.format,
-        consistency:"native-snapshot",status:result.idempotent?"already-created":"created",storage:"verified",...result});
+        consistency:source.consistencyRequirement,status:result.idempotent?"already-created":"created",storage:"verified",...result});
       const {cancellationRequested:_cancel,...query}=command;
       if (!managedDatabaseBackupReceiptMatches(query,receipt)) fail();
       return Object.freeze(receipt);

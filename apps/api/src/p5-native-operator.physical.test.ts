@@ -1,3 +1,4 @@
+import {restoreNativeSqlFixture} from "./testing/p5-native-sql-decoder.js";
 import {decodeNativePostgresFixture} from "./testing/p5-native-postgres-decoder.js";
 import {nativeDumpFixture} from "./testing/p5-native-backup-fixture.js";
 import {applyManagedDatabaseDelete,type ManagedDatabaseDeleteApplyAccess} from "./managed-database-delete-apply.js";
@@ -43,9 +44,9 @@ const evidence: Record<string, unknown> = {}, actualFetch = globalThis.fetch;
 beforeAll(async () => { session = await openOperatorSession(); }, 70000);
 function requiredSession() { if (!session) throw new Error("Owned operator session unavailable."); return session; }
 const marker = "p5-persistent-value";
-function probe(engine:ManagedDatabaseEngineV1, write:boolean, hostname = "127.0.0.1") {
+function probe(engine:ManagedDatabaseEngineV1, write:boolean, hostname = "127.0.0.1",statement?:string) {
   if (!/^(127\.0\.0\.1|db-[a-z][a-z0-9_-]{0,59})$/.test(hostname)) throw new Error("Scoped fixture hostname required.");
-  const sql = write ? "CREATE TABLE IF NOT EXISTS p5_probe (value varchar(64)); DELETE FROM p5_probe; INSERT INTO p5_probe VALUES ('p5-persistent-value');" : "SELECT value FROM p5_probe;";
+  const sql = statement ?? (write ? "CREATE TABLE IF NOT EXISTS p5_probe (value varchar(64)); DELETE FROM p5_probe; INSERT INTO p5_probe VALUES ('p5-persistent-value');" : "SELECT value FROM p5_probe;");
   if (engine === "postgres") return `PGPASSWORD="$POSTGRES_PASSWORD" psql --host ${hostname} --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --no-password --tuples-only --no-align --command "${sql}"`;
   if (engine === "mysql" || engine === "mariadb") {
     const prefix = engine === "mysql" ? "MYSQL" : "MARIADB", binary = engine === "mysql" ? "mysql" : "mariadb";
@@ -61,7 +62,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
   let network: ManagedDatabaseFreshResources["network"] | undefined, originalCommandId: string | undefined, originalPlanDigest: string | undefined;
   let statsDispatches=0, logReads=0, legacyPhase=true, backupCaptures=0;
   const backupMaxBytes=2097152, backupRoot=resolve(process.env.RUNNER_TEMP!,"deploylite-p5-native-private-"+projectId);
-  const dump=engine==="postgres"?nativeDumpFixture(backupRoot):undefined;
+  const dump=["postgres","mysql","mariadb"].includes(engine)?nativeDumpFixture(backupRoot):undefined;
   let nativeBackup:Record<string,unknown>|undefined;
   let browserFixture: Awaited<ReturnType<typeof openDatabaseBrowser>> | undefined;
   const logRequests: string[][] = [];
@@ -163,6 +164,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     expect(apply.json().data.command.status).toBe("completed");
     const receipt = managedDatabaseRuntimeReceiptSchema.parse(apply.json().data.receipt);
     expect(receipt.status).toBe("ready"); if (!receipt.containerId || !receipt.imageId) throw new Error("Original daemon identity required.");
+    const originalContainerId=receipt.containerId;
     pinned = original(); expect(receipt).toMatchObject({commandId:pinned.commandId,planDigest:pinned.planDigest,networkId:pinned.network.id,volumeCreatedAt:pinned.volume.createdAt});
     const input = {request:{schemaVersion:1,projectId,databaseId,engine},profile,commandId:receipt.commandId,imageId:receipt.imageId,containerId:receipt.containerId,environmentFingerprint:receipt.environmentFingerprint};
     const verifier = createManagedDatabaseReadinessVerifier({...shared,nativeInspector:inspector,resourceVerifier:resources,
@@ -171,10 +173,13 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const ready = await verifier.verify(input,pinned,authority,signal); expect(ready.uid).toBeGreaterThan(0);
     await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,true)],signal);
     for (const hostname of ["127.0.0.1",connection.hostname]) expect((await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,false,hostname)],signal)).stdout.trim()).toBe(marker);
+    const sqlDump=engine==="mysql"||engine==="mariadb";
+    if(sqlDump)await runner.run(["docker","exec",receipt.containerId,"sh","-ec",probe(engine,true,"127.0.0.1","CREATE TABLE p5_nontransactional(value varchar(64)) ENGINE=MyISAM; INSERT INTO p5_nontransactional VALUES ('p5-nontransactional-value');")],signal);
     if(dump)nativeBackup=await dump.prove({
       call:()=>call("runtime/backup",{...preparation,originalReceipt:receipt,originalReplayFingerprint:apply.json().data.originalReplayFingerprint,destinationId:"private-native",maxBytes:backupMaxBytes}),
       reopen:async()=>{await app!.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(true);app=await build(endpoint,"managed_database_fixture_key_1234567890");},
-      inventory:()=>new DbBackupInventoryStore(db.db,agentId),verify:()=>verifier.verify(input,pinned!,authority,signal),decode:bytes=>decodeNativePostgresFixture({bytes,containerId:receipt.containerId!,uid:ready.uid,signal}),signal,captures:()=>backupCaptures,maxBytes:backupMaxBytes,originalContainerId:receipt.containerId,uid:ready.uid
+      inventory:()=>new DbBackupInventoryStore(db.db,agentId),verify:()=>verifier.verify(input,pinned!,authority,signal),decode:bytes=>(engine==="mysql"||engine==="mariadb")?restoreNativeSqlFixture({engine,bytes,containerId:originalContainerId,uid:ready.uid,signal}):decodeNativePostgresFixture({bytes,containerId:originalContainerId,uid:ready.uid,signal}),signal,captures:()=>backupCaptures,maxBytes:backupMaxBytes,originalContainerId:receipt.containerId,uid:ready.uid,
+      ...(sqlDump?{writerProbe:async()=>{const resumed=AbortSignal.timeout(5000);await runner.run(["docker","exec",originalContainerId,"sh","-ec",probe(engine,true)],resumed);expect((await runner.run(["docker","exec",originalContainerId,"sh","-ec",probe(engine,false)],resumed)).stdout.trim()).toBe(marker);}}:{})
     });
     const originals = async () => ({commands:(await db.pool.query("SELECT * FROM control_commands WHERE id=$1",[receipt.commandId])).rows,
       cache:(await db.pool.query("SELECT * FROM agent_replay WHERE command_id=$1",[receipt.commandId])).rows});

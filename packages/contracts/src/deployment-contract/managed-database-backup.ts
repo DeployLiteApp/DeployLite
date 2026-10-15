@@ -55,12 +55,12 @@ export const managedDatabaseBackupReceiptSchema = managedDatabaseStopReceiptSche
   archiveSha256: digest,
   manifestSha256: digest,
   format: z.enum(["postgres-custom-gzip", "mysql-sql-gzip", "mariadb-sql-gzip", "mongodb-archive-gzip", "volume-tar"]),
-  consistency: z.enum(["native-snapshot", "transactional-tables", "quiesced-writes", "all-consumers-stopped"]),
+  consistency: z.enum(["native-snapshot", "transactional-tables", "global-read-lock", "quiesced-writes", "all-consumers-stopped"]),
   status: z.enum(["created", "already-created"]),
   idempotent: z.boolean()
 }).strict().superRefine((value, ctx) => {
   if (value.volumeKey !== "db-"+value.databaseId || value.commandId === value.originalCommandId || value.format !== formats[value.engine]
-    || value.consistency !== consistency[value.engine] || (value.status === "already-created") !== value.idempotent)
+    || !(value.consistency === consistency[value.engine] || (["mysql","mariadb"].includes(value.engine) && value.consistency === "global-read-lock")) || (value.status === "already-created") !== value.idempotent)
     ctx.addIssue({code:z.ZodIssueCode.custom, path:["status"], message:"Backup evidence must bind its engine, original source and replay marker"});
 });
 export const managedDatabaseBackupCachedReceiptSchema = z.object({

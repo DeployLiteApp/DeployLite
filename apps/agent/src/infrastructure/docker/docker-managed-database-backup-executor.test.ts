@@ -60,8 +60,8 @@ it("withholds capture on failed ownership and publication on authority withdrawa
     expect(f.runner.runBinaryToSink).toHaveBeenCalledTimes(stage==="ownership"?0:1);expect(await readdir(f.root)).toEqual([]);
   }
 });
-it.each(["mysql","mariadb","mongodb","redis"] as const)("refuses %s capture until its real consistency implementation exists",async engine=>{
-  const f=await fixture(engine);await expect(f.executor.execute(f.command,f.authority,new AbortController().signal)).rejects.toThrow();
+it.each(["mysql","mariadb","mongodb","redis"] as const)("refuses unsupported or uncorroborated %s capture before private effects",async engine=>{
+  const f=await fixture(engine);if(engine==="mysql"||engine==="mariadb")f.replayStore.durable=false;await expect(f.executor.execute(f.command,f.authority,new AbortController().signal)).rejects.toThrow();
   expect(f.runner.runBinaryToSink).not.toHaveBeenCalled();expect(await readdir(f.root)).toEqual([]);
 });
 
@@ -71,4 +71,13 @@ it("enforces the command byte budget before private archive publication",async()
   const command={...f.command,maxBytes:2,inputDigest,authority:{...f.command.authority,inputDigest}};
   await expect(f.executor.execute(command,{...f.authority,inputDigest},new AbortController().signal)).rejects.toThrow();
   expect(await readdir(f.root)).toEqual([]);
+});
+
+it.each(["mysql","mariadb"] as const)("captures corroborated %s using one bounded global read lock dump",async engine=>{
+ const f=await fixture(engine),receipt=await f.executor.execute(f.command,f.authority,new AbortController().signal);
+ const {cancellationRequested:_cancel,...query}=f.command;expect(managedDatabaseBackupReceiptMatches(query,receipt)).toBe(true);
+ expect(receipt).toMatchObject({consistency:"global-read-lock",format:engine+"-sql-gzip",archiveBytes:4});
+ expect(f.runner.runBinaryToSink).toHaveBeenCalledOnce();expect(f.verifier.verify).toHaveBeenCalledTimes(2);
+ expect(f.runner.runBinaryToSink.mock.calls[0]![0].at(-1)).toContain("timeout --signal=TERM --kill-after=1s");
+ expect(await readFile(join(f.root,receipt.archiveId,"archive.bin"))).toEqual(f.data);
 });
