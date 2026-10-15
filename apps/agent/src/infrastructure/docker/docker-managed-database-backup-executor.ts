@@ -1,3 +1,4 @@
+import {captureComposeVolumeBackupToSink,type ComposeVolumeBackupSource} from "./docker-compose-volume-backup.js";
 import {managedDatabaseBackupAgentCommandSchema, managedDatabaseBackupPreparationSchema, managedDatabaseBackupReceiptSchema, managedDatabaseRuntimeReceiptSchema, MANAGED_DATABASE_BACKUP_CAPABILITY, protocolPayloadFingerprint, type Clock, type CapabilityRegistry, type ImageReferencePolicyV1, type ManagedDatabaseEngineV1} from "@deploylite/contracts";
 import {awaitAbortable, managedDatabaseBackupExecutionDigest, managedDatabaseBackupSourceDigest, managedDatabaseBackupReceiptMatches} from "@deploylite/domain";
 import type {AgentReplayStore} from "../../agent-transport.js";
@@ -17,7 +18,8 @@ export function createManagedDatabaseBackupExecutor(supplied:Readonly<{
   capabilities:CapabilityRegistry;
   clock:Clock;
   replayStore:Pick<AgentReplayStore,"durable"|"lookupByFingerprintDigest">;
-  verifier:Pick<Verifier,"verify">;
+  verifier:Pick<Verifier,"verify">&Partial<Pick<Verifier,"verifyStopped">>;
+  volumeSource?:ComposeVolumeBackupSource;
   runner:Pick<DockerProcessRunner,"runBinaryToSink">;
   archive:Pick<ReturnType<typeof createPrivateNativeBackupArchive>,"write">;
   limits:Readonly<{deadlineMs:number;maxBytes:number}>;
@@ -35,7 +37,7 @@ export function createManagedDatabaseBackupExecutor(supplied:Readonly<{
       const preparation=managedDatabaseBackupPreparationSchema.parse(Object.fromEntries(
         Object.keys(managedDatabaseBackupPreparationSchema.innerType().shape).map(key=>[key,command[key as keyof typeof command]])
       ));
-      if (!["postgres","mysql","mariadb"].includes(command.engine) || command.inputDigest !== managedDatabaseBackupExecutionDigest(preparation)
+      if (!["postgres","mysql","mariadb","redis"].includes(command.engine) || command.inputDigest !== managedDatabaseBackupExecutionDigest(preparation)
         || command.maxBytes > options.limits.maxBytes || !options.replayStore.durable
         || typeof options.replayStore.lookupByFingerprintDigest !== "function") fail();
       const original=command.originalReceipt,start=options.clock.now();
@@ -58,15 +60,16 @@ export function createManagedDatabaseBackupExecutor(supplied:Readonly<{
       const profile=options.profiles[command.engine];
       const {destinationId:_destination,maxBytes:_bytes,...originalPreparation}=preparation;
       const source=buildManagedDatabaseBackupSource(originalPreparation,{agentId:options.agentId,profile,imagePolicy:options.imagePolicy});
-      if (!source.argv || !["native-snapshot","global-read-lock"].includes(source.consistencyRequirement)) fail();
+      const redis=command.engine==="redis";
+      if(redis?(!options.volumeSource||typeof options.verifier.verifyStopped!=="function"||source.consistencyRequirement!=="all-consumers-stopped"):(!source.argv||!["native-snapshot","global-read-lock"].includes(source.consistencyRequirement)))fail();
       const input={request:{schemaVersion:1 as const,projectId:command.projectId,databaseId:command.databaseId,engine:command.engine},profile,
         commandId:original.commandId,imageId:source.imageId,containerId:source.containerId,environmentFingerprint:source.environmentFingerprint};
       const resources={projectId:command.projectId,databaseId:command.databaseId,commandId:original.commandId,planDigest:source.planDigest,
         volume:{name:source.volumeName,createdAt:source.volumeCreatedAt},network:{name:source.networkName,id:source.networkId}};
       const boundedAuthority={...authority,expiresAt:deadline,assertValid:gate};
       async function verify(){
-        const value=await call(()=>options.verifier.verify(input,resources,boundedAuthority,controller.signal));
-        if (value.containerId !== source.containerId || !Number.isSafeInteger(value.uid) || value.uid < 1 || value.uid > 4294967294) fail();
+        if(redis){const value=await call(()=>options.verifier.verifyStopped!(input,resources,boundedAuthority,controller.signal));if(value.containerId!==source.containerId)fail();}
+        else{const value=await call(()=>options.verifier.verify(input,resources,boundedAuthority,controller.signal));if(value.containerId!==source.containerId||!Number.isSafeInteger(value.uid)||value.uid<1||value.uid>4294967294)fail();}
         await gate();
       }
       await verify();
@@ -80,7 +83,7 @@ export function createManagedDatabaseBackupExecutor(supplied:Readonly<{
             current();if(!(chunk instanceof Uint8Array)||chunk.length>command.maxBytes-bytes)fail();
             bytes+=chunk.length;await write(chunk);current();
           };
-          const captured=await call(()=>options.runner.runBinaryToSink(buildConsistentManagedDatabaseBackupArgv(source,deadline),signal,boundedWrite));
+          const captured=await call(()=>redis?captureComposeVolumeBackupToSink(options.volumeSource!,source.volumeName,command.maxBytes,boundedWrite,signal,current):options.runner.runBinaryToSink(buildConsistentManagedDatabaseBackupArgv(source,deadline),signal,boundedWrite));
           if(captured.bytes!==bytes)fail();
           await verify();return captured;
         },boundedAuthority,controller.signal));
