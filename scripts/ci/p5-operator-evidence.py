@@ -170,7 +170,7 @@ def validate_confirmed_deletion(result,profile):
 
 def validate_native_backup(result, profile):
     proof=result.get("nativeBackup")
-    exact(proof,{"receipt","maxBytes","captures","signedHttp","restorePreparation","archiveIntegrity","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup"}|({"writersResumed"} if profile["engine"] in ("mysql","mariadb","mongodb") else {"stoppedSource","sourceCleanup"} if profile["engine"]=="redis" else set()),"complete_actual_native_dump_required")
+    exact(proof,{"pendingRestore","receipt","maxBytes","captures","signedHttp","restorePreparation","archiveIntegrity","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup"}|({"writersResumed"} if profile["engine"] in ("mysql","mariadb","mongodb") else {"stoppedSource","sourceCleanup"} if profile["engine"]=="redis" else set()),"complete_actual_native_dump_required")
     native.require(profile["engine"] in ("postgres","mysql","mariadb","mongodb","redis") and type(proof["captures"]) is int and proof["captures"]==1
         and type(proof["maxBytes"]) is int and proof["maxBytes"]==2097152
         and all(proof[key]=="passed" for key in ("signedHttp","restorePreparation","archiveIntegrity","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup")),"executed_private_postgres_dump_required")
@@ -196,6 +196,24 @@ def validate_native_backup(result, profile):
         and isinstance(receipt["correlationId"],str) and 1<=len(receipt["correlationId"])<=256,"original_bounded_native_dump_required")
     archive="backup_"+hashlib.sha256((ready["projectId"]+"\0"+receipt["commandId"]+"\0private-native").encode()).hexdigest()[:32]
     native.require(receipt["archiveId"]==archive,"original_private_archive_id_required")
+    validate_pending_restore(proof,ready,profile,source)
+
+def validate_pending_restore(proof,ready,profile,source):
+    pending=proof["pendingRestore"]
+    exact(pending,{"commandId","confirmationId","actorId","projectId","databaseId","engine","inputDigest","idempotencyKey","correlationId","expiresAt",
+        "status","classification","consumedAt","reopen","sameOriginalKey","sameOriginalNonce","dispatches"},"strict_original_pending_restore_required")
+    uuid=r"[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}"
+    native.require(all(isinstance(pending[key],str) and re.fullmatch(uuid,pending[key]) for key in ("commandId","confirmationId"))
+        and isinstance(pending["actorId"],str) and re.fullmatch(r"[A-Za-z0-9_-]{1,200}",pending["actorId"])
+        and pending["commandId"] not in (ready["commandId"],proof["receipt"]["commandId"])
+        and pending["projectId"]==ready["projectId"] and pending["databaseId"]==ready["databaseId"] and pending["engine"]==profile["engine"]
+        and pending["inputDigest"]==digest({**source,"backupReceipt":proof["receipt"],"maxBytes":proof["maxBytes"],"action":"project.update","scope":{"kind":"project","projectId":ready["projectId"]},"operation":"database.runtime.restore"})
+        and pending["idempotencyKey"]=="fixture_restore_pending_"+profile["engine"] and pending["correlationId"]=="fixture-restore-pending-"+profile["engine"]
+        and type(pending["expiresAt"]) is int and proof["receipt"]["observedAt"]<pending["expiresAt"]<=proof["receipt"]["observedAt"]+200000
+        and pending["status"]=="pending_confirmation" and pending["classification"]=="destructive" and pending["consumedAt"] is None
+        and all(pending[key]=="passed" for key in ("reopen","sameOriginalKey","sameOriginalNonce"))
+        and type(pending["dispatches"]) is int and pending["dispatches"]==0,"durable_original_pending_restore_required")
+
 
 def validate_result(result, profile, source_commit="7e4875341dbb8e1afdeff23137403528f3af6382"):
     exact(result, {"receipt", "uid", "original", "nativeStop", "nativeStart", "currentHealth", "currentMetrics", "currentLogs", "inventoryRecovery", "browserAcceptance", "confirmationRecovery", "confirmedClaim", "confirmedAuthority", "confirmedDeletion", "internalConnection", "authenticatedProbe", "restart", "persistence", "cleanup", "operator"}|({"nativeBackup"} if profile["engine"] in ("postgres","mysql","mariadb","mongodb","redis") else set()), "public_operator_result_required")

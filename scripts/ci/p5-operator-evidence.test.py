@@ -373,6 +373,10 @@ def add_native_backup(result,profile):
     if profile["engine"] in ("mysql","mariadb","mongodb"):proof["writersResumed"]="passed"
     else:proof.update(restoredData="passed",restoreCleanup="passed")
     if profile["engine"]=="redis":receipt.update(format="volume-tar",consistency="all-consumers-stopped",observedAt=result["nativeStop"]["receipt"]["observedAt"]);proof.update(stoppedSource="passed",sourceCleanup="passed")
+    proof["pendingRestore"]={"commandId":"77777777-7777-4777-8777-777777777777","confirmationId":"88888888-8888-4888-8888-888888888888","actorId":"actor-a",**{key:ready[key] for key in ("projectId","databaseId","engine")},
+        "inputDigest":digest({**source,"backupReceipt":receipt,"maxBytes":proof["maxBytes"],"action":"project.update","scope":{"kind":"project","projectId":ready["projectId"]},"operation":"database.runtime.restore"}),
+        "idempotencyKey":"fixture_restore_pending_"+profile["engine"],"correlationId":"fixture-restore-pending-"+profile["engine"],"expiresAt":20000,
+        "status":"pending_confirmation","classification":"destructive","consumedAt":None,"reopen":"passed","sameOriginalKey":"passed","sameOriginalNonce":"passed","dispatches":0}
     result["nativeBackup"]=proof
     return result,profile
 
@@ -380,6 +384,23 @@ def native_backup_fixture():
     return fixture()
 
 class NativeBackupProof(unittest.TestCase):
+    def test_refuses_incomplete_pending_restore_metadata(self):
+        result,profile=native_backup_fixture()
+        for key in result["nativeBackup"]["pendingRestore"]:
+            changed=copy.deepcopy(result);changed["nativeBackup"]["pendingRestore"].pop(key)
+            with self.assertRaises(RuntimeError):module.validate_native_backup(changed,profile)
+
+    def test_refuses_detached_consumed_or_executed_pending_restore(self):
+        result,profile=native_backup_fixture()
+        for patch in ({"inputDigest":"0"*64},{"projectId":"foreign"},{"engine":"redis"},{"consumedAt":1000},{"dispatches":1},{"dispatches":False},{"sameOriginalNonce":"skipped"},{"reopen":"pending"},{"expiresAt":0},{"privatePath":"private-fixture"}):
+            changed=copy.deepcopy(result);changed["nativeBackup"]["pendingRestore"].update(patch)
+            with self.assertRaises(RuntimeError):module.validate_native_backup(changed,profile)
+
+    def test_requires_original_durable_pending_restore_nonce(self):
+        result,profile=native_backup_fixture()
+        result["nativeBackup"].pop("pendingRestore",None)
+        with self.assertRaises(RuntimeError):module.validate_native_backup(result,profile)
+
     def test_refuses_missing_verified_restore_preparation(self):
         result,profile=add_native_backup(*native_backup_fixture())
         result["nativeBackup"].pop("restorePreparation",None)
