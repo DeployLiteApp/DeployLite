@@ -514,16 +514,17 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     await app.close();app=await build(endpoint,"managed_database_fixture_key_1234567890",new Map([[projectId,{controls:faultControls,transport:fencedDeleteTransport,originalTransport,agentId,deadlineMs:60000,now:Date.now}]]));
     const applyDelete=()=>app!.inject({method:"POST",url:`/api/v1/projects/${projectId}/databases/${databaseId}/runtime/delete/apply`,headers:{cookie,"idempotency-key":deleteKey,"x-correlation-id":randomUUID()},payload:{...deleteBody,confirmationId:approval.id}});
     await browserFixture.applyRemovalExpectUnknown();
-    expect(completionFaults).toBe(1);if(!issued.query||!issued.command)throw new Error("One issued deletion required.");const deleteQuery=issued.query,deleteCommand={...deleteQuery,cancellationRequested:false};
+    expect(completionFaults).toBe(1);if(!issued.query||!issued.command)throw new Error("One issued deletion required.");const deleteQuery=issued.query,issuedDeleteCommand=issued.command,deleteCommand={...deleteQuery,cancellationRequested:false};
     const deleted=managedDatabaseDeleteReceiptSchema.parse((await deleteTransport.readReceipt({command:issued.command,input:removalSource,agentId,confirmationId:approval.id},deleteQuery.authority,{...deleteQuery.context,signal}))!);expect(managedDatabaseDeleteReceiptMatches(deleteQuery,deleted)).toBe(true);expect(deleteEffects).toBe(1);
     expect((await runner.run(["docker","container","ls","--all","--no-trunc","--filter",`id=${receipt.containerId}`,"--format","{{.ID}}"],signal)).stdout).toBe("");
     expect(await resources.verifyFresh({request:input.request,profile,commandId:receipt.commandId},pinned,authority,signal)).toEqual(pinned);
     const completionAudits=async()=>(await db.pool.query("SELECT * FROM audit_events WHERE action='database.runtime.removed' AND correlation_id=$1",[deletePending.correlationId])).rows;
     const deleteNonce=async()=>(await db.pool.query("SELECT * FROM control_command_confirmations WHERE command_id=$1",[deletePending.id])).rows,originalConsumed=await deleteNonce();expect(originalConsumed).toHaveLength(1);expect(originalConsumed[0].consumed_at).not.toBeNull();
     expect(await completionAudits()).toHaveLength(0);expect((await db.pool.query("SELECT status,result FROM control_commands WHERE id=$1",[deletePending.id])).rows).toEqual([{status:"dispatching",result:null}]);
+    const deletionApplication=app;
     const {finalControls,recoveryAccess}=await browserFixture.reopenApplication(async()=>{
-      await app.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(false);
-      const recoveredDeleteTransport=new AuthenticatedManagedDatabaseDeleteTransport({...transportOptions,endpoint}),cachedDelete=await recoveredDeleteTransport.readReceipt({command:issued.command,input:removalSource,agentId,confirmationId:approval.id},deleteQuery.authority,{...deleteQuery.context,signal});
+      await deletionApplication.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(false);
+      const recoveredDeleteTransport=new AuthenticatedManagedDatabaseDeleteTransport({...transportOptions,endpoint}),cachedDelete=await recoveredDeleteTransport.readReceipt({command:issuedDeleteCommand,input:removalSource,agentId,confirmationId:approval.id},deleteQuery.authority,{...deleteQuery.context,signal});
       expect(cachedDelete).toEqual(deleted);expect((await sendDelete(deleteCommand)).status).toBe(403);expect(deleteEffects).toBe(1);
       const finalControls=new DbControlCommandRepository(db.db),recoveryAccess={controls:finalControls,transport:recoveredDeleteTransport,originalTransport:new AuthenticatedManagedDatabaseRuntimeTransport({...transportOptions,endpoint}),agentId,deadlineMs:60000,now:Date.now};
       app=await build(endpoint,"managed_database_fixture_key_1234567890");
