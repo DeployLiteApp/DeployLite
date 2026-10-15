@@ -465,7 +465,8 @@
         "packages/db/src/native-backup-inventory-postgres.cases.ts",
         "packages/db/migrations/0028_backup_inventory_native_receipts.sql",
         "packages/db/src/native-backup-inventory.test.ts",
-        "packages/domain/src/native-backup-inventory.test.ts"
+        "packages/domain/src/native-backup-inventory.test.ts",
+        "packages/db/src/inventory-fixture-shutdown.test.ts"
       ]
     },
     "api": {
@@ -1425,7 +1426,8 @@
     "packages/db/src/native-backup-inventory-postgres.cases.ts",
     "packages/db/migrations/0028_backup_inventory_native_receipts.sql",
     "packages/db/src/native-backup-inventory.test.ts",
-    "packages/domain/src/native-backup-inventory.test.ts"
+    "packages/domain/src/native-backup-inventory.test.ts",
+    "packages/db/src/inventory-fixture-shutdown.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
