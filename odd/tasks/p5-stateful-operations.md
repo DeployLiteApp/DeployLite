@@ -2772,7 +2772,7 @@ Corrected stdin restore full Node24 pnpmcheck exits0:3578unit across eight proje
 
 ## PR513 bounded native PostgreSQL proof reconciliation — 2026-10-15
 
-- [ ] PR513-S1 delegated sole writer: preserve original four commits and isolated fixture/decoder/guard delta; normal merge accepted main52ff5895514fb562873796aaacb98865601b0543 into existing test/p5-postgres-native-dump, current manifest forward union342+4=346, <=400 actual lines. Preparation/multiple-source trigger; ODD/auto-chain/stacked-to-main, RDD OFF, Strict TDD ON only for genuine correction; unchanged adoption is not retrospective RED.
+- [x] PR513-S1 delegated sole writer: preserve original four commits and isolated fixture/decoder/guard delta; normal merge accepted main52ff5895514fb562873796aaacb98865601b0543 into existing test/p5-postgres-native-dump, current manifest forward union342+4=346, <=400 actual lines. Preparation/multiple-source trigger; ODD/auto-chain/stacked-to-main, RDD OFF, Strict TDD ON only for genuine correction; unchanged adoption is not retrospective RED.
 - [ ] PR513-S2 freeze exact source and observe complete original16 once/in order/stop first nonzero under Node24/single-worker plus static dbcheck; all checks required without skips/weakening. Preserve raw regular/generated/rootcache/sharedVitest/dependency-alias/all nested Next symlink preimages; standard dependency build only.
 - [ ] PR513-S3 record outcomes/full mirror, scoped Conventional commits, ordinary existing-branch push only after complete local proof; ROOT retains independent/spot/PR-state/CI/main acceptance. Hosted native PostgreSQL dump/restore remains PENDING; no local Docker/PG/services/migration/browser/SSH/install/cleanup. Task/B1/P5 OPEN.
 
