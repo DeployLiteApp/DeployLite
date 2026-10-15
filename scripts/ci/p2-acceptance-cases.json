@@ -3,7 +3,7 @@
   "purpose": "Expected evidence only; this manifest neither authorizes runtime nor claims PASS",
   "suites": {
     "db": {
-      "count": 69,
+      "count": 72,
       "allowSkipped": false,
       "cases": [
         {
@@ -419,6 +419,24 @@
           "title": "keeps generated database credentials unchanged on stale profiles and refuses unauthorized creation",
           "file": "packages/db/src/managed-database-credentials-postgres.cases.ts",
           "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance persists native inventory from actual completion audit across a fresh pool",
+          "title": "persists native inventory from actual completion audit across a fresh pool",
+          "file": "packages/db/src/native-backup-inventory-postgres.cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance enforces native database keys and rejects missing or unknown receipt action in SQL",
+          "title": "enforces native database keys and rejects missing or unknown receipt action in SQL",
+          "file": "packages/db/src/native-backup-inventory-postgres.cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance converges native concurrent inventory and replay without overwriting original evidence",
+          "title": "converges native concurrent inventory and replay without overwriting original evidence",
+          "file": "packages/db/src/native-backup-inventory-postgres.cases.ts",
+          "physicalRestart": false
         }
       ],
       "sourceFiles": [
@@ -443,7 +461,12 @@
         "packages/domain/src/managed-database-credentials.test.ts",
         "packages/db/src/repositories/managed-database-credentials.ts",
         "packages/db/src/repositories/managed-database-credentials.test.ts",
-        "packages/db/src/managed-database-credentials-postgres.cases.ts"
+        "packages/db/src/managed-database-credentials-postgres.cases.ts",
+        "packages/db/src/native-backup-inventory-postgres.cases.ts",
+        "packages/db/migrations/0028_backup_inventory_native_receipts.sql",
+        "packages/db/src/native-backup-inventory.test.ts",
+        "packages/domain/src/native-backup-inventory.test.ts",
+        "packages/db/src/inventory-fixture-shutdown.test.ts"
       ]
     },
     "api": {
@@ -1399,7 +1422,12 @@
     "packages/domain/src/managed-database-backup-binding.test.ts",
     "apps/agent/src/infrastructure/docker/docker-managed-database-backup-executor.ts",
     "apps/agent/src/infrastructure/docker/docker-managed-database-backup-executor.test.ts",
-    "apps/agent/src/managed-database-backup-replay.test.ts"
+    "apps/agent/src/managed-database-backup-replay.test.ts",
+    "packages/db/src/native-backup-inventory-postgres.cases.ts",
+    "packages/db/migrations/0028_backup_inventory_native_receipts.sql",
+    "packages/db/src/native-backup-inventory.test.ts",
+    "packages/domain/src/native-backup-inventory.test.ts",
+    "packages/db/src/inventory-fixture-shutdown.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,

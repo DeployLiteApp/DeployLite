@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { composeVolumeBackupReceiptSchema } from "@deploylite/contracts";
+import { backupInventoryReceiptSchema } from "@deploylite/contracts";
 import { BackupInventoryEvidenceError, digestControlInput, prepareBackupInventoryRecord,
   type BackupInventoryReader, type BackupInventoryWriter, type BackupInventoryRecord } from "@deploylite/domain";
 import type { DeployLiteDb } from "../client.js";
@@ -15,14 +15,14 @@ export class DbBackupInventoryStore implements BackupInventoryReader, BackupInve
   available() { return true; }
 
   async recordAuthenticatedReceipt(raw: unknown): Promise<BackupInventoryRecord> {
-    const parsed = composeVolumeBackupReceiptSchema.safeParse(raw);
+    const parsed = backupInventoryReceiptSchema.safeParse(raw);
     if (!parsed.success || parsed.data.agentId !== this.expectedAgentId) reject();
     const receipt = parsed.data;
     return this.db.transaction(async tx => {
       const [command] = await tx.select().from(controlCommands).where(eq(controlCommands.id, receipt.commandId)).limit(1).for("share");
       if (!command) reject();
       const audits = await tx.select().from(auditEvents).where(and(
-        eq(auditEvents.action, "compose.volume.backup.executed"), eq(auditEvents.targetType, "project"),
+        eq(auditEvents.action, receipt.action === "database.runtime.backup" ? "database.runtime.backup.executed" : "compose.volume.backup.executed"), eq(auditEvents.targetType, "project"),
         eq(auditEvents.targetId, receipt.projectId), eq(auditEvents.correlationId, receipt.correlationId),
         sql`${auditEvents.metadata} ->> 'commandId' = ${receipt.commandId}`)).limit(2).for("share");
       if (audits.length !== 1) reject();
@@ -56,7 +56,7 @@ export class DbBackupInventoryStore implements BackupInventoryReader, BackupInve
   }
 
   private read(row: typeof backupInventory.$inferSelect, projectId: string, volumeKey: string, destinationId: string): BackupInventoryRecord {
-    const parsed = composeVolumeBackupReceiptSchema.safeParse(row.receipt);
+    const parsed = backupInventoryReceiptSchema.safeParse(row.receipt);
     const createdAtMs = row.createdAt.getTime();
     if (!parsed.success || parsed.data.agentId !== this.expectedAgentId || parsed.data.projectId !== projectId
       || parsed.data.volumeKey !== volumeKey || parsed.data.destinationId !== destinationId
