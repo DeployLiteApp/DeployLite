@@ -132,3 +132,78 @@ it("returns the supplied current source in strict browser proof",async()=>{
  try{expect((await fixture.cycle(async()=>{})).sourceCommit).toBe(current);}
  finally{await fixture.close();}
 });
+
+function deferred() {
+ let release!: () => void;
+ const promise = new Promise<void>(done => { release = done; });
+ return {promise, release};
+}
+const nextTurn = () => new Promise<void>(done => setImmediate(done));
+function browserRequest(body = async function* () {}) {
+ const response = {writeHead: vi.fn(), end: vi.fn()};
+ const pending = boundary.request!({url: "/api/v1/projects/project1/databases", method: "GET", headers: {},
+  [Symbol.asyncIterator]: body}, response);
+ return {response, pending};
+}
+
+it("queues a browser poll across the owned unavailable-application window without losing browser state", async () => {
+ let available = true;
+ const fixture = await openDatabaseBrowser({...input(), app: () => available ? {inject: boundary.inject} as unknown as FastifyInstance : undefined!});
+ boundary.inject.mockClear(); // Initial fixture navigation is setup, not the controlled request under test.
+ const entered = deferred(), resume = deferred();
+ const reopening = fixture.reopenApplication(async () => { available = false; entered.release(); await resume.promise; available = true; });
+ await entered.promise;
+ const request = browserRequest();
+ try {
+  await nextTurn();
+  expect(request.response.writeHead).not.toHaveBeenCalled();
+  expect(boundary.inject).not.toHaveBeenCalled();
+  expect(boundary.contextClose).not.toHaveBeenCalled();
+ } finally { resume.release(); await reopening; await request.pending; await fixture.close(); }
+ expect(request.response.writeHead).toHaveBeenCalledWith(200, {"Content-Type": "application/json"});
+ expect(boundary.inject).toHaveBeenCalledTimes(1);
+});
+
+it.each(["body", "inject"] as const)("drains an admitted %s request before the owned application closes", async stage => {
+ let closed = false;
+ const fixture = await openDatabaseBrowser(input());
+ boundary.inject.mockClear(); // Initial fixture navigation is setup, not the controlled request under test.
+ const entered = deferred(), finish = deferred();
+ if (stage === "inject") boundary.inject.mockImplementationOnce(async () => { entered.release(); await finish.promise; return {statusCode: 200, body: "{}"}; });
+ const request = browserRequest(stage === "body" ? async function* () { entered.release(); await finish.promise; } : undefined);
+ await entered.promise;
+ const reopening = fixture.reopenApplication(async () => { closed = true; });
+ try { await nextTurn(); expect(closed).toBe(false); }
+ finally { finish.release(); await request.pending; await reopening; await fixture.close(); }
+ expect(closed).toBe(true);
+ expect(request.response.writeHead).toHaveBeenCalledWith(200, {"Content-Type": "application/json"});
+ expect(boundary.inject).toHaveBeenCalledTimes(1);
+});
+
+it("keeps unexpected missing application requests fail-closed outside an owned reopen", async () => {
+ const fixture = await openDatabaseBrowser({...input(), app: () => undefined!});
+ boundary.inject.mockClear(); // Initial fixture navigation is setup, not the controlled request under test.
+ try {
+  const request = browserRequest(); await request.pending;
+  expect(request.response.writeHead).toHaveBeenCalledWith(500);
+  expect(request.response.end).toHaveBeenCalledWith('{"error":"Fixture unavailable"}');
+  expect(boundary.inject).not.toHaveBeenCalled();
+ } finally { await fixture.close(); }
+});
+
+it("fails queued requests closed when the owned application reopen rejects", async () => {
+ let available = true;
+ const fixture = await openDatabaseBrowser({...input(), app: () => available ? {inject: boundary.inject} as unknown as FastifyInstance : undefined!});
+ boundary.inject.mockClear(); // Initial fixture navigation is setup, not the controlled request under test.
+ const entered = deferred(), finish = deferred();
+ const failure = new Error("private fixture reopen diagnostic");
+ const reopening = fixture.reopenApplication(async () => { available = false; entered.release(); await finish.promise; throw failure; });
+ const result = reopening.catch(error => error);
+ await entered.promise;
+ const request = browserRequest();
+ try { await nextTurn(); expect(request.response.writeHead).not.toHaveBeenCalled(); }
+ finally { finish.release(); expect(await result).toBe(failure); await request.pending; await fixture.close(); }
+ expect(request.response.writeHead).toHaveBeenCalledWith(500);
+ expect(request.response.end).toHaveBeenCalledWith('{"error":"Fixture unavailable"}');
+ expect(boundary.inject).not.toHaveBeenCalled();
+});
