@@ -1392,7 +1392,11 @@
     "packages/domain/src/managed-database-delete-receipt.test.ts",
     "apps/agent/src/managed-database-delete-replay.test.ts",
     "packages/db/src/repositories/control-plane-database-delete.test.ts",
-    "packages/db/src/repositories/control-plane-project-confirmation.fixture.ts"
+    "packages/db/src/repositories/control-plane-project-confirmation.fixture.ts",
+    "packages/contracts/src/deployment-contract/managed-database-backup.ts",
+    "packages/contracts/src/deployment-contract/managed-database-backup.test.ts",
+    "packages/domain/src/managed-database-backup-binding.ts",
+    "packages/domain/src/managed-database-backup-binding.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,

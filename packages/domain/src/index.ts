@@ -469,3 +469,5 @@ export * from "./managed-database-logs-binding.js";
 export * from "./managed-database-inventory.js";
 
 export * from "./managed-database-delete-binding.js";
+
+export * from "./managed-database-backup-binding.js";
