@@ -19,6 +19,8 @@ export function registerBackupRetentionPreviewRoute(app: FastifyInstance, option
       if (!params.success || !body.success) return reply.code(400).send(options.error(request, "VALIDATION_ERROR", "Request validation failed."));
       const projectId = params.data.projectId, user = request.auth?.user, context = request.correlationContext;
       if (!user || !context) return reply.code(401).send(options.error(request, "UNAUTHENTICATED", "Authentication required."));
+      const expectedActor = request.headers["x-deploylite-expected-actor-id"];
+      if (expectedActor !== undefined && expectedActor !== user.id) return reply.code(409).send(options.error(request, "ACTOR_CHANGED", "Retention preview is unavailable."));
       const selectedAccess = () => options.access?.get(projectId) ?? options.configuredAccess?.get(projectId);
       const access = selectedAccess(), agentId = access?.agentId, deadlineMs = access?.deadlineMs, controller = new AbortController();
       const validDeadline = access && Number.isSafeInteger(access.deadlineMs) && access.deadlineMs > 0 && access.deadlineMs <= 60_000;
