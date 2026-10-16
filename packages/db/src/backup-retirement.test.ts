@@ -16,13 +16,14 @@ function harness() {
   const archive = {...receipt, commandId: receipt.commandId, receipt, createdAt: new Date(1)};
   const reservations: Record<string, unknown>[] = [], protections: Record<string, unknown>[] = [], queries: unknown[][] = [];
   let now = 1000, fail = false;
+  let wait = async (_point: string) => {};
   const port = {
-    execute: async (query: Parameters<PgDialect["sqlToQuery"]>[0]) => {queries.push(new PgDialect().sqlToQuery(query).params);},
+    execute: async (query: Parameters<PgDialect["sqlToQuery"]>[0]) => {queries.push(new PgDialect().sqlToQuery(query).params); await wait("lock");},
     select() {return {from(table: unknown) {
       const rows = table === controlCommands ? [command] : table === controlCommandConfirmations ? [nonce]
         : table === backupInventory ? [archive] : table === backupRestoreProtections ? protections : reservations;
       const query = {where(sql: Parameters<PgDialect["sqlToQuery"]>[0]) {queries.push(new PgDialect().sqlToQuery(sql).params); return query;},
-        limit() {return query;}, for() {return query;}, then(resolve: (rows: unknown[]) => unknown) {return Promise.resolve(structuredClone(rows)).then(resolve);}};
+        limit() {return query;}, for() {return query;}, then(resolve: (rows: unknown[]) => unknown) {return Promise.resolve().then(async () => {await wait("read"); return structuredClone(rows);}).then(resolve);}};
       return query;
     }};},
     insert(table: unknown) {expect(table).toBe(backupRetirementReservations); return {values(value: Record<string, unknown>) {return {onConflictDoNothing() {return {
@@ -33,6 +34,12 @@ function harness() {
     const before = structuredClone(reservations); try {return await run(port);} catch (error) {reservations.splice(0, reservations.length, ...before); throw error;}
   }} as unknown as DeployLiteDb;
   return {intent, command, nonce, archive, reservations, protections, queries, expire: () => {now = 3000;}, fault: () => {fail = true;},
+    waitAt: (point: string) => {
+      let entered!: () => void, release!: () => void;
+      const waiting = new Promise<void>(resolve => {entered = resolve;}), resumed = new Promise<void>(resolve => {release = resolve;});
+      wait = async where => {if (where === point) {entered(); await resumed;}};
+      return {waiting, release};
+    },
     store: () => new DbBackupRetirementStore(db, "agent-a", () => now)};
 }
 it("preserves one P3 preparatory reservation across repository loss, lost reply and expiry without execution", async () => {
@@ -56,4 +63,22 @@ it.each(["protection", "actor", "nonce", "receipt", "expiry", "fault", "conflict
   const before = structuredClone(h.reservations);
   await expect(h.store().reserve(binding, command, confirmation)).rejects.toThrow("Archive retirement is unavailable.");
   expect(h.reservations).toEqual(before);
+});
+
+it.each(["lock", "read"])("rejects NEW reservation after confirmation expires while awaiting %s", async point => {
+  const h = harness(), {binding, command, confirmation} = h.intent, gate = h.waitAt(point);
+  const before = structuredClone({reservations: h.reservations, protections: h.protections, command: h.command, nonce: h.nonce});
+  const attempt = h.store().reserve(binding, command, confirmation);
+  await gate.waiting; h.expire(); gate.release();
+  await expect(attempt).rejects.toThrow("Archive retirement is unavailable.");
+  expect({reservations: h.reservations, protections: h.protections, command: h.command, nonce: h.nonce}).toEqual(before);
+});
+it.each(["lock", "read"])("observes only the exact ORIGINAL reservation after expiry while awaiting %s", async point => {
+  const h = harness(), {binding, command, confirmation} = h.intent;
+  await h.store().reserve(binding, command, confirmation);
+  const before = structuredClone({reservations: h.reservations, protections: h.protections, command: h.command, nonce: h.nonce});
+  const gate = h.waitAt(point), attempt = h.store().reserve(binding, command, confirmation);
+  await gate.waiting; h.expire(); gate.release();
+  await expect(attempt).resolves.toEqual({reserved: true, executionAllowed: false, commandId: command.id});
+  expect({reservations: h.reservations, protections: h.protections, command: h.command, nonce: h.nonce}).toEqual(before);
 });

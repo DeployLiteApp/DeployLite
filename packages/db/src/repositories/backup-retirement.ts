@@ -44,16 +44,18 @@ export class DbBackupRetirementStore {
         const reservationScope = and(eq(backupRetirementReservations.projectId, receipt.projectId), eq(backupRetirementReservations.volumeKey, receipt.volumeKey),
           eq(backupRetirementReservations.destinationId, receipt.destinationId), eq(backupRetirementReservations.archiveId, receipt.archiveId));
         const existing = await tx.select().from(backupRetirementReservations).where(reservationScope).limit(2).for("share");
+        const current = this.clock();
+        if (!Number.isSafeInteger(current) || current < now || !Number.isSafeInteger(new Date(current).getTime())) unavailable();
         const values = {commandId: command.id, confirmationId: nonce.id, projectId: receipt.projectId, volumeKey: receipt.volumeKey,
-          destinationId: receipt.destinationId, archiveId: receipt.archiveId, inputDigest, binding, createdAt: new Date(now)};
+          destinationId: receipt.destinationId, archiveId: receipt.archiveId, inputDigest, binding, createdAt: new Date(current)};
         if (existing.length) {
           const original = existing[0]!;
           if (existing.length !== 1 || !(original.createdAt instanceof Date) || !Number.isSafeInteger(original.createdAt.getTime()) || original.createdAt.getTime() < 0
-            || original.createdAt.getTime() > now || digestControlInput({...original, createdAt: 0}) !== digestControlInput({...values, createdAt: 0})) unavailable();
+            || original.createdAt.getTime() > current || digestControlInput({...original, createdAt: 0}) !== digestControlInput({...values, createdAt: 0})) unavailable();
           // Durable observation after lost reply/expiry. Never consume, renew, claim or redispatch.
           return {reserved: true as const, executionAllowed: false as const, commandId: command.id};
         }
-        evaluateConfirmation(command, confirmation, new Date(now));
+        evaluateConfirmation(command, confirmation, new Date(current));
         const [inserted] = await tx.insert(backupRetirementReservations).values(values).onConflictDoNothing().returning();
         if (!inserted || digestControlInput(inserted) !== digestControlInput(values)) unavailable();
         return {reserved: true as const, executionAllowed: false as const, commandId: command.id};
