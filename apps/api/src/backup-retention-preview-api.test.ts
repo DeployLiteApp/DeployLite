@@ -21,11 +21,12 @@ async function fixture(options: {authenticated?: boolean; grantScope?: string; a
   };
   const access = {agentId: "agent-1", inventory, protections, deadlineMs: 20};
   const app = Fastify(); apps.push(app);
+  const grants = {listForActor: vi.fn(async (actorId: string) => [{id: "grant-1", actorId, action: "project.update" as const, scope: {kind: "project" as const, projectId: options.grantScope ?? "project-1"}}])};
   registerBackupRetentionPreviewRoute(app, {prefix: "/api/v1", projects: projects as never, audit: audit as never,
-    grants: {listForActor: async actorId => [{id: "grant-1", actorId, action: "project.update", scope: {kind: "project", projectId: options.grantScope ?? "project-1"}}]},
+    grants,
     access: new Map([["project-1", access]]), requireAuth, requireRole: async () => {},
     ok: (_request, data) => ({data}), error: (_request, code, message) => ({error: {code, message}})});
-  return {inventory, protections, projects, audit, post: (payload: unknown = body) => app.inject({method: "POST", url: "/api/v1/projects/project-1/backups/retention/preview", payload: payload as Record<string, unknown>})};
+  return {inventory, protections, projects, grants, audit, post: (payload: unknown = body, headers: Record<string, string> = {}) => app.inject({method: "POST", headers, url: "/api/v1/projects/project-1/backups/retention/preview", payload: payload as Record<string, unknown>})};
 }
 it("returns only a scoped effect-free plan and appends correlated safe audit", async () => {
   const f = await fixture(), response = await f.post();
@@ -69,4 +70,14 @@ it("withholds the preview when durable inventory becomes unavailable during audi
 });
 it("withholds the preview when its configured agent changes during audit", async () => {
   const f = await fixture({changeAgentAfterAudit: true}); expect((await f.post()).statusCode).toBe(503);
+});
+
+it.each(["foreign", "actor-1, foreign"])("rejects mismatched expected preview actor %s before private reads or audit", async actor => {
+  const f = await fixture(); expect((await f.post(body, {"x-deploylite-expected-actor-id": actor})).statusCode).toBe(409);
+  expect(f.grants.listForActor).not.toHaveBeenCalled(); expect(f.projects.findById).not.toHaveBeenCalled(); expect(f.inventory.list).not.toHaveBeenCalled();
+  expect(f.protections.list).not.toHaveBeenCalled(); expect(f.audit.append).not.toHaveBeenCalled();
+});
+it("accepts the matching optional preview actor while preserving headerless requests", async () => {
+  const f = await fixture(); expect((await f.post(body, {"x-deploylite-expected-actor-id": "actor-1"})).statusCode).toBe(200);
+  expect((await f.post()).statusCode).toBe(200);
 });
