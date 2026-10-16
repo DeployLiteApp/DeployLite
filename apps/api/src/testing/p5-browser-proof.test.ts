@@ -7,12 +7,16 @@ it("refuses missing stages, fabricated source, shared browser and unbounded evid
  for(const key of Object.keys(proof())){const value:Record<string,unknown>={...proof()};delete value[key];expect(validateBrowserProof(value)).toBe(false);}
 });
 
+
+// A compatible call boundary exercises the new argument without claiming a type error as RED.
+const validateCurrent:(value:unknown,expectedSource?:string)=>boolean=validateBrowserProof;
 it.each(["postgres","mysql","mariadb","mongodb","redis"])("accepts exact bound current-source %s browser evidence",engine=>{
- const current="a".repeat(40);expect(validateBrowserProof({...proof(),engine,sourceCommit:current},current)).toBe(true);
+ const current="a".repeat(40);expect(validateCurrent({...proof(),engine,sourceCommit:current},current)).toBe(true);
 });
-it("rejects a valid-looking browser snapshot detached from the supplied exact source",()=>{
- expect(validateBrowserProof(proof(),"a".repeat(40))).toBe(false);
- for(const expected of ["","main","A".repeat(40)])expect(validateBrowserProof(proof(),expected)).toBe(false);
+it("rejects detached or invalid expected browser source while retaining historical default compatibility",()=>{
+ expect(validateCurrent(proof(),"a".repeat(40))).toBe(false);
+ for(const expected of ["","main","A".repeat(40)])expect(validateCurrent(proof(),expected)).toBe(false);
+ expect(validateCurrent({...proof(),sourceCommit:"a".repeat(40)},undefined)).toBe(false);
 });
 
 function deletionProof(){return {sourceCommit:"a".repeat(40),engine:"postgres",projectId:"project1",databaseId:"orders",browser:"chromium",context:"isolated",preparation:"passed",confirmation:"passed",recovery:"passed",sameOriginalKey:"passed",inventory:"passed",reload:"passed",retainedStorage:"passed",requests:7};}
