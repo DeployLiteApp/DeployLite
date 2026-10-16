@@ -1500,7 +1500,9 @@
     "apps/agent/src/infrastructure/docker/docker-managed-database-restore-volume.ts",
     "apps/agent/src/infrastructure/docker/docker-managed-database-restore-volume.test.ts",
     "apps/api/src/managed-database-backups-route.ts",
-    "apps/api/src/managed-database-backups-route.test.ts"
+    "apps/api/src/managed-database-backups-route.test.ts",
+    "apps/web/src/lib/managed-database-backup.ts",
+    "apps/web/src/lib/managed-database-backup.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,

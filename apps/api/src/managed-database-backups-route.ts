@@ -32,6 +32,8 @@ export function registerManagedDatabaseBackupsRoute(app: FastifyInstance, option
     if (!params.success || !query.success || request.body !== undefined) return reject(400, "VALIDATION_ERROR");
     const user = request.auth?.user, context = request.correlationContext;
     if (!user || !context) return reject(401, "UNAUTHENTICATED");
+    const expectedActor = request.headers["x-deploylite-expected-actor-id"];
+    if (expectedActor !== undefined && expectedActor !== user.id) return reject(409, "ACTOR_CHANGED");
     const {projectId, databaseId} = params.data, destinationId = query.data.destinationId;
     const execution = options.executions?.get(projectId), planning = options.planning?.get(projectId);
     const deadlineMs = execution?.deadlineMs, validDeadline = Number.isSafeInteger(deadlineMs) && deadlineMs! > 0 && deadlineMs! <= 60000;
