@@ -170,7 +170,7 @@ def validate_confirmed_deletion(result,profile):
 
 def validate_native_backup(result, profile):
     proof=result.get("nativeBackup")
-    exact(proof,{"nativeRestore","pendingRestore","receipt","maxBytes","captures","signedHttp","restorePreparation","archiveIntegrity","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup"}|({"writersResumed"} if profile["engine"] in ("mysql","mariadb","mongodb") else {"stoppedSource","sourceCleanup"} if profile["engine"]=="redis" else set()),"complete_actual_native_dump_required")
+    exact(proof,{"browserBackup","nativeRestore","pendingRestore","receipt","maxBytes","captures","signedHttp","restorePreparation","archiveIntegrity","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup"}|({"writersResumed"} if profile["engine"] in ("mysql","mariadb","mongodb") else {"stoppedSource","sourceCleanup"} if profile["engine"]=="redis" else set()),"complete_actual_native_dump_required")
     native.require(profile["engine"] in ("postgres","mysql","mariadb","mongodb","redis") and type(proof["captures"]) is int and proof["captures"]==1
         and type(proof["maxBytes"]) is int and proof["maxBytes"]==2097152
         and all(proof[key]=="passed" for key in ("signedHttp","restorePreparation","archiveIntegrity","formatValidated","seededRow","restoredData","restoreCleanup","inventoryReopen","replay","privateFiles","cleanup")),"executed_private_postgres_dump_required")
@@ -198,6 +198,24 @@ def validate_native_backup(result, profile):
     native.require(receipt["archiveId"]==archive,"original_private_archive_id_required")
     validate_pending_restore(proof,ready,profile,source)
     validate_confirmed_restore(proof,ready,profile)
+    validate_backup_browser(proof,ready,result["browserAcceptance"]["sourceCommit"])
+
+def validate_backup_browser(proof,ready,source_commit):
+    browser=proof["browserBackup"];receipt=proof["receipt"]
+    exact(browser,{"sourceCommit","engine","projectId","databaseId","actorId","browser","context","requests","commandId","originalCommandId","archiveId","idempotencyKey","destinationId","manual","originalSource","lostReply","reload","sameOriginalKey","inventory","calls"},"complete_original_backup_browser_required")
+    native.require(browser["sourceCommit"]==source_commit and browser["browser"]=="chromium" and browser["context"]=="isolated"
+        and all(browser[key]==ready[key] for key in ("engine","projectId","databaseId"))
+        and browser["actorId"]==proof["pendingRestore"]["actorId"]==proof["nativeRestore"]["actorId"]
+        and isinstance(browser["idempotencyKey"],str) and re.fullmatch(r"[A-Za-z0-9_-]{1,200}",browser["idempotencyKey"])
+        and browser["commandId"]==receipt["commandId"] and browser["originalCommandId"]==ready["commandId"]
+        and browser["archiveId"]==receipt["archiveId"] and browser["destinationId"]==receipt["destinationId"]
+        and type(browser["requests"]) is int and 1<=browser["requests"]<=1000
+        and all(browser[key]=="passed" for key in ("manual","originalSource","lostReply","reload","sameOriginalKey","inventory")),"actual_current_source_backup_browser_required")
+    calls=browser["calls"];native.require(isinstance(calls,list) and len(calls)==2,"one_original_backup_and_cache_recovery_required")
+    for call in calls:
+        exact(call,{"key","commandId","archiveId","actorId","status"},"bounded_backup_browser_response_required")
+        native.require(type(call["status"]) is int and call["status"]==200 and call["key"]==browser["idempotencyKey"]
+            and all(call[key]==browser[key] for key in ("commandId","archiveId","actorId")),"same_original_backup_browser_request_required")
 
 def validate_confirmed_restore(proof,ready,profile):
     restore=proof["nativeRestore"];backup=proof["receipt"];pending=proof["pendingRestore"]

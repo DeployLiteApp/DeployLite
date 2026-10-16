@@ -49,3 +49,12 @@ it("identifies closed owned API admission without reflecting source",()=>{expect
 it("keeps unknown request metadata redacted",()=>{expect(browserFixtureRequestFailure({stage:"password=private-fixture",aborted:false,code:"private-path"} as never)).toBe("request");});
 it("preserves request rejection with bounded stage metadata",()=>{expect(browserDeletionRecoveryFailure({calls:[{key:"key",confirmationId:"nonce",status:503},{key:"key",confirmationId:"nonce",status:200}],key:"key",confirmationId:"nonce",failures:["request"],requestFailure:"body-aborted"})).toBe("request:body-aborted");});
 it("identifies a temporarily missing owned application separately from injection",()=>{expect(browserFixtureRequestFailure({stage:"app",aborted:false,code:undefined})).toBe("app");});
+
+function backupProof(engine="postgres") {return {sourceCommit:"a".repeat(40),engine,projectId:"project1",databaseId:"orders",actorId:"operator1",browser:"chromium",context:"isolated",requests:12,commandId:"backup1",originalCommandId:"create1",archiveId:"backup_"+"a".repeat(32),idempotencyKey:"original-key",destinationId:"private-native",manual:"passed",originalSource:"passed",lostReply:"passed",reload:"passed",sameOriginalKey:"passed",inventory:"passed",calls:[{key:"original-key",commandId:"backup1",archiveId:"backup_"+"a".repeat(32),actorId:"operator1",status:200},{key:"original-key",commandId:"backup1",archiveId:"backup_"+"a".repeat(32),actorId:"operator1",status:200}]};}
+it.each(["postgres","mysql","mariadb","mongodb","redis"])("requires complete original %s manual backup browser evidence",async engine=>{const {validateBackupBrowserProof}=await import("./p5-browser-proof.js");expect(validateBackupBrowserProof(backupProof(engine),"a".repeat(40))).toBe(true);});
+
+it("rejects incomplete detached foreign-source or private native backup browser evidence",async()=>{
+ const {validateBackupBrowserProof}=await import("./p5-browser-proof.js");
+ for(const patch of [{manual:"pending"},{reload:"skipped"},{sourceCommit:"b".repeat(40)},{context:"shared"},{privatePath:"private"},{calls:[]},{commandId:"create1"}])expect(validateBackupBrowserProof({...backupProof(),...patch},"a".repeat(40))).toBe(false);
+ for(const field of ["key","commandId","archiveId","actorId"] as const){const value=backupProof();value.calls[1]![field]="foreign";expect(validateBackupBrowserProof(value,"a".repeat(40))).toBe(false);}
+});
