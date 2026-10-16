@@ -1,3 +1,7 @@
+import {MANAGED_DATABASE_RESTORE_CAPABILITY} from "@deploylite/contracts";
+import {createManagedDatabaseRestoreExecutor} from "./docker-managed-database-restore-executor.js";
+import {createManagedDatabaseRestoreVolumeWriter} from "./docker-managed-database-restore-volume.js";
+import {createPrivateNativeRestoreArchive} from "./docker-managed-database-restore-archive.js";
 import type {ComposeVolumeBackupSource} from "./docker-compose-volume-backup.js";
 import {MANAGED_DATABASE_BACKUP_CAPABILITY} from "@deploylite/contracts";
 import type {AgentReplayStore} from "../../agent-transport.js";
@@ -41,7 +45,7 @@ export function createManagedDatabaseRuntime(supplied: Readonly<{
     capabilities: CapabilityRegistry;
     clock: Clock;
     runner: DockerCliRunner;
-    backup?:Readonly<{volumeSource?:ComposeVolumeBackupSource;destinations:ReadonlyMap<string,string>;runner:Pick<DockerProcessRunner,"runBinaryToSink">;replayStore:Pick<AgentReplayStore,"durable"|"lookupByFingerprintDigest">;maxBytes:number}>;
+    backup?:Readonly<{volumeSource?:ComposeVolumeBackupSource;destinations:ReadonlyMap<string,string>;runner:Pick<DockerProcessRunner,"runBinaryToSink"> & Partial<Pick<DockerProcessRunner,"runBinaryFromSource">>;replayStore:Pick<AgentReplayStore,"durable"|"lookupByFingerprintDigest">;maxBytes:number}>;
     limits: Readonly<{deadlineMs: number; maxOutputBytes: number; maxContainers: number; pollIntervalMs: number; cpus: number; memoryBytes: number; pidsLimit: number; stopGraceSeconds?: number}>;
 }>) {
     try {
@@ -59,6 +63,8 @@ export function createManagedDatabaseRuntime(supplied: Readonly<{
         if(backupConfig && (!(backupConfig.destinations instanceof Map) || backupConfig.destinations.size<1
             || backupConfig.replayStore.durable!==true || typeof backupConfig.replayStore.lookupByFingerprintDigest!=="function"
             || typeof backupConfig.runner.runBinaryToSink!=="function" || !Number.isSafeInteger(backupConfig.maxBytes) || backupConfig.maxBytes<1))fail();
+        const restoreEnabled=options.capabilities.has(MANAGED_DATABASE_RESTORE_CAPABILITY),restoreInput=backupConfig?.runner.runBinaryFromSource;
+        if(restoreEnabled && (!backupConfig||backupConfig.maxBytes<1024||typeof restoreInput!=="function"||stopGrace===undefined||!options.capabilities.has(MANAGED_DATABASE_STOP_CAPABILITY)||!options.capabilities.has(MANAGED_DATABASE_START_CAPABILITY)))fail();
         const profiles = validateManagedDatabaseRuntimeProfiles(options.profiles, options.imagePolicy);
         const shared = {...options, profiles};
         const nativeInspector = createManagedDatabaseDockerInspector(shared);
@@ -95,9 +101,20 @@ export function createManagedDatabaseRuntime(supplied: Readonly<{
         const stop=stopper?createManagedDatabaseStopExecutor({...shared,stopper}):undefined;
         const deletion=options.capabilities.has(MANAGED_DATABASE_DELETE_CAPABILITY)&&stopper?createManagedDatabaseDeleteExecutor({...shared,stopper,inspector:nativeInspector,
             remover:createManagedDatabaseDaemonRemover({runner:options.runner,verifier,clock:options.clock,limits:{deadlineMs:options.limits.deadlineMs,maxOutputBytes:options.limits.maxOutputBytes}})}):undefined;
+        const restoreBinary={runBinaryFromSource:(...args:Parameters<DockerProcessRunner["runBinaryFromSource"]>)=>{
+            if(!backupConfig||typeof restoreInput!=="function"||backupConfig.runner.runBinaryFromSource!==restoreInput)fail();return restoreInput!.call(backupConfig.runner,...args);
+        }};
+        const originalRun=options.runner.run,restoreRunner={...restoreBinary,run:(...args:Parameters<DockerCliRunner["run"]>)=>{if(options.runner.run!==originalRun)fail();return originalRun.call(options.runner,...args);}};
+        const restore=restoreEnabled && backupConfig && stopper?createManagedDatabaseRestoreExecutor({agentId:options.agentId,profiles,imagePolicy:options.imagePolicy,capabilities:options.capabilities,clock:options.clock,replayStore:backupConfig.replayStore,verifier,runner:restoreBinary,
+            archive:createPrivateNativeRestoreArchive({destinations:backupConfig.destinations,expectedAgentId:options.agentId,clock:options.clock,maxBytes:backupConfig.maxBytes,maxDurationMs:options.limits.deadlineMs}),
+            redis:{inspector:nativeInspector,stopper,starter,volumeWriter:createManagedDatabaseRestoreVolumeWriter({...shared,runner:restoreRunner,nativeInspector,verifier,composeInspector,limits:{...options.limits,maxBytes:backupConfig.maxBytes}})},limits:{deadlineMs:options.limits.deadlineMs,maxBytes:backupConfig.maxBytes}}):undefined;
         return Object.freeze({apply: async (...args: Parameters<typeof executor.apply>) => executor.apply(args[0], {assertValid: async () => {
             capabilities(); await args[1].assertValid(); capabilities();
-        }}, args[2]),...(backup?{backup:async(...args:Parameters<typeof backup.execute>)=>{
+        }}, args[2]),...(restore?{restore:async(...args:Parameters<typeof restore.restore>)=>{
+            const authority=args[1];if(typeof authority?.assertValid!=="function"||typeof authority.assertConfirmed!=="function")fail();const valid=authority.assertValid,confirmed=authority.assertConfirmed;
+            const check=()=>{capabilities();if(!options.capabilities.has(MANAGED_DATABASE_RESTORE_CAPABILITY)||!options.capabilities.has(MANAGED_DATABASE_STOP_CAPABILITY)||!options.capabilities.has(MANAGED_DATABASE_START_CAPABILITY))fail();};
+            check();return restore.restore(args[0],{assertValid:async()=>{check();await valid.call(authority);check();},assertConfirmed:async(value,id)=>{check();await confirmed.call(authority,value,id);check();}},args[2]);
+        }}:{}),...(backup?{backup:async(...args:Parameters<typeof backup.execute>)=>{
             const check=()=>{capabilities();if(!options.capabilities.has(MANAGED_DATABASE_BACKUP_CAPABILITY))fail();};
             check();return backup.execute(args[0],{...args[1],assertValid:async()=>{check();await args[1].assertValid();check();}},args[2]);
         }}:{}),...(stop?{stop:async(...args:Parameters<typeof stop.stop>)=>stop.stop(args[0],{assertValid:async()=>{
