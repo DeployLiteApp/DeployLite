@@ -3,7 +3,7 @@ import {useEffect, useRef, useState} from "react";
 import {z} from "zod";
 import {managedDatabaseBackupPreparationSchema, type ManagedDatabaseHealthPreparationV1} from "@deploylite/contracts";
 import {backupManagedDatabase, readManagedDatabaseBackups, type ManagedDatabaseBackupView} from "@/lib/managed-database-backup";
-import {ManagedDatabaseRestoreControl} from "./managed-database-restore-control";
+import {ManagedDatabaseRestoreControl, readRecoverableManagedDatabaseRestores} from "./managed-database-restore-control";
 import {Button} from "@/components/ui/button";
 type Props = {preparation: ManagedDatabaseHealthPreparationV1; apiBaseUrl: string; actorId: string;
   currentState: "running" | "stopped" | null; disabled?: boolean; onRestored?(): void; onBusyChange?(busy: boolean): void};
@@ -18,16 +18,18 @@ export function ManagedDatabaseBackupPanel({preparation, apiBaseUrl, actorId, cu
   const active = useRef<AbortController | null>(null);
   const preferred = useRef<{scope: string; destination: string} | null>(null);
   const [attempt, setAttempt] = useState<Attempt | null>(null), [loadedScope, setLoadedScope] = useState("");
+  const [recoveries, setRecoveries] = useState<ReturnType<typeof readRecoverableManagedDatabaseRestores>>([]);
   const [view, setView] = useState<ManagedDatabaseBackupView | null>(null), [destination, setDestination] = useState("");
   const [budget, setBudget] = useState(""), [blocked, setBlocked] = useState(false), [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(""), [revision, setRevision] = useState(0);
   const visible = loadedScope === scope, pending = visible && attempt && !attempt.confirmedArchiveId;
   useEffect(() => {
     const controller = new AbortController();
-    setLoadedScope(""); setView(null); setAttempt(null); setBlocked(false); setBusy(false); setMessage("");
+    setLoadedScope(""); setView(null); setRecoveries([]); setAttempt(null); setBlocked(false); setBusy(false); setMessage("");
     let stored: Attempt | null = null;
     try {
       identity.parse(actorId);
+      setRecoveries(readRecoverableManagedDatabaseRestores(preparation, apiBaseUrl, actorId));
       const raw = sessionStorage.getItem(slot);
       if (raw !== null) {
         if (raw.length > 131072) throw new Error("unavailable");
@@ -87,6 +89,10 @@ export function ManagedDatabaseBackupPanel({preparation, apiBaseUrl, actorId, cu
     <h3>Backups</h3>
     {message ? <p role="status">{message}</p> : null}
     {visible ? <>
+      {recoveries.map(selection => <div key={JSON.stringify(selection)}><p>Pending original restore · {selection.archiveId}</p>
+        <ManagedDatabaseRestoreControl selection={selection} actorId={actorId} apiBaseUrl={apiBaseUrl} currentState={currentState}
+          disabled={disabled || busy || blocked} onBusyChange={onBusyChange} onRestored={() => {onRestored?.(); setRevision(value => value + 1);}} />
+      </div>)}
       <label>Backup destination <select aria-label="Backup destination" value={destination} disabled={busy || Boolean(pending)} onChange={event => {
         preferred.current = {scope, destination: event.target.value}; setRevision(value => value + 1);
       }}>{view?.destinations.map(value => <option key={value.destinationId} value={value.destinationId}>{value.destinationId}</option>)}</select></label>
@@ -99,9 +105,9 @@ export function ManagedDatabaseBackupPanel({preparation, apiBaseUrl, actorId, cu
         const compatible = receipt.originalCommandId === source.commandId && receipt.profileId === preparation.profileId
           && (["projectId", "databaseId", "engine", "planDigest", "environmentFingerprint", "agentId", "containerId", "imageId", "volumeName", "networkName", "networkId", "volumeCreatedAt"] as const).every(key => receipt[key] === source[key]);
         return <li key={receipt.archiveId}><span>{receipt.archiveId}</span> · {receipt.archiveBytes} bytes · {new Date(row.createdAtMs).toISOString()}
-          {selected ? <ManagedDatabaseRestoreControl selection={{...preparation, archiveId: receipt.archiveId, destinationId: receipt.destinationId,
+          {selected && !recoveries.some(selection => selection.archiveId === receipt.archiveId && selection.destinationId === receipt.destinationId) ? <ManagedDatabaseRestoreControl selection={{...preparation, archiveId: receipt.archiveId, destinationId: receipt.destinationId,
             expectedArchiveSha256: receipt.archiveSha256, expectedManifestSha256: receipt.manifestSha256, maxBytes: selected.maxBytes}}
-            actorId={actorId} apiBaseUrl={apiBaseUrl} currentState={currentState} disabled={disabled || busy || !compatible || receipt.archiveBytes > selected.maxBytes}
+            actorId={actorId} apiBaseUrl={apiBaseUrl} currentState={currentState} disabled={disabled || busy || blocked || !compatible || receipt.archiveBytes > selected.maxBytes}
             onBusyChange={onBusyChange} onRestored={onRestored} /> : null}
         </li>;
       })}</ul>
