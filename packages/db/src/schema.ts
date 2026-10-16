@@ -574,3 +574,26 @@ export const backupRestoreProtections=pgTable("backup_restore_protections",{
  check("backup_restore_protections_binding_valid",sql`${table.archiveSha256} ~ '^[a-f0-9]{64}$' and ${table.manifestSha256} ~ '^[a-f0-9]{64}$' and ${table.inputDigest} ~ '^[a-f0-9]{64}$' and ${table.archiveId} ~ '^backup_[a-f0-9]{32}$' and ${table.volumeKey} ~ '^db-[A-Za-z0-9_-]{1,63}$' and ${table.destinationId} ~ '^[A-Za-z0-9_-]{1,200}$' and ${table.restoreCommandId} <> ${table.backupCommandId}`),
  check("backup_restore_protections_created_valid",sql`${table.createdAt} >= timestamptz 'epoch'`)
 ]);
+
+// Insert-only reservation, not a deletion receipt or execution lease. No expiry release.
+export const backupRetirementReservations = pgTable("backup_retirement_reservations", {
+  commandId: uuid("command_id").notNull().unique().references(() => controlCommands.id, {onDelete: "restrict", onUpdate: "cascade"}),
+  confirmationId: uuid("confirmation_id").notNull().unique().references(() => controlCommandConfirmations.id, {onDelete: "restrict", onUpdate: "cascade"}),
+  projectId: uuid("project_id").notNull(),
+  volumeKey: text("volume_key").notNull(),
+  destinationId: text("destination_id").notNull(),
+  archiveId: text("archive_id").notNull(),
+  inputDigest: text("input_digest").notNull(),
+  binding: jsonb("binding").$type<Record<string, unknown>>().notNull(),
+  createdAt: timestamp("created_at", {withTimezone: true}).notNull()
+}, table => [
+  primaryKey({columns: [table.projectId, table.volumeKey, table.destinationId, table.archiveId]}),
+  foreignKey({columns: [table.projectId, table.volumeKey, table.destinationId, table.archiveId],
+    foreignColumns: [backupInventory.projectId, backupInventory.volumeKey, backupInventory.destinationId, backupInventory.archiveId]}).onDelete("restrict").onUpdate("cascade"),
+  check("backup_retirement_reservations_digest_valid", sql`${table.inputDigest} ~ '^[a-f0-9]{64}$'`),
+  check("backup_retirement_reservations_created_valid", sql`${table.createdAt} >= timestamptz 'epoch'`),
+  check("backup_retirement_reservations_binding_valid", sql`(${table.binding}->>'operation' = 'backup.retire'
+    and ${table.binding}->'executionAllowed' = 'false'::jsonb
+    and ${table.binding}->'receipt' @> jsonb_build_object('projectId', ${table.projectId}::text,
+      'volumeKey', ${table.volumeKey}, 'destinationId', ${table.destinationId}, 'archiveId', ${table.archiveId})) is true`)
+]);

@@ -36,3 +36,4 @@ export type DeployLiteRepositories = {
 };
 
 export const dbBoundary = "repository-adapter-placeholder-with-schema-migrations";
+export {DbBackupRetirementStore} from "./repositories/backup-retirement.js";

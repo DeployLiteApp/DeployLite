@@ -1,9 +1,10 @@
 import {expect,it} from "vitest";
 import {PgDialect} from "drizzle-orm/pg-core";
 import {MANAGED_DATABASE_RUNTIME_CAPABILITY} from "@deploylite/contracts";
-import {composeRuntimeResourceName,createControlCommand,managedDatabaseRuntimeExecutionBinding,managedDatabaseRuntimeReplayFingerprintDigest,managedDatabaseBackupExecutionDigest,managedDatabaseBackupSourceDigest,prepareManagedDatabaseRestoreConfirmation,type ControlCommand} from "@deploylite/domain";
+import {composeRuntimeResourceName,createControlCommand,managedDatabaseRuntimeExecutionBinding,managedDatabaseRuntimeReplayFingerprintDigest,managedDatabaseBackupExecutionDigest,managedDatabaseBackupSourceDigest,prepareManagedDatabaseRestoreConfirmation,prepareBackupRetirementConfirmation,planBackupRetention,type ControlCommand} from "@deploylite/domain";
 import type {DeployLiteDb} from "./client.js";
 import {controlCommands,controlCommandConfirmations,backupInventory,backupRestoreProtections} from "./schema.js";
+import {DbBackupRetirementStore} from "./repositories/backup-retirement.js";
 import {DbBackupRestoreProtectionStore} from "./repositories/backup-restore-protection.js";
 const engines=["postgres","mysql","mariadb","mongodb","redis"] as const;
 function fixture(engine:typeof engines[number]="postgres"){
@@ -21,17 +22,17 @@ function fixture(engine:typeof engines[number]="postgres"){
  const {command,confirmation}=prepareManagedDatabaseRestoreConfirmation({preparation,actorId:"operator-a",idempotencyKey:"restore-orders",correlationId:"restore-correlation",now:1000,commandTtlMs:1000});
  return {preparation,command,confirmation};
 }
-function harness(engine:typeof engines[number]="postgres"){
+function harness(engine:typeof engines[number]="postgres", retiring=false){
  const f=fixture(engine),command={...f.command,actorUserId:f.command.actorId,scopeKind:"project",scopeKey:"project-a",executionAuthority:null};
  const confirmation={...f.confirmation,actorUserId:f.confirmation.actorId,scopeKind:"project",scopeKey:"project-a"};
  const backup={projectId:"project-a",volumeKey:"db-orders",destinationId:"private-native",archiveId:f.preparation.backupReceipt.archiveId,commandId:f.preparation.backupReceipt.commandId,receipt:f.preparation.backupReceipt,createdAt:new Date(1000)};
- const saved:Record<string,unknown>[]=[];const queries:unknown[][]=[];let fail=false;
+ const saved:Record<string,unknown>[]=[],retired:Record<string,unknown>[]=[];const queries:unknown[][]=[];let fail=false;
  const port={execute:async(condition:Parameters<PgDialect["sqlToQuery"]>[0])=>{queries.push(new PgDialect().sqlToQuery(condition).params);},
-  select(){return {from(table:unknown){const rows=table===controlCommands?[command]:table===controlCommandConfirmations?[confirmation]:table===backupInventory?[backup]:saved;
+  select(){return {from(table:unknown){const rows=table===controlCommands?[command]:table===controlCommandConfirmations?[confirmation]:table===backupInventory?[backup]:table===backupRestoreProtections?saved:retiring?[{commandId:"retirement-a"}]:retired;
    const query={where(condition:Parameters<PgDialect["sqlToQuery"]>[0]){queries.push(new PgDialect().sqlToQuery(condition).params);return query;},limit(){return query;},for(){return query;},orderBy(){return query;},then(resolve:(rows:unknown[])=>unknown){return Promise.resolve(structuredClone(rows)).then(resolve);}};return query;}};},
-  insert(){return {values(value:Record<string,unknown>){return {onConflictDoNothing(){return {returning:async()=>{if(saved.length)return [];saved.push(structuredClone(value));if(fail)throw new Error("password=private-fixture");return structuredClone(saved);}};}};}};}};
- const db={...port,transaction:async(run:(tx:typeof port)=>Promise<unknown>)=>{const before=structuredClone(saved);try{return await run(port);}catch(error){saved.splice(0,saved.length,...before);throw error;}}} as unknown as DeployLiteDb;
- let now=1000;return {f,command,confirmation,backup,saved,queries,advance:()=>{now=3000;},fault:()=>{fail=true;},store:()=>new DbBackupRestoreProtectionStore(db,"agent-a",()=>now)};
+  insert(table:unknown){const target=table===backupRestoreProtections?saved:retired;return {values(value:Record<string,unknown>){return {onConflictDoNothing(){return {returning:async()=>{if(target.length)return [];target.push(structuredClone(value));if(fail)throw new Error("password=private-fixture");return structuredClone(target);}};}};}};}};
+ const db={...port,transaction:async(run:(tx:typeof port)=>Promise<unknown>)=>{const before=structuredClone(saved),beforeRetired=structuredClone(retired);try{return await run(port);}catch(error){saved.splice(0,saved.length,...before);retired.splice(0,retired.length,...beforeRetired);throw error;}}} as unknown as DeployLiteDb;
+ let now=1000;return {f,command,confirmation,backup,saved,retired,queries,retirement:()=>new DbBackupRetirementStore(db,"agent-a",()=>now),advance:()=>{now=3000;},fault:()=>{fail=true;},store:()=>new DbBackupRestoreProtectionStore(db,"agent-a",()=>now)};
 }
 it.each(engines)("persists original %s archive protection through repository recreation without renewal",async engine=>{const h=harness(engine);await expect(h.store().protect(h.f.preparation,h.f.command,h.f.confirmation)).resolves.toBeUndefined();const before=structuredClone(h.saved);await h.store().protect(h.f.preparation,h.f.command,h.f.confirmation);expect(h.saved).toEqual(before);expect(await h.store().list("project-a","db-orders","private-native")).toEqual([h.f.preparation.backupReceipt.archiveId]);expect(h.saved[0]).toMatchObject({restoreCommandId:h.f.command.id,confirmationId:h.f.confirmation.id,inputDigest:h.f.command.inputDigest,createdAt:new Date(1000)});expect(h.queries.some(values=>values.includes("deploylite:execution:project-a"))).toBe(true);});
 it("does not release original protection on expired pending approval",async()=>{const h=harness();await h.store().protect(h.f.preparation,h.f.command,h.f.confirmation);h.advance();expect(await h.store().list("project-a","db-orders","private-native")).toEqual([h.f.preparation.backupReceipt.archiveId]);await expect(h.store().protect(h.f.preparation,h.f.command,h.f.confirmation)).rejects.toThrow("Restore archive protection is unavailable.");expect(h.saved).toHaveLength(1);});
@@ -52,4 +53,42 @@ it.each(["absent","nonce","command","hash"])("rejects %s exact restore protectio
  const h=harness();if(mode!=="absent")await h.store().protect(h.f.preparation,h.f.command,h.f.confirmation);const before=structuredClone(h.saved);
  const preparation=mode==="hash"?{...h.f.preparation,backupReceipt:{...h.f.preparation.backupReceipt,archiveSha256:"0".repeat(64)}}:h.f.preparation;
  await expect(h.store().assertProtected(preparation,mode==="command"?{...h.f.command,id:"foreign"}:h.f.command,mode==="nonce"?"foreign":h.f.confirmation.id)).rejects.toThrow("Restore archive protection is unavailable.");expect(h.saved).toEqual(before);
+});
+
+it.each(engines)("denies %s protection after a durable retirement reservation", async engine => {
+  const h = harness(engine, true);
+  await expect(h.store().protect(h.f.preparation, h.f.command, h.f.confirmation)).rejects.toThrow("Restore archive protection is unavailable.");
+  expect(h.saved).toEqual([]);
+});
+
+function retirementIntent(h: ReturnType<typeof harness>) {
+  const receipt = h.f.preparation.backupReceipt;
+  const snapshot = {schemaVersion: 1, projectId: receipt.projectId, volumeKey: receipt.volumeKey, destinationId: receipt.destinationId,
+    keepNewest: 1, protectedArchiveIds: [], backups: [{receipt, createdAtMs: 1000},
+      {receipt: {...receipt, archiveId: "backup_" + "1".repeat(32), commandId: "backup-b"}, createdAtMs: 1001}]};
+  const plan = planBackupRetention(snapshot);
+  return prepareBackupRetirementConfirmation({snapshot, archiveId: receipt.archiveId, expectedInventoryDigest: plan.inventoryDigest,
+    expectedPlanDigest: plan.planDigest, actorId: "operator-a", idempotencyKey: "retire-original", correlationId: "retire-a", now: 1100, commandTtlMs: 1000});
+}
+it.each(engines)("prepares a single individually confirmed %s archive retirement without provider authority", engine => {
+  const h = harness(engine), intent = retirementIntent(h);
+  expect(intent.binding.receipt).toEqual(h.f.preparation.backupReceipt); expect(intent.binding.executionAllowed).toBe(false);
+  expect(intent.confirmation.commandId).toBe(intent.command.id); expect(intent.command.projectExecutionAuthority).toBeUndefined();
+});
+it.each(engines)("arbitrates both %s native store orderings under the shared SQL project lock", async engine => {
+  const protectedFirst = harness(engine), first = retirementIntent(protectedFirst);
+  await protectedFirst.store().protect(protectedFirst.f.preparation, protectedFirst.f.command, protectedFirst.f.confirmation);
+  Object.assign(protectedFirst.command, {...first.command, actorUserId: first.command.actorId, scopeKind: "project", scopeKey: "project-a"});
+  Object.assign(protectedFirst.confirmation, {...first.confirmation, actorUserId: first.confirmation.actorId, scopeKind: "project", scopeKey: "project-a"});
+  await expect(protectedFirst.retirement().reserve(first.binding, first.command, first.confirmation)).rejects.toThrow("Archive retirement is unavailable.");
+  expect(protectedFirst.retired).toEqual([]); expect(protectedFirst.saved).toHaveLength(1);
+  const reservedFirst = harness(engine), second = retirementIntent(reservedFirst);
+  const restoreCommand = structuredClone(reservedFirst.command), restoreNonce = structuredClone(reservedFirst.confirmation);
+  Object.assign(reservedFirst.command, {...second.command, actorUserId: second.command.actorId, scopeKind: "project", scopeKey: "project-a"});
+  Object.assign(reservedFirst.confirmation, {...second.confirmation, actorUserId: second.confirmation.actorId, scopeKind: "project", scopeKey: "project-a"});
+  await reservedFirst.retirement().reserve(second.binding, second.command, second.confirmation);
+  Object.assign(reservedFirst.command, restoreCommand); Object.assign(reservedFirst.confirmation, restoreNonce);
+  await expect(reservedFirst.store().protect(reservedFirst.f.preparation, reservedFirst.f.command, reservedFirst.f.confirmation)).rejects.toThrow("Restore archive protection is unavailable.");
+  expect(reservedFirst.saved).toEqual([]); expect(reservedFirst.retired).toHaveLength(1);
+  expect(reservedFirst.queries[0]).toEqual(["deploylite:execution:project-a"]);
 });
