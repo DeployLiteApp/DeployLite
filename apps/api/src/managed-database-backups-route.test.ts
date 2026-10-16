@@ -41,8 +41,16 @@ function fixture(engine: ManagedDatabaseEngineV1 = "postgres", settings: {anonym
     ok: (_request: unknown, data: unknown) => ({data}), error: (_request: unknown, code: string) => ({error: {code}})};
   registerManagedDatabaseBackupsRoute(app, options);
   return {app, options, rows, inventory, grants, projects, append, execution, planning, profile,
-    call: (query = "") => app.inject({method: "GET", url: "/api/v1/projects/project-a/databases/orders/backups" + query})};
+    call: (query = "", headers: Record<string, string> = {}) => app.inject({method: "GET", headers, url: "/api/v1/projects/project-a/databases/orders/backups" + query})};
 }
+it.each(["foreign", "operator-a, foreign"])("refuses a stale metadata client actor %s before private reads",async actor=>{
+ const f=fixture();expect((await f.call("?destinationId=destination-a",{"x-deploylite-expected-actor-id":actor})).statusCode).toBe(409);
+ expect(f.projects).not.toHaveBeenCalled();expect(f.grants).not.toHaveBeenCalled();expect(f.inventory.list).not.toHaveBeenCalled();expect(f.append).not.toHaveBeenCalled();
+});
+it("accepts a matching explicit actor for the existing immutable metadata view",async()=>{
+ const f=fixture();expect((await f.call("?destinationId=destination-a",{"x-deploylite-expected-actor-id":"operator-a"})).statusCode).toBe(200);
+ expect(f.append).toHaveBeenCalledOnce();
+});
 it("returns only explicit public destination IDs and intersected byte limits before selection", async () => {
   const f = fixture(), response = await f.call();
   expect(response.statusCode).toBe(200);
