@@ -1,10 +1,14 @@
 import type { FastifyInstance, preHandlerAsyncHookHandler } from "fastify";
-import { BackupRetentionPreviewError, PolicyEvaluator, awaitAbortable, prepareBackupRetentionPreview, type AuditRepository, type BackupInventoryReader, type BackupRetentionProtectionReader, type ControlGrantRepository, type ProjectRepository } from "@deploylite/domain";
-import { backupRetentionPreviewRequestSchema } from "@deploylite/contracts";
+import { BackupRetentionPreviewError, PolicyEvaluator, awaitAbortable, digestControlInput, planManagedDatabaseProfile, prepareBackupRetentionPreview, type AuditRepository, type BackupInventoryReader, type BackupRetentionProtectionReader, type ControlGrantRepository, type ProjectRepository } from "@deploylite/domain";
+import { backupInventoryReceiptSchema, backupRetentionPreviewRequestSchema, composeVolumeBackupPlanningProfileSchema, managedDatabaseProfileRequestSchema, type ImageReferencePolicyV1 } from "@deploylite/contracts";
 import { z } from "zod";
-export type BackupRetentionPreviewAccess = Readonly<{agentId: string; inventory?: BackupInventoryReader; protections: BackupRetentionProtectionReader; deadlineMs: number}>;
+import type {ManagedDatabaseCredentialConfiguration} from "./managed-database-credentials-route.js";
+import type {ComposeVolumeBackupPlanAccess} from "./compose-volume-backup-plan-route.js";
+export type BackupRetentionPreviewAccess = Readonly<{agentId: string; inventory?: BackupInventoryReader; protections: BackupRetentionProtectionReader; deadlineMs: number;
+  native?: Readonly<{configuration: ManagedDatabaseCredentialConfiguration; imagePolicy: ImageReferencePolicyV1; planning: ReadonlyMap<string, ComposeVolumeBackupPlanAccess>}>;
+}>;
 type Options = Readonly<{prefix: string; projects: ProjectRepository; grants: ControlGrantRepository; audit: AuditRepository;
-  access?: ReadonlyMap<string, BackupRetentionPreviewAccess>; inventoryFactory?: (agentId: string) => BackupInventoryReader;
+  access?: ReadonlyMap<string, BackupRetentionPreviewAccess>; configuredAccess?: ReadonlyMap<string, BackupRetentionPreviewAccess>; inventoryFactory?: (agentId: string) => BackupInventoryReader;
   requireAuth: preHandlerAsyncHookHandler; requireRole: preHandlerAsyncHookHandler;
   ok(request: unknown, data: unknown): unknown; error(request: unknown, code: string, message: string): unknown}>;
 export function registerBackupRetentionPreviewRoute(app: FastifyInstance, options: Options): void {
@@ -15,7 +19,8 @@ export function registerBackupRetentionPreviewRoute(app: FastifyInstance, option
       if (!params.success || !body.success) return reply.code(400).send(options.error(request, "VALIDATION_ERROR", "Request validation failed."));
       const projectId = params.data.projectId, user = request.auth?.user, context = request.correlationContext;
       if (!user || !context) return reply.code(401).send(options.error(request, "UNAUTHENTICATED", "Authentication required."));
-      const access = options.access?.get(projectId), agentId = access?.agentId, deadlineMs = access?.deadlineMs, controller = new AbortController();
+      const selectedAccess = () => options.access?.get(projectId) ?? options.configuredAccess?.get(projectId);
+      const access = selectedAccess(), agentId = access?.agentId, deadlineMs = access?.deadlineMs, controller = new AbortController();
       const validDeadline = access && Number.isSafeInteger(access.deadlineMs) && access.deadlineMs > 0 && access.deadlineMs <= 60_000;
       const cancel = () => controller.abort(), timer = setTimeout(cancel, validDeadline ? access.deadlineMs : 60_000);
       request.raw.once("aborted", cancel); if (request.raw.aborted) cancel();
@@ -28,8 +33,9 @@ export function registerBackupRetentionPreviewRoute(app: FastifyInstance, option
         return reply.code(audited ? status : 503).send(options.error(request, audited ? code : "BACKUP_RETENTION_UNAVAILABLE", "Backup retention preview is unavailable or outside policy."));
       };
       try {
-        const decision = new PolicyEvaluator().evaluate({actorId: user.id, role: user.role, action: "project.update", scope: {kind: "project", projectId},
+        const authorize = async () => new PolicyEvaluator().evaluate({actorId: user.id, role: user.role, action: "project.update", scope: {kind: "project", projectId},
           correlationId: context.correlationId, grants: await awaitAbortable(() => options.grants.listForActor(user.id), controller.signal)});
+        const decision = await authorize();
         if (!decision.allowed) return await fail(403, decision.code, "permission-denied");
         const project = await awaitAbortable(() => options.projects.findById(projectId), controller.signal);
         if (!project) return await fail(404, "NOT_FOUND", "project-not-found");
@@ -37,16 +43,62 @@ export function registerBackupRetentionPreviewRoute(app: FastifyInstance, option
         const configuredInventory = access.inventory, factory = options.inventoryFactory;
         const inventory = configuredInventory ?? factory?.(agentId), protections = access.protections;
         if (!inventory) return await fail(503, "BACKUP_RETENTION_UNAVAILABLE", "inventory-unavailable");
-        const current = () => options.access?.get(projectId) === access && access.inventory === configuredInventory
+        const inventoryList = inventory.list, inventoryAvailable = inventory.available, protectionList = protections.list, protectionAvailable = protections.available;
+        const native = access.native;
+        let nativeCurrent = () => true;
+        let validateInventory = (_rows: readonly unknown[]) => {};
+        if (native) {
+          if (!body.data.volumeKey.startsWith("db-")) throw new Error("unavailable");
+          const databaseId = managedDatabaseProfileRequestSchema.shape.databaseId.parse(body.data.volumeKey.slice(3));
+          const configuration = native.configuration, profiles = configuration.profiles, projectIds = configuration.projectIds;
+          const policy = native.imagePolicy, planning = native.planning, destinationAccess = planning.get(projectId);
+          const destinationProfiles = destinationAccess?.profiles, destinationStore = destinationAccess?.store;
+          const destination = destinationProfiles?.get(body.data.destinationId), parsedDestination = composeVolumeBackupPlanningProfileSchema.parse(destination);
+          if (!projectIds?.has(projectId) || configuration.deadlineMs !== deadlineMs || !destinationAccess || !destinationStore?.available()
+            || parsedDestination.owner !== "deploylite" || parsedDestination.agentId !== agentId || parsedDestination.projectId !== projectId
+            || parsedDestination.destinationId !== body.data.destinationId || parsedDestination.maxDurationMs < deadlineMs!) throw new Error("unavailable");
+          const plans = new Map([...profiles].map(([engine, profile]) => [engine, planManagedDatabaseProfile({schemaVersion: 1, projectId, databaseId, engine}, profile, policy)]));
+          const profilesDigest = digestControlInput([...profiles]), policyDigest = digestControlInput(policy), destinationDigest = digestControlInput(destination);
+          const storeAvailable = destinationStore.available;
+          nativeCurrent = () => {
+            try {return access.native === native && native.configuration === configuration && native.imagePolicy === policy && native.planning === planning
+              && configuration.profiles === profiles && configuration.projectIds === projectIds && projectIds.has(projectId) && configuration.deadlineMs === deadlineMs
+              && digestControlInput([...profiles]) === profilesDigest && digestControlInput(policy) === policyDigest
+              && planning.get(projectId) === destinationAccess && destinationAccess.profiles === destinationProfiles && destinationAccess.store === destinationStore
+              && destinationStore.available === storeAvailable && storeAvailable.call(destinationStore)
+              && destinationProfiles?.get(body.data.destinationId) === destination && digestControlInput(destination) === destinationDigest;
+            } catch {return false;}
+          };
+          const recordSchema = z.object({schemaVersion: z.literal(1), receipt: backupInventoryReceiptSchema, createdAtMs: z.number().int().safe().nonnegative()}).strict();
+          validateInventory = rows => {
+            for (const raw of rows) {
+              const row = recordSchema.parse(raw), receipt = row.receipt;
+              if (receipt.action === "database.runtime.backup") {
+                const plan = plans.get(receipt.engine);
+                if (!plan || receipt.databaseId !== databaseId || receipt.profileId !== plan.profileId || receipt.planDigest !== plan.planDigest
+                  || row.createdAtMs < receipt.observedAt) throw new Error("unavailable");
+              }
+            }
+          };
+        }
+        const current = () => selectedAccess() === access && access.inventory === configuredInventory
           && access.agentId === agentId && access.deadlineMs === deadlineMs && access.protections === protections
-          && options.inventoryFactory === factory && inventory.available() && protections.available();
-        const plan = await prepareBackupRetentionPreview(projectId, body.data, {expectedAgentId: agentId,
-          inventory: {available: () => current() && inventory.available(), list: (...args) => inventory.list(...args)},
-          protections: {available: () => current() && protections.available(), list: (...args) => protections.list(...args)}}, controller.signal);
-        if (!current()) return await fail(503, "BACKUP_RETENTION_UNAVAILABLE", "access-changed");
+          && options.inventoryFactory === factory && inventory.list === inventoryList && inventory.available === inventoryAvailable
+          && protections.list === protectionList && protections.available === protectionAvailable
+          && access.native === native && inventoryAvailable.call(inventory) && protectionAvailable.call(protections) && nativeCurrent();
+        const fence = async () => {if (!current() || controller.signal.aborted || !(await authorize()).allowed || !current() || controller.signal.aborted) throw new Error("unavailable");};
+        await fence();
+        const ports = {expectedAgentId: agentId,
+          inventory: {available: current, list: async (...args: [string, string, string]) => {await fence(); const rows = await inventoryList.call(inventory, ...args); await fence(); validateInventory(rows); return rows;}},
+          protections: {available: current, list: async (...args: [string, string, string]) => {await fence(); const ids = await protectionList.call(protections, ...args); await fence(); return ids;}}};
+        const plan = await prepareBackupRetentionPreview(projectId, body.data, ports, controller.signal);
+        await fence();
         if (!await audit("backup.retention.preview", {inventoryDigest: plan.inventoryDigest, planDigest: plan.planDigest,
           retainedCount: plan.retainedArchiveIds.length, candidateCount: plan.deletionCandidates.length})) return await fail(503, "BACKUP_RETENTION_UNAVAILABLE", "audit-unavailable");
-        if (!current() || controller.signal.aborted) return await fail(503, "BACKUP_RETENTION_UNAVAILABLE", "access-changed");
+        await fence();
+        const finalPlan = await prepareBackupRetentionPreview(projectId, {...body.data, expectedInventoryDigest: plan.inventoryDigest}, ports, controller.signal);
+        if (finalPlan.planDigest !== plan.planDigest) throw new BackupRetentionPreviewError("stale-protection");
+        await fence();
         return options.ok(request, {plan});
       } catch (error) {
         const stale = error instanceof BackupRetentionPreviewError && ["stale-inventory", "stale-protection"].includes(error.code);
