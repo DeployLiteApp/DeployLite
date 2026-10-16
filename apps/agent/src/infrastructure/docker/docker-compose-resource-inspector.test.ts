@@ -207,3 +207,14 @@ it("does not corroborate an absent endpoint of a running volume consumer",async(
  await expect(inspect(s)).rejects.toMatchObject({code:"COMPOSE_INSPECTION_FAILED"});
  expect(s.f.networkReads).toBe(0);
 });
+
+
+it.each(["network","volume"] as const)("projects all owned %s consumers privately without collapsing or accepting ambiguous public service state",async kind=>{
+ const s=fixture(kind),helper={...structuredClone(s.f.container),id:"d".repeat(64)};if(kind==="network")helper.networks=[];s.f.containers.push(helper);
+ const result=await create(s.options).inspectAllConsumers(s.input,new AbortController().signal);expect(result.containers).toHaveLength(2);expect(result.containers.map(value=>value.containerId).sort()).toEqual(["c".repeat(64),"d".repeat(64)]);
+ const strict=fixture(kind);strict.f.containers.push({...structuredClone(strict.f.container),id:"d".repeat(64)});await expect(inspect(strict)).rejects.toMatchObject({code:"COMPOSE_RESOURCE_CONFLICT"});
+});
+it("keeps foreign attached consumers and unstable resource snapshots forbidden in private all-consumer observation",async()=>{
+ const foreign=fixture("volume");foreign.f.containers.push({...structuredClone(foreign.f.container),id:"d".repeat(64),projectId:"foreign"});await expect(create(foreign.options).inspectAllConsumers(foreign.input,new AbortController().signal)).rejects.toMatchObject({code:"COMPOSE_RESOURCE_FOREIGN"});
+ const changed=fixture("volume");changed.f.afterResource={...changed.f.resource,createdAt:"2026-10-09T00:00:00Z"};await expect(create(changed.options).inspectAllConsumers(changed.input,new AbortController().signal)).rejects.toMatchObject({code:"COMPOSE_INSPECTION_UNSTABLE"});
+});
