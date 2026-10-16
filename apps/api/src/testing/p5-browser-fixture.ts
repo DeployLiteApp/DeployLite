@@ -5,8 +5,9 @@ import {pathToFileURL} from "node:url";
 import {resolve} from "node:path";
 import {readFile} from "node:fs/promises";
 import {execFileSync} from "node:child_process";
+import {managedDatabaseRestoreSelectionSchema} from "@deploylite/contracts";
 import type {FastifyInstance} from "fastify";
-import {browserFixtureRequestFailure,type BrowserFixtureRequestStage,browserDeletionRecoveryFailure,validateBrowserProof,validateDeletionBrowserProof,validateBackupBrowserProof} from "./p5-browser-proof.js";
+import {browserFixtureRequestFailure,type BrowserFixtureRequestStage,browserDeletionRecoveryFailure,validateBrowserProof,validateDeletionBrowserProof,validateBackupBrowserProof,validateRestoreBrowserProof} from "./p5-browser-proof.js";
 const root=resolve(import.meta.dirname,"../../../..");
 /** Compile the actual application stylesheet with its existing production plugin. */
 export async function buildDatabaseBrowserStyles(){
@@ -33,6 +34,9 @@ export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:s
  type ApiResponse={statusCode:number;body:string;json():any};
  let requests=0,applyResponse:ApiResponse|undefined;
  let originalBackup:{response:ApiResponse;key:string;body:Record<string,unknown>}|undefined,backupLostReply=false,backupRequestStart=0;
+ let originalRestore:{response:ApiResponse;key:string;selection:unknown}|undefined,restoreRequestStart=0;
+ const restoreCalls:{key:string;confirmationId:string;actorId:string;status:number}[]=[];
+ const getOriginalRestore=()=>originalRestore;
  const getOriginalBackup=()=>originalBackup;
  const backupCalls:{key:string;commandId:string;archiveId:string;actorId:string;status:number}[]=[];
  let deletionPreparation:{response:typeof applyResponse;key:string}|undefined,deletionRequestStart=0;
@@ -77,6 +81,14 @@ export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:s
     if(!headers['idempotency-key'])throw new Error("Original deletion key required.");deletionPreparation={response,key:headers['idempotency-key']};
    }
    if(req.url===prefix+`/${input.databaseId}/runtime/delete/apply`)deletionCalls.push({key:headers['idempotency-key']!,confirmationId:JSON.parse(bytes).confirmationId,status:response.statusCode});
+   if(req.url===prefix+`/${input.databaseId}/runtime/restore/prepare`&&response.statusCode===200){
+    const key=headers['idempotency-key'];if(!key||headers['x-deploylite-expected-actor-id']!==input.actorId||originalRestore)throw new Error("One original restore preparation required.");
+    originalRestore={response,key,selection:managedDatabaseRestoreSelectionSchema.parse({projectId:input.projectId,databaseId:input.databaseId,...JSON.parse(bytes)})};
+   }
+   if(req.url===prefix+`/${input.databaseId}/runtime/restore/apply`){
+    if(headers['x-deploylite-expected-actor-id']!==input.actorId)throw new Error("Current original restore actor required.");
+    restoreCalls.push({key:headers['idempotency-key']!,confirmationId:JSON.parse(bytes).confirmationId,actorId:input.actorId,status:response.statusCode});
+   }
    if(req.url===prefix+`/${input.databaseId}/runtime/backup`&&response.statusCode===200){
     const data=response.json().data,key=headers['idempotency-key'],actor=headers['x-deploylite-expected-actor-id'];
     if(!key||actor!==input.actorId||data.command.idempotencyKey!==key)throw new Error("Original backup actor/key required.");
@@ -143,6 +155,35 @@ export async function openDatabaseBrowser(input:{sourceCommit:string;projectId:s
      manual:'passed',originalSource:'passed',lostReply:'passed',reload:'passed',sameOriginalKey:'passed',inventory:'passed',calls:[...backupCalls]};
     if(failures.length||!validateBackupBrowserProof(proof,sourceCommit))throw new Error("Incomplete original backup browser proof.");
     await page.goto('about:blank');return {...captured,proof};
+   },
+   async prepareRestore(raw:unknown,key:string){
+    if(originalRestore||restoreCalls.length||!/^[A-Za-z0-9_-]{1,200}$/.test(key))throw new Error("One original restore intent required.");
+    const selection=managedDatabaseRestoreSelectionSchema.parse(raw);if(selection.projectId!==input.projectId||selection.databaseId!==input.databaseId||selection.engine!==input.engine)throw new Error("Original restore selection required.");
+    restoreRequestStart=requests;await page.goto(origin);await selected().click();
+    // Recover a prior public request intent, preserving the fixture's original caller key before any approval exists.
+    await page.evaluate(({actorId,selection,key,origin}:any)=>sessionStorage.setItem('deploylite.native-restore:'+JSON.stringify([origin,actorId,selection]),JSON.stringify({key,selection,prepared:null,uncertainApply:false,confirmedReceipt:null})),{actorId:input.actorId,selection,key,origin});
+    await page.reload();await selected().click();await enabled('Retry restore preparation');await button('Retry restore preparation').click();
+    await page.getByRole('dialog',{name:'Restore database'}).waitFor();await page.getByText('Restore replaces current database data with this backup.',{exact:true}).waitFor();
+    const captured=getOriginalRestore();if(!captured||captured.key!==key||restoreCalls.length||failures.length)throw new Error("Original UI approval required before effects.");
+    return captured;
+   },
+   async applyRestoreExpectUnknown(){
+    await enabled('Confirm restore');await button('Confirm restore').click();await enabled('Retry original restore');
+    if(restoreCalls.length!==1||restoreCalls[0]!.status!==503||failures.length)throw new Error("One original uncertain restore required.");
+    await page.goto('about:blank');
+   },
+   async recoverRestore(verify:()=>Promise<void>){
+    const original=getOriginalRestore();if(!original)throw new Error("Original restore approval required.");
+    await page.goto(origin);await selected().click();await enabled('Retry restore confirmation');
+    if(restoreCalls.length!==1)throw new Error("Reload cannot apply a restore.");
+    await button('Retry restore confirmation').click();await page.getByRole('dialog',{name:'Restore database'}).waitFor();
+    await enabled('Retry original restore');await button('Retry original restore').click();await page.getByText('Restore completed.',{exact:true}).waitFor();await verify();
+    const data=original.response.json().data,selection=managedDatabaseRestoreSelectionSchema.parse(original.selection);
+    const proof={sourceCommit,engine:input.engine,projectId:input.projectId,databaseId:input.databaseId,actorId:input.actorId,browser:'chromium',context:'isolated',requests:requests-restoreRequestStart,
+      commandId:data.command.id,originalCommandId:selection.originalReceipt.commandId,archiveId:selection.archiveId,idempotencyKey:original.key,confirmationId:data.confirmation.id,
+      preparation:'passed',confirmation:'passed',originalSource:'passed',lostReply:'passed',reload:'passed',sameOriginalKey:'passed',sameOriginalNonce:'passed',cacheOnlyReopen:'passed',expiredRecovery:'passed',restoredData:'passed',calls:[...restoreCalls]};
+    if(failures.length||Date.now()<Date.parse(data.command.expiresAt)||!validateRestoreBrowserProof(proof,sourceCommit))throw new Error("Incomplete original restore browser proof.");
+    await page.goto('about:blank');return proof;
    },
    async cycle(persistence:()=>Promise<void>){
     await page.goto(origin);await selected().click();await enabled('Start database');

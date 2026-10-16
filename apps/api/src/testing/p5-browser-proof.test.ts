@@ -58,3 +58,12 @@ it("rejects incomplete detached foreign-source or private native backup browser 
  for(const patch of [{manual:"pending"},{reload:"skipped"},{sourceCommit:"b".repeat(40)},{context:"shared"},{privatePath:"private"},{calls:[]},{commandId:"create1"}])expect(validateBackupBrowserProof({...backupProof(),...patch},"a".repeat(40))).toBe(false);
  for(const field of ["key","commandId","archiveId","actorId"] as const){const value=backupProof();value.calls[1]![field]="foreign";expect(validateBackupBrowserProof(value,"a".repeat(40))).toBe(false);}
 });
+
+function restoreProof(engine="postgres") {return {sourceCommit:"a".repeat(40),engine,projectId:"project1",databaseId:"orders",actorId:"operator1",browser:"chromium",context:"isolated",requests:12,commandId:"restore1",originalCommandId:"create1",archiveId:"backup_"+"a".repeat(32),idempotencyKey:"fixture_restore_apply_"+engine,confirmationId:"original-nonce",preparation:"passed",confirmation:"passed",originalSource:"passed",lostReply:"passed",reload:"passed",sameOriginalKey:"passed",sameOriginalNonce:"passed",cacheOnlyReopen:"passed",expiredRecovery:"passed",restoredData:"passed",calls:[{key:"fixture_restore_apply_"+engine,confirmationId:"original-nonce",actorId:"operator1",status:503},{key:"fixture_restore_apply_"+engine,confirmationId:"original-nonce",actorId:"operator1",status:200}]};}
+it.each(["postgres","mysql","mariadb","mongodb","redis"])("requires complete original %s destructive restore browser recovery",async engine=>{const {validateRestoreBrowserProof}=await import("./p5-browser-proof.js");expect(validateRestoreBrowserProof(restoreProof(engine),"a".repeat(40))).toBe(true);});
+
+it("rejects missing detached renewed or private original restore browser recovery",async()=>{
+ const {validateRestoreBrowserProof}=await import("./p5-browser-proof.js");
+ for(const patch of [{confirmation:"pending"},{expiredRecovery:"skipped"},{sameOriginalNonce:"pending"},{sourceCommit:"b".repeat(40)},{context:"shared"},{privatePath:"private"},{calls:[]},{commandId:"create1"}])expect(validateRestoreBrowserProof({...restoreProof(),...patch},"a".repeat(40))).toBe(false);
+ for(const field of ["key","confirmationId","actorId"] as const){const value=restoreProof();value.calls[1]![field]="foreign";expect(validateRestoreBrowserProof(value,"a".repeat(40))).toBe(false);}
+});

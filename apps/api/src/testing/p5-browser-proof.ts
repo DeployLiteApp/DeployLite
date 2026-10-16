@@ -54,3 +54,16 @@ export function validateBackupBrowserProof(value:unknown,expectedSource:string):
  return proof.sourceCommit===expectedSource&&proof.commandId!==proof.originalCommandId&&proof.calls.every(call=>
   call.key===proof.idempotencyKey&&call.commandId===proof.commandId&&call.archiveId===proof.archiveId&&call.actorId===proof.actorId);
 }
+
+const restoreBrowserSchema=backupBrowserSchema.omit({destinationId:true,manual:true,inventory:true,calls:true}).extend({
+ confirmationId:z.string().regex(/^[A-Za-z0-9_-]{1,200}$/),preparation:passed,confirmation:passed,sameOriginalNonce:passed,
+ cacheOnlyReopen:passed,expiredRecovery:passed,restoredData:passed,
+ calls:z.tuple([z.object({key:z.string(),confirmationId:z.string(),actorId:z.string(),status:z.literal(503)}).strict(),
+  z.object({key:z.string(),confirmationId:z.string(),actorId:z.string(),status:z.literal(200)}).strict()])
+}).strict();
+export function validateRestoreBrowserProof(value:unknown,expectedSource:string):boolean{
+ const parsed=restoreBrowserSchema.safeParse(value);if(!/^[a-f0-9]{40}$/.test(expectedSource)||!parsed.success)return false;
+ const proof=parsed.data;
+ return proof.sourceCommit===expectedSource&&proof.commandId!==proof.originalCommandId&&proof.calls.every(call=>
+  call.key===proof.idempotencyKey&&call.confirmationId===proof.confirmationId&&call.actorId===proof.actorId);
+}
