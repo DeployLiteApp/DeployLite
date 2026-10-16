@@ -23,3 +23,7 @@ it("does not mount authenticated inventory without a configured API", () => {
   render(<ManagedDatabaseWorkbench projectId="project-a" apiBaseUrl={null} />);
   expect(observed.creator).toHaveBeenCalled(); expect(observed.inventory).not.toHaveBeenCalled();
 });
+it("passes the current authenticated actor into stored database controls",()=>{
+  render(<ManagedDatabaseWorkbench projectId="project-a" apiBaseUrl="https://api.example.test" actorId="operator-a"/>);
+  expect(observed.inventory).toHaveBeenLastCalledWith(expect.objectContaining({actorId:"operator-a"}));
+});
