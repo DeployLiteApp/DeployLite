@@ -3,15 +3,16 @@ import {useEffect, useRef, useState} from "react";
 import {z} from "zod";
 import {managedDatabaseBackupPreparationSchema, type ManagedDatabaseHealthPreparationV1} from "@deploylite/contracts";
 import {backupManagedDatabase, readManagedDatabaseBackups, type ManagedDatabaseBackupView} from "@/lib/managed-database-backup";
+import {ManagedDatabaseRestoreControl} from "./managed-database-restore-control";
 import {Button} from "@/components/ui/button";
 type Props = {preparation: ManagedDatabaseHealthPreparationV1; apiBaseUrl: string; actorId: string;
-  currentState: "running" | "stopped" | null; disabled?: boolean; onBusyChange?(busy: boolean): void};
+  currentState: "running" | "stopped" | null; disabled?: boolean; onRestored?(): void; onBusyChange?(busy: boolean): void};
 const identity = z.string().regex(/^[A-Za-z0-9_-]{1,200}$/);
 const attemptSchema = z.object({key: identity, preparation: managedDatabaseBackupPreparationSchema,
   confirmedArchiveId: z.string().regex(/^backup_[a-f0-9]{32}$/).nullable()}).strict();
 type Attempt = z.infer<typeof attemptSchema>;
 /** Save the original public request before dispatch; reload and uncertainty never create a replacement. */
-export function ManagedDatabaseBackupPanel({preparation, apiBaseUrl, actorId, currentState, disabled, onBusyChange}: Props) {
+export function ManagedDatabaseBackupPanel({preparation, apiBaseUrl, actorId, currentState, disabled, onRestored, onBusyChange}: Props) {
   const scope = JSON.stringify([apiBaseUrl, actorId, preparation]), slot = "deploylite.native-backup:" + scope;
   const current = useRef(scope); current.current = scope;
   const active = useRef<AbortController | null>(null);
@@ -93,7 +94,17 @@ export function ManagedDatabaseBackupPanel({preparation, apiBaseUrl, actorId, cu
       {!pending && !stateAllowsBackup ? <p>{preparation.engine === "redis" ? "Stop Redis before creating a backup." : "A current running database observation is required."}</p> : null}
       <Button disabled={busy || disabled || blocked || (!pending && (!view || !validBudget || !stateAllowsBackup))} onClick={() => void create()}>{pending ? "Retry backup confirmation" : "Create backup"}</Button>
       <Button variant="outline" disabled={busy} onClick={() => setRevision(value => value + 1)}>Reload backups</Button>
-      <ul>{view?.backups.filter(row => row.receipt.destinationId === destination).map(row => <li key={row.receipt.archiveId}><span>{row.receipt.archiveId}</span> · {row.receipt.archiveBytes} bytes · {new Date(row.createdAtMs).toISOString()}</li>)}</ul>
+      <ul>{view?.backups.filter(row => row.receipt.destinationId === destination).map(row => {
+        const receipt = row.receipt, source = preparation.originalReceipt;
+        const compatible = receipt.originalCommandId === source.commandId && receipt.profileId === preparation.profileId
+          && (["projectId", "databaseId", "engine", "planDigest", "environmentFingerprint", "agentId", "containerId", "imageId", "volumeName", "networkName", "networkId", "volumeCreatedAt"] as const).every(key => receipt[key] === source[key]);
+        return <li key={receipt.archiveId}><span>{receipt.archiveId}</span> · {receipt.archiveBytes} bytes · {new Date(row.createdAtMs).toISOString()}
+          {selected ? <ManagedDatabaseRestoreControl selection={{...preparation, archiveId: receipt.archiveId, destinationId: receipt.destinationId,
+            expectedArchiveSha256: receipt.archiveSha256, expectedManifestSha256: receipt.manifestSha256, maxBytes: selected.maxBytes}}
+            actorId={actorId} apiBaseUrl={apiBaseUrl} currentState={currentState} disabled={disabled || busy || !compatible || receipt.archiveBytes > selected.maxBytes}
+            onBusyChange={onBusyChange} onRestored={onRestored} /> : null}
+        </li>;
+      })}</ul>
       {attempt?.confirmedArchiveId && !view?.backups.some(row => row.receipt.archiveId === attempt.confirmedArchiveId) ? <p>{attempt.confirmedArchiveId}</p> : null}
     </> : <p>Loading backups…</p>}
   </section>;

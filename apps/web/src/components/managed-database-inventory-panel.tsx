@@ -102,7 +102,8 @@ export function ManagedDatabaseInventoryPanel({projectId, apiBaseUrl, refreshKey
             <Button disabled={busy || !selected.startPreparation || (currentState !== "stopped" && !retryStart)} onClick={() => void control("start")}>{retryStart ? "Retry start confirmation" : "Start database"}</Button>
           </div>
           {actorId ? <ManagedDatabaseBackupPanel key={JSON.stringify([actorId, selected.source])} preparation={selected.source} apiBaseUrl={apiBaseUrl}
-            actorId={actorId} currentState={currentState} disabled={busy} onBusyChange={setBusy} /> : null}
+            actorId={actorId} currentState={currentState} disabled={busy} onBusyChange={setBusy}
+            onRestored={() => {setCurrentState(null); setTelemetryRevision(value => value + 1);}} /> : null}
           <ManagedDatabaseDeleteControl preparation={selected.source} apiBaseUrl={apiBaseUrl} disabled={busy} onBusyChange={setBusy} onDeleted={()=>{
             onSelect?onSelect(""):setLocalSelection("");setObservation(null);setManual(value=>value+1);
           }} />
