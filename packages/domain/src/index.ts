@@ -479,3 +479,4 @@ export * from "./managed-database-verified-restore.js";
 export * from "./managed-database-restore-archive-binding.js";
 
 export * from "./managed-database-restore-receipt-binding.js";
+export * from "./backup-retirement.js";

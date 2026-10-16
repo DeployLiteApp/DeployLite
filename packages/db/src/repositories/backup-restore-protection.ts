@@ -2,7 +2,7 @@ import {and,eq,sql} from "drizzle-orm";
 import {managedDatabaseBackupReceiptSchema,managedDatabaseRestorePreparationSchema,protocolPayloadFingerprint,projectControlAuthoritySchema} from "@deploylite/contracts";
 import {digestControlInput,evaluateConfirmation,managedDatabaseRestoreExecutionDigest,type ControlCommand,type ControlConfirmation,type BackupRetentionProtectionReader} from "@deploylite/domain";
 import type {DeployLiteDb} from "../client.js";
-import {backupRestoreProtections,backupInventory,controlCommands,controlCommandConfirmations} from "../schema.js";
+import {backupRestoreProtections,backupRetirementReservations,backupInventory,controlCommands,controlCommandConfirmations} from "../schema.js";
 function unavailable():never{throw new Error("Restore archive protection is unavailable.");}
 const scope=(projectId:string,volumeKey:string,destinationId:string)=>and(eq(backupRestoreProtections.projectId,projectId),eq(backupRestoreProtections.volumeKey,volumeKey),eq(backupRestoreProtections.destinationId,destinationId));
 type Transaction=Parameters<Parameters<DeployLiteDb["transaction"]>[0]>[0];
@@ -58,6 +58,10 @@ export class DbBackupRestoreProtectionStore implements BackupRetentionProtection
     backupCommandId:receipt.commandId,inputDigest:digest,archiveSha256:receipt.archiveSha256,manifestSha256:receipt.manifestSha256,createdAt:new Date(now)};
    await this.db.transaction(async tx=>{
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`deploylite:execution:${receipt.projectId}`},0))`);
+    const retirement = await tx.select().from(backupRetirementReservations).where(and(
+      eq(backupRetirementReservations.projectId,receipt.projectId),eq(backupRetirementReservations.volumeKey,receipt.volumeKey),
+      eq(backupRetirementReservations.destinationId,receipt.destinationId),eq(backupRetirementReservations.archiveId,receipt.archiveId))).limit(1).for("share");
+    if(retirement.length)unavailable();
     const {command:stored,nonce,receipt:original}=await this.read(tx,values);
     if(stored.status!=="pending_confirmation"||stored.executionAuthority||stored.actorUserId!==command.actorId||stored.idempotencyKey!==command.idempotencyKey
      ||stored.correlationId!==command.correlationId||stored.expiresAt.getTime()!==command.expiresAt.getTime()||nonce.consumedAt!==null
