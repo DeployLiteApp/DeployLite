@@ -103,3 +103,18 @@ it.each(["foreign","operator-a, foreign"])("rejects %s expected restore actor be
  expect(f.grants).not.toHaveBeenCalled();expect(f.projects).not.toHaveBeenCalled();expect(f.inventory.list).not.toHaveBeenCalled();expect(f.controls.resolve).not.toHaveBeenCalled();
 });
 it("keeps an explicit matching actor on its original restore key and source",async()=>{const f=await routeFixture();expect((await f.call(undefined,"restore-orders",{"x-deploylite-expected-actor-id":"operator-a"})).statusCode).toBe(200);});
+
+
+it("recovers an expired original restore after completion rollback without a cipher or another execution",async()=>{
+ const f=await routeFixture();
+ f.controls.completeManagedDatabaseRestore.mockImplementationOnce(async()=>{throw new Error("injected completion rollback");});
+ expect((await f.call()).statusCode).toBe(503);expect(f.transport.dispatch).toHaveBeenCalledOnce();expect(f.audit).not.toHaveBeenCalled();
+ const originalNonce=structuredClone(f.nonce),originalReceipt=structuredClone([...f.cache.values()][0]);
+ f.now.value=3000;f.routeOptions.configuration.profiles.clear();
+ f.transport.dispatch.mockRejectedValue(new Error("Execution capability withdrawn."));
+ f.archive.verify.mockRejectedValue(new Error("Fresh archive capability withdrawn."));
+ expect(f.routeOptions).not.toHaveProperty("cipher");
+ const recovered=await f.call();expect(recovered.statusCode).toBe(200);
+ expect(recovered.json().data).toMatchObject({restored:true,idempotent:true,receipt:originalReceipt});
+ expect(f.nonce).toEqual(originalNonce);expect(f.transport.dispatch).toHaveBeenCalledOnce();expect(f.audit).toHaveBeenCalledOnce();
+});

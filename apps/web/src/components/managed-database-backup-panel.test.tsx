@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import {cleanup,fireEvent,render,screen,waitFor} from "@testing-library/react";
+import {act,cleanup,fireEvent,render,screen,waitFor} from "@testing-library/react";
 import {afterEach,expect,it,vi} from "vitest";
 import {managedDatabaseBackupReceiptSchema,managedDatabaseHealthPreparationSchema,type ManagedDatabaseEngineV1} from "@deploylite/contracts";
 import {readManagedDatabaseBackups,backupManagedDatabase} from "@/lib/managed-database-backup";
@@ -125,4 +125,11 @@ it("blocks a fresh selector with a changed budget when an owned original restore
  sessionStorage.setItem("deploylite.native-restore:"+JSON.stringify([f.props.apiBaseUrl,f.props.actorId,selection]),'{"key":"original-key"}');
  read.mockResolvedValue({kind:"ready",destinations:[{destinationId:"destination-a",maxBytes:8192}],backups:[f.inventory]});render(<ManagedDatabaseBackupPanel {...f.props}/>);
  await screen.findByText(f.receipt.archiveId);expect(restoreObserved).toHaveBeenLastCalledWith(expect.objectContaining({disabled:true}));expect(backup).not.toHaveBeenCalled();
+});
+
+it("retains visible restore completion while refreshed inventory replaces the completed recovery control",async()=>{
+ const f=setup();read.mockResolvedValue({kind:"ready",destinations:[{destinationId:"destination-a",maxBytes:4096}],backups:[f.inventory]});
+ const view=render(<ManagedDatabaseBackupPanel {...f.props}/>);await screen.findByText(f.receipt.archiveId);
+ const props=restoreObserved.mock.lastCall![0] as {onRestored?():void};act(()=>props.onRestored?.());await screen.findByText("Restore completed.");
+ view.rerender(<ManagedDatabaseBackupPanel {...f.props} actorId="operator-b"/>);await waitFor(()=>expect(screen.queryByText("Restore completed.")).toBeNull());expect(backup).not.toHaveBeenCalled();
 });

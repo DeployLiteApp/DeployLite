@@ -409,7 +409,8 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const restoreKey="fixture_restore_apply_"+engine;
     const {projectId:_restoreProject,databaseId:_restoreDatabase,...restoreBody}=restoreSelection;
     const restoreCall=(operation:string,confirmationId?:string)=>app!.inject({method:"POST",url:`/api/v1/projects/${projectId}/databases/${databaseId}/runtime/restore/${operation}`,headers:{cookie,"idempotency-key":restoreKey,"x-correlation-id":randomUUID()},payload:{...restoreBody,...(confirmationId?{confirmationId}:{})}});
-    const preparedRestore=await restoreCall("prepare");expect(preparedRestore.statusCode).toBe(200);
+    legacyPhase=false;const browserPreparedRestore=await browserFixture.prepareRestore(restoreSelection,restoreKey);legacyPhase=true;
+    const preparedRestore=browserPreparedRestore.response;expect(preparedRestore.statusCode).toBe(200);
     const actualPending=preparedRestore.json().data;expect(actualPending.confirmation.consumedAt).toBeNull();expect(actualPending.command.id).not.toBe(pendingCommand.id);
     expect((await restoreCall("apply",randomUUID())).statusCode).toBe(503);expect(restoreEffects).toBe(0);
     const inventorySnapshot=(await db.pool.query("SELECT * FROM backup_inventory WHERE command_id=$1",[restoreBackup.commandId])).rows;
@@ -419,7 +420,7 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const restoreFaultControls=new DbControlCommandRepository(db.db,stage=>{if(stage==="command-completed"){restoreCompletionFaults++;throw new Error("injected restore completion rollback");}});
     const actualRestoreAccess:ManagedDatabaseRestoreApplyAccess={...restoreAccess(),controls:restoreFaultControls,deadlineMs:60000,transport:new AuthenticatedManagedDatabaseRestoreTransport({endpoint,agentId,trustKey,timeoutMs:60000,allowInsecureInternal:true})};
     await app!.close();app=await build(endpoint,"managed_database_fixture_key_1234567890",undefined,undefined,new Map([[projectId,actualRestoreAccess]]));
-    expect((await restoreCall("apply",actualPending.confirmation.id)).statusCode).toBe(503);
+    legacyPhase=false;await browserFixture.applyRestoreExpectUnknown();legacyPhase=true;
     expect(restoreCompletionFaults).toBe(1);expect(lostRestore).toBe(true);expect(restoreEffects).toBe(1);expect(restoreInputs).toBe(1);expect(restorePosts).toBe(1);
     expect(unconsumedRestoreRejected).toBe(true);
     const restoreNonce=async()=>(await db.pool.query("SELECT * FROM control_command_confirmations WHERE command_id=$1",[actualPending.command.id])).rows;
@@ -430,6 +431,9 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     const recoveryWait=Math.max(0,originalRestoreExpiresAt-Date.now()+1);expect(recoveryWait).toBeLessThanOrEqual(60000);if(recoveryWait)await new Promise(resolve=>setTimeout(resolve,recoveryWait));
     await app!.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(false);app=await build(endpoint);
     const restoreRecoveredAt=Date.now();expect(restoreRecoveredAt).toBeGreaterThanOrEqual(originalRestoreExpiresAt);
+    // First retain the strongest boundary: no cipher and no execution capability.
+    const keylessInventory=await app!.inject({method:"GET",url:`/api/v1/projects/${projectId}/databases`,headers:{cookie}});
+    expect(keylessInventory.statusCode).toBe(503);
     const recoveredRestore=await restoreCall("apply",actualPending.confirmation.id);expect(recoveredRestore.statusCode).toBe(200);
     const restored=managedDatabaseRestoreReceiptSchema.parse(recoveredRestore.json().data.receipt);expect(recoveredRestore.json().data).toMatchObject({restored:true,idempotent:true});
     expect((await restoreCall("apply",actualPending.confirmation.id)).json().data.receipt).toEqual(restored);expect(restoreEffects).toBe(1);expect(restoreInputs).toBe(1);expect(restorePosts).toBe(1);
@@ -440,11 +444,23 @@ for (const engine of engines) it(`native operator physical ${engine} startup sto
     expect((await db.pool.query("SELECT * FROM backup_inventory WHERE command_id=$1",[restoreBackup.commandId])).rows).toEqual(inventorySnapshot);
     expect((await db.pool.query("SELECT consumed_at FROM control_command_confirmations WHERE command_id=$1",[pendingCommand.id])).rows).toEqual([{consumed_at:null}]);
     expect((await db.pool.query("SELECT * FROM backup_restore_protections WHERE restore_command_id=$1",[pendingCommand.id])).rows).toEqual(protectionRows);
+    // Inventory reconstruction is a distinct prerequisite, not restore execution authority.
+    await browserFixture.reopenApplication(async()=>{
+      await app!.close();app=undefined;app=await build(endpoint,"managed_database_fixture_key_1234567890");
+    });
+    const browserInventory=await app!.inject({method:"GET",url:`/api/v1/projects/${projectId}/databases`,headers:{cookie}});
+    expect(browserInventory.statusCode).toBe(200);
+    legacyPhase=false;const browserRestoreProof=await browserFixture.recoverRestore(async()=>{
+      expect((await runner.run(["docker","exec",originalContainerId,"sh","-c",probe(engine,false)],signal)).stdout.trim()).toBe(marker);
+    });legacyPhase=true;
+    expect(restoreEffects).toBe(1);expect(restoreInputs).toBe(1);expect(restorePosts).toBe(1);
+    expect(await restoreAudits()).toHaveLength(1);expect(await restoreNonce()).toEqual(consumedRestore);
+    expect(await originals()).toEqual(originalRows);expect(await encrypted()).toEqual(cipherRows);
     const expiryWait=Math.max(0,pendingCommand.expiresAt.getTime()-Date.now()+1);expect(expiryWait).toBeLessThanOrEqual(10001);if(expiryWait)await new Promise(resolve=>setTimeout(resolve,expiryWait));
     const expiredApply=await app!.inject({method:"POST",url:`/api/v1/projects/${projectId}/databases/${databaseId}/runtime/restore/apply`,headers:{cookie,"idempotency-key":pendingRestoreInput.idempotencyKey},payload:{...restoreBody,confirmationId:pendingRestore.confirmation.id}});
     expect(expiredApply.statusCode).toBe(503);expect(restoreEffects).toBe(1);
     expect((await db.pool.query("SELECT consumed_at FROM control_command_confirmations WHERE command_id=$1",[pendingCommand.id])).rows).toEqual([{consumed_at:null}]);
-    nativeBackup.nativeRestore={receipt:restored,commandId:actualPending.command.id,confirmationId:actualPending.confirmation.id,actorId,idempotencyKey:restoreKey,consumedAt:new Date(consumedRestore[0].consumed_at).getTime(),expiresAt:originalRestoreExpiresAt,recoveredAt:restoreRecoveredAt,dispatches:restoreEffects,inputWrites:restoreInputs,requestPosts:restorePosts,unconsumedConfirmation:"passed",expiredConfirmation:"passed",reusedConfirmation:"passed",foreignConfirmation:"passed",lostReply:"passed",completionRollback:"passed",cacheOnlyReopen:"passed",restoredData:"passed",originalRows:"unchanged",cipher:"unchanged",inventory:"unchanged",originalPending:"unconsumed",protection:"unchanged",auditCount:1};
+    nativeBackup.nativeRestore={browserRestore:browserRestoreProof,receipt:restored,commandId:actualPending.command.id,confirmationId:actualPending.confirmation.id,actorId,idempotencyKey:restoreKey,consumedAt:new Date(consumedRestore[0].consumed_at).getTime(),expiresAt:originalRestoreExpiresAt,recoveredAt:restoreRecoveredAt,dispatches:restoreEffects,inputWrites:restoreInputs,requestPosts:restorePosts,unconsumedConfirmation:"passed",expiredConfirmation:"passed",reusedConfirmation:"passed",foreignConfirmation:"passed",lostReply:"passed",completionRollback:"passed",cacheOnlyReopen:"passed",restoredData:"passed",originalRows:"unchanged",cipher:"unchanged",inventory:"unchanged",originalPending:"unconsumed",protection:"unchanged",auditCount:1};
     await app!.close();app=undefined;await peer!.close();peer=undefined;await db.reopen();endpoint=await startPeer(true);app=await build(endpoint,"managed_database_fixture_key_1234567890");
 
     const inventoryAfterStart = await recoveredInventory(stopped,originalStopReplayFingerprint);

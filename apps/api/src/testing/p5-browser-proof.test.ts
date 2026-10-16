@@ -1,3 +1,4 @@
+import {readFileSync} from "node:fs";
 import {expect,it} from "vitest";
 import {browserFixtureRequestFailure,browserDeletionRecoveryFailure,validateBrowserProof,validateDeletionBrowserProof} from "./p5-browser-proof.js";
 function proof(){return {sourceCommit:"7e4875341dbb8e1afdeff23137403528f3af6382",engine:"postgres",projectId:"project1",databaseId:"orders",creation:"passed",selection:"passed",reload:"passed",telemetry:"passed",start:"passed",stop:"passed",persistence:"passed",browser:"chromium",context:"isolated",requests:12};}
@@ -57,4 +58,32 @@ it("rejects incomplete detached foreign-source or private native backup browser 
  const {validateBackupBrowserProof}=await import("./p5-browser-proof.js");
  for(const patch of [{manual:"pending"},{reload:"skipped"},{sourceCommit:"b".repeat(40)},{context:"shared"},{privatePath:"private"},{calls:[]},{commandId:"create1"}])expect(validateBackupBrowserProof({...backupProof(),...patch},"a".repeat(40))).toBe(false);
  for(const field of ["key","commandId","archiveId","actorId"] as const){const value=backupProof();value.calls[1]![field]="foreign";expect(validateBackupBrowserProof(value,"a".repeat(40))).toBe(false);}
+});
+
+function restoreProof(engine="postgres") {return {sourceCommit:"a".repeat(40),engine,projectId:"project1",databaseId:"orders",actorId:"operator1",browser:"chromium",context:"isolated",requests:12,commandId:"restore1",originalCommandId:"create1",archiveId:"backup_"+"a".repeat(32),idempotencyKey:"fixture_restore_apply_"+engine,confirmationId:"original-nonce",preparation:"passed",confirmation:"passed",originalSource:"passed",lostReply:"passed",reload:"passed",sameOriginalKey:"passed",sameOriginalNonce:"passed",cacheOnlyReopen:"passed",expiredRecovery:"passed",restoredData:"passed",calls:[{key:"fixture_restore_apply_"+engine,confirmationId:"original-nonce",actorId:"operator1",status:503},{key:"fixture_restore_apply_"+engine,confirmationId:"original-nonce",actorId:"operator1",status:200}]};}
+it.each(["postgres","mysql","mariadb","mongodb","redis"])("requires complete original %s destructive restore browser recovery",async engine=>{const {validateRestoreBrowserProof}=await import("./p5-browser-proof.js");expect(validateRestoreBrowserProof(restoreProof(engine),"a".repeat(40))).toBe(true);});
+
+it("rejects missing detached renewed or private original restore browser recovery",async()=>{
+ const {validateRestoreBrowserProof}=await import("./p5-browser-proof.js");
+ for(const patch of [{confirmation:"pending"},{expiredRecovery:"skipped"},{sameOriginalNonce:"pending"},{sourceCommit:"b".repeat(40)},{context:"shared"},{privatePath:"private"},{calls:[]},{commandId:"create1"}])expect(validateRestoreBrowserProof({...restoreProof(),...patch},"a".repeat(40))).toBe(false);
+ for(const field of ["key","confirmationId","actorId"] as const){const value=restoreProof();value.calls[1]![field]="foreign";expect(validateRestoreBrowserProof(value,"a".repeat(40))).toBe(false);}
+});
+
+
+it("proves expired keyless original cache recovery before restoring only the browser inventory key",()=>{
+ const source=readFileSync(new URL("../p5-native-operator.physical.test.ts",import.meta.url),"utf8");
+ const phase=source.slice(source.indexOf("const originalRestoreExpiresAt="),source.indexOf("const expiryWait=Math.max(0,pendingCommand.expiresAt"));
+ const expired=phase.indexOf("toBeGreaterThanOrEqual(originalRestoreExpiresAt)"),direct=phase.indexOf('const recoveredRestore=await restoreCall("apply",actualPending.confirmation.id)');
+ const key=phase.indexOf('app=await build(endpoint,"managed_database_fixture_key_1234567890")'),browser=phase.indexOf("browserFixture.recoverRestore(");
+ expect(expired).toBeGreaterThan(-1);expect(direct).toBeGreaterThan(expired);
+ expect(key,"full Workbench inventory needs the fixture key after keyless cache proof").toBeGreaterThan(direct);
+ expect(browser).toBeGreaterThan(key);
+ const keyless=phase.slice(expired,key);
+ expect(keyless).toContain('expect(recoveredRestore.statusCode).toBe(200)');
+ expect(keyless).toContain('expect(restoreEffects).toBe(1)');expect(keyless).toContain('expect(await restoreAudits()).toHaveLength(1)');
+ expect(phase.slice(key,browser)).not.toContain("startPeer(true)");
+ const reopen=phase.indexOf("browserFixture.reopenApplication");
+ expect(reopen).toBeGreaterThan(direct);expect(key).toBeGreaterThan(reopen);
+ expect(phase).toContain('expect(keylessInventory.statusCode).toBe(503)');
+ expect(phase).toContain('expect(browserInventory.statusCode).toBe(200)');
 });

@@ -17,6 +17,7 @@ export function ManagedDatabaseBackupPanel({preparation, apiBaseUrl, actorId, cu
   const current = useRef(scope); current.current = scope;
   const active = useRef<AbortController | null>(null);
   const preferred = useRef<{scope: string; destination: string} | null>(null);
+  const [restoreNotice, setRestoreNotice] = useState<{scope: string} | null>(null);
   const [attempt, setAttempt] = useState<Attempt | null>(null), [loadedScope, setLoadedScope] = useState("");
   const [recoveries, setRecoveries] = useState<ReturnType<typeof readRecoverableManagedDatabaseRestores>>([]);
   const [view, setView] = useState<ManagedDatabaseBackupView | null>(null), [destination, setDestination] = useState("");
@@ -85,13 +86,15 @@ export function ManagedDatabaseBackupPanel({preparation, apiBaseUrl, actorId, cu
     } catch {if (!controller.signal.aborted && current.current === scope) setMessage("Backup could not be confirmed. Retry the original request.");}
     finally {if (active.current === controller) {active.current = null; setBusy(false); onBusyChange?.(false);}}
   }
+  function restored() {setRestoreNotice({scope}); onRestored?.(); setRevision(value => value + 1);}
   return <section aria-label="Database backups" className="space-y-2">
     <h3>Backups</h3>
+    {restoreNotice?.scope === scope ? <p role="status">Restore completed.</p> : null}
     {message ? <p role="status">{message}</p> : null}
     {visible ? <>
       {recoveries.map(selection => <div key={JSON.stringify(selection)}><p>Pending original restore · {selection.archiveId}</p>
         <ManagedDatabaseRestoreControl selection={selection} actorId={actorId} apiBaseUrl={apiBaseUrl} currentState={currentState}
-          disabled={disabled || busy || blocked} onBusyChange={onBusyChange} onRestored={() => {onRestored?.(); setRevision(value => value + 1);}} />
+          disabled={disabled || busy || blocked} onBusyChange={onBusyChange} onRestored={restored} />
       </div>)}
       <label>Backup destination <select aria-label="Backup destination" value={destination} disabled={busy || Boolean(pending)} onChange={event => {
         preferred.current = {scope, destination: event.target.value}; setRevision(value => value + 1);
@@ -108,7 +111,7 @@ export function ManagedDatabaseBackupPanel({preparation, apiBaseUrl, actorId, cu
           {selected && !recoveries.some(selection => selection.archiveId === receipt.archiveId && selection.destinationId === receipt.destinationId) ? <ManagedDatabaseRestoreControl selection={{...preparation, archiveId: receipt.archiveId, destinationId: receipt.destinationId,
             expectedArchiveSha256: receipt.archiveSha256, expectedManifestSha256: receipt.manifestSha256, maxBytes: selected.maxBytes}}
             actorId={actorId} apiBaseUrl={apiBaseUrl} currentState={currentState} disabled={disabled || busy || blocked || !compatible || receipt.archiveBytes > selected.maxBytes}
-            onBusyChange={onBusyChange} onRestored={onRestored} /> : null}
+            onBusyChange={onBusyChange} onRestored={restored} /> : null}
         </li>;
       })}</ul>
       {attempt?.confirmedArchiveId && !view?.backups.some(row => row.receipt.archiveId === attempt.confirmedArchiveId) ? <p>{attempt.confirmedArchiveId}</p> : null}

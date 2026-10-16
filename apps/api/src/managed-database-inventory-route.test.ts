@@ -152,3 +152,19 @@ it("withholds inventory when immutable retirement history changes during read au
   f.append.mockImplementation(async input => {const result = await append(input); f.history.mockResolvedValue([]); return result;});
   expect((await f.call()).statusCode).toBe(503);
 });
+
+
+it("requires only the inventory cipher for read-only reconstruction after execution capabilities are withdrawn",async()=>{
+ const f=await fixture(),cipher=f.options.cipher;
+ const before=f.rows.map(row=>({...row,encryptedValue:Buffer.from(row.encryptedValue)}));
+ Reflect.deleteProperty(f.options,"cipher");
+ expect((await f.call()).statusCode).toBe(503);
+ expect(f.inventory.listEncryptedByProject).not.toHaveBeenCalled();
+ f.options.cipher=cipher;
+ // An available authenticated receipt reader is not an enabled execution capability.
+ f.originalTransport.dispatch.mockRejectedValue(new Error("Execution capability withdrawn."));
+ f.stopTransport.dispatch.mockRejectedValue(new Error("Execution capability withdrawn."));
+ expect((await f.call()).statusCode).toBe(200);
+ expect(f.rows).toEqual(before);expect(f.secrets.createIfAbsent).not.toHaveBeenCalled();
+ expect(f.originalTransport.dispatch).not.toHaveBeenCalled();expect(f.stopTransport.dispatch).not.toHaveBeenCalled();
+});
