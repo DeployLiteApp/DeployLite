@@ -6,7 +6,11 @@ import { readManagedDatabaseTelemetry } from "@/lib/managed-database-telemetry";
 import { ManagedDatabaseTelemetryPanel } from "./managed-database-telemetry-panel";
 vi.mock("@/lib/managed-database-telemetry", () => ({readManagedDatabaseTelemetry: vi.fn()}));
 const read = vi.mocked(readManagedDatabaseTelemetry);
-afterEach(() => { cleanup(); vi.resetAllMocks(); vi.useRealTimers(); });
+const browserDescriptors = [[navigator,"clipboard"],[URL,"createObjectURL"],[URL,"revokeObjectURL"]].map(([target,key]) => ({target:target as object,key:key as string,descriptor:Object.getOwnPropertyDescriptor(target,key as string)}));
+afterEach(() => {
+  cleanup(); vi.restoreAllMocks(); vi.resetAllMocks(); vi.useRealTimers();
+  for (const {target,key,descriptor} of browserDescriptors) {if (descriptor) Object.defineProperty(target,key,descriptor); else Reflect.deleteProperty(target,key);}
+});
 function fixture() {
   const preparation: ManagedDatabaseHealthPreparationV1 = {schemaVersion: 1, projectId: "project-a", databaseId: "orders", engine: "postgres",
     profileId: "profile-a", planDigest: "a".repeat(64), environmentFingerprint: "b".repeat(32), originalReplayFingerprint: "c".repeat(64),
@@ -82,4 +86,42 @@ it("reports only fresh observed state and clears it after a rejected observation
   read.mockResolvedValueOnce({kind: "error", message: "private-detail"});
   fireEvent.click(screen.getByRole("button", {name: "Refresh"}));
   await waitFor(() => expect(onState).toHaveBeenLastCalledWith(null));
+});
+it("copies only the currently filtered redacted logs without another runtime read", async () => {
+  const f = fixture(), writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {configurable:true,value:{writeText}});
+  render(<ManagedDatabaseTelemetryPanel {...f.props} />); await screen.findByText("Healthy");
+  read.mockResolvedValue({kind:"ready",observation:{...f.health,action:"database.runtime.logs",logs:{stdout:"alpha line\nbeta line\n",stderr:"notice\n",redacted:true},logsObservedAt:1999}});
+  fireEvent.click(screen.getByRole("button",{name:"Logs"})); await screen.findByText(/alpha line/);
+  fireEvent.click(screen.getByRole("button",{name:"Pause live"}));
+  fireEvent.change(screen.getByLabelText("Search logs"),{target:{value:"beta"}}); const count = read.mock.calls.length;
+  fireEvent.click(screen.getByRole("button",{name:"Copy logs"})); await screen.findByText("Logs copied.");
+  expect(writeText).toHaveBeenCalledExactlyOnceWith("beta line"); expect(read.mock.calls.length).toBe(count);
+});
+it("downloads the displayed redacted logs as text and releases the object URL", async () => {
+  const f = fixture(), create = vi.fn().mockReturnValue("blob:fixture"), revoke = vi.fn();
+  Object.defineProperty(URL,"createObjectURL",{configurable:true,value:create}); Object.defineProperty(URL,"revokeObjectURL",{configurable:true,value:revoke});
+  const click = vi.spyOn(HTMLAnchorElement.prototype,"click").mockImplementation(() => {});
+  render(<ManagedDatabaseTelemetryPanel {...f.props} />); await screen.findByText("Healthy");
+  read.mockResolvedValue({kind:"ready",observation:{...f.health,action:"database.runtime.logs",logs:{stdout:"public line",stderr:"public notice",redacted:true},logsObservedAt:1999}});
+  fireEvent.click(screen.getByRole("button",{name:"Logs"})); await screen.findByText(/public line/);
+  fireEvent.click(screen.getByRole("button",{name:"Pause live"})); const count=read.mock.calls.length;
+  fireEvent.click(screen.getByRole("button",{name:"Download logs"})); await screen.findByText("Logs downloaded.");
+  expect(create).toHaveBeenCalledOnce(); expect(create.mock.calls[0]![0]).toBeInstanceOf(Blob);
+  expect(create.mock.calls[0]![0].type).toBe("text/plain;charset=utf-8");
+  const contents = await new Promise<string>(resolve => {const reader=new FileReader(); reader.onload=()=>resolve(String(reader.result)); reader.readAsText(create.mock.calls[0]![0]);});
+  expect(contents).toBe("public line\npublic notice"); expect(click).toHaveBeenCalledOnce();
+  expect(revoke).toHaveBeenCalledExactlyOnceWith("blob:fixture"); expect(document.querySelector('a[download]')).toBeNull();
+  expect(read.mock.calls.length).toBe(count); click.mockRestore();
+});
+it("reports clipboard rejection generically and disables exporting empty filtered logs", async () => {
+  const f=fixture(), writeText=vi.fn().mockRejectedValue(new Error("private-detail"));
+  Object.defineProperty(navigator,"clipboard",{configurable:true,value:{writeText}});
+  render(<ManagedDatabaseTelemetryPanel {...f.props} />); await screen.findByText("Healthy");
+  read.mockResolvedValue({kind:"ready",observation:{...f.health,action:"database.runtime.logs",logs:{stdout:"public line",stderr:"",redacted:true},logsObservedAt:1999}});
+  fireEvent.click(screen.getByRole("button",{name:"Logs"})); await screen.findByText("public line");
+  fireEvent.click(screen.getByRole("button",{name:"Copy logs"})); await screen.findByText("Logs could not be copied.");
+  expect(screen.queryByText("private-detail")).toBeNull();
+  fireEvent.change(screen.getByLabelText("Search logs"),{target:{value:"absent"}});
+  for(const name of ["Copy logs","Download logs"]) expect((screen.getByRole("button",{name}) as HTMLButtonElement).disabled).toBe(true);
 });
