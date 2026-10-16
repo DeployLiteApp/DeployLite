@@ -1322,7 +1322,7 @@ function registerCoreHooks(app: FastifyInstance, corsOrigin: string | null): voi
       return reply
         .header("access-control-allow-origin", corsOrigin)
         .header("access-control-allow-credentials", "true")
-        .header("access-control-allow-headers", "content-type,x-request-id")
+        .header("access-control-allow-headers", "content-type,x-request-id,idempotency-key,x-deploylite-expected-actor-id")
         .header("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
         .header("vary", "Origin")
         .code(204)

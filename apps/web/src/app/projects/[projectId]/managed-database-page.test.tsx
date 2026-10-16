@@ -47,5 +47,5 @@ it("withholds native controls without authentication or a resolved project", asy
 
 it("activates scoped stored inventory for operators without forwarding server credentials", async () => {
   authenticate("operator"); expect(await page()).toContain("Stored native databases");
-  expect(observed.inventory).toHaveBeenCalledExactlyOnceWith({projectId: "project-1", apiBaseUrl: "https://api.example.test", refreshKey: 0, selectedDatabaseId: "", onSelect: expect.any(Function)});
+  expect(observed.inventory).toHaveBeenCalledExactlyOnceWith({actorId: "user-1", projectId: "project-1", apiBaseUrl: "https://api.example.test", refreshKey: 0, selectedDatabaseId: "", onSelect: expect.any(Function)});
 });

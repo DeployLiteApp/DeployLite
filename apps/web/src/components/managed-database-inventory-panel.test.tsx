@@ -6,12 +6,13 @@ import {readManagedDatabaseInventory, type ManagedDatabaseInventoryEntry} from "
 import {startManagedDatabase, stopManagedDatabase} from "@/lib/managed-database-lifecycle";
 import {ManagedDatabaseInventoryPanel} from "./managed-database-inventory-panel";
 vi.mock("./managed-database-delete-control",()=>({ManagedDatabaseDeleteControl:({onDeleted}:{onDeleted():void})=><button onClick={onDeleted}>Fixture delete completion</button>}));
-const observed = vi.hoisted(() => ({state: "running" as "running" | "stopped" | null}));
+const observed = vi.hoisted(() => ({state: "running" as "running" | "stopped" | null, backup: vi.fn()}));
 vi.mock("@/lib/managed-database-inventory", () => ({readManagedDatabaseInventory: vi.fn()}));
 vi.mock("@/lib/managed-database-lifecycle", () => ({stopManagedDatabase: vi.fn(), startManagedDatabase: vi.fn()}));
 vi.mock("./managed-database-telemetry-panel", () => ({ManagedDatabaseTelemetryPanel: ({preparation, onState}: {preparation: {databaseId: string}; onState?(value: "running" | "stopped" | null): void}) => {
   useEffect(() => {onState?.(observed.state);}, [onState, preparation]); return <p>Telemetry for {preparation.databaseId}</p>;
 }}));
+vi.mock("./managed-database-backup-panel",()=>({ManagedDatabaseBackupPanel:(props:unknown)=>{observed.backup(props);return <p>Scoped backup controls</p>;}}));
 const read = vi.mocked(readManagedDatabaseInventory), stop = vi.mocked(stopManagedDatabase), start = vi.mocked(startManagedDatabase);
 afterEach(() => {cleanup(); vi.resetAllMocks(); observed.state = "running";});
 function fixture(projectId = "project-a", databaseId = "orders", engine: "postgres" | "mysql" | "mariadb" | "mongodb" | "redis" = "postgres") {
@@ -111,4 +112,10 @@ it("prevents overlapping effects and aborts stale control results on unmount", a
 it("reloads and clears the retired selection after explicit delete control completion",async()=>{
   const f=fixture();read.mockResolvedValueOnce({kind:"ready",databases:[f.entry]}).mockResolvedValue({kind:"ready",databases:[]});
   render(<ManagedDatabaseInventoryPanel {...f.props}/>);await choose();fireEvent.click(screen.getByRole("button",{name:"Fixture delete completion"}));await screen.findByText("No stored databases.");expect(screen.queryByText("Telemetry for orders")).toBeNull();expect(read).toHaveBeenCalledTimes(2);
+});
+
+it("activates backups only for a known actor and the selected original source with current health",async()=>{
+  const f=fixture();const view=render(<ManagedDatabaseInventoryPanel {...f.props}/>);await choose();expect(observed.backup).not.toHaveBeenCalled();
+  view.rerender(<ManagedDatabaseInventoryPanel {...f.props} actorId="operator-a"/>);await choose();
+  await waitFor(()=>expect(observed.backup).toHaveBeenLastCalledWith(expect.objectContaining({preparation:f.source,actorId:"operator-a",apiBaseUrl:f.props.apiBaseUrl,currentState:"running"})));
 });
