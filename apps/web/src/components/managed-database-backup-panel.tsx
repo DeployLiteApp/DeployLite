@@ -4,6 +4,7 @@ import {z} from "zod";
 import {managedDatabaseBackupPreparationSchema, type ManagedDatabaseHealthPreparationV1} from "@deploylite/contracts";
 import {backupManagedDatabase, readManagedDatabaseBackups, type ManagedDatabaseBackupView} from "@/lib/managed-database-backup";
 import {ManagedDatabaseRestoreControl, readRecoverableManagedDatabaseRestores} from "./managed-database-restore-control";
+import {ManagedDatabaseRetentionPreviewPanel} from "./managed-database-retention-preview-panel";
 import {Button} from "@/components/ui/button";
 type Props = {preparation: ManagedDatabaseHealthPreparationV1; apiBaseUrl: string; actorId: string;
   currentState: "running" | "stopped" | null; disabled?: boolean; onRestored?(): void; onBusyChange?(busy: boolean): void};
@@ -103,6 +104,8 @@ export function ManagedDatabaseBackupPanel({preparation, apiBaseUrl, actorId, cu
       {!pending && !stateAllowsBackup ? <p>{preparation.engine === "redis" ? "Stop Redis before creating a backup." : "A current running database observation is required."}</p> : null}
       <Button disabled={busy || disabled || blocked || (!pending && (!view || !validBudget || !stateAllowsBackup))} onClick={() => void create()}>{pending ? "Retry backup confirmation" : "Create backup"}</Button>
       <Button variant="outline" disabled={busy} onClick={() => setRevision(value => value + 1)}>Reload backups</Button>
+      {selected ? <ManagedDatabaseRetentionPreviewPanel projectId={preparation.projectId} databaseId={preparation.databaseId}
+        destinationId={selected.destinationId} sourceIdentity={scope} actorId={actorId} apiBaseUrl={apiBaseUrl} disabled={disabled || busy || blocked} /> : null}
       <ul>{view?.backups.filter(row => row.receipt.destinationId === destination).map(row => {
         const receipt = row.receipt, source = preparation.originalReceipt;
         const compatible = receipt.originalCommandId === source.commandId && receipt.profileId === preparation.profileId
