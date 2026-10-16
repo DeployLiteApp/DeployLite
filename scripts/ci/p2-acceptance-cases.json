@@ -1507,7 +1507,9 @@
     "apps/web/src/components/managed-database-backup-panel.tsx",
     "apps/web/src/components/managed-database-backup-panel.test.tsx",
     "apps/web/src/lib/managed-database-restore.ts",
-    "apps/web/src/lib/managed-database-restore.test.ts"
+    "apps/web/src/lib/managed-database-restore.test.ts",
+    "apps/web/src/components/managed-database-restore-control.tsx",
+    "apps/web/src/components/managed-database-restore-control.test.tsx"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,

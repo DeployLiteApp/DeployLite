@@ -5,6 +5,8 @@ import {managedDatabaseBackupReceiptSchema,managedDatabaseHealthPreparationSchem
 import {readManagedDatabaseBackups,backupManagedDatabase} from "@/lib/managed-database-backup";
 import {ManagedDatabaseBackupPanel} from "./managed-database-backup-panel";
 vi.mock("@/lib/managed-database-backup",()=>({readManagedDatabaseBackups:vi.fn(),backupManagedDatabase:vi.fn()}));
+const restoreObserved=vi.hoisted(()=>vi.fn());
+vi.mock("./managed-database-restore-control",()=>({ManagedDatabaseRestoreControl:(props:unknown)=>{restoreObserved(props);return <p>Confirmed restore control</p>;}}));
 const read=vi.mocked(readManagedDatabaseBackups),backup=vi.mocked(backupManagedDatabase);
 afterEach(()=>{cleanup();vi.restoreAllMocks();vi.resetAllMocks();sessionStorage.clear();});
 function fixture(engine: ManagedDatabaseEngineV1 = "postgres") {
@@ -102,4 +104,11 @@ it("aborts an old actor's request and publishes no result into the new actor's v
 it("withholds corrupt stored attempts instead of creating replacement keys",async()=>{
   const f=setup(),scope=JSON.stringify([f.props.apiBaseUrl,f.props.actorId,f.source]);sessionStorage.setItem("deploylite.native-backup:"+scope,'{"key":"foreign"}');
   render(<ManagedDatabaseBackupPanel {...f.props}/>);const button=await screen.findByRole("button",{name:"Create backup"});expect((button as HTMLButtonElement).disabled).toBe(true);fireEvent.click(button);expect(backup).not.toHaveBeenCalled();
+});
+
+it("offers restore only through the original source and selected immutable inventory hashes",async()=>{
+ const f=setup();read.mockResolvedValue({kind:"ready",destinations:[{destinationId:"destination-a",maxBytes:4096}],backups:[f.inventory]});
+ render(<ManagedDatabaseBackupPanel {...f.props}/>);await screen.findByText(f.receipt.archiveId);
+ expect(restoreObserved).toHaveBeenLastCalledWith(expect.objectContaining({actorId:"operator-a",apiBaseUrl:f.props.apiBaseUrl,currentState:"running",selection:{...f.source,archiveId:f.receipt.archiveId,destinationId:f.receipt.destinationId,expectedArchiveSha256:f.receipt.archiveSha256,expectedManifestSha256:f.receipt.manifestSha256,maxBytes:4096}}));
+ expect(backup).not.toHaveBeenCalled();
 });
