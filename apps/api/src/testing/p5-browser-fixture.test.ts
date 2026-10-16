@@ -64,7 +64,7 @@ afterEach(()=>{
 function input(sourceCommit=current){
  // A variable with an extra property remains type-safe against the original pre-binding input.
  const value:Parameters<typeof openDatabaseBrowser>[0]&{sourceCommit:string}={sourceCommit,
-  projectId:"project1",databaseId:"orders",engine:"postgres",cookie:"fixture-cookie",
+  projectId:"project1",databaseId:"orders",engine:"postgres",actorId:"operator1",cookie:"fixture-cookie",
   app:()=>({inject:boundary.inject}) as unknown as FastifyInstance};
  return value;
 }

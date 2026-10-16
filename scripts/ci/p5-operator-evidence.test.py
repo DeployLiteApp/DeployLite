@@ -147,6 +147,7 @@ class OperatorProofTests(unittest.TestCase):
         for pair in fixtures.values():
             pair[0]["browserAcceptance"]["sourceCommit"] = "a" * 40
             pair[0]["confirmedDeletion"]["browserDeletion"]["sourceCommit"] = "a" * 40
+            pair[0]["nativeBackup"]["browserBackup"]["sourceCommit"]="a"*40
         binding = {"commit": "a" * 40, "runId": "123", "runAttempt": "1", "nonce": "b" * 24,
             "databaseName": "deploylite_p5_operator_" + "b" * 24, "profiles": {engine: pair[1] for engine, pair in fixtures.items()}}
         acceptance = {"schemaVersion": 1, **{key: binding[key] for key in ("commit", "runId", "runAttempt", "nonce")},
@@ -380,6 +381,10 @@ def add_native_backup(result,profile):
     restored={key:ready[key] for key in keys}
     restored.update(action="database.runtime.restore",profileId=profile["profileId"],commandId="99999999-9999-4999-8999-999999999999",originalCommandId=ready["commandId"],backupCommandId=receipt["commandId"],confirmationId="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",inputDigest=proof["pendingRestore"]["inputDigest"],correlationId="restore-correlation",observedAt=3500,status="restored",storage="original",health="passed",**{key:receipt[key] for key in ("archiveId","archiveBytes","archiveSha256","manifestSha256","format")})
     proof["nativeRestore"]={"receipt":restored,"commandId":restored["commandId"],"confirmationId":restored["confirmationId"],"actorId":"actor-a","idempotencyKey":"fixture_restore_apply_"+profile["engine"],"consumedAt":3000,"expiresAt":20000,"recoveredAt":21000,"dispatches":1,"inputWrites":1,"requestPosts":1,"auditCount":1,**{key:"passed" for key in ("unconsumedConfirmation","expiredConfirmation","reusedConfirmation","foreignConfirmation","lostReply","completionRollback","cacheOnlyReopen","restoredData")},**{key:"unchanged" for key in ("originalRows","cipher","inventory","protection")},"originalPending":"unconsumed"}
+    proof["browserBackup"]={"sourceCommit":result["browserAcceptance"]["sourceCommit"],"engine":ready["engine"],"projectId":ready["projectId"],"databaseId":ready["databaseId"],"actorId":"actor-a","browser":"chromium","context":"isolated","requests":12,
+        "commandId":receipt["commandId"],"originalCommandId":ready["commandId"],"archiveId":receipt["archiveId"],"idempotencyKey":"browser-original-backup","destinationId":receipt["destinationId"],
+        **{key:"passed" for key in ("manual","originalSource","lostReply","reload","sameOriginalKey","inventory")},
+        "calls":[{"key":"browser-original-backup","commandId":receipt["commandId"],"archiveId":receipt["archiveId"],"actorId":"actor-a","status":200} for _ in range(2)]}
     result["nativeBackup"]=proof
     return result,profile
 
@@ -387,6 +392,18 @@ def native_backup_fixture():
     return fixture()
 
 class NativeBackupProof(unittest.TestCase):
+    def test_rejects_detached_or_incomplete_backup_browser(self):
+        for patch in ({"actorId":"foreign"},{"sourceCommit":"a"*40},{"reload":"skipped"},{"lostReply":"pending"},{"calls":[]},{"privatePath":"private"}):
+            result,profile=native_backup_fixture();result["nativeBackup"]["browserBackup"].update(patch)
+            with self.assertRaises(RuntimeError):module.validate_native_backup(result,profile)
+        for key in ("key","commandId","archiveId","actorId","status"):
+            result,profile=native_backup_fixture();result["nativeBackup"]["browserBackup"]["calls"][1][key]="foreign"
+            with self.assertRaises(RuntimeError):module.validate_native_backup(result,profile)
+
+    def test_requires_original_native_backup_browser_flow(self):
+        result,profile=native_backup_fixture();result["nativeBackup"].pop("browserBackup",None)
+        with self.assertRaises(RuntimeError):module.validate_native_backup(result,profile)
+
     def test_refuses_incomplete_pending_restore_metadata(self):
         result,profile=native_backup_fixture()
         for key in result["nativeBackup"]["pendingRestore"]:
