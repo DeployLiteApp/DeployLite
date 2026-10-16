@@ -82,7 +82,7 @@ async function routeFixture(engine:typeof engines[number]="postgres") {
  const {backupReceipt,maxBytes,...source}=f.preparation;
  const {projectId:_project,databaseId:_database,...selection}={...source,archiveId:backupReceipt.archiveId,destinationId:backupReceipt.destinationId,expectedArchiveSha256:backupReceipt.archiveSha256,expectedManifestSha256:backupReceipt.manifestSha256,maxBytes};
  const body={...selection,confirmationId:f.nonce.id};
- const call=(payload:unknown=body,key="restore-orders")=>app.inject({method:"POST",url:"/api/v1/projects/project-a/databases/orders/runtime/restore/apply",headers:{"idempotency-key":key},payload:payload as Record<string,unknown>});
+ const call=(payload:unknown=body,key="restore-orders",extra:Record<string,string>={})=>app.inject({method:"POST",url:"/api/v1/projects/project-a/databases/orders/runtime/restore/apply",headers:{"idempotency-key":key,...extra},payload:payload as Record<string,unknown>});
  return {...f,app,routeOptions:options,grants,projects,body,call};
 }
 it.each(engines)("applies original %s confirmation through authenticated route with server-selected archive",async engine=>{
@@ -97,3 +97,9 @@ it("rejects detached original approval and changed server inventory without effe
 it("recovers expired completion using server inventory and original signed cache without fresh archive or profile",async()=>{const f=await routeFixture(),first=await f.call();expect(first.statusCode).toBe(200);f.now.value=3000;f.archive.verify.mockClear();f.protection.assertProtected.mockClear();f.routeOptions.configuration.profiles.clear();const again=await f.call();expect(again.statusCode).toBe(200);expect(again.json().data.receipt).toEqual(first.json().data.receipt);expect(f.archive.verify).not.toHaveBeenCalled();expect(f.protection.assertProtected).not.toHaveBeenCalled();expect(f.transport.dispatch).toHaveBeenCalledOnce();expect(f.audit).toHaveBeenCalledOnce();});
 it("redacts archive failures and rejects changed profiles before original approval consumption",async()=>{const f=await routeFixture();f.archive.verify.mockRejectedValue(new Error("password=private-fixture"));const response=await f.call();expect(response.statusCode).toBe(503);expect(response.body).not.toContain("private-fixture");expect(f.nonce.consumedAt).toBeNull();const g=await routeFixture();g.profile.image="registry.example.com/postgres@sha256:"+"f".repeat(64);expect((await g.call()).statusCode).toBe(503);expect(g.transport.dispatch).not.toHaveBeenCalled();});
 it("registers authenticated confirmed restore in actual API bootstrap",async()=>{const f=await routeFixture(),app=await buildApiApp({env:{NODE_ENV:"test"}});apps.push(app);expect((await app.inject({method:"POST",url:"/api/v1/projects/project-a/databases/orders/runtime/restore/apply",headers:{"idempotency-key":"restore"},payload:f.body})).statusCode).toBe(401);});
+
+it.each(["foreign","operator-a, foreign"])("rejects %s expected restore actor before private reads and approval effects",async actor=>{
+ const f=await routeFixture();expect((await f.call(undefined,"restore-orders",{"x-deploylite-expected-actor-id":actor})).statusCode).toBe(409);
+ expect(f.grants).not.toHaveBeenCalled();expect(f.projects).not.toHaveBeenCalled();expect(f.inventory.list).not.toHaveBeenCalled();expect(f.controls.resolve).not.toHaveBeenCalled();
+});
+it("keeps an explicit matching actor on its original restore key and source",async()=>{const f=await routeFixture();expect((await f.call(undefined,"restore-orders",{"x-deploylite-expected-actor-id":"operator-a"})).statusCode).toBe(200);});
