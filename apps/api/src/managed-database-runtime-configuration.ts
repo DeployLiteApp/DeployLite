@@ -1,3 +1,5 @@
+import {AuthenticatedManagedDatabaseRestoreTransport} from "./managed-database-restore-transport.js";
+import type {ManagedDatabaseRestoreApplyAccess} from "./managed-database-restore-apply.js";
 import {AuthenticatedManagedDatabaseRestoreArchiveTransport} from "./managed-database-restore-archive-transport.js";
 import type {ManagedDatabaseRestorePreparationAccess} from "./managed-database-restore-prepare.js";
 import {AuthenticatedManagedDatabaseBackupTransport} from "./managed-database-backup-transport.js";
@@ -40,7 +42,7 @@ export async function createConfiguredManagedDatabaseApi(input: Readonly<{
   projects: Pick<ProjectRepository, "findById">; controls: unknown; secrets?: ManagedDatabaseCredentialCreationRepository;
   agent: Readonly<{ endpoint?: string; agentId?: string; trustKey?: string }>;
   backupInventory?: (agentId:string)=>BackupInventoryWriter & Partial<BackupInventoryReader>;
-  restoreProtection?: (agentId:string)=>ManagedDatabaseRestorePreparationAccess["protection"];
+  restoreProtection?: (agentId:string)=>ManagedDatabaseRestorePreparationAccess["protection"] & Partial<Pick<ManagedDatabaseRestoreApplyAccess["protection"],"assertProtected">>;
 }>) {
   const controls = projectUpdateControls(input.controls), secrets = input.secrets;
   let parsed: NonNullable<ReturnType<typeof parseManagedDatabaseApiConfiguration>>;
@@ -60,11 +62,16 @@ export async function createConfiguredManagedDatabaseApi(input: Readonly<{
     const backupInventory = backupTransport ? inventoryFactory!(agentId) : undefined;
     if (backupTransport && (!backupTransport.available() || !backupInventory?.available())) throw new Error();
     const restorePreparations=new Map<string,ManagedDatabaseRestorePreparationAccess>();
+    const restoreExecutions=new Map<string,ManagedDatabaseRestoreApplyAccess>();
     const restoreInventory=backupInventory && typeof backupInventory.list==="function" ? backupInventory as BackupInventoryReader & BackupInventoryWriter : undefined;
     const restoreEnabled=backupMaxBytes!==undefined && restoreInventory && typeof controls.findProjectUpdateById==="function" && typeof controls.resolveProjectUpdateConfirmation==="function" && typeof input.restoreProtection==="function";
     const restoreArchive=restoreEnabled?new AuthenticatedManagedDatabaseRestoreArchiveTransport({endpoint,agentId,trustKey,allowInsecureInternal:true,timeoutMs:configuration.limits.deadlineMs}):undefined;
     const restoreProtection=restoreEnabled?input.restoreProtection!(agentId):undefined;
     if(restoreArchive && (!restoreArchive.available() || typeof restoreProtection?.protect!=="function"))throw new Error();
+    const restoreApplyProtection=restoreProtection && typeof restoreProtection.assertProtected==="function" ? restoreProtection as ManagedDatabaseRestoreApplyAccess["protection"] : undefined;
+    const restoreApplyEnabled=restoreArchive && restoreInventory && restoreApplyProtection && [controls.claimConfirmedProjectUpdate,controls.completeManagedDatabaseRestore,controls.validateConfirmedProjectUpdateAuthority].every(port=>typeof port==="function");
+    const restoreTransport=restoreApplyEnabled?new AuthenticatedManagedDatabaseRestoreTransport({endpoint,agentId,trustKey,allowInsecureInternal:true,timeoutMs:configuration.limits.deadlineMs}):undefined;
+    if(restoreTransport && !restoreTransport.available())throw new Error();
     const stopExecutions = new Map<string, ManagedDatabaseStopAccess>();
     const startExecutions = new Map<string, ManagedDatabaseStartAccess>();
     const deletePreparations = new Map<string,ManagedDatabaseDeletePreparationAccess>();
@@ -90,6 +97,7 @@ export async function createConfiguredManagedDatabaseApi(input: Readonly<{
       if (!project || project.id !== binding.projectId) throw new Error();
       if (backupTransport && backupInventory) backupExecutions.set(binding.projectId,{controls,transport:backupTransport,originalTransport:transport,inventory:backupInventory,agentId,maxBytes:backupMaxBytes ?? 0,now:Date.now,commandTtlMs:configuration.limits.deadlineMs,deadlineMs:configuration.limits.deadlineMs});
       if(restoreArchive && restoreInventory && restoreProtection)restorePreparations.set(binding.projectId,{controls,originalTransport:transport,inventory:restoreInventory,protection:restoreProtection,archive:restoreArchive,agentId,now:Date.now,commandTtlMs:configuration.limits.deadlineMs,deadlineMs:configuration.limits.deadlineMs});
+      if(restoreTransport && restoreArchive && restoreInventory && restoreApplyProtection)restoreExecutions.set(binding.projectId,{controls,originalTransport:transport,transport:restoreTransport,inventory:restoreInventory,protection:restoreApplyProtection,archive:restoreArchive,agentId,now:Date.now,commandTtlMs:configuration.limits.deadlineMs,deadlineMs:configuration.limits.deadlineMs});
       executions.set(binding.projectId, { controls, transport, agentId, now: Date.now,
         commandTtlMs: configuration.limits.deadlineMs, deadlineMs: configuration.limits.deadlineMs });
       if (healthTransport) healthExecutions.set(binding.projectId,{controls,transport:healthTransport,originalTransport:transport,agentId,now:Date.now,deadlineMs:configuration.limits.deadlineMs});
@@ -105,7 +113,7 @@ export async function createConfiguredManagedDatabaseApi(input: Readonly<{
     }
     const credentials: ManagedDatabaseCredentialConfiguration = { profiles: new Map(Object.entries(configuration.profiles) as [keyof typeof configuration.profiles, typeof configuration.profiles.postgres][]),
       store: secrets, projectIds: new Set(bindings.map(binding => binding.projectId)), deadlineMs: configuration.limits.deadlineMs };
-    return { credentials, executions, restorePreparations, backupExecutions, stopExecutions, startExecutions, deletePreparations, deleteExecutions, healthExecutions, metricsExecutions, logsExecutions, imagePolicy: managedDatabaseNativeImagePolicy() };
+    return { credentials, executions, restorePreparations, restoreExecutions, backupExecutions, stopExecutions, startExecutions, deletePreparations, deleteExecutions, healthExecutions, metricsExecutions, logsExecutions, imagePolicy: managedDatabaseNativeImagePolicy() };
   } catch { throw new Error("Database API configuration is invalid."); }
   finally { clearTimeout(timer); }
 }

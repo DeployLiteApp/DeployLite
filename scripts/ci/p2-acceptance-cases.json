@@ -1489,7 +1489,9 @@
     "apps/agent/src/managed-database-restore-replay.test.ts",
     "apps/agent/src/managed-database-restore-server.test.ts",
     "apps/api/src/managed-database-restore-apply.ts",
-    "apps/api/src/managed-database-restore-apply.test.ts"
+    "apps/api/src/managed-database-restore-apply.test.ts",
+    "apps/api/src/managed-database-restore-apply-route.ts",
+    "apps/api/src/managed-database-restore-apply-route.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
