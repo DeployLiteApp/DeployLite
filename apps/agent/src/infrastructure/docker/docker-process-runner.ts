@@ -119,8 +119,8 @@ function redactDockerProtocolOutput(value: string, argv: readonly string[]): str
 export type DockerProcessExit = Readonly<{ exitCode: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }>;
 export class DockerProcessError extends Error { constructor(readonly kind: "failed" | "timeout" | "canceled" | "output-limit", readonly result?: DockerProcessExit) { super(`docker process ${kind}`); this.name = "DockerProcessError"; } }
 export function redactDockerDiagnostic(value: string): string { return redactSecrets(value).replace(/\b(password|secret|token|authorization)\s*[:=]\s*\S+/gi, "$1=[REDACTED]").replace(/:\/\/[^\s/:]+:[^\s@]+@/g, "://[REDACTED]@"); }
-export type SpawnedProcess = Pick<ChildProcess, "stdout" | "stderr" | "once" | "kill"> & { pid?: number };
-export type SpawnProcess = (file: string, args: readonly string[], options: { shell: false; detached: boolean; stdio: ["ignore", "pipe", "pipe"]; env?: NodeJS.ProcessEnv }) => SpawnedProcess;
+export type SpawnedProcess = Pick<ChildProcess, "stdout" | "stderr" | "once" | "kill"> & { pid?: number;stdin?: ChildProcess["stdin"] };
+export type SpawnProcess = (file: string, args: readonly string[], options: { shell: false; detached: boolean; stdio: ["ignore"|"pipe", "pipe", "pipe"]; env?: NodeJS.ProcessEnv }) => SpawnedProcess;
 const defaultSpawn: SpawnProcess = (file, args, options) => nodeSpawn(file, args, options);
 
 /** Binary failures intentionally carry no partial output or diagnostic result. */
@@ -132,6 +132,39 @@ export class DockerProcessRunner {
   readonly #spawn: SpawnProcess; readonly #timeoutMs: number; readonly #maxOutputBytes: number; readonly #maxBinaryBytes: number;
   constructor(options: DockerProcessRunnerOptions = {}) { this.#spawn = options.spawn ?? defaultSpawn; this.#timeoutMs = options.timeoutMs ?? 30_000; this.#maxOutputBytes = options.maxOutputBytes ?? 64 * 1024; this.#maxBinaryBytes = options.maxBinaryBytes ?? this.#maxOutputBytes; }
   /** Private archive bytes go only to the caller-owned sink; diagnostics never enter the result. */
+  /** Private verified bytes enter only the owned child stdin. No diagnostics or partial output escape. */
+  runBinaryFromSource(argv:readonly string[],signal:AbortSignal,source:Uint8Array):Promise<Readonly<{bytes:number;sha256:string}>> {
+    if(signal.aborted)return Promise.reject(new DockerBinaryProcessError("canceled"));
+    if(!argv.length||argv.some(part=>typeof part!=="string"||part.includes("\u0000"))||!(source instanceof Uint8Array)||source.length<1
+      ||!Number.isSafeInteger(this.#maxBinaryBytes)||this.#maxBinaryBytes<1||source.length>this.#maxBinaryBytes
+      ||!Number.isSafeInteger(this.#maxOutputBytes)||this.#maxOutputBytes<1||!Number.isSafeInteger(this.#timeoutMs)||this.#timeoutMs<1)
+      return Promise.reject(new DockerBinaryProcessError("failed"));
+    const snapshot=Buffer.from(source),bytes=snapshot.length,sha256=createHash("sha256").update(snapshot).digest("hex");
+    return new Promise((resolve,reject)=>{
+      let child:SpawnedProcess;
+      try{child=this.#spawn(argv[0]!,argv.slice(1),{shell:false,detached:true,stdio:["pipe","pipe","pipe"]});}
+      catch{snapshot.fill(0);reject(new DockerBinaryProcessError("failed"));return;}
+      let settled=false,inputComplete=false,outputBytes=0,diagnosticBytes=0,timer:ReturnType<typeof setTimeout>|undefined;
+      const cleanup=()=>{if(timer)clearTimeout(timer);signal.removeEventListener("abort",abort);snapshot.fill(0);};
+      const fail=(kind:DockerProcessError["kind"])=>{
+        if(settled)return;settled=true;cleanup();
+        try{child.stdin?.destroy();}catch{/* owned input already closed */}
+        try{child.kill("SIGKILL");}catch{/* owned child already gone */}
+        if(child.pid&&process.platform!=="win32"){try{process.kill(-child.pid,"SIGKILL");}catch{/* owned group already gone */}}
+        reject(new DockerBinaryProcessError(kind));
+      };
+      const abort=()=>fail("canceled");
+      child.stdout?.on("data",(chunk:unknown)=>{if(settled)return;if(!Buffer.isBuffer(chunk)){fail("failed");return;}outputBytes+=chunk.length;if(outputBytes>this.#maxOutputBytes)fail("output-limit");});
+      child.stderr?.on("data",(chunk:unknown)=>{if(settled)return;if(!Buffer.isBuffer(chunk)){fail("failed");return;}diagnosticBytes+=chunk.length;if(diagnosticBytes>this.#maxOutputBytes)fail("output-limit");});
+      child.stdin?.once("error",()=>fail("failed"));child.stdout?.once("error",()=>fail("failed"));child.stderr?.once("error",()=>fail("failed"));child.once("error",()=>fail("failed"));
+      child.once("close",(code:number|null,exitSignal:NodeJS.Signals|null)=>{
+        if(settled)return;if(code!==0||exitSignal!==null||!inputComplete){fail("failed");return;}settled=true;cleanup();resolve({bytes,sha256});
+      });
+      signal.addEventListener("abort",abort,{once:true});timer=setTimeout(()=>fail("timeout"),this.#timeoutMs);
+      if(signal.aborted){abort();return;}if(!child.stdin){fail("failed");return;}
+      try{child.stdin.end(snapshot,()=>{if(!settled)inputComplete=true;});}catch{fail("failed");}
+    });
+  }
   runBinaryToSink(argv: readonly string[], signal: AbortSignal, sink: (bytes: Uint8Array) => Promise<void>): Promise<Readonly<{ bytes: number; sha256: string }>> {
     if (signal.aborted) return Promise.reject(new DockerBinaryProcessError("canceled"));
     if (!argv.length || argv.some(part => typeof part !== "string" || part.includes("\u0000")) || typeof sink !== "function"
