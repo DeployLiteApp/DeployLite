@@ -8,10 +8,14 @@ import { COMPOSE_VOLUME_BACKUP_CAPABILITY, InMemoryCapabilityRegistry, type Comp
 import { composeVolumeBackupExecutionDigest, createComposePreview, digestComposeResourceObservation, digestControlInput, type ComposeResourceInspector } from "@deploylite/domain";
 import { createDockerComposeVolumeBackupExecutor, createLocalDirectoryComposeVolumeBackupSource, type ComposeVolumeBackupEntry, type ComposeVolumeBackupSource } from "./docker-compose-volume-backup.js";
 
-const publicationRace = vi.hoisted(() => ({duplicate: false, observed: false}));
+const publicationRace = vi.hoisted(() => ({duplicate: false, observed: false, afterPending: undefined as (() => void) | undefined}));
 vi.mock("node:fs/promises", async () => {
   const filesystem = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
-  return {...filesystem, rename: async (...paths: Parameters<typeof filesystem.rename>) => {
+  return {...filesystem, realpath: async (...paths: Parameters<typeof filesystem.realpath>) => {
+    const canonical = await filesystem.realpath(...paths);
+    if (publicationRace.observed && String(paths[0]).includes(".pending-")) publicationRace.afterPending?.();
+    return canonical;
+  }, rename: async (...paths: Parameters<typeof filesystem.rename>) => {
     if (publicationRace.duplicate) {
       publicationRace.duplicate = false;
       // Inject a competing completed publication at the rename boundary, preserving both owned paths.
@@ -169,7 +173,7 @@ for (const change of ["cancellation", "expiry"] as const) it(`refuses P3 publica
   } finally {uid.mockRestore(); clock.mockRestore();}
 });
 
-for (const branch of ["created", "EEXIST", "already-existing"] as const) {
+for (const branch of ["created", "EEXIST", "already-existing", "EEXIST-cleanup"] as const) {
   for (const change of ["cancellation", "expiry"] as const) {
     it(`refuses late ${change} after ${branch} receipt validation without deleting or recreating the published archive`, async () => {
       const f = await fixture();
@@ -180,17 +184,21 @@ for (const branch of ["created", "EEXIST", "already-existing"] as const) {
       const external = new AbortController(), owner = process.geteuid!();
       const clock = vi.spyOn(Date, "now").mockReturnValue(100);
       f.authority.expiresAt = 200;
-      publicationRace.duplicate = branch === "EEXIST";
+      publicationRace.duplicate = branch === "EEXIST" || branch === "EEXIST-cleanup";
       publicationRace.observed = false;
       let changed = false, restored = false;
       const uid = vi.spyOn(process as {geteuid: () => number}, "geteuid").mockImplementation(() => {
-        if (existsSync(archivePath) && (branch !== "EEXIST" || publicationRace.observed)) {
+        if (branch !== "EEXIST-cleanup" && existsSync(archivePath) && (branch !== "EEXIST" || publicationRace.observed)) {
           changed = true;
           if (change === "cancellation") external.abort();
           else clock.mockReturnValue(201);
         }
         return owner;
       });
+      publicationRace.afterPending = branch === "EEXIST-cleanup" ? () => {
+        changed = true;
+        if (change === "cancellation") external.abort(); else clock.mockReturnValue(201);
+      } : undefined;
       const restore = () => {
         if (restored) return;
         restored = true;
@@ -198,6 +206,7 @@ for (const branch of ["created", "EEXIST", "already-existing"] as const) {
         clock.mockRestore();
         publicationRace.duplicate = false;
         publicationRace.observed = false;
+        publicationRace.afterPending = undefined;
       };
       try {
         await expect(f.executor.execute(f.input, f.authority, external.signal)).rejects.toMatchObject({code: "COMPOSE_BACKUP_FAILED"});

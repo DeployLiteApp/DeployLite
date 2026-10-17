@@ -300,12 +300,13 @@ export function createDockerComposeVolumeBackupExecutor(supplied: ComposeVolumeB
       if (!options.capabilities.has(COMPOSE_RESOURCE_INSPECTION_CAPABILITY)) fail("COMPOSE_BACKUP_UNAVAILABLE");
       if (authority.expiresAt !== undefined && (!Number.isSafeInteger(authority.expiresAt) || Date.now() >= authority.expiresAt)) fail("COMPOSE_BACKUP_FAILED");
     };
+    let successful = false;
     let temporaryDirectory: string | undefined, temporaryInfo: DirectoryInfo | undefined, destinationSnapshot: Awaited<ReturnType<typeof safeDirectory>> | undefined;
     try {
       assertCurrent(); await awaitAbortable(() => authority.assertValid(), signal); assertCurrent();
       const destination = await safeDirectory(destinationPath, true), archiveId = archiveName(input); destinationSnapshot = destination;
       const already = await existingReceipt(destination.path, archiveId, input, destination.info);
-      if (already) { assertCurrent(); return already; }
+      if (already) { assertCurrent(); successful = true; return already; }
       const preview = createComposePreview(input.canonicalDocument, plan.projectId, options.imagePolicy);
       const plannedVolume = preview.volumes.find(value => value.key === plan.volumeKey);
       if (preview.configDigest !== plan.configDigest || !plannedVolume) fail("COMPOSE_BACKUP_STALE");
@@ -362,11 +363,13 @@ export function createDockerComposeVolumeBackupExecutor(supplied: ComposeVolumeB
         if (!concurrent) fail("COMPOSE_BACKUP_CONFLICT");
         const pending = temporaryDirectory;
         if (!pending) fail("COMPOSE_BACKUP_CONFLICT");
+        successful = true;
         return concurrent; // The identity-checked finally owns pending cleanup.
       }
       const published = await existingReceipt(destination.path, archiveId, input, destination.info);
       assertCurrent();
       if (!published) fail("COMPOSE_BACKUP_FAILED");
+      successful = true;
       return { ...published, status: "created", idempotent: false };
     } catch (error) {
       if (error instanceof ComposeVolumeBackupError) throw error;
@@ -377,6 +380,7 @@ export function createDockerComposeVolumeBackupExecutor(supplied: ComposeVolumeB
         const root = await safeDirectory(destinationSnapshot.path, true), pending = await safeDirectory(temporaryDirectory, true);
         if (sameDirectory(root.info, destinationSnapshot.info) && sameDirectory(pending.info, temporaryInfo)) await rm(temporaryDirectory, {recursive: true, force: true});
       } catch {/* Preserve uncertain ownership/namespace evidence; never repair or remove an unrecognized path. */}
+      if (successful) assertCurrent();
     }
   }
   return { async execute(raw: unknown, authority: ComposeVolumeBackupAuthority, signal: AbortSignal): Promise<ComposeVolumeBackupReceiptV1> {

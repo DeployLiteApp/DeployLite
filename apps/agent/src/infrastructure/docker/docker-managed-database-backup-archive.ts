@@ -27,12 +27,13 @@ export function createPrivateNativeBackupArchive(supplied:{destinations:Readonly
  if(!positive.safeParse(options.maxBytes).success||!positive.max(2147483647).safeParse(options.maxDurationMs).success)fail();
  return {async write(raw:unknown,producer:NativeBackupProducer,authority:ComposeVolumeBackupAuthority,external:AbortSignal){
   const controller=new AbortController(),cancel=()=>controller.abort();external.addEventListener("abort",cancel,{once:true});if(external.aborted)cancel();
-  let rootPath:string|undefined,rootInfo:DirectoryInfo|undefined;
+  let rootPath:string|undefined,rootInfo:DirectoryInfo|undefined,successfulCurrent:(()=>void)|undefined;
   let timer:ReturnType<typeof setTimeout>|undefined,temporary:string|undefined,tempInfo:DirectoryInfo|undefined,final:string|undefined,finalInfo:DirectoryInfo|undefined,handle:FileHandle|undefined,published=false,accepting=false;
   try {
    const binding=bindingSchema.parse(structuredClone(raw)),start=options.clock.now(),deadline=Math.min(start+options.maxDurationMs,authority.expiresAt??Number.MAX_SAFE_INTEGER);
-   function current(){const now=options.clock.now();if(controller.signal.aborted||external.aborted||!Number.isSafeInteger(start)||start<0||!Number.isSafeInteger(now)||now<start||!Number.isSafeInteger(deadline)||now>=deadline
+   function authorityCurrent(){const now=options.clock.now();if(external.aborted||!Number.isSafeInteger(start)||start<0||!Number.isSafeInteger(now)||now<start||!Number.isSafeInteger(deadline)||now>=deadline
     ||binding.projectId!==authority.projectId||binding.commandId!==authority.commandId||binding.inputDigest!==authority.inputDigest)fail();}
+   function current(){if(controller.signal.aborted)fail();authorityCurrent();}
    async function gate(){current();await awaitAbortable(()=>authority.assertValid(),controller.signal);current();}
    async function read<T>(work:()=>Promise<T>){current();const result=await awaitAbortable(work,controller.signal);current();return result;}
    current();timer=setTimeout(cancel,deadline-start);await gate();
@@ -54,7 +55,7 @@ export function createPrivateNativeBackupArchive(supplied:{destinations:Readonly
     const actual=await read(()=>composeBackupFilesystem.hashFile(path,controller.signal));if(actual.bytes!==manifest.archiveBytes||actual.sha256!==manifest.archiveSha256)fail();
     await rootCurrent();await gate();await rootCurrent();const after=await read(()=>composeBackupFilesystem.safeDirectory(final!,true));if(!composeBackupFilesystem.sameDirectory(after.info,archiveDirectory.info))fail();return receipt(manifest,bytes,true);
    }
-   const previous=await existing();if(previous)return previous;
+   const previous=await existing();if(previous){successfulCurrent=authorityCurrent;return previous;}
    await gate();await mkdir(final,{mode:0o700});finalInfo=await lstat(final);current();
    temporary=await mkdtemp(join(root.path,".pending-"+archiveId+"-"));tempInfo=await lstat(temporary);current();
    const dataPath=join(temporary,"archive.bin");handle=await open(dataPath,"wx",0o600);current();
@@ -81,11 +82,12 @@ export function createPrivateNativeBackupArchive(supplied:{destinations:Readonly
    await rootCurrent();const before=await read(()=>composeBackupFilesystem.safeDirectory(final!,true));if(!composeBackupFilesystem.sameDirectory(before.info,finalInfo))fail();
    await link(dataPath,join(final,"archive.bin"));current();await gate();await rootCurrent();const finalCheck=await read(()=>composeBackupFilesystem.safeDirectory(final!,true));if(!composeBackupFilesystem.sameDirectory(finalCheck.info,finalInfo))fail();await link(manifestPath,join(final,"manifest.json"));published=true;current();
    for(const path of [final,root.path]){const directory=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_DIRECTORY);try {await directory.sync();}finally{await directory.close();}current();}
-   const result=await existing();if(!result)fail();return {...result,idempotent:false};
+   const result=await existing();if(!result)fail();successfulCurrent=authorityCurrent;return {...result,idempotent:false};
   }catch{return fail();}finally{
    accepting=false;controller.abort();
    if(timer)clearTimeout(timer);external.removeEventListener("abort",cancel);await handle?.close().catch(()=>undefined);
    await removeOwned(temporary,tempInfo,rootPath,rootInfo);if(!published)await removeOwned(final,finalInfo,rootPath,rootInfo);
+   successfulCurrent?.();
   }
  }};
 }
