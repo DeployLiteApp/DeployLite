@@ -358,12 +358,14 @@ export function createDockerComposeVolumeBackupExecutor(supplied: ComposeVolumeB
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST" && (error as NodeJS.ErrnoException).code !== "ENOTEMPTY") throw error;
         const concurrent = await existingReceipt(destination.path, archiveId, input, destination.info);
+        assertCurrent();
         if (!concurrent) fail("COMPOSE_BACKUP_CONFLICT");
         const pending = temporaryDirectory;
         if (!pending) fail("COMPOSE_BACKUP_CONFLICT");
         return concurrent; // The identity-checked finally owns pending cleanup.
       }
       const published = await existingReceipt(destination.path, archiveId, input, destination.info);
+      assertCurrent();
       if (!published) fail("COMPOSE_BACKUP_FAILED");
       return { ...published, status: "created", idempotent: false };
     } catch (error) {
