@@ -1591,7 +1591,9 @@
     "packages/db/src/compose-volume-restore-protection-schema.test.ts",
     "packages/domain/src/compose-volume-restore-source.ts",
     "packages/domain/src/compose-volume-restore-source.test.ts",
-    "packages/domain/src/backup-retirement.ts"
+    "packages/domain/src/backup-retirement.ts",
+    "apps/agent/src/infrastructure/docker/private-archive-retirement.ts",
+    "apps/agent/src/infrastructure/docker/private-archive-retirement.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
