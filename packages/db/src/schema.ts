@@ -597,3 +597,41 @@ export const backupRetirementReservations = pgTable("backup_retirement_reservati
     and ${table.binding}->'receipt' @> jsonb_build_object('projectId', ${table.projectId}::text,
       'volumeKey', ${table.volumeKey}, 'destinationId', ${table.destinationId}, 'archiveId', ${table.archiveId})) is true`)
 ]);
+
+// Additive P3 protection storage only. No adapter, expiry release or execution authority.
+export const composeVolumeRestoreProtections = pgTable("compose_volume_restore_protections", {
+  restoreCommandId: uuid("restore_command_id").primaryKey().references(() => controlCommands.id, {onDelete: "restrict", onUpdate: "cascade"}),
+  confirmationId: uuid("confirmation_id").notNull().unique().references(() => controlCommandConfirmations.id, {onDelete: "restrict", onUpdate: "cascade"}),
+  projectId: uuid("project_id").notNull(),
+  volumeKey: text("volume_key").notNull(),
+  destinationId: text("destination_id").notNull(),
+  archiveId: text("archive_id").notNull(),
+  backupCommandId: uuid("backup_command_id").notNull().references(() => controlCommands.id, {onDelete: "restrict", onUpdate: "cascade"}),
+  inputDigest: text("input_digest").notNull(),
+  archiveSha256: text("archive_sha256").notNull(),
+  manifestSha256: text("manifest_sha256").notNull(),
+  sourceBinding: jsonb("source_binding").$type<Record<string, unknown>>().notNull(),
+  createdAt: timestamp("created_at", {withTimezone: true}).notNull()
+}, table => [
+  foreignKey({columns: [table.projectId, table.volumeKey, table.destinationId, table.archiveId],
+    foreignColumns: [backupInventory.projectId, backupInventory.volumeKey, backupInventory.destinationId, backupInventory.archiveId]}).onDelete("restrict").onUpdate("cascade"),
+  index("compose_volume_restore_protections_scope_idx").on(table.projectId, table.volumeKey, table.destinationId),
+  check("compose_volume_restore_protections_identity_valid", sql`${table.volumeKey} ~ '^[A-Za-z0-9_-]{1,200}$'
+    and ${table.destinationId} ~ '^[A-Za-z0-9_-]{1,200}$' and ${table.archiveId} ~ '^[A-Za-z0-9_-]{1,200}$'
+    and ${table.restoreCommandId} <> ${table.backupCommandId}`),
+  check("compose_volume_restore_protections_digest_valid", sql`${table.inputDigest} ~ '^[a-f0-9]{64}$'
+    and ${table.archiveSha256} ~ '^[a-f0-9]{64}$' and ${table.manifestSha256} ~ '^[a-f0-9]{64}$'`),
+  check("compose_volume_restore_protections_created_valid", sql`${table.createdAt} >= timestamptz 'epoch'`),
+  check("compose_volume_restore_protections_binding_valid", sql`(
+    ${table.sourceBinding} @> jsonb_build_object('schemaVersion', 1, 'operation', 'compose.volume.restore.source', 'executionAllowed', false)
+    and ${table.sourceBinding} - array['schemaVersion', 'operation', 'executionAllowed', 'source'] = '{}'::jsonb
+    and ${table.sourceBinding}->'source' @> jsonb_build_object('schemaVersion', 1)
+    and (${table.sourceBinding}->'source') - array['schemaVersion', 'receipt', 'createdAtMs'] = '{}'::jsonb
+    and jsonb_typeof(${table.sourceBinding}->'source'->'createdAtMs') = 'number'
+    and (${table.sourceBinding}->'source'->>'createdAtMs')::numeric between 0 and 8640000000000000
+    and trunc((${table.sourceBinding}->'source'->>'createdAtMs')::numeric) = (${table.sourceBinding}->'source'->>'createdAtMs')::numeric
+    and ${table.sourceBinding}->'source'->'receipt' @> jsonb_build_object('schemaVersion', 1, 'action', 'compose.volume.backup', 'redacted', true,
+      'projectId', ${table.projectId}::text, 'commandId', ${table.backupCommandId}::text,
+      'volumeKey', ${table.volumeKey}, 'destinationId', ${table.destinationId}, 'archiveId', ${table.archiveId},
+      'archiveSha256', ${table.archiveSha256}, 'manifestSha256', ${table.manifestSha256})) is true`)
+]);
