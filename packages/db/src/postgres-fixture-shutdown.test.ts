@@ -1,4 +1,4 @@
-import {randomUUID} from "node:crypto";
+import {createHash, randomUUID} from "node:crypto";
 import {backupRetentionRequestSchema} from "@deploylite/contracts";
 import {planBackupRetention, prepareBackupRetirementConfirmation} from "@deploylite/domain";
 import {nativeMetadata} from "./backup-protection-postgres.cases.js";
@@ -53,9 +53,9 @@ describe("hosted protection acceptance source contract", () => {
   ];
   it("enrolls all ten exact physical case identities without replacing the original74", () => {
     const suite = manifest().suites.db;
-    expect(suite.count).toBe(84); expect(suite.allowSkipped).toBe(false); expect(suite.cases).toHaveLength(84);
-    expect(new Set(suite.cases.map((row: {fullName: string}) => row.fullName)).size).toBe(84);
-    expect(suite.cases.filter((row: {file: string}) => row.file === path)).toEqual(titles.map(title => ({
+    expect(suite.count).toBe(89); expect(suite.allowSkipped).toBe(false); expect(suite.cases).toHaveLength(89);
+    expect(new Set(suite.cases.map((row: {fullName: string}) => row.fullName)).size).toBe(89);
+    expect(suite.cases.filter((row: {file: string}) => row.file === path).slice(0, 10)).toEqual(titles.map(title => ({
       fullName: `P5 backup inventory durable PostgreSQL acceptance ${title}`, title, file: path, physicalRestart: false
     })));
   });
@@ -64,7 +64,7 @@ describe("hosted protection acceptance source contract", () => {
       "packages/db/migrations/0030_backup_retirement_reservation.sql", "packages/db/migrations/0031_compose_volume_restore_protections.sql",
       "packages/db/src/repositories/backup-retirement.ts", "packages/db/src/backup-retirement.test.ts", "packages/db/src/compose-volume-restore-protection-schema.test.ts",
       "packages/domain/src/compose-volume-restore-source.ts", "packages/domain/src/compose-volume-restore-source.test.ts", "packages/domain/src/backup-retirement.ts"];
-    expect(manifest().sourceFiles).toHaveLength(417); expect(manifest().suites.db.sourceFiles).toHaveLength(41);
+    expect(manifest().sourceFiles).toHaveLength(417); expect(manifest().suites.db.sourceFiles).toHaveLength(43);
     for (const name of names) {expect(manifest().sourceFiles).toContain(name); expect(manifest().suites.db.sourceFiles).toContain(name);}
   });
   it("requires real SQL lock ownership, owned backend cancellation, original snapshots and settled cleanup stages", () => {
@@ -112,5 +112,43 @@ describe("hosted protection retention fixture request", () => {
       expectedInventoryDigest: plan.inventoryDigest, expectedPlanDigest: plan.planDigest, actorId: randomUUID(),
       idempotencyKey: randomUUID(), correlationId: randomUUID(), now, commandTtlMs: 60000});
     expect(prepared.binding).toMatchObject({operation: "backup.retire", executionAllowed: false, receipt});
+  });
+});
+
+// Structural assertions only. Actual PostgreSQL89 remains an opt-in hosted proof.
+describe("committed retirement replay PostgreSQL acceptance source", () => {
+  const root = new URL("../../../", import.meta.url), path = "packages/db/src/backup-protection-postgres.cases.ts";
+  const load = (name: string) => readFileSync(new URL(name, root), "utf8"), source = () => load(path);
+  const manifest = () => JSON.parse(load("scripts/ci/p2-acceptance-cases.json"));
+  it("preserves the literal original84 prefix and appends exactly five current-runner physical identities", () => {
+    const suite = manifest().suites.db;
+    expect(createHash("sha256").update(JSON.stringify(suite.cases.slice(0, 84))).digest("hex")).toBe("d20f46c94b89c90faa2eb9a5f3ef87c646c12d9c206c9cc5fb4c6a728cab86d1");
+    const titles = ["fences native replay reclaim and release after reservation commit", "fences p3 replay reclaim and release after reservation commit",
+      "recovers native original replay cache after reserved lease expiry and reopen", "recovers p3 original replay cache after reserved lease expiry and reopen",
+      "preserves unreserved UUID replay lease reclaim and token release"];
+    expect(suite.count).toBe(89); expect(suite.allowSkipped).toBe(false); expect(suite.cases).toHaveLength(89);
+    expect(suite.cases.slice(84)).toEqual(titles.map(title => ({fullName: `P5 backup inventory durable PostgreSQL acceptance ${title}`, title, file: path, physicalRestart: false})));
+  });
+  it("enrolls both existing replay sources in DB43 without changing the global417 list", () => {
+    const m = manifest(); expect(m.sourceFiles).toHaveLength(417); expect(m.suites.db.sourceFiles).toHaveLength(43);
+    for (const name of ["packages/db/src/repositories/agent-replay.ts", "packages/db/src/repositories/agent-replay.test.ts"]) {
+      expect(m.sourceFiles).toContain(name); expect(m.suites.db.sourceFiles).toContain(name);
+    }
+  });
+  it("orders distinct-session absent/commit/present observation before any replay admission", () => {
+    const helper = source().slice(source().indexOf("async function withCommittedReplay("));
+    const stages = ["reservationPromise = f.reserve(held.db)", "held.entered.then", "const absent = await replay.pool.query",
+      "expect(absent.rows).toHaveLength(0)", "held.release(); const reserved = await reservationPromise", "const committed = await replay.pool.query",
+      "expect(committed.rows).toEqual([expectedReservation])", "store: new DbAgentReplayStore", "await run(context)"];
+    let offset = -1; for (const stage of stages) {const next = helper.indexOf(stage); expect(next, stage).toBeGreaterThan(offset); offset = next;}
+    expect(helper).toContain("expect(reserverPid).not.toBe(replayPid)"); expect(helper).toContain("Promise.allSettled([reservationPromise, ...pending])");
+    expect(helper).toContain("await Promise.all([reserver.close(), replay.close()])");
+  });
+  it("retains real expiry, original cache, token CAS, reopen and ordinary-row controls", () => {
+    const text = source();
+    for (const stage of ["retirementCommand: retired.command", "lease_expires_at = clock_timestamp() - interval '1 second'", "admissionTestOnly: true",
+      "lookupByFingerprintDigest", 'createHash("sha256").update(fingerprint)', 'ownedPool(getUrl(), "replay_cache_reopen")',
+      "snapshotOriginals", "numericDates", "laneRows", "first.claimToken", "next.claimToken", "beforeReservations", "Promise.allSettled(pending)"])
+      expect(text, stage).toContain(stage);
   });
 });

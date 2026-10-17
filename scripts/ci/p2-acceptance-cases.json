@@ -3,7 +3,7 @@
   "purpose": "Expected evidence only; this manifest neither authorizes runtime nor claims PASS",
   "suites": {
     "db": {
-      "count": 84,
+      "count": 89,
       "allowSkipped": false,
       "cases": [
         {
@@ -509,6 +509,36 @@
           "title": "denies expired and canceled p3 protection after an observed project-lock wait",
           "file": "packages/db/src/backup-protection-postgres.cases.ts",
           "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance fences native replay reclaim and release after reservation commit",
+          "title": "fences native replay reclaim and release after reservation commit",
+          "file": "packages/db/src/backup-protection-postgres.cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance fences p3 replay reclaim and release after reservation commit",
+          "title": "fences p3 replay reclaim and release after reservation commit",
+          "file": "packages/db/src/backup-protection-postgres.cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance recovers native original replay cache after reserved lease expiry and reopen",
+          "title": "recovers native original replay cache after reserved lease expiry and reopen",
+          "file": "packages/db/src/backup-protection-postgres.cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance recovers p3 original replay cache after reserved lease expiry and reopen",
+          "title": "recovers p3 original replay cache after reserved lease expiry and reopen",
+          "file": "packages/db/src/backup-protection-postgres.cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance preserves unreserved UUID replay lease reclaim and token release",
+          "title": "preserves unreserved UUID replay lease reclaim and token release",
+          "file": "packages/db/src/backup-protection-postgres.cases.ts",
+          "physicalRestart": false
         }
       ],
       "sourceFiles": [
@@ -552,7 +582,9 @@
         "packages/db/src/compose-volume-restore-protection-schema.test.ts",
         "packages/domain/src/compose-volume-restore-source.ts",
         "packages/domain/src/compose-volume-restore-source.test.ts",
-        "packages/domain/src/backup-retirement.ts"
+        "packages/domain/src/backup-retirement.ts",
+        "packages/db/src/repositories/agent-replay.ts",
+        "packages/db/src/repositories/agent-replay.test.ts"
       ]
     },
     "api": {

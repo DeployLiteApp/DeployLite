@@ -1,4 +1,4 @@
-import {randomUUID} from "node:crypto";
+import {createHash, randomUUID} from "node:crypto";
 import type pg from "pg";
 import {sql} from "drizzle-orm";
 import {expect, it} from "vitest";
@@ -12,6 +12,7 @@ import {DbControlCommandRepository} from "./repositories/control-plane.js";
 import {DbBackupInventoryStore} from "./repositories/backup-inventory.js";
 import {DbBackupRestoreProtectionStore} from "./repositories/backup-restore-protection.js";
 import {DbComposeVolumeRestoreProtectionStore} from "./repositories/compose-volume-restore-protection.js";
+import {DbAgentReplayStore} from "./repositories/agent-replay.js";
 import {DbBackupRetirementStore} from "./repositories/backup-retirement.js";
 
 const lanes = ["native", "p3"] as const;
@@ -78,7 +79,7 @@ async function fixture(pool: pg.Pool, lane: Lane, ttl = 60000) {
     : new DbComposeVolumeRestoreProtectionStore(connection, "agent1").protect(restore.binding!, value.command, value.confirmation);
   const list = (connection: DeployLiteDb) => lane === "native" ? new DbBackupRestoreProtectionStore(connection, "agent1").list(projectId, receipt.volumeKey, receipt.destinationId)
     : new DbComposeVolumeRestoreProtectionStore(connection, "agent1").list(projectId, receipt.volumeKey, receipt.destinationId);
-  return {projectId, receipt, source, restore, original, restoreKey, protect, list, table: lane === "native" ? "backup_restore_protections" : "compose_volume_restore_protections",
+  return {projectId, receipt, source, restore, original, restoreKey, protect, list, retirementCommand: retired.command, table: lane === "native" ? "backup_restore_protections" : "compose_volume_restore_protections",
     reserve: (connection: DeployLiteDb) => new DbBackupRetirementStore(connection, "agent1").reserve(proposedRetirement.binding, retired.command, retirementNonce!)};
 }
 function holdBeforeCommit(db: DeployLiteDb) {
@@ -188,5 +189,97 @@ export function defineBackupProtectionCases(getPool: () => pg.Pool, getUrl: () =
         if (mode === "cancellation") {await f.protect(createDbClient(waiter.pool)); expect((await laneRows(observer, f)).protection).toHaveLength(1); expect(await snapshotOriginals(observer, f.projectId)).toEqual(before);}
       } finally {held.release(); await Promise.allSettled([owning, contending]); await Promise.all([owner.close(), waiter.close()]);}
     }
+  }, 30000);
+  type ReplayContext = {f: Awaited<ReturnType<typeof fixture>>; pool: pg.Pool; peer: pg.Pool; store: DbAgentReplayStore;
+    fingerprint: string; lease: Parameters<DbAgentReplayStore["claim"]>[2]; pending: Promise<unknown>[]; track: <T>(value: Promise<T>) => Promise<T>};
+  async function replayRows(pool: pg.Pool, commandId: string) {
+    return numericDates((await pool.query("SELECT * FROM agent_replay WHERE command_id=$1", [commandId])).rows);
+  }
+  async function expireReplay(pool: pg.Pool, commandId: string) {
+    const before = (await pool.query("SELECT * FROM agent_replay WHERE command_id=$1", [commandId])).rows; expect(before).toHaveLength(1);
+    const changed = await pool.query("UPDATE agent_replay SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE command_id=$1 RETURNING command_id", [commandId]);
+    expect(changed.rowCount).toBe(1); expect(changed.rows).toEqual([{command_id: commandId}]);
+    expect((await pool.query("SELECT lease_expires_at < clock_timestamp() AS expired FROM agent_replay WHERE command_id=$1", [commandId])).rows).toEqual([{expired: true}]);
+    const after = (await pool.query("SELECT * FROM agent_replay WHERE command_id=$1", [commandId])).rows; expect(after).toHaveLength(1);
+    expect({...after[0], lease_expires_at: before[0].lease_expires_at}).toEqual(before[0]); return numericDates(after);
+  }
+  async function withCommittedReplay(lane: Lane, run: (context: ReplayContext) => Promise<void>) {
+    const f = await fixture(getPool(), lane), originals = await snapshotOriginals(getPool(), f.projectId);
+    const reserver = ownedPool(getUrl(), "replay_reserver"), replay = ownedPool(getUrl(), "replay_observer"), held = holdBeforeCommit(createDbClient(reserver.pool));
+    const pending: Promise<unknown>[] = [], track = <T>(value: Promise<T>) => {pending.push(value); void value.catch(() => {}); return value;};
+    let reservationPromise: ReturnType<typeof f.reserve> | undefined;
+    try {
+      const reserverPid = (await reserver.pool.query("SELECT pg_backend_pid() AS pid")).rows[0].pid, replayPid = (await replay.pool.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+      expect(reserverPid).not.toBe(replayPid); expect(f.receipt.commandId).not.toBe(f.retirementCommand.id);
+      reservationPromise = f.reserve(held.db); const earlyOutcome = reservationPromise.then(() => false, () => false);
+      expect(await Promise.race([held.entered.then(() => true), earlyOutcome])).toBe(true);
+      const absent = await replay.pool.query("SELECT command_id FROM backup_retirement_reservations WHERE command_id=$1", [f.retirementCommand.id]);
+      expect(absent.rows).toHaveLength(0);
+      held.release(); const reserved = await reservationPromise;
+      expect(reserved).toEqual({reserved: true, executionAllowed: false, commandId: f.retirementCommand.id});
+      const committed = await replay.pool.query("SELECT command_id,project_id,volume_key,destination_id,archive_id,input_digest FROM backup_retirement_reservations WHERE command_id=$1", [f.retirementCommand.id]);
+      const expectedReservation = {command_id: f.retirementCommand.id, project_id: f.projectId, volume_key: f.receipt.volumeKey,
+        destination_id: f.receipt.destinationId, archive_id: f.receipt.archiveId, input_digest: f.retirementCommand.inputDigest};
+      expect(committed.rows).toEqual([expectedReservation]); const reservedRows = numericDates(await laneRows(replay.pool, f));
+      const context: ReplayContext = {f, pool: replay.pool, peer: reserver.pool, store: new DbAgentReplayStore(createDbClient(replay.pool), "original-replay-owner"),
+        fingerprint: JSON.stringify({commandId: f.retirementCommand.id, inputDigest: f.retirementCommand.inputDigest, correlationId: f.retirementCommand.correlationId}),
+        lease: {leaseId: randomUUID(), fence: 1, expiresAt: Date.now() + 60000}, pending, track};
+      await run(context);
+      expect(await snapshotOriginals(replay.pool, f.projectId)).toEqual(originals); expect(numericDates(await laneRows(replay.pool, f))).toEqual(reservedRows);
+    } finally {held.release(); await Promise.allSettled([reservationPromise, ...pending]); await Promise.all([reserver.close(), replay.close()]);}
+  }
+  for (const lane of lanes) it(`fences ${lane} replay reclaim and release after reservation commit`, async () => {
+    await withCommittedReplay(lane, async ({f, pool, peer, store, fingerprint, lease, track}) => {
+      const commandId = f.retirementCommand.id, first = await track(store.claim(commandId, fingerprint, lease)); expect(first.claimed).toBe(true); expect(first.claimToken).toEqual(expect.any(String));
+      const fresh = new DbAgentReplayStore(createDbClient(peer), "reopened-replay-owner"), admitted = await replayRows(pool, commandId);
+      expect(await track(fresh.claim(commandId, fingerprint, {...lease, leaseId: randomUUID()}))).toEqual({claimed: false});
+      for (const token of [undefined, "foreign-token", first.claimToken]) {await track(store.release(commandId, token)); expect(await replayRows(pool, commandId)).toEqual(admitted);}
+      const expired = await expireReplay(pool, commandId);
+      const duplicate = new DbAgentReplayStore(createDbClient(pool), "parallel-replay-owner");
+      expect(await Promise.all([fresh, duplicate].map(owner => track(owner.claim(commandId, fingerprint, {...lease, leaseId: randomUUID(), expiresAt: Date.now() + 60000}))))).toEqual([{claimed: false}, {claimed: false}]);
+      await track(store.release(commandId, first.claimToken)); await track(fresh.release(commandId, first.claimToken));
+      await expect(track(fresh.claim(commandId, "foreign-fingerprint", lease))).rejects.toThrow("replay"); expect(await replayRows(pool, commandId)).toEqual(expired);
+    });
+  }, 30000);
+  for (const lane of lanes) it(`recovers ${lane} original replay cache after reserved lease expiry and reopen`, async () => {
+    await withCommittedReplay(lane, async context => {
+      const {f, pool, peer, store, fingerprint, lease, pending, track} = context, commandId = f.retirementCommand.id;
+      const first = await track(store.claim(commandId, fingerprint, lease)); expect(first.claimed).toBe(true); expect(first.claimToken).toEqual(expect.any(String));
+      const expired = await expireReplay(pool, commandId), receipt = {admissionTestOnly: true, commandId, correlationId: f.retirementCommand.correlationId};
+      const foreign = new DbAgentReplayStore(createDbClient(peer), "foreign-replay-owner");
+      for (const [owner, input, token] of [[foreign, fingerprint, first.claimToken!], [store, "foreign", first.claimToken!], [store, fingerprint, "foreign-token"]] as const) {
+        await expect(track(owner.complete(commandId, {fingerprint: input, claimToken: token, receipt}))).rejects.toThrow("stale"); expect(await replayRows(pool, commandId)).toEqual(expired);
+      }
+      await track(store.complete(commandId, {fingerprint, claimToken: first.claimToken!, receipt})); const completed = await replayRows(pool, commandId);
+      const reopened = ownedPool(getUrl(), "replay_cache_reopen");
+      try {
+        const fresh = new DbAgentReplayStore(createDbClient(reopened.pool), "cache-reader-after-reopen"), found = await track(fresh.lookup(commandId, fingerprint));
+        expect(found).toEqual(receipt); found!.admissionTestOnly = false; expect(await track(fresh.lookup(commandId, fingerprint))).toEqual(receipt);
+        const digest = createHash("sha256").update(fingerprint).digest("hex"); expect(await track(fresh.lookupByFingerprintDigest(commandId, digest))).toEqual(receipt);
+        expect(await track(fresh.claim(commandId, fingerprint, {...lease, expiresAt: Date.now() + 60000}))).toEqual({claimed: false, receipt});
+        await expect(track(fresh.lookup(commandId, "foreign-fingerprint"))).rejects.toThrow("replay"); await expect(track(fresh.lookupByFingerprintDigest(commandId, "0".repeat(64)))).rejects.toThrow("replay");
+        await expect(track(store.complete(commandId, {fingerprint, claimToken: first.claimToken!, receipt}))).rejects.toThrow("stale");
+        await track(store.release(commandId, first.claimToken)); await track(fresh.release(commandId, first.claimToken)); expect(await replayRows(reopened.pool, commandId)).toEqual(completed);
+      } finally {await Promise.allSettled(pending); await reopened.close();}
+    });
+  }, 30000);
+  it("preserves unreserved UUID replay lease reclaim and token release", async () => {
+    const commandId = randomUUID(), fingerprint = JSON.stringify({admissionTestOnly: true, commandId}), pending: Promise<unknown>[] = [];
+    const track = <T>(value: Promise<T>) => {pending.push(value); void value.catch(() => {}); return value;};
+    const beforeReservations = numericDates((await getPool().query("SELECT * FROM backup_retirement_reservations ORDER BY command_id")).rows);
+    const owner = ownedPool(getUrl(), "ordinary_replay_owner"), reopened = ownedPool(getUrl(), "ordinary_replay_reopen");
+    try {
+      expect((await reopened.pool.query("SELECT command_id FROM backup_retirement_reservations WHERE command_id=$1", [commandId])).rows).toEqual([]);
+      const original = new DbAgentReplayStore(createDbClient(owner.pool), "ordinary-owner"), fresh = new DbAgentReplayStore(createDbClient(reopened.pool), "ordinary-successor");
+      const lease = {leaseId: randomUUID(), fence: 1, expiresAt: Date.now() + 60000}, first = await track(original.claim(commandId, fingerprint, lease)); expect(first.claimed).toBe(true);
+      await expireReplay(owner.pool, commandId); const next = await track(fresh.claim(commandId, fingerprint, {...lease, leaseId: randomUUID()})); expect(next.claimed).toBe(true); expect(next.claimToken).not.toBe(first.claimToken);
+      const successor = await replayRows(reopened.pool, commandId); await track(original.release(commandId, first.claimToken)); await track(fresh.release(commandId, "wrong-token")); expect(await replayRows(reopened.pool, commandId)).toEqual(successor);
+      await track(fresh.release(commandId, next.claimToken)); expect(await replayRows(reopened.pool, commandId)).toEqual([]);
+      const again = await track(fresh.claim(commandId, fingerprint, {...lease, leaseId: randomUUID()})); expect(again.claimed).toBe(true); expect(again.claimToken).not.toBe(next.claimToken);
+      const receipt = {admissionTestOnly: true, commandId}; await track(fresh.complete(commandId, {fingerprint, claimToken: again.claimToken!, receipt})); const completed = await replayRows(reopened.pool, commandId);
+      expect(await track(original.lookup(commandId, fingerprint))).toEqual(receipt); expect(await track(original.claim(commandId, fingerprint, lease))).toEqual({claimed: false, receipt});
+      await track(fresh.release(commandId, again.claimToken)); expect(await replayRows(owner.pool, commandId)).toEqual(completed);
+      expect(numericDates((await getPool().query("SELECT * FROM backup_retirement_reservations ORDER BY command_id")).rows)).toEqual(beforeReservations);
+    } finally {await Promise.allSettled(pending); await Promise.all([owner.close(), reopened.close()]);}
   }, 30000);
 }
