@@ -1629,7 +1629,14 @@
     "packages/db/src/repositories/agent-replay.test.ts",
     "apps/agent/src/infrastructure/docker/docker-compose-volume-backup.ts",
     "apps/agent/src/infrastructure/docker/docker-compose-volume-backup.test.ts",
-    "apps/agent/src/infrastructure/docker/private-archive-root-policy.test.ts"
+    "apps/agent/src/infrastructure/docker/private-archive-root-policy.test.ts",
+    "apps/api/Dockerfile",
+    "infra/vps/compose.yml",
+    "infra/vps/.env.example",
+    "apps/agent/src/infrastructure/docker/private-archive-runtime-root.ts",
+    "apps/agent/src/infrastructure/docker/private-archive-runtime-root.test.ts",
+    "scripts/ci/agent-private-root-proof.mjs",
+    "scripts/ci/agent-private-root-proof.test.mjs"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,

@@ -106,7 +106,11 @@ services:
       DEPLOYLITE_AGENT_TRUST_KEY: ${DEPLOYLITE_AGENT_TRUST_KEY:?DEPLOYLITE_AGENT_TRUST_KEY is required}
       DEPLOYLITE_AGENT_HOST: 0.0.0.0
       DEPLOYLITE_AGENT_PORT: 3002
+      DEPLOYLITE_COMPOSE_VOLUME_BACKUP_ROOTS:
     volumes:
+      - type: volume
+        source: agent-backups
+        target: /var/lib/deploylite-agent/backups
       # The agent has privileged Docker-host authority through this socket; the
       # application must enforce ownership labels before every mutation.
       - type: bind
@@ -142,6 +146,7 @@ services:
       retries: 12
 
 volumes:
+  agent-backups:
   postgres-data:
 
 networks:
