@@ -28,6 +28,12 @@ export function checkComposition({dockerfile,compose,workflow}){
   for(const name of ['agent.sbom.json','agent.trivy.json'])assert.equal(workflow.split(name).length-1,2);
   assert(workflow.includes('node scripts/ci/agent-private-root-proof.mjs')&&workflow.includes('steps.agent_image_trivy_scan.outcome'));
 }
+/** A generated name is not ownership: guard every volume effect with actual daemon readback. */
+export function useOwnedVolume(volume,name,token,operation){
+  assert.equal(volume.Name,name);
+  assert.equal(volume.Labels?.['deploylite.agent-root'],token);
+  return operation(volume);
+}
 async function main(){
   const env=process.env,report={schema:'deploylite.agent-private-root/v1',status:'failed',cases:[],cleanup:{complete:false}};
   const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -48,7 +54,7 @@ async function main(){
     return result.stdout.trim();};
   const inspect=(kind,id,until=deadline)=>JSON.parse(command([kind,'inspect',id],until))[0];
   const volume=()=>{const name=`${token}-${volumes.length}`;volumes.push(name);command(['volume','create','--label',label,name]);
-    return name;};
+    return useOwnedVolume(inspect('volume',name),name,token,()=>name);};
   const account=`const fs=await import('node:fs');console.log(JSON.stringify({uid:process.geteuid(),gid:process.getegid(),groups:process.getgroups(),passwd:fs.readFileSync('/etc/passwd','utf8').split('\\n').filter(Boolean).map(x=>x.split(':')).map(x=>({name:x[0],uid:Number(x[2]),gid:Number(x[3])})),docker:fs.readFileSync('/etc/group','utf8').split('\\n').find(x=>x.startsWith('docker:'))}));`;
   const script=(image,source,{mount,user,setup=false,target=root}={})=>{
     const name=`${token}-container-${containers.length}`;containers.push(name);
@@ -57,7 +63,10 @@ async function main(){
     if(user)args.push('--user',user);
     if(mount)args.push('--mount',`type=volume,source=${mount},target=${target}`);
     args.push('--entrypoint','node',image,'--input-type=module','-e',source);
-    const id=command(args);
+    let volumeOwnership;
+    const id=mount?useOwnedVolume(inspect('volume',mount),mount,token,volume=>{
+      volumeOwnership={name:volume.Name,labels:volume.Labels};return command(args);
+    }):command(args);
     const info=inspect('container',id);
     assert.equal(info.Config.Labels['deploylite.agent-root'],token);
     assert.equal(info.Image,image);
@@ -75,7 +84,7 @@ async function main(){
     assert(!info.HostConfig.Binds?.length&&!Object.keys(info.HostConfig.PortBindings||{}).length);
     const output=command(['start','--attach',id]);
     assert.equal(inspect('container',id).State.ExitCode,0);
-    return {id,name,image:info.Image,setup,user:info.Config.User,mounts:info.Mounts.map(x=>({type:x.Type,name:x.Name,target:x.Destination,writable:x.RW})),isolation:{network:info.HostConfig.NetworkMode,privileged:info.HostConfig.Privileged,readOnly:info.HostConfig.ReadonlyRootfs,capAdd:info.HostConfig.CapAdd,capDrop:info.HostConfig.CapDrop,memory:info.HostConfig.Memory,nanoCpus:info.HostConfig.NanoCpus,pids:info.HostConfig.PidsLimit},observation:JSON.parse(output)};
+    return {id,name,image:info.Image,labels:info.Config.Labels,volumeOwnership,setup,user:info.Config.User,mounts:info.Mounts.map(x=>({type:x.Type,name:x.Name,target:x.Destination,writable:x.RW})),isolation:{network:info.HostConfig.NetworkMode,privileged:info.HostConfig.Privileged,readOnly:info.HostConfig.ReadonlyRootfs,capAdd:info.HostConfig.CapAdd,capDrop:info.HostConfig.CapDrop,memory:info.HostConfig.Memory,nanoCpus:info.HostConfig.NanoCpus,pids:info.HostConfig.PidsLimit},observation:JSON.parse(output)};
   };
   const validator=`const {validatePrivateArchiveRuntimeRoots}=await import('./dist/infrastructure/docker/private-archive-runtime-root.js');`;
   const filesystem=`const fs=await import('node:fs/promises'),crypto=await import('node:crypto');
@@ -145,7 +154,9 @@ async function main(){
     for(const [kind,ids]of [['container',containers],['volume',volumes]])for(const id of ids){
       try{const present=execute(['docker','--host','unix:///var/run/docker.sock',kind,'inspect',id],until);
     if(present.status===0){const value=JSON.parse(present.stdout)[0];
-    assert.equal((kind==='container'?value.Config.Labels:value.Labels)['deploylite.agent-root'],token);command([kind,'rm',...(kind==='container'?['--force']:[]),id],until);}else assert.match(present.stderr,/No such (object|container|volume)/i);
+    assert.equal((kind==='container'?value.Config.Labels:value.Labels)['deploylite.agent-root'],token);
+    if(kind==='volume')useOwnedVolume(value,id,token,()=>command([kind,'rm',id],until));
+    else command([kind,'rm','--force',id],until);}else assert.match(present.stderr,/No such (object|container|volume)/i);
         const absent=execute(['docker','--host','unix:///var/run/docker.sock',kind,'inspect',id],until);
     assert.equal(absent.status,1);
     assert.match(absent.stderr,/No such (object|container|volume)/i);readbacks.push({kind,id,absenceExit:absent.status,absenceMessage:absent.stderr.trim()});
