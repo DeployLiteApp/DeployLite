@@ -63,3 +63,22 @@ it("settles already accepted private writes before checking producer completion"
  const f=await fixture(),receipt=await f.archive.write(f.binding,async write=>{void write(f.data).catch(()=>undefined);return {bytes:4,sha256:f.sha256};},f.authority,f.signal.signal);
  expect(receipt).toMatchObject({archiveBytes:4,archiveSha256:f.sha256});expect(await readFile(join(f.root,receipt.archiveId,"archive.bin"))).toEqual(f.data);
 });
+
+for (const identity of ["root", "foreign"] as const) it(`refuses ${identity} effective UID before native producer or filesystem mutation`, async () => {
+ const f=await fixture(),owner=process.geteuid!(),uid=vi.spyOn(process as {geteuid: () => number},"geteuid").mockReturnValue(identity==="root"?0:owner+1);
+ try {await expect(f.archive.write(f.binding,f.producer,f.authority,f.signal.signal)).rejects.toThrow("Native archive is unavailable.");expect(f.producer).not.toHaveBeenCalled();expect(await readdir(f.root)).toEqual([]);}finally{uid.mockRestore();}
+});
+for (const phase of ["before-data","before-manifest","mode"] as const) it(`rechecks native private root ${phase} after the final awaited grant and preserves uncertain pending evidence`,async()=>{
+ const f=await fixture(),owner=process.geteuid!(),uid=vi.spyOn(process as {geteuid: () => number},"geteuid").mockReturnValue(owner);let changed=false;
+ f.authority.assertValid.mockImplementation(async()=>{
+  for(const name of await readdir(f.root))if(name.startsWith(".pending-")){
+   const ready=await readFile(join(f.root,name,"manifest.json")).then(()=>true,()=>false),published=await readdir(f.root).then(names=>names.find(value=>value.startsWith("backup_")));
+   const linked=published?await readFile(join(f.root,published,"archive.bin")).then(()=>true,()=>false):false;
+   if(ready&&(phase!=="before-manifest"||linked)){changed=true;if(phase==="mode")await chmod(f.root,0o707);else uid.mockReturnValue(owner+1);}
+  }
+ });
+ try {await expect(f.archive.write(f.binding,f.producer,f.authority,f.signal.signal)).rejects.toThrow("Native archive is unavailable.");expect(changed).toBe(true);expect(f.producer).toHaveBeenCalledOnce();
+  const names=await readdir(f.root);expect(names.some(name=>name.startsWith(".pending-"))).toBe(true);
+  for(const name of names.filter(value=>value.startsWith("backup_")))expect(await readdir(join(f.root,name))).not.toContain("manifest.json");
+ }finally{uid.mockRestore();await chmod(f.root,0o700);}
+});

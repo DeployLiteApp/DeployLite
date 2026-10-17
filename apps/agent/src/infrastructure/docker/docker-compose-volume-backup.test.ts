@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, realpath } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, realpath, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -111,4 +111,21 @@ describe("simulated local Compose volume backup", () => {
       destinations: new Map([["destination-1", overlap.sourceRoot]]) });
     await expect(overlap.executor.execute(overlap.input, overlap.authority, new AbortController().signal)).rejects.toMatchObject({ code: "COMPOSE_BACKUP_UNSAFE_DESTINATION" });
   });
+});
+
+for (const identity of ["root", "foreign"] as const) it(`refuses ${identity} effective UID before P3 source resolution or publication`, async () => {
+  const f = await fixture(), owner = process.geteuid!(), uid = vi.spyOn(process as {geteuid: () => number}, "geteuid").mockReturnValue(identity === "root" ? 0 : owner + 1);
+  try {await expect(f.executor.execute(f.input, f.authority, new AbortController().signal)).rejects.toMatchObject({code: "COMPOSE_BACKUP_UNSAFE_DESTINATION"}); expect(f.resolveVolume).not.toHaveBeenCalled(); expect(await readdir(f.destinationRoot)).toEqual([]);} finally {uid.mockRestore();}
+});
+for (const phase of ["identity", "mode"] as const) it(`rechecks P3 private root ${phase} after final awaited grant and preserves uncertain pending evidence`, async () => {
+  const f = await fixture(), owner = process.geteuid!(), uid = vi.spyOn(process as {geteuid: () => number}, "geteuid").mockReturnValue(owner); let changed = false;
+  f.authority.assertValid.mockImplementation(async () => {
+    for (const name of await readdir(f.destinationRoot)) if (name.startsWith(".pending-")) {
+      const ready = await readFile(join(f.destinationRoot, name, "manifest.json")).then(() => true, () => false);
+      if (ready) {changed = true; if (phase === "mode") await chmod(f.destinationRoot, 0o707); else uid.mockReturnValue(owner + 1);}
+    }
+  });
+  try {await expect(f.executor.execute(f.input, f.authority, new AbortController().signal)).rejects.toMatchObject({code: "COMPOSE_BACKUP_UNSAFE_DESTINATION"}); expect(changed).toBe(true);
+    const names = await readdir(f.destinationRoot); expect(names.some(name => name.startsWith(".pending-"))).toBe(true); expect(names.filter(name => !name.startsWith(".pending-"))).toEqual([]);
+  } finally {uid.mockRestore(); await chmod(f.destinationRoot, 0o700);}
 });

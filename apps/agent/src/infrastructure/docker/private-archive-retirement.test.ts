@@ -196,3 +196,8 @@ it.each(formats)("streams multiple bounded chunks from an exact %s private read-
   await expect(f.inspect()).resolves.toMatchObject({integrity: "verified", archiveBytes: f.data.length, archiveSha256: digest(f.data)});
   expect(f.calls.filter(call => call.name === "read" && call.path === f.paths.data)).toHaveLength(3); expect(f.handles.every(handle => handle.closed === 1 && handle.settled)).toBe(true);
 });
+
+it("rejects root effective identity before archive inspection or effect access", () => {
+  const uid = vi.spyOn(process as {geteuid: () => number}, "geteuid").mockReturnValue(0);
+  try {const f = fixture(); expect(() => createPrivateArchiveRetirementInspector(f.options)).toThrow("Private archive inspection is unavailable."); expect(f.calls).toEqual([]);} finally {uid.mockRestore();}
+});
