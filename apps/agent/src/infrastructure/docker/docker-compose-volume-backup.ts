@@ -352,6 +352,7 @@ export function createDockerComposeVolumeBackupExecutor(supplied: ComposeVolumeB
       if (afterObservation.physicalIdentity !== observation.physicalIdentity || afterObservation.stateDigest !== observation.stateDigest) fail("COMPOSE_BACKUP_STALE");
       assertCurrent(); await awaitAbortable(() => authority.assertValid(), signal); assertCurrent();
       const publicationRoot = await safeDirectory(destinationPath, true); if (!sameDirectory(publicationRoot.info, destination.info)) fail("COMPOSE_BACKUP_UNSAFE_DESTINATION");
+      assertCurrent();
       const finalDirectory = join(destination.path, archiveId);
       try { await rename(temporaryDirectory, finalDirectory); temporaryDirectory = undefined; }
       catch (error) {

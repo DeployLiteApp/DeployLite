@@ -129,3 +129,25 @@ for (const phase of ["identity", "mode"] as const) it(`rechecks P3 private root 
     const names = await readdir(f.destinationRoot); expect(names.some(name => name.startsWith(".pending-"))).toBe(true); expect(names.filter(name => !name.startsWith(".pending-"))).toEqual([]);
   } finally {uid.mockRestore(); await chmod(f.destinationRoot, 0o700);}
 });
+
+for (const change of ["cancellation", "expiry"] as const) it(`refuses P3 publication when ${change} arrives during awaited final root validation`, async () => {
+  const f = await fixture(), external = new AbortController(), owner = process.geteuid!();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(100);
+  const uid = vi.spyOn(process as {geteuid: () => number}, "geteuid");
+  let finalRoot = false, changed = false;
+  Object.assign(f.authority, {expiresAt: 200});
+  uid.mockImplementation(() => {
+    if (finalRoot) {changed = true; if (change === "cancellation") external.abort(); else clock.mockReturnValue(201);}
+    return owner;
+  });
+  f.authority.assertValid.mockImplementation(async () => {
+    for (const name of await readdir(f.destinationRoot)) if (name.startsWith(".pending-")) {
+      if (await readFile(join(f.destinationRoot, name, "manifest.json")).then(() => true, () => false)) finalRoot = true;
+    }
+  });
+  try {
+    await expect(f.executor.execute(f.input, f.authority, external.signal)).rejects.toMatchObject({code: "COMPOSE_BACKUP_FAILED"});
+    expect(changed).toBe(true);
+    expect((await readdir(f.destinationRoot)).filter(name => !name.startsWith(".pending-"))).toEqual([]);
+  } finally {uid.mockRestore(); clock.mockRestore();}
+});
