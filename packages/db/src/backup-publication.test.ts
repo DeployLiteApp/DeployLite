@@ -39,7 +39,7 @@ function harness(native=false){
     insert(){throw new Error("Forbidden insert");},update(){throw new Error("Forbidden update");},delete(){throw new Error("Forbidden delete");}
   };
   const db={transaction:async(run:(tx:typeof port)=>Promise<unknown>)=>{
-    state.transactions++;if(fault==="acquire")throw new Error("acquire");
+    state.transactions++;if(fault==="acquire")throw new Error("acquire");await wait("transaction");
     try{const owned=run(port);const result=await Promise.race([owned,broken.promise.then(()=>{throw new Error("connection lost");})]);if(reenter)await run(port);if(fault==="commit")throw new Error("commit");if(fault==="commit-expiry")now=6000;return result;}
     finally{state.released=true;if(fault==="release-cancel")controller.abort();if(fault==="release")throw new Error("release");}
   }}as unknown as DeployLiteDb;
@@ -142,4 +142,12 @@ it("rejects leaked held context without further transaction reads or callbacks",
 });
 it("withholds success even if callback swallows an adopted failure",async()=>{
   const h=harness();await expect(h.run(async held=>{await held.adopt(async()=>{throw new Error("owned failure");}).catch(()=>{});return"published";})).rejects.toThrow("Backup publication is unavailable.");
+});
+
+it.each(["cancel","expiry"])("rejects %s while acquiring a transaction before issuing lock SQL",async reason=>{
+  const h=harness(),gate=h.hold("transaction");let calls=0;
+  const attempt=h.run(async()=>{calls++;});await gate.entered;
+  if(reason==="cancel")h.controller.abort();else h.tick(6000);
+  gate.release();await expect(attempt).rejects.toThrow("Backup publication is unavailable.");
+  expect(calls).toBe(0);expect(h.state.transactions).toBe(1);expect(h.queries).toEqual([]);
 });

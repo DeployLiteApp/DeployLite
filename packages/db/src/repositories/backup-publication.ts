@@ -23,7 +23,7 @@ export class DbBackupPublicationBarrier implements BackupPublicationBarrier {
       };
       current();
       const result=await this.db.transaction(tx=>{
-        if(entered)throw unavailable();entered=true;
+        current();if(entered)throw unavailable();entered=true;
         settlement=(async()=>{
           let accepting=true,live=true,adoptionFailed=false,snapshot:ControlCommand|undefined;
           const pending:Promise<void>[]=[];stop=()=>{accepting=false;};
