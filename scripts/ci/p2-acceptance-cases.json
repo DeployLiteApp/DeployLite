@@ -1593,7 +1593,8 @@
     "packages/domain/src/compose-volume-restore-source.test.ts",
     "packages/domain/src/backup-retirement.ts",
     "apps/agent/src/infrastructure/docker/private-archive-retirement.ts",
-    "apps/agent/src/infrastructure/docker/private-archive-retirement.test.ts"
+    "apps/agent/src/infrastructure/docker/private-archive-retirement.test.ts",
+    "packages/db/src/repositories/agent-replay.test.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,

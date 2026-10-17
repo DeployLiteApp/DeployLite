@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, lte } from "drizzle-orm";
+import { and, eq, lte, notExists } from "drizzle-orm";
 import { ReplayConflictError } from "@deploylite/contracts";
 import type { DeployLiteDb } from "../client.js";
-import { agentReplay } from "../schema.js";
+import { agentReplay, backupRetirementReservations } from "../schema.js";
 
 export type AgentReplayReceipt = Record<string, unknown>;
 export type AgentReplayClaim = { claimed: boolean; claimToken?: string; receipt?: AgentReplayReceipt };
@@ -28,6 +28,11 @@ export class DbAgentReplayStore implements AgentReplayStore {
     if (row.status !== "completed") return null;
     return row.receipt ? structuredClone(row.receipt) : null;
   }
+  /** Permanent reservation must commit before admission; unresolved claims are never recycled. */
+  #unreserved(commandId: string) {
+    if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(commandId)) return undefined;
+    return notExists(this.db.select({commandId: backupRetirementReservations.commandId}).from(backupRetirementReservations).where(eq(backupRetirementReservations.commandId, commandId)));
+  }
   async claim(commandId: string, fingerprint: string, lease: AgentReplayLease): Promise<AgentReplayClaim> {
     const now = new Date();
     if (lease.expiresAt <= now.getTime()) throw new Error("replay lease is expired");
@@ -38,7 +43,7 @@ export class DbAgentReplayStore implements AgentReplayStore {
     if (!row || row.fingerprint !== fingerprint) throw new ReplayConflictError();
     if (row.status === "completed" && row.receipt) return { claimed: false, receipt: row.receipt };
     if (row.leaseExpiresAt <= now) {
-      const [reclaimed] = await this.db.update(agentReplay).set({ claimOwner: this.owner, leaseId: lease.leaseId, claimToken, leaseExpiresAt: new Date(lease.expiresAt), claimedAt: now }).where(and(eq(agentReplay.commandId, commandId), eq(agentReplay.status, "in_progress"), lte(agentReplay.leaseExpiresAt, now))).returning({ commandId: agentReplay.commandId });
+      const [reclaimed] = await this.db.update(agentReplay).set({ claimOwner: this.owner, leaseId: lease.leaseId, claimToken, leaseExpiresAt: new Date(lease.expiresAt), claimedAt: now }).where(and(eq(agentReplay.commandId, commandId), eq(agentReplay.status, "in_progress"), lte(agentReplay.leaseExpiresAt, now), this.#unreserved(commandId))).returning({ commandId: agentReplay.commandId });
       if (reclaimed) { this.#owned.add(commandId); return { claimed: true, claimToken }; }
     }
     return { claimed: false };
@@ -52,5 +57,5 @@ export class DbAgentReplayStore implements AgentReplayStore {
     if (!result.length) throw new Error("replay claim is stale or already completed");
     this.#owned.delete(commandId);
   }
-  async release(commandId: string, claimToken?: string): Promise<void> { if (!claimToken) return; await this.db.delete(agentReplay).where(and(eq(agentReplay.commandId, commandId), eq(agentReplay.claimOwner, this.owner), eq(agentReplay.claimToken, claimToken), eq(agentReplay.status, "in_progress"))); }
+  async release(commandId: string, claimToken?: string): Promise<void> { if (!claimToken) return; await this.db.delete(agentReplay).where(and(eq(agentReplay.commandId, commandId), eq(agentReplay.claimOwner, this.owner), eq(agentReplay.claimToken, claimToken), eq(agentReplay.status, "in_progress"), this.#unreserved(commandId))); }
 }
