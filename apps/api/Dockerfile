@@ -66,8 +66,12 @@ FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a
 WORKDIR /app
 ENV NODE_ENV=production
 ARG DOCKER_GID=998
-RUN apk add --no-cache docker-cli && apk upgrade --no-cache && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack && addgroup -S -g ${DOCKER_GID} docker && addgroup -S deploylite && adduser -S deploylite -G deploylite && addgroup deploylite docker
-COPY --from=build --chown=deploylite:deploylite /agent /app
-USER deploylite
+RUN apk add --no-cache docker-cli && apk upgrade --no-cache && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+  && addgroup -S -g 10001 deploylite-agent && adduser -S -D -H -s /sbin/nologin -u 10001 -G deploylite-agent deploylite-agent \
+  && addgroup -S -g ${DOCKER_GID} docker && addgroup deploylite-agent docker \
+  && install -d -m 0755 /var/lib/deploylite-agent \
+  && install -d -m 0700 -o 10001 -g 10001 /var/lib/deploylite-agent/backups
+COPY --from=build --chown=10001:10001 /agent /app
+USER 10001
 EXPOSE 3002
 CMD ["node", "dist/index.js"]

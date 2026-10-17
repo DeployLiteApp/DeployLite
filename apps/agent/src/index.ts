@@ -141,11 +141,12 @@ export async function startAgentRuntime(env: NodeJS.ProcessEnv = process.env) {
   const resourceCleanupEnabled = parseComposeResourceCleanupEnabled(env[COMPOSE_RESOURCE_CLEANUP_ENABLED_ENV], parsed.NODE_ENV);
   const traefikDynamicDir = env.DEPLOYLITE_TRAEFIK_DYNAMIC_DIR?.trim();
   if (traefikDynamicDir && !isAbsolute(traefikDynamicDir)) throw new Error("DEPLOYLITE_TRAEFIK_DYNAMIC_DIR must be an absolute path.");
-  const {DockerProcessRunner}=await import("./infrastructure/docker/docker-process-runner.js");
-  const nativeRunner = new DockerProcessRunner();
   const imagePolicy = managedDatabaseNativeImagePolicy();
   const managedDatabaseConfiguration=parseManagedDatabaseRuntimeConfiguration(env[MANAGED_DATABASE_RUNTIME_CONFIG_ENV],imagePolicy);
   const volumeBackupConfig = parseComposeVolumeBackupRuntimeConfig(env[COMPOSE_VOLUME_BACKUP_CONFIG_ENV]);
+  if(volumeBackupConfig)await (await import("./infrastructure/docker/private-archive-runtime-root.js")).validatePrivateArchiveRuntimeRoots(volumeBackupConfig.destinations);
+  const {DockerProcessRunner}=await import("./infrastructure/docker/docker-process-runner.js");
+  const nativeRunner = new DockerProcessRunner();
   const backupMaxBytes = managedDatabaseConfiguration?.limits.backupMaxBytes;
   if (backupMaxBytes !== undefined && !volumeBackupConfig) throw new Error("Database runtime configuration is invalid.");
   const nativeBinaryRunner=backupMaxBytes!==undefined && volumeBackupConfig && managedDatabaseConfiguration ? new DockerProcessRunner({timeoutMs:managedDatabaseConfiguration.limits.deadlineMs,maxOutputBytes:managedDatabaseConfiguration.limits.maxOutputBytes,maxBinaryBytes:backupMaxBytes}) : undefined;

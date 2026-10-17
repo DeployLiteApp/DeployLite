@@ -155,7 +155,11 @@ jobs:
       - run: pnpm test:migration-image
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
         with: { scan-type: fs, scan-ref: ., severity: "HIGH,CRITICAL", exit-code: "1", ignore-unfixed: "false" }
-      - run: docker build --file apps/api/Dockerfile --tag deploylite-api:ci . && docker build --file apps/web/Dockerfile --tag deploylite-web:ci .
+      - run: |
+          docker build --target runtime --label deploylite.ci.target=runtime --label deploylite.ci.head=$GITHUB_SHA --file apps/api/Dockerfile --tag deploylite-api:ci .
+          docker build --target agent --label deploylite.ci.target=agent --label deploylite.ci.head=$GITHUB_SHA --file apps/api/Dockerfile --tag deploylite-agent:ci .
+          docker build --target migration --label deploylite.ci.target=migration --label deploylite.ci.head=$GITHUB_SHA --file apps/api/Dockerfile --tag deploylite-migration:ci .
+          docker build --file apps/web/Dockerfile --tag deploylite-web:ci .
         if: always()
       - id: images
         if: always()
@@ -180,11 +184,26 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
         continue-on-error: true
         with: { scan-type: image, image-ref: deploylite-web:ci, format: json, output: web.trivy.json, severity: "HIGH,CRITICAL", exit-code: "1", ignore-unfixed: "false" }
+      - name: Generate agent image SBOM
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
+        with: { scan-type: image, image-ref: deploylite-agent:ci, format: cyclonedx, output: agent.sbom.json, scanners: vuln }
+      - id: agent_image_trivy_scan
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.28.0
+        continue-on-error: true
+        with: { scan-type: image, image-ref: deploylite-agent:ci, format: json, output: agent.trivy.json, severity: "HIGH,CRITICAL", exit-code: "1", ignore-unfixed: "false" }
+      - name: Prove dedicated agent private root and cleanup
+        if: always()
+        run: node --test scripts/ci/agent-private-root-proof.test.mjs && node scripts/ci/agent-private-root-proof.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: supply-chain-reports
           path: |
+            agent.sbom.json
+            agent.trivy.json
+            artifacts/agent-private-root.json
             api.sbom.json
             web.sbom.json
             api.trivy.json
@@ -195,6 +214,7 @@ jobs:
         if: always()
         run: |
           set -Eeuo pipefail
+          test "${{ steps.agent_image_trivy_scan.outcome }}" = success
           test "${{ steps.api_image_trivy_scan.outcome }}" = success
           test "${{ steps.web_image_trivy_scan.outcome }}" = success
 

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MANAGED_DATABASE_RUNTIME_CAPABILITY } from "@deploylite/contracts";
 
 const harness = vi.hoisted(() => ({
+  runner:vi.fn(),validateRoots:vi.fn(async (_roots:ReadonlyMap<string,string>)=>{}),
   restoreInput:true,restoreReplay:true,restoreConfirmed:true,
   binaryInput:vi.fn(async()=>{throw new Error("Unexpected private restore input");}),
   pool: vi.fn(() => ({ end: vi.fn(async () => {}) })),
@@ -34,8 +35,9 @@ vi.mock("./deployment-dispatcher.js", () => ({
   }
 }));
 vi.mock("./infrastructure/docker/docker-process-runner.js", () => ({
-  DockerProcessRunner: class { run = harness.run; runBinaryToSink=harness.binaryRun;runBinaryFromSource=harness.restoreInput?harness.binaryInput:undefined; }
+  DockerProcessRunner: class { constructor(){harness.runner();} run = harness.run; runBinaryToSink=harness.binaryRun;runBinaryFromSource=harness.restoreInput?harness.binaryInput:undefined; }
 }));
+vi.mock("./infrastructure/docker/private-archive-runtime-root.js",()=>({validatePrivateArchiveRuntimeRoots:harness.validateRoots}));
 import { startAgentRuntime } from "./index.js";
 import type { AgentServerOptions } from "./server.js";
 
@@ -165,3 +167,17 @@ function restoreBootstrapEnvironment():NodeJS.ProcessEnv{const config=configurat
 it("advertises confirmed restore only with explicit native archive/STOP configuration and functional persisted claim/confirmation ports",async()=>{const runtime=await startAgentRuntime(restoreBootstrapEnvironment());try{expect(receiver().capabilities).toContain("database.runtime.restore.v1");expect(harness.run).not.toHaveBeenCalled();expect(harness.binaryInput).not.toHaveBeenCalled();}finally{await runtime.close();}});
 it.each(["restoreInput","restoreReplay","restoreConfirmed"] as const)("withholds restore capability without functional %s",async field=>{harness[field]=false;const runtime=await startAgentRuntime(restoreBootstrapEnvironment());try{expect(receiver().capabilities).not.toContain("database.runtime.restore.v1");expect(harness.run).not.toHaveBeenCalled();expect(harness.binaryInput).not.toHaveBeenCalled();}finally{await runtime.close();}});
 it("never infers confirmed restore from backup budget without bounded STOP or from STOP without native archive",async()=>{for(const missing of ["stopGraceSeconds","backupMaxBytes"]){const env=restoreBootstrapEnvironment(),config=JSON.parse(env.DEPLOYLITE_MANAGED_DATABASE_RUNTIME!);delete config.limits[missing];const runtime=await startAgentRuntime({...env,DEPLOYLITE_MANAGED_DATABASE_RUNTIME:JSON.stringify(config)});try{expect(receiver().capabilities).not.toContain("database.runtime.restore.v1");expect(harness.binaryInput).not.toHaveBeenCalled();}finally{await runtime.close();}}});
+it("awaits every configured archive root before constructing any runner or database",async()=>{
+  const env={...environment(),DEPLOYLITE_COMPOSE_VOLUME_BACKUP_ROOTS:JSON.stringify({sourceRoots:{source:"/fixture/data"},destinations:{a:"/fixture/a",b:"/fixture/b"}})};
+  harness.validateRoots.mockImplementationOnce(async roots=>{
+    expect([...roots]).toEqual([["a","/fixture/a"],["b","/fixture/b"]]);
+    expect(harness.runner).not.toHaveBeenCalled();expect(harness.pool).not.toHaveBeenCalled();expect(harness.startServer).not.toHaveBeenCalled();
+  });
+  const runtime=await startAgentRuntime(env);expect(harness.validateRoots).toHaveBeenCalledOnce();await runtime.close();
+});
+it("rejects invalid archive roots before runner, database, providers or listener without a test-mode bypass",async()=>{
+  harness.validateRoots.mockRejectedValueOnce(new Error("Private archive root is unavailable."));
+  await expect(startAgentRuntime({...environment(),DEPLOYLITE_COMPOSE_VOLUME_BACKUP_ROOTS:JSON.stringify({sourceRoots:{source:"/fixture/data"},destinations:{a:"/fixture/a"}})})).rejects.toThrow("Private archive root is unavailable.");
+  expect(harness.runner).not.toHaveBeenCalled();expect(harness.pool).not.toHaveBeenCalled();expect(harness.startServer).not.toHaveBeenCalled();
+});
+it("preserves no-backup startup without probing roots",async()=>{const runtime=await startAgentRuntime(environment());expect(harness.validateRoots).not.toHaveBeenCalled();await runtime.close();});
