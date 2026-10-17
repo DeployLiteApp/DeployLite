@@ -1,3 +1,7 @@
+import {randomUUID} from "node:crypto";
+import {backupRetentionRequestSchema} from "@deploylite/contracts";
+import {planBackupRetention, prepareBackupRetirementConfirmation} from "@deploylite/domain";
+import {nativeMetadata} from "./backup-protection-postgres.cases.js";
 import {readFileSync} from "node:fs";
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
@@ -79,5 +83,34 @@ describe("hosted protection acceptance source contract", () => {
     expect(source.slice(probe, migration)).toContain("prepareMigrationProbe(databaseUrl)");
     expect(source).toContain("defineBackupProtectionCases(() => pool, () => databaseUrl, () => migrationProbe)");
     expect(source.match(/CREATE DATABASE/g)).toHaveLength(1);
+  });
+});
+
+// Execute the actual fixture request expression without a PostgreSQL connection.
+describe("hosted protection retention fixture request", () => {
+  it.each(["native", "p3"] as const)("plans %s retirement from authenticated inventory records without weakening the strict request", lane => {
+    const projectId = randomUUID(), now = Date.now();
+    const receipt = lane === "native" ? nativeMetadata(projectId).receipt : {
+      schemaVersion: 1 as const, action: "compose.volume.backup" as const, agentId: "agent1", commandId: randomUUID(), projectId,
+      inputDigest: "a".repeat(64), correlationId: randomUUID(), volumeKey: "data", destinationId: "local1",
+      archiveId: "backup_" + randomUUID().replaceAll("-", ""), status: "created" as const, consistency: "stopped" as const,
+      archiveBytes: 100, entries: 2, archiveSha256: "b".repeat(64), manifestSha256: "c".repeat(64), idempotent: false, redacted: true as const
+    };
+    const records = [{schemaVersion: 1 as const, receipt, createdAtMs: now - 2}, {schemaVersion: 1 as const,
+      receipt: {...receipt, commandId: randomUUID(), correlationId: randomUUID(), archiveId: "backup_" + randomUUID().replaceAll("-", "")}, createdAtMs: now - 1}];
+    const source = readFileSync(new URL("./backup-protection-postgres.cases.ts", import.meta.url), "utf8");
+    const expression = source.match(/const snapshot = ([^\n]+);/)?.[1]; expect(expression).toBeDefined();
+    const snapshot = new Function("projectId", "receipt", "records", `return (${expression});`)(projectId, receipt, records);
+    const parsed = backupRetentionRequestSchema.safeParse(snapshot);
+    expect(parsed.success, JSON.stringify(parsed.success ? [] : parsed.error.issues)).toBe(true);
+    expect(snapshot.backups).toEqual(records.map(({receipt, createdAtMs}) => ({receipt, createdAtMs})));
+    const raw = backupRetentionRequestSchema.safeParse({...snapshot, backups: records}); expect(raw.success).toBe(false);
+    expect(records.map(record => record.schemaVersion)).toEqual([1, 1]);
+    const plan = planBackupRetention(snapshot); expect(plan.retainedArchiveIds).toEqual([records[1]!.receipt.archiveId]);
+    expect(plan.deletionCandidates.map(candidate => candidate.archiveId)).toEqual([receipt.archiveId]);
+    const prepared = prepareBackupRetirementConfirmation({snapshot, archiveId: receipt.archiveId,
+      expectedInventoryDigest: plan.inventoryDigest, expectedPlanDigest: plan.planDigest, actorId: randomUUID(),
+      idempotencyKey: randomUUID(), correlationId: randomUUID(), now, commandTtlMs: 60000});
+    expect(prepared.binding).toMatchObject({operation: "backup.retire", executionAllowed: false, receipt});
   });
 });

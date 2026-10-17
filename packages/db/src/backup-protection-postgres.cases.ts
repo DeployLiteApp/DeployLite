@@ -37,7 +37,7 @@ async function snapshotOriginals(pool: pg.Pool, projectId: string) {
     rows[table!] = numericDates((await pool.query(`SELECT * FROM ${table} WHERE ${column}=$1 ORDER BY to_jsonb(${table})::text`, [projectId])).rows);
   return rows;
 }
-function nativeMetadata(projectId: string) {
+export function nativeMetadata(projectId: string) {
   const base = {schemaVersion: 1 as const, projectId, databaseId: "orders", engine: "postgres" as const, profileId: "profile1", planDigest: "a".repeat(64), environmentFingerprint: "b".repeat(32)};
   const {profileId: _profile, ...runtime} = base;
   const original = managedDatabaseRuntimeReceiptSchema.parse({...runtime, action: "database.runtime", agentId: "agent1", commandId: randomUUID(), inputDigest: managedDatabaseRuntimeExecutionDigest(base), correlationId: randomUUID(),
@@ -71,7 +71,7 @@ async function fixture(pool: pg.Pool, lane: Lane, ttl = 60000) {
     expect(confirmation).not.toBeNull(); return {command: resolved.command, confirmation: confirmation!, binding: lane === "p3" ? (proposed as ReturnType<typeof prepareComposeVolumeRestoreSourceConfirmation>).binding : undefined};
   }
   const restoreKey = randomUUID(), restore = await original(restoreKey);
-  const snapshot = {schemaVersion: 1, projectId, volumeKey: receipt.volumeKey, destinationId: receipt.destinationId, keepNewest: 1, protectedArchiveIds: [], backups: records};
+  const snapshot = {schemaVersion: 1, projectId, volumeKey: receipt.volumeKey, destinationId: receipt.destinationId, keepNewest: 1, protectedArchiveIds: [], backups: records.map(({receipt, createdAtMs}) => ({receipt, createdAtMs}))};
   const plan = planBackupRetention(snapshot), proposedRetirement = prepareBackupRetirementConfirmation({snapshot, archiveId: receipt.archiveId, expectedInventoryDigest: plan.inventoryDigest, expectedPlanDigest: plan.planDigest, actorId, idempotencyKey: randomUUID(), correlationId: randomUUID(), now: Date.now(), commandTtlMs: ttl});
   const retired = await controls.resolve(proposedRetirement.command), retirementNonce = await controls.resolveProjectUpdateConfirmation(retired.command, new Date(now)); expect(retirementNonce).not.toBeNull();
   const protect = (connection: DeployLiteDb, value = restore) => lane === "native" ? new DbBackupRestoreProtectionStore(connection, "agent1").protect(native!.preparation, value.command, value.confirmation)
