@@ -3,7 +3,7 @@ import {PgDialect} from "drizzle-orm/pg-core";
 import {MANAGED_DATABASE_RUNTIME_CAPABILITY} from "@deploylite/contracts";
 import {composeRuntimeResourceName,createControlCommand,managedDatabaseRuntimeExecutionBinding,managedDatabaseRuntimeReplayFingerprintDigest,managedDatabaseBackupExecutionDigest,managedDatabaseBackupSourceDigest,prepareManagedDatabaseRestoreConfirmation,prepareBackupRetirementConfirmation,planBackupRetention,type ControlCommand} from "@deploylite/domain";
 import type {DeployLiteDb} from "./client.js";
-import {controlCommands,controlCommandConfirmations,backupInventory,backupRestoreProtections} from "./schema.js";
+import {controlCommands,controlCommandConfirmations,backupInventory,backupRestoreProtections,composeVolumeRestoreProtections} from "./schema.js";
 import {DbBackupRetirementStore} from "./repositories/backup-retirement.js";
 import {DbBackupRestoreProtectionStore} from "./repositories/backup-restore-protection.js";
 const engines=["postgres","mysql","mariadb","mongodb","redis"] as const;
@@ -28,7 +28,7 @@ function harness(engine:typeof engines[number]="postgres", retiring=false){
  const backup={projectId:"project-a",volumeKey:"db-orders",destinationId:"private-native",archiveId:f.preparation.backupReceipt.archiveId,commandId:f.preparation.backupReceipt.commandId,receipt:f.preparation.backupReceipt,createdAt:new Date(1000)};
  const saved:Record<string,unknown>[]=[],retired:Record<string,unknown>[]=[];const queries:unknown[][]=[];let fail=false;
  const port={execute:async(condition:Parameters<PgDialect["sqlToQuery"]>[0])=>{queries.push(new PgDialect().sqlToQuery(condition).params);},
-  select(){return {from(table:unknown){const rows=table===controlCommands?[command]:table===controlCommandConfirmations?[confirmation]:table===backupInventory?[backup]:table===backupRestoreProtections?saved:retiring?[{commandId:"retirement-a"}]:retired;
+  select(){return {from(table:unknown){const rows=table===controlCommands?[command]:table===controlCommandConfirmations?[confirmation]:table===backupInventory?[backup]:table===backupRestoreProtections?saved:table===composeVolumeRestoreProtections?[]:retiring?[{commandId:"retirement-a"}]:retired;
    const query={where(condition:Parameters<PgDialect["sqlToQuery"]>[0]){queries.push(new PgDialect().sqlToQuery(condition).params);return query;},limit(){return query;},for(){return query;},orderBy(){return query;},then(resolve:(rows:unknown[])=>unknown){return Promise.resolve(structuredClone(rows)).then(resolve);}};return query;}};},
   insert(table:unknown){const target=table===backupRestoreProtections?saved:retired;return {values(value:Record<string,unknown>){return {onConflictDoNothing(){return {returning:async()=>{if(target.length)return [];target.push(structuredClone(value));if(fail)throw new Error("password=private-fixture");return structuredClone(target);}};}};}};}};
  const db={...port,transaction:async(run:(tx:typeof port)=>Promise<unknown>)=>{const before=structuredClone(saved),beforeRetired=structuredClone(retired);try{return await run(port);}catch(error){saved.splice(0,saved.length,...before);retired.splice(0,retired.length,...beforeRetired);throw error;}}} as unknown as DeployLiteDb;

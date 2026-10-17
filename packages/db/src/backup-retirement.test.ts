@@ -2,7 +2,7 @@ import {expect, it} from "vitest";
 import {PgDialect} from "drizzle-orm/pg-core";
 import {planBackupRetention, prepareBackupRetirementConfirmation} from "@deploylite/domain";
 import type {DeployLiteDb} from "./client.js";
-import {backupInventory, backupRestoreProtections, backupRetirementReservations, controlCommands, controlCommandConfirmations} from "./schema.js";
+import {backupInventory, backupRestoreProtections, composeVolumeRestoreProtections, backupRetirementReservations, controlCommands, controlCommandConfirmations} from "./schema.js";
 import {DbBackupRetirementStore} from "./repositories/backup-retirement.js";
 
 function harness() {
@@ -21,7 +21,7 @@ function harness() {
     execute: async (query: Parameters<PgDialect["sqlToQuery"]>[0]) => {queries.push(new PgDialect().sqlToQuery(query).params); await wait("lock");},
     select() {return {from(table: unknown) {
       const rows = table === controlCommands ? [command] : table === controlCommandConfirmations ? [nonce]
-        : table === backupInventory ? [archive] : table === backupRestoreProtections ? protections : reservations;
+        : table === backupInventory ? [archive] : table === backupRestoreProtections ? protections : table === composeVolumeRestoreProtections ? [] : reservations;
       const query = {where(sql: Parameters<PgDialect["sqlToQuery"]>[0]) {queries.push(new PgDialect().sqlToQuery(sql).params); return query;},
         limit() {return query;}, for() {return query;}, then(resolve: (rows: unknown[]) => unknown) {return Promise.resolve().then(async () => {await wait("read"); return structuredClone(rows);}).then(resolve);}};
       return query;
