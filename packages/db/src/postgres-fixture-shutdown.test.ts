@@ -64,7 +64,7 @@ describe("hosted protection acceptance source contract", () => {
       "packages/db/migrations/0030_backup_retirement_reservation.sql", "packages/db/migrations/0031_compose_volume_restore_protections.sql",
       "packages/db/src/repositories/backup-retirement.ts", "packages/db/src/backup-retirement.test.ts", "packages/db/src/compose-volume-restore-protection-schema.test.ts",
       "packages/domain/src/compose-volume-restore-source.ts", "packages/domain/src/compose-volume-restore-source.test.ts", "packages/domain/src/backup-retirement.ts"];
-    expect(manifest().sourceFiles).toHaveLength(427); expect(manifest().suites.db.sourceFiles).toHaveLength(43);
+    expect(manifest().sourceFiles).toHaveLength(428); expect(manifest().suites.db.sourceFiles).toHaveLength(43);
     for (const name of names) {expect(manifest().sourceFiles).toContain(name); expect(manifest().suites.db.sourceFiles).toContain(name);}
   });
   it("requires real SQL lock ownership, owned backend cancellation, original snapshots and settled cleanup stages", () => {
@@ -130,7 +130,7 @@ describe("committed retirement replay PostgreSQL acceptance source", () => {
     expect(suite.cases.slice(84)).toEqual(titles.map(title => ({fullName: `P5 backup inventory durable PostgreSQL acceptance ${title}`, title, file: path, physicalRestart: false})));
   });
   it("enrolls both existing replay sources in DB43 without changing the global417 list", () => {
-    const m = manifest(); expect(m.sourceFiles).toHaveLength(427); expect(m.suites.db.sourceFiles).toHaveLength(43);
+    const m = manifest(); expect(m.sourceFiles).toHaveLength(428); expect(m.suites.db.sourceFiles).toHaveLength(43);
     for (const name of ["packages/db/src/repositories/agent-replay.ts", "packages/db/src/repositories/agent-replay.test.ts"]) {
       expect(m.sourceFiles).toContain(name); expect(m.suites.db.sourceFiles).toContain(name);
     }

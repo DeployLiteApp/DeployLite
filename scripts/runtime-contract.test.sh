@@ -50,11 +50,12 @@ for dockerfile in apps/api/Dockerfile apps/web/Dockerfile; do
   grep -Fq "pnpm install --frozen-lockfile" "${dockerfile}" || fail "${dockerfile} must use a frozen pnpm install"
 done
 grep -Fq 'pnpm --filter @deploylite/agent build' apps/api/Dockerfile || fail 'agent target must build the agent entrypoint'
-grep -Fq 'COPY --from=build --chown=deploylite:deploylite /agent /app' apps/api/Dockerfile || fail 'agent target must copy the deployed package'
+agent_target="$(awk '/^FROM .* AS agent$/ { in_agent=1; next } /^FROM / { in_agent=0 } in_agent' apps/api/Dockerfile)"
+grep -Fqx 'COPY --from=build --chown=10001:10001 /agent /app' <<<"${agent_target}" || fail 'agent target must copy the deployed package with dedicated ownership'
 grep -Fq 'test -f /agent/dist/index.js' apps/api/Dockerfile || fail 'agent deploy must contain the generated entrypoint'
-grep -Fq 'apk add --no-cache docker-cli' apps/api/Dockerfile || fail 'agent target must contain docker-cli'
-grep -Fqx 'USER deploylite' apps/api/Dockerfile || fail 'agent target must run as deploylite'
-grep -Fqx 'CMD ["node", "dist/index.js"]' apps/api/Dockerfile || fail 'agent target must have the generated entrypoint command'
+grep -Fq 'apk add --no-cache docker-cli' <<<"${agent_target}" || fail 'agent target must contain docker-cli'
+grep -Fqx 'USER 10001' <<<"${agent_target}" || fail 'agent target must run as dedicated UID 10001'
+grep -Fqx 'CMD ["node", "dist/index.js"]' <<<"${agent_target}" || fail 'agent target must have the generated entrypoint command'
 
 grep -Fqx 'ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0' apps/web/Dockerfile || \
   fail 'apps/web/Dockerfile must bind the standalone server to 0.0.0.0:3000'

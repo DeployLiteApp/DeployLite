@@ -1636,7 +1636,8 @@
     "apps/agent/src/infrastructure/docker/private-archive-runtime-root.ts",
     "apps/agent/src/infrastructure/docker/private-archive-runtime-root.test.ts",
     "scripts/ci/agent-private-root-proof.mjs",
-    "scripts/ci/agent-private-root-proof.test.mjs"
+    "scripts/ci/agent-private-root-proof.test.mjs",
+    "scripts/runtime-contract.test.sh"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,

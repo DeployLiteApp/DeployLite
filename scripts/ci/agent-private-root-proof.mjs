@@ -34,6 +34,12 @@ export function useOwnedVolume(volume,name,token,operation){
   assert.equal(volume.Labels?.['deploylite.agent-root'],token);
   return operation(volume);
 }
+export function assertCapabilities(actual,setup){
+  const values=actual??[];
+  assert(Array.isArray(values));
+  const normalized=values.map(value=>{assert.equal(typeof value,'string');return value.replace(/^CAP_/,'');});
+  assert.deepEqual(normalized.sort(),setup?['CHOWN','DAC_OVERRIDE','FOWNER']:[]);
+}
 async function main(){
   const env=process.env,report={schema:'deploylite.agent-private-root/v1',status:'failed',cases:[],cleanup:{complete:false}};
   const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -73,7 +79,7 @@ async function main(){
     assert.equal(info.Mounts.length,mount?1:0);
     if(mount)assert(info.Mounts.some(x=>x.Type==='volume'&&x.Name===mount&&x.Destination===target&&x.RW));
     assert.deepEqual(info.HostConfig.CapDrop,['ALL']);
-    assert.deepEqual(info.HostConfig.CapAdd||[],setup?['CHOWN','DAC_OVERRIDE','FOWNER']:[]);
+    assertCapabilities(info.HostConfig.CapAdd,setup);
     assert.equal(info.HostConfig.Memory,268435456);
     assert.equal(info.HostConfig.NanoCpus,500000000);
     assert.equal(info.HostConfig.PidsLimit,64);
