@@ -1,9 +1,19 @@
+import {existsSync} from "node:fs";
 import {createHash} from "node:crypto";
 import {mkdtemp,realpath,readFile,readdir,rm,stat,writeFile,mkdir,symlink,chmod} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {afterEach,expect,it,vi} from "vitest";
 import {createPrivateNativeBackupArchive} from "./docker-managed-database-backup-archive.js";
+const nativeCleanup = vi.hoisted(() => ({afterPath: undefined as ((path: string) => void) | undefined}));
+vi.mock("node:fs/promises", async () => {
+  const filesystem = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  return {...filesystem, realpath: async (...paths: Parameters<typeof filesystem.realpath>) => {
+    const canonical = await filesystem.realpath(...paths);
+    nativeCleanup.afterPath?.(String(paths[0]));
+    return canonical;
+  }};
+});
 const roots:string[]=[];
 afterEach(async()=>{await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})));});
 async function fixture(){
@@ -63,3 +73,53 @@ it("settles already accepted private writes before checking producer completion"
  const f=await fixture(),receipt=await f.archive.write(f.binding,async write=>{void write(f.data).catch(()=>undefined);return {bytes:4,sha256:f.sha256};},f.authority,f.signal.signal);
  expect(receipt).toMatchObject({archiveBytes:4,archiveSha256:f.sha256});expect(await readFile(join(f.root,receipt.archiveId,"archive.bin"))).toEqual(f.data);
 });
+
+for (const identity of ["root", "foreign"] as const) it(`refuses ${identity} effective UID before native producer or filesystem mutation`, async () => {
+ const f=await fixture(),owner=process.geteuid!(),uid=vi.spyOn(process as {geteuid: () => number},"geteuid").mockReturnValue(identity==="root"?0:owner+1);
+ try {await expect(f.archive.write(f.binding,f.producer,f.authority,f.signal.signal)).rejects.toThrow("Native archive is unavailable.");expect(f.producer).not.toHaveBeenCalled();expect(await readdir(f.root)).toEqual([]);}finally{uid.mockRestore();}
+});
+for (const phase of ["before-data","before-manifest","mode"] as const) it(`rechecks native private root ${phase} after the final awaited grant and preserves uncertain pending evidence`,async()=>{
+ const f=await fixture(),owner=process.geteuid!(),uid=vi.spyOn(process as {geteuid: () => number},"geteuid").mockReturnValue(owner);let changed=false;
+ f.authority.assertValid.mockImplementation(async()=>{
+  for(const name of await readdir(f.root))if(name.startsWith(".pending-")){
+   const ready=await readFile(join(f.root,name,"manifest.json")).then(()=>true,()=>false),published=await readdir(f.root).then(names=>names.find(value=>value.startsWith("backup_")));
+   const linked=published?await readFile(join(f.root,published,"archive.bin")).then(()=>true,()=>false):false;
+   if(ready&&(phase!=="before-manifest"||linked)){changed=true;if(phase==="mode")await chmod(f.root,0o707);else uid.mockReturnValue(owner+1);}
+  }
+ });
+ try {await expect(f.archive.write(f.binding,f.producer,f.authority,f.signal.signal)).rejects.toThrow("Native archive is unavailable.");expect(changed).toBe(true);expect(f.producer).toHaveBeenCalledOnce();
+  const names=await readdir(f.root);expect(names.some(name=>name.startsWith(".pending-"))).toBe(true);
+  for(const name of names.filter(value=>value.startsWith("backup_")))expect(await readdir(join(f.root,name))).not.toContain("manifest.json");
+ }finally{uid.mockRestore();await chmod(f.root,0o700);}
+});
+
+for (const change of ["cancellation", "expiry"] as const) {
+  it(`refuses native success when ${change} arrives during awaited pending cleanup and preserves the published original`, async () => {
+    const f = await fixture();
+    let now = 100, changed = false;
+    f.options.clock.now = () => now;
+    Object.assign(f.authority, {expiresAt: 10_000});
+    const archive = createPrivateNativeBackupArchive({...f.options, maxDurationMs: 100_000});
+    const archiveId = "backup_" + createHash("sha256").update(f.binding.projectId + "\0" + f.binding.commandId + "\0" + f.binding.destinationId).digest("hex").slice(0, 32);
+    const archivePath = join(f.root, archiveId, "archive.bin"), manifestPath = join(f.root, archiveId, "manifest.json");
+    nativeCleanup.afterPath = path => {
+      if (path.includes(".pending-") && existsSync(manifestPath)) {
+        changed = true;
+        if (change === "cancellation") f.signal.abort(); else now = 10_001;
+      }
+    };
+    try {
+      await expect(archive.write(f.binding, f.producer, f.authority, f.signal.signal)).rejects.toThrow("Native archive is unavailable.");
+      expect(changed).toBe(true);
+      const manifest = await readFile(manifestPath);
+      expect(await readFile(archivePath)).toEqual(f.data);
+      expect(f.producer).toHaveBeenCalledOnce();
+      nativeCleanup.afterPath = undefined;
+      now = 100;
+      expect(await archive.write(f.binding, f.producer, f.authority, new AbortController().signal)).toMatchObject({idempotent: true});
+      expect(f.producer).toHaveBeenCalledOnce();
+      expect(await readFile(archivePath)).toEqual(f.data);
+      expect(await readFile(manifestPath)).toEqual(manifest);
+    } finally {nativeCleanup.afterPath = undefined;}
+  });
+}

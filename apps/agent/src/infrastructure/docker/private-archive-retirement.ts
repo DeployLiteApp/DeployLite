@@ -29,7 +29,7 @@ export function createPrivateArchiveRetirementInspector(supplied: Options) {
   let options: Options, filesystem: PrivateArchiveInspectionFilesystem, owner: number, now: Clock["now"];
   try {
     options = {...supplied, destinations: new Map(supplied.destinations)}; now = options.clock.now;
-    const uid = process.geteuid?.(); if (typeof uid !== "number" || !Number.isSafeInteger(uid) || uid < 0) unavailable(); owner = uid;
+    const uid = process.geteuid?.(); if (typeof uid !== "number" || !Number.isSafeInteger(uid) || uid <= 0) unavailable(); owner = uid;
     if (!isIdentity(options.expectedAgentId) || typeof now !== "function" || !Number.isSafeInteger(options.maxBytes) || options.maxBytes < 1
       || !Number.isSafeInteger(options.maxDurationMs) || options.maxDurationMs < 1 || options.maxDurationMs > 2147483647) unavailable();
     for (const [key, path] of options.destinations) if (!isIdentity(key) || typeof path !== "string" || !isAbsolute(path) || path !== resolve(path)

@@ -1,11 +1,32 @@
+import {existsSync} from "node:fs";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, realpath } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, realpath, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { COMPOSE_VOLUME_BACKUP_CAPABILITY, InMemoryCapabilityRegistry, type ComposeResourceObservationV1 } from "@deploylite/contracts";
 import { composeVolumeBackupExecutionDigest, createComposePreview, digestComposeResourceObservation, digestControlInput, type ComposeResourceInspector } from "@deploylite/domain";
 import { createDockerComposeVolumeBackupExecutor, createLocalDirectoryComposeVolumeBackupSource, type ComposeVolumeBackupEntry, type ComposeVolumeBackupSource } from "./docker-compose-volume-backup.js";
+
+const publicationRace = vi.hoisted(() => ({duplicate: false, observed: false, afterPending: undefined as (() => void) | undefined}));
+vi.mock("node:fs/promises", async () => {
+  const filesystem = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  return {...filesystem, realpath: async (...paths: Parameters<typeof filesystem.realpath>) => {
+    const canonical = await filesystem.realpath(...paths);
+    if (publicationRace.observed && String(paths[0]).includes(".pending-")) publicationRace.afterPending?.();
+    return canonical;
+  }, rename: async (...paths: Parameters<typeof filesystem.rename>) => {
+    if (publicationRace.duplicate) {
+      publicationRace.duplicate = false;
+      // Inject a competing completed publication at the rename boundary, preserving both owned paths.
+      if (typeof paths[0] !== "string" || typeof paths[1] !== "string") throw new Error("Injected publication requires string paths");
+      await filesystem.cp(paths[0], paths[1], {recursive: true, force: false, errorOnExist: true});
+      publicationRace.observed = true;
+      throw Object.assign(new Error("Injected competing publication"), {code: "EEXIST"});
+    }
+    return filesystem.rename(...paths);
+  }};
+});
 
 const policy = { policyVersion: "backup-test", trustedHosts: ["registry.example.com"], allowTags: false, allowDigests: true };
 const image = "registry.example.com/app@sha256:" + "a".repeat(64);
@@ -112,3 +133,95 @@ describe("simulated local Compose volume backup", () => {
     await expect(overlap.executor.execute(overlap.input, overlap.authority, new AbortController().signal)).rejects.toMatchObject({ code: "COMPOSE_BACKUP_UNSAFE_DESTINATION" });
   });
 });
+
+for (const identity of ["root", "foreign"] as const) it(`refuses ${identity} effective UID before P3 source resolution or publication`, async () => {
+  const f = await fixture(), owner = process.geteuid!(), uid = vi.spyOn(process as {geteuid: () => number}, "geteuid").mockReturnValue(identity === "root" ? 0 : owner + 1);
+  try {await expect(f.executor.execute(f.input, f.authority, new AbortController().signal)).rejects.toMatchObject({code: "COMPOSE_BACKUP_UNSAFE_DESTINATION"}); expect(f.resolveVolume).not.toHaveBeenCalled(); expect(await readdir(f.destinationRoot)).toEqual([]);} finally {uid.mockRestore();}
+});
+for (const phase of ["identity", "mode"] as const) it(`rechecks P3 private root ${phase} after final awaited grant and preserves uncertain pending evidence`, async () => {
+  const f = await fixture(), owner = process.geteuid!(), uid = vi.spyOn(process as {geteuid: () => number}, "geteuid").mockReturnValue(owner); let changed = false;
+  f.authority.assertValid.mockImplementation(async () => {
+    for (const name of await readdir(f.destinationRoot)) if (name.startsWith(".pending-")) {
+      const ready = await readFile(join(f.destinationRoot, name, "manifest.json")).then(() => true, () => false);
+      if (ready) {changed = true; if (phase === "mode") await chmod(f.destinationRoot, 0o707); else uid.mockReturnValue(owner + 1);}
+    }
+  });
+  try {await expect(f.executor.execute(f.input, f.authority, new AbortController().signal)).rejects.toMatchObject({code: "COMPOSE_BACKUP_UNSAFE_DESTINATION"}); expect(changed).toBe(true);
+    const names = await readdir(f.destinationRoot); expect(names.some(name => name.startsWith(".pending-"))).toBe(true); expect(names.filter(name => !name.startsWith(".pending-"))).toEqual([]);
+  } finally {uid.mockRestore(); await chmod(f.destinationRoot, 0o700);}
+});
+
+for (const change of ["cancellation", "expiry"] as const) it(`refuses P3 publication when ${change} arrives during awaited final root validation`, async () => {
+  const f = await fixture(), external = new AbortController(), owner = process.geteuid!();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(100);
+  const uid = vi.spyOn(process as {geteuid: () => number}, "geteuid");
+  let finalRoot = false, changed = false;
+  Object.assign(f.authority, {expiresAt: 200});
+  uid.mockImplementation(() => {
+    if (finalRoot) {changed = true; if (change === "cancellation") external.abort(); else clock.mockReturnValue(201);}
+    return owner;
+  });
+  f.authority.assertValid.mockImplementation(async () => {
+    for (const name of await readdir(f.destinationRoot)) if (name.startsWith(".pending-")) {
+      if (await readFile(join(f.destinationRoot, name, "manifest.json")).then(() => true, () => false)) finalRoot = true;
+    }
+  });
+  try {
+    await expect(f.executor.execute(f.input, f.authority, external.signal)).rejects.toMatchObject({code: "COMPOSE_BACKUP_FAILED"});
+    expect(changed).toBe(true);
+    expect((await readdir(f.destinationRoot)).filter(name => !name.startsWith(".pending-"))).toEqual([]);
+  } finally {uid.mockRestore(); clock.mockRestore();}
+});
+
+for (const branch of ["created", "EEXIST", "already-existing", "EEXIST-cleanup"] as const) {
+  for (const change of ["cancellation", "expiry"] as const) {
+    it(`refuses late ${change} after ${branch} receipt validation without deleting or recreating the published archive`, async () => {
+      const f = await fixture();
+      const archiveId = "backup_" + createHash("sha256").update(f.input.projectId + "\0" + f.input.commandId + "\0" + f.input.plan.destinationId).digest("hex").slice(0, 32);
+      const archivePath = join(f.destinationRoot, archiveId, "archive.tar");
+      const manifestPath = join(f.destinationRoot, archiveId, "manifest.json");
+      if (branch === "already-existing") await f.executor.execute(f.input, f.authority, new AbortController().signal);
+      const external = new AbortController(), owner = process.geteuid!();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(100);
+      f.authority.expiresAt = 200;
+      publicationRace.duplicate = branch === "EEXIST" || branch === "EEXIST-cleanup";
+      publicationRace.observed = false;
+      let changed = false, restored = false;
+      const uid = vi.spyOn(process as {geteuid: () => number}, "geteuid").mockImplementation(() => {
+        if (branch !== "EEXIST-cleanup" && existsSync(archivePath) && (branch !== "EEXIST" || publicationRace.observed)) {
+          changed = true;
+          if (change === "cancellation") external.abort();
+          else clock.mockReturnValue(201);
+        }
+        return owner;
+      });
+      publicationRace.afterPending = branch === "EEXIST-cleanup" ? () => {
+        changed = true;
+        if (change === "cancellation") external.abort(); else clock.mockReturnValue(201);
+      } : undefined;
+      const restore = () => {
+        if (restored) return;
+        restored = true;
+        uid.mockRestore();
+        clock.mockRestore();
+        publicationRace.duplicate = false;
+        publicationRace.observed = false;
+        publicationRace.afterPending = undefined;
+      };
+      try {
+        await expect(f.executor.execute(f.input, f.authority, external.signal)).rejects.toMatchObject({code: "COMPOSE_BACKUP_FAILED"});
+        expect(changed).toBe(true);
+        const archive = await readFile(archivePath), manifest = await readFile(manifestPath);
+        expect(createHash("sha256").update(archive).digest("hex")).toBe(JSON.parse(manifest.toString()).archiveSha256);
+        expect(f.resolveVolume).toHaveBeenCalledTimes(1);
+        restore();
+        f.authority.expiresAt = f.input.lease.expiresAt;
+        const original = await f.executor.execute(f.input, f.authority, new AbortController().signal);
+        expect(original).toMatchObject({status: "already-created", idempotent: true});
+        expect(f.resolveVolume).toHaveBeenCalledTimes(1);
+        expect(await readFile(archivePath)).toEqual(archive);
+        expect(await readFile(manifestPath)).toEqual(manifest);
+      } finally {restore();}
+    });
+  }
+}

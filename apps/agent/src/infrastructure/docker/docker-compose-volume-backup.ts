@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, type Stats } from "node:fs";
 import { lstat, mkdtemp, open, realpath, rename, rm, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
@@ -43,16 +43,27 @@ function isWithin(parent: string, child: string): boolean {
   const childRelative = relative(parent, child);
   return childRelative === "" || (childRelative !== ".." && !childRelative.startsWith(".." + sep) && !isAbsolute(childRelative));
 }
-async function safeDirectory(path: string, destination: boolean): Promise<{ path: string; info: Awaited<ReturnType<typeof lstat>> }> {
-  if (!isAbsolute(path)) fail(destination ? "COMPOSE_BACKUP_UNSAFE_DESTINATION" : "COMPOSE_BACKUP_UNSAFE_SOURCE");
+type DirectoryInfo = Stats;
+/** Identity snapshots are validation, not an atomic namespace lock. */
+function sameDirectory(left: DirectoryInfo, right: DirectoryInfo) {
+  return (["dev", "ino", "uid", "gid", "mode"] as const).every(key => left[key] === right[key]);
+}
+async function safeDirectory(path: string, destination: boolean): Promise<{path: string; info: DirectoryInfo}> {
+  const code = destination ? "COMPOSE_BACKUP_UNSAFE_DESTINATION" : "COMPOSE_BACKUP_UNSAFE_SOURCE";
+  if (!isAbsolute(path)) fail(code);
   const normalized = resolve(path);
   try {
-    const info = await lstat(normalized);
-    const canonical = await realpath(normalized);
-    if (info.isSymbolicLink() || !info.isDirectory() || canonical !== normalized || (destination && (info.mode & 0o077) !== 0))
-      fail(destination ? "COMPOSE_BACKUP_UNSAFE_DESTINATION" : "COMPOSE_BACKUP_UNSAFE_SOURCE");
-    return { path: canonical, info };
-  } catch (error) { if (error instanceof ComposeVolumeBackupError) throw error; fail(destination ? "COMPOSE_BACKUP_UNSAFE_DESTINATION" : "COMPOSE_BACKUP_UNSAFE_SOURCE"); }
+    const owner = destination ? process.geteuid?.() : undefined;
+    if (destination && (typeof owner !== "number" || !Number.isSafeInteger(owner) || owner <= 0)) fail(code);
+    const valid = (value: DirectoryInfo) => !value.isSymbolicLink() && value.isDirectory() && (!destination || (
+      process.geteuid?.() === owner && value.uid === owner && (["uid", "gid", "dev", "ino", "mode"] as const).every(key => Number.isSafeInteger(value[key]) && value[key] >= 0)
+      && value.ino > 0 && (value.mode & fsConstants.S_IFMT) === fsConstants.S_IFDIR && (value.mode & 0o7077) === 0 && (value.mode & 0o500) === 0o500));
+    const info = await lstat(normalized); if (!valid(info)) fail(code);
+    const canonical = await realpath(normalized); if (canonical !== normalized) fail(code);
+    if (!destination) return {path: canonical, info}; // Source ownership/modes retain their existing independent contract.
+    const after = await lstat(normalized); if (!valid(after) || !sameDirectory(info, after)) fail(code);
+    return {path: canonical, info: after};
+  } catch (error) {if (error instanceof ComposeVolumeBackupError) throw error; fail(code);}
 }
 function safeRelativePath(value: string): string {
   if (value.length < 1 || value.startsWith("/") || value.includes("\\") || value.includes(":") || /[\u0000-\u001f\u007f]/.test(value)) fail("COMPOSE_BACKUP_UNSAFE_SOURCE");
@@ -175,12 +186,14 @@ async function hashFile(path: string, signal?: AbortSignal): Promise<{ bytes: nu
   } finally { await handle.close().catch(() => undefined); }
   return { bytes, sha256: hasher.digest("hex") };
 }
-async function existingReceipt(root: string, archiveId: string, command: ComposeVolumeBackupExecutionInput): Promise<ComposeVolumeBackupReceiptV1 | null> {
+async function existingReceipt(root: string, archiveId: string, command: ComposeVolumeBackupExecutionInput, expectedRoot: DirectoryInfo): Promise<ComposeVolumeBackupReceiptV1 | null> {
+  const rootBefore = await safeDirectory(root, true); if (!sameDirectory(rootBefore.info, expectedRoot)) fail("COMPOSE_BACKUP_UNSAFE_DESTINATION");
   const finalDirectory = join(root, archiveId);
   let directoryInfo;
   try { directoryInfo = await lstat(finalDirectory); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; fail("COMPOSE_BACKUP_FAILED"); }
   if (directoryInfo.isSymbolicLink() || !directoryInfo.isDirectory()) fail("COMPOSE_BACKUP_CONFLICT");
   try {
+    const directory = await safeDirectory(finalDirectory, true); if (!sameDirectory(directory.info, directoryInfo)) fail("COMPOSE_BACKUP_CONFLICT");
     const manifestPath = join(finalDirectory, "manifest.json"), manifestInfo = await lstat(manifestPath);
     if (manifestInfo.isSymbolicLink() || !manifestInfo.isFile()) fail("COMPOSE_BACKUP_CONFLICT");
     const manifestHandle = await open(manifestPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
@@ -196,6 +209,7 @@ async function existingReceipt(root: string, archiveId: string, command: Compose
     const archive = await hashFile(join(finalDirectory, "archive.tar"));
     if (archive.bytes !== manifest.archiveBytes || archive.sha256 !== manifest.archiveSha256 || archive.bytes > command.plan.limits.maxBytes
       || manifest.entries > command.plan.limits.maxEntries) fail("COMPOSE_BACKUP_CONFLICT");
+    if (!sameDirectory((await safeDirectory(root, true)).info, expectedRoot) || !sameDirectory((await safeDirectory(finalDirectory, true)).info, directory.info)) fail("COMPOSE_BACKUP_UNSAFE_DESTINATION");
     return receipt(manifest, archiveId, manifestBytes, "already-created");
   } catch (error) { if (error instanceof ComposeVolumeBackupError) throw error; fail("COMPOSE_BACKUP_CONFLICT"); }
 }
@@ -286,12 +300,13 @@ export function createDockerComposeVolumeBackupExecutor(supplied: ComposeVolumeB
       if (!options.capabilities.has(COMPOSE_RESOURCE_INSPECTION_CAPABILITY)) fail("COMPOSE_BACKUP_UNAVAILABLE");
       if (authority.expiresAt !== undefined && (!Number.isSafeInteger(authority.expiresAt) || Date.now() >= authority.expiresAt)) fail("COMPOSE_BACKUP_FAILED");
     };
-    let temporaryDirectory: string | undefined;
+    let successful = false;
+    let temporaryDirectory: string | undefined, temporaryInfo: DirectoryInfo | undefined, destinationSnapshot: Awaited<ReturnType<typeof safeDirectory>> | undefined;
     try {
       assertCurrent(); await awaitAbortable(() => authority.assertValid(), signal); assertCurrent();
-      const destination = await safeDirectory(destinationPath, true), archiveId = archiveName(input);
-      const already = await existingReceipt(destination.path, archiveId, input);
-      if (already) { assertCurrent(); return already; }
+      const destination = await safeDirectory(destinationPath, true), archiveId = archiveName(input); destinationSnapshot = destination;
+      const already = await existingReceipt(destination.path, archiveId, input, destination.info);
+      if (already) { assertCurrent(); successful = true; return already; }
       const preview = createComposePreview(input.canonicalDocument, plan.projectId, options.imagePolicy);
       const plannedVolume = preview.volumes.find(value => value.key === plan.volumeKey);
       if (preview.configDigest !== plan.configDigest || !plannedVolume) fail("COMPOSE_BACKUP_STALE");
@@ -321,6 +336,7 @@ export function createDockerComposeVolumeBackupExecutor(supplied: ComposeVolumeB
       validateEntrySet(entries, plan.limits.maxEntries);
       entries.sort((left, right) => left.path.localeCompare(right.path, "en"));
       temporaryDirectory = await mkdtemp(join(destination.path, ".pending-" + archiveId + "-"));
+      temporaryInfo = (await safeDirectory(temporaryDirectory, true)).info;
       const archivePath = join(temporaryDirectory, "archive.tar");
       const archive = await writeArchive(archivePath, entries, plan.limits.maxBytes, signal, assertCurrent);
       const manifest = manifestSchema.parse({ schemaVersion: 1, commandId: input.commandId, projectId: input.projectId, volumeKey: plan.volumeKey,
@@ -332,29 +348,39 @@ export function createDockerComposeVolumeBackupExecutor(supplied: ComposeVolumeB
       try { await manifestHandle.writeFile(manifestBytes); await manifestHandle.sync(); } finally { await manifestHandle.close(); }
       const sourceAfter = await safeDirectory(source.root, false), destinationAfter = await safeDirectory(destinationPath, true);
       if (sourceAfter.info.dev !== sourceRoot.info.dev || sourceAfter.info.ino !== sourceRoot.info.ino
-        || destinationAfter.info.dev !== destination.info.dev || destinationAfter.info.ino !== destination.info.ino) fail("COMPOSE_BACKUP_UNSAFE_DESTINATION");
+        || !sameDirectory(destinationAfter.info, destination.info)) fail("COMPOSE_BACKUP_UNSAFE_DESTINATION");
       const afterObservation = await inspectCurrent();
       if (afterObservation.physicalIdentity !== observation.physicalIdentity || afterObservation.stateDigest !== observation.stateDigest) fail("COMPOSE_BACKUP_STALE");
       assertCurrent(); await awaitAbortable(() => authority.assertValid(), signal); assertCurrent();
+      const publicationRoot = await safeDirectory(destinationPath, true); if (!sameDirectory(publicationRoot.info, destination.info)) fail("COMPOSE_BACKUP_UNSAFE_DESTINATION");
+      assertCurrent();
       const finalDirectory = join(destination.path, archiveId);
       try { await rename(temporaryDirectory, finalDirectory); temporaryDirectory = undefined; }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST" && (error as NodeJS.ErrnoException).code !== "ENOTEMPTY") throw error;
-        const concurrent = await existingReceipt(destination.path, archiveId, input);
+        const concurrent = await existingReceipt(destination.path, archiveId, input, destination.info);
+        assertCurrent();
         if (!concurrent) fail("COMPOSE_BACKUP_CONFLICT");
         const pending = temporaryDirectory;
         if (!pending) fail("COMPOSE_BACKUP_CONFLICT");
-        await rm(pending, { recursive: true, force: true }); temporaryDirectory = undefined; return concurrent;
+        successful = true;
+        return concurrent; // The identity-checked finally owns pending cleanup.
       }
-      const published = await existingReceipt(destination.path, archiveId, input);
+      const published = await existingReceipt(destination.path, archiveId, input, destination.info);
+      assertCurrent();
       if (!published) fail("COMPOSE_BACKUP_FAILED");
+      successful = true;
       return { ...published, status: "created", idempotent: false };
     } catch (error) {
       if (error instanceof ComposeVolumeBackupError) throw error;
       return fail("COMPOSE_BACKUP_FAILED");
     } finally {
       clearTimeout(timer); external.removeEventListener("abort", cancel);
-      if (temporaryDirectory) await rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined);
+      if (temporaryDirectory && temporaryInfo && destinationSnapshot) try {
+        const root = await safeDirectory(destinationSnapshot.path, true), pending = await safeDirectory(temporaryDirectory, true);
+        if (sameDirectory(root.info, destinationSnapshot.info) && sameDirectory(pending.info, temporaryInfo)) await rm(temporaryDirectory, {recursive: true, force: true});
+      } catch {/* Preserve uncertain ownership/namespace evidence; never repair or remove an unrecognized path. */}
+      if (successful) assertCurrent();
     }
   }
   return { async execute(raw: unknown, authority: ComposeVolumeBackupAuthority, signal: AbortSignal): Promise<ComposeVolumeBackupReceiptV1> {
@@ -372,7 +398,7 @@ export function createDockerComposeVolumeBackupExecutor(supplied: ComposeVolumeB
 }
 
 /** Shared private filesystem guards; existing Compose behavior remains unchanged. */
-export const composeBackupFilesystem = Object.freeze({safeDirectory,hashFile});
+export const composeBackupFilesystem = Object.freeze({safeDirectory,hashFile,sameDirectory});
 
 /** Reuse the P3 safe tar writer for an already corroborated stopped native volume. */
 export async function captureComposeVolumeBackupToSink(source:ComposeVolumeBackupSource,runtimeName:string,maxBytes:number,write:(bytes:Uint8Array)=>Promise<void>,signal:AbortSignal,current:()=>void):Promise<{bytes:number;sha256:string}>{
