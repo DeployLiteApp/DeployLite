@@ -2,11 +2,11 @@ import {and, eq, sql} from "drizzle-orm";
 import {backupRetirementBinding, backupRetirementInputDigest, digestControlInput, evaluateConfirmation,
   type ControlCommand, type ControlConfirmation} from "@deploylite/domain";
 import type {DeployLiteDb} from "../client.js";
-import {backupInventory, backupRestoreProtections, backupRetirementReservations, controlCommands, controlCommandConfirmations} from "../schema.js";
+import {backupInventory, backupRestoreProtections, composeVolumeRestoreProtections, backupRetirementReservations, controlCommands, controlCommandConfirmations} from "../schema.js";
 import {toCommand} from "./control-plane.js";
 
 function unavailable(): never { throw new Error("Archive retirement is unavailable."); }
-/** No provider activation. P3 protection semantics and execution remain undelivered. */
+/** No provider activation. Physical protection arbitration and execution remain unverified. */
 export class DbBackupRetirementStore {
   constructor(private readonly db: DeployLiteDb, private readonly expectedAgentId: string, private readonly clock = Date.now) {}
   executionAvailable() { return false; }
@@ -40,7 +40,10 @@ export class DbBackupRetirementStore {
         const protectedRows = await tx.select().from(backupRestoreProtections).where(and(
           eq(backupRestoreProtections.projectId, receipt.projectId), eq(backupRestoreProtections.volumeKey, receipt.volumeKey),
           eq(backupRestoreProtections.destinationId, receipt.destinationId), eq(backupRestoreProtections.archiveId, receipt.archiveId))).limit(1).for("share");
-        if (protectedRows.length) unavailable(); // Expiry never releases original restore protection.
+        const p3Protected = await tx.select().from(composeVolumeRestoreProtections).where(and(
+          eq(composeVolumeRestoreProtections.projectId, receipt.projectId), eq(composeVolumeRestoreProtections.volumeKey, receipt.volumeKey),
+          eq(composeVolumeRestoreProtections.destinationId, receipt.destinationId), eq(composeVolumeRestoreProtections.archiveId, receipt.archiveId))).limit(1).for("share");
+        if (protectedRows.length || p3Protected.length) unavailable(); // Expiry never releases original restore protection.
         const reservationScope = and(eq(backupRetirementReservations.projectId, receipt.projectId), eq(backupRetirementReservations.volumeKey, receipt.volumeKey),
           eq(backupRetirementReservations.destinationId, receipt.destinationId), eq(backupRetirementReservations.archiveId, receipt.archiveId));
         const existing = await tx.select().from(backupRetirementReservations).where(reservationScope).limit(2).for("share");
