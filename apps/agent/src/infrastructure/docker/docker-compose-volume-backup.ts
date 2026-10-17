@@ -12,6 +12,7 @@ const identity = z.string().min(1).max(200).regex(/^[A-Za-z0-9_-]+$/);
 const manifestSchema = z.object({ schemaVersion: z.literal(1), commandId: identity, agentId: identity, correlationId: identity, projectId: identity, volumeKey: identity, destinationId: identity,
   planDigest: digest, inputDigest: digest, configDigest: digest, stateDigest: digest, consistency: z.literal("stopped"), archiveBytes: z.number().int().positive(),
   entries: z.number().int().nonnegative(), archiveSha256: digest }).strict();
+export {manifestSchema as composeVolumeBackupArchiveManifestSchema};
 
 export type ComposeVolumeBackupEntry = Readonly<{
   path: string; kind: "file" | "directory" | "symlink" | "unsupported"; mode: number; modifiedAtSeconds: number; size: number;

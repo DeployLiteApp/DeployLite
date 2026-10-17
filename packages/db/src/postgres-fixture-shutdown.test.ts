@@ -64,7 +64,7 @@ describe("hosted protection acceptance source contract", () => {
       "packages/db/migrations/0030_backup_retirement_reservation.sql", "packages/db/migrations/0031_compose_volume_restore_protections.sql",
       "packages/db/src/repositories/backup-retirement.ts", "packages/db/src/backup-retirement.test.ts", "packages/db/src/compose-volume-restore-protection-schema.test.ts",
       "packages/domain/src/compose-volume-restore-source.ts", "packages/domain/src/compose-volume-restore-source.test.ts", "packages/domain/src/backup-retirement.ts"];
-    expect(manifest().sourceFiles).toHaveLength(414); expect(manifest().suites.db.sourceFiles).toHaveLength(41);
+    expect(manifest().sourceFiles).toHaveLength(416); expect(manifest().suites.db.sourceFiles).toHaveLength(41);
     for (const name of names) {expect(manifest().sourceFiles).toContain(name); expect(manifest().suites.db.sourceFiles).toContain(name);}
   });
   it("requires real SQL lock ownership, owned backend cancellation, original snapshots and settled cleanup stages", () => {
