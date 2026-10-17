@@ -3,7 +3,7 @@ import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
 
 const mockedModules = ["vitest", "pg", "./client.js",
-  "./managed-database-credentials-postgres.cases.js", "./native-backup-inventory-postgres.cases.js"];
+  "./managed-database-credentials-postgres.cases.js", "./native-backup-inventory-postgres.cases.js", "./backup-protection-postgres.cases.js"];
 afterEach(() => {
   for (const name of mockedModules) vi.doUnmock(name);
   vi.unstubAllEnvs();
@@ -29,6 +29,7 @@ async function fixture() {
     closeDbPool: async (connection: typeof pool) => { await connection.end(); } }));
   vi.doMock("./managed-database-credentials-postgres.cases.js", () => ({ defineManagedDatabaseCredentialCases() {} }));
   vi.doMock("./native-backup-inventory-postgres.cases.js", () => ({ defineNativeBackupInventoryCases() {} }));
+  vi.doMock("./backup-protection-postgres.cases.js", () => ({ defineBackupProtectionCases() {}, prepareMigrationProbe: async () => undefined }));
   vi.doMock("vitest", () => ({ expect, it: vi.fn(),
     describe: (_name: string, define: () => void) => define(),
     beforeAll: (run: () => Promise<void>) => { hooks.open = run; },

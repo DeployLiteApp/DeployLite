@@ -1,3 +1,4 @@
+import {defineBackupProtectionCases, prepareMigrationProbe, type MigrationProbe} from "./backup-protection-postgres.cases.js";
 import {defineManagedDatabaseRestoreCompletionCases} from "./managed-database-restore-postgres.cases.js";
 import {defineNativeBackupInventoryCases} from "./native-backup-inventory-postgres.cases.js";
 import { defineManagedDatabaseCredentialCases } from "./managed-database-credentials-postgres.cases.js";
@@ -15,6 +16,7 @@ const enabled = process.env.DEPLOYLITE_DB_INTEGRATION === "1";
 const configured = enabled ? process.env.DATABASE_URL : undefined;
 if (enabled && !configured) throw new Error("DATABASE_URL must be set when DEPLOYLITE_DB_INTEGRATION=1.");
 let maintenance: pg.Client, pool: pg.Pool, databaseName: string, databaseUrl: string;
+let migrationProbe: MigrationProbe | undefined;
 let closeFixturePool: (() => Promise<void>) | undefined;
 const store = (connection = pool) => new DbBackupInventoryStore(createDbClient(connection), "agent-1");
 async function seed(projectId = randomUUID(), archiveId: string = randomUUID()) {
@@ -38,7 +40,10 @@ async function count(projectId: string) {
     maintenance = new pg.Client({connectionString: url.toString()}); await maintenance.connect();
     await maintenance.query(`CREATE DATABASE "${databaseName}"`); url.pathname = `/${databaseName}`; databaseUrl = url.toString();
     const migrationClient = new pg.Client({connectionString: databaseUrl}); await migrationClient.connect();
-    try { for (const file of (await readdir(new URL("../migrations/", import.meta.url))).filter(name => name.endsWith(".sql")).sort()) await migrationClient.query(await readFile(new URL(`../migrations/${file}`, import.meta.url), "utf8")); }
+    try { for (const file of (await readdir(new URL("../migrations/", import.meta.url))).filter(name => name.endsWith(".sql")).sort()) {
+      if (file === "0031_compose_volume_restore_protections.sql") migrationProbe = await prepareMigrationProbe(databaseUrl);
+      await migrationClient.query(await readFile(new URL(`../migrations/${file}`, import.meta.url), "utf8"));
+    } }
     finally { await migrationClient.end(); }
     pool = createDbPool(databaseUrl, {max: 3});
     closeFixturePool = trackPostgresFixtureShutdown(pool);
@@ -47,6 +52,7 @@ async function count(projectId: string) {
     await closeFixturePool?.();
     if (maintenance) { try { if (databaseName) await maintenance.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`); } finally { await maintenance.end(); } }
   }, 30_000);
+  defineBackupProtectionCases(() => pool, () => databaseUrl, () => migrationProbe);
   defineManagedDatabaseCredentialCases(() => pool, () => databaseUrl);
   defineNativeBackupInventoryCases(() => pool, () => databaseUrl);
   defineManagedDatabaseRestoreCompletionCases(() => pool, () => databaseUrl);

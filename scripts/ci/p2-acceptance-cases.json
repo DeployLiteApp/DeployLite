@@ -3,7 +3,7 @@
   "purpose": "Expected evidence only; this manifest neither authorizes runtime nor claims PASS",
   "suites": {
     "db": {
-      "count": 74,
+      "count": 84,
       "allowSkipped": false,
       "cases": [
         {
@@ -449,6 +449,66 @@
           "title": "rolls back restore completion audit and refuses unconsumed original nonce without ledger changes",
           "file": "packages/db/src/managed-database-restore-postgres.cases.ts",
           "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance preserves native protection rows and constraints across additive P3 migration",
+          "title": "preserves native protection rows and constraints across additive P3 migration",
+          "file": "packages/db/src/backup-protection-postgres.cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance enforces P3 source binding and original ledger/inventory/nonce SQL constraints",
+          "title": "enforces P3 source binding and original ledger/inventory/nonce SQL constraints",
+          "file": "packages/db/src/backup-protection-postgres.cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance serializes native protection versus retirement with protection-first=true",
+          "title": "serializes native protection versus retirement with protection-first=true",
+          "file": "packages/db/src/backup-protection-postgres.cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance serializes native protection versus retirement with protection-first=false",
+          "title": "serializes native protection versus retirement with protection-first=false",
+          "file": "packages/db/src/backup-protection-postgres.cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance serializes p3 protection versus retirement with protection-first=true",
+          "title": "serializes p3 protection versus retirement with protection-first=true",
+          "file": "packages/db/src/backup-protection-postgres.cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance serializes p3 protection versus retirement with protection-first=false",
+          "title": "serializes p3 protection versus retirement with protection-first=false",
+          "file": "packages/db/src/backup-protection-postgres.cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance preserves native duplicate originals and expiry/reopen observation",
+          "title": "preserves native duplicate originals and expiry/reopen observation",
+          "file": "packages/db/src/backup-protection-postgres.cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance preserves p3 duplicate originals and expiry/reopen observation",
+          "title": "preserves p3 duplicate originals and expiry/reopen observation",
+          "file": "packages/db/src/backup-protection-postgres.cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance denies expired and canceled native protection after an observed project-lock wait",
+          "title": "denies expired and canceled native protection after an observed project-lock wait",
+          "file": "packages/db/src/backup-protection-postgres.cases.ts",
+          "physicalRestart": false
+        },
+        {
+          "fullName": "P5 backup inventory durable PostgreSQL acceptance denies expired and canceled p3 protection after an observed project-lock wait",
+          "title": "denies expired and canceled p3 protection after an observed project-lock wait",
+          "file": "packages/db/src/backup-protection-postgres.cases.ts",
+          "physicalRestart": false
         }
       ],
       "sourceFiles": [
@@ -481,7 +541,18 @@
         "packages/db/migrations/0028_backup_inventory_native_receipts.sql",
         "packages/db/src/native-backup-inventory.test.ts",
         "packages/domain/src/native-backup-inventory.test.ts",
-        "packages/db/src/inventory-fixture-shutdown.test.ts"
+        "packages/db/src/inventory-fixture-shutdown.test.ts",
+        "packages/db/src/backup-protection-postgres.cases.ts",
+        "packages/db/src/repositories/compose-volume-restore-protection.ts",
+        "packages/db/src/compose-volume-restore-protection.test.ts",
+        "packages/db/migrations/0030_backup_retirement_reservation.sql",
+        "packages/db/migrations/0031_compose_volume_restore_protections.sql",
+        "packages/db/src/repositories/backup-retirement.ts",
+        "packages/db/src/backup-retirement.test.ts",
+        "packages/db/src/compose-volume-restore-protection-schema.test.ts",
+        "packages/domain/src/compose-volume-restore-source.ts",
+        "packages/domain/src/compose-volume-restore-source.test.ts",
+        "packages/domain/src/backup-retirement.ts"
       ]
     },
     "api": {
@@ -1509,7 +1580,18 @@
     "apps/web/src/lib/managed-database-restore.ts",
     "apps/web/src/lib/managed-database-restore.test.ts",
     "apps/web/src/components/managed-database-restore-control.tsx",
-    "apps/web/src/components/managed-database-restore-control.test.tsx"
+    "apps/web/src/components/managed-database-restore-control.test.tsx",
+    "packages/db/src/backup-protection-postgres.cases.ts",
+    "packages/db/src/repositories/compose-volume-restore-protection.ts",
+    "packages/db/src/compose-volume-restore-protection.test.ts",
+    "packages/db/migrations/0030_backup_retirement_reservation.sql",
+    "packages/db/migrations/0031_compose_volume_restore_protections.sql",
+    "packages/db/src/repositories/backup-retirement.ts",
+    "packages/db/src/backup-retirement.test.ts",
+    "packages/db/src/compose-volume-restore-protection-schema.test.ts",
+    "packages/domain/src/compose-volume-restore-source.ts",
+    "packages/domain/src/compose-volume-restore-source.test.ts",
+    "packages/domain/src/backup-retirement.ts"
   ],
   "evidenceBinding": {
     "schemaVersion": 1,
