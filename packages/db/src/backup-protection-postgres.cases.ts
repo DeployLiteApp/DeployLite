@@ -142,7 +142,7 @@ export function defineBackupProtectionCases(getPool: () => pg.Pool, getUrl: () =
     await rejectSql(pool, "INSERT INTO compose_volume_restore_protections SELECT $2,confirmation_id,project_id,volume_key,destination_id,archive_id,backup_command_id,input_digest,archive_sha256,manifest_sha256,source_binding,created_at FROM compose_volume_restore_protections WHERE restore_command_id=$1", [f.restore.command.id, third.command.id], "23505");
     expect(await snapshotOriginals(pool, f.projectId)).toEqual(before); expect(numericDates(await laneRows(pool, f))).toEqual(rows);
   });
-  it.each(lanes.flatMap(lane => [true, false].map(first => [lane, first] as const)))("serializes %s protection versus retirement with protection-first=%s", async (lane, first) => {
+  for (const lane of lanes) for (const first of [true, false]) it(`serializes ${lane} protection versus retirement with protection-first=${first}`, async () => {
     const observer = getPool(), f = await fixture(observer, lane), before = await snapshotOriginals(observer, f.projectId);
     const owner = ownedPool(getUrl(), "owner"), waiter = ownedPool(getUrl(), "waiter"), held = holdBeforeCommit(createDbClient(owner.pool));
     let owning: Promise<unknown> | undefined, contending: Promise<unknown> | undefined;
@@ -157,7 +157,7 @@ export function defineBackupProtectionCases(getPool: () => pg.Pool, getUrl: () =
       expect(await snapshotOriginals(observer, f.projectId)).toEqual(before);
     } finally {held.release(); await Promise.allSettled([owning, contending]); await Promise.all([owner.close(), waiter.close()]);}
   }, 30000);
-  it.each(lanes)("preserves %s duplicate originals and expiry/reopen observation", async lane => {
+  for (const lane of lanes) it(`preserves ${lane} duplicate originals and expiry/reopen observation`, async () => {
     const pool = getPool(), f = await fixture(pool, lane, 5000), before = await snapshotOriginals(pool, f.projectId), db = createDbClient(pool);
     const retry = await f.original(f.restoreKey); expect(retry.command).toEqual(f.restore.command); expect(retry.confirmation).toEqual(f.restore.confirmation);
     await Promise.all([f.protect(db), f.protect(db, retry)]); const rows = numericDates(await laneRows(pool, f)); expect((await laneRows(pool, f)).protection).toHaveLength(1);
@@ -168,7 +168,7 @@ export function defineBackupProtectionCases(getPool: () => pg.Pool, getUrl: () =
       expect(numericDates(await laneRows(fresh.pool, f))).toEqual(rows); expect(await snapshotOriginals(fresh.pool, f.projectId)).toEqual(before);
     } finally {await fresh.close();}
   }, 30000);
-  it.each(lanes)("denies expired and canceled %s protection after an observed project-lock wait", async lane => {
+  for (const lane of lanes) it(`denies expired and canceled ${lane} protection after an observed project-lock wait`, async () => {
     for (const mode of ["expiry", "cancellation"] as const) {
       const observer = getPool(), f = await fixture(observer, lane, mode === "expiry" ? 5000 : 60000), before = await snapshotOriginals(observer, f.projectId);
       const owner = ownedPool(getUrl(), "blocker"), waiter = ownedPool(getUrl(), "contender"), held = holdBeforeCommit(createDbClient(owner.pool));
