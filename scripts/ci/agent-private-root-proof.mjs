@@ -136,7 +136,12 @@ async function main(){
       ['symlink',`await fs.symlink('/tmp',root+'/child');`,root+'/child'],['outside','', '/tmp']
     ]){
       const bad=volume(),target=name==='public-parent'?'/var/lib/deploylite-agent':root;
-    const preparation=script(images.agent.Id,filesystem+setup+`const fixture=await fs.lstat(${JSON.stringify(path)}),parent=await fs.lstat('/var/lib/deploylite-agent');console.log(JSON.stringify({prepared:true,uid:fixture.uid,gid:fixture.gid,mode:fixture.mode&4095,symlink:fixture.isSymbolicLink(),parentMode:parent.mode&4095}));`,{mount:bad,user:'0:0',setup:true,target});
+    const preparation=script(images.agent.Id,filesystem+`await fs.writeFile(root+'/.fixture','owned fixture',{flag:'wx',mode:384});
+      const marker=await fs.readFile(root+'/.fixture');
+      if(marker.toString()!=='owned fixture')throw new Error('Fixture marker readback failed.');
+      ${setup}
+      const fixture=await fs.lstat(${JSON.stringify(path)}),parent=await fs.lstat('/var/lib/deploylite-agent');console.log(JSON.stringify({prepared:true,marker:{bytes:marker.length,sha256:crypto.createHash('sha256').update(marker).digest('hex')},uid:fixture.uid,gid:fixture.gid,mode:fixture.mode&4095,symlink:fixture.isSymbolicLink(),parentMode:parent.mode&4095}));`,{mount:bad,user:'0:0',setup:true,target});
+      assert.deepEqual(preparation.observation.marker,{bytes:13,sha256:hash('owned fixture')});
       const refusal=script(images.agent.Id,filesystem+validator+`let error;try{await validatePrivateArchiveRuntimeRoots(new Map([['bad',${JSON.stringify(path)}]]));}catch(value){error=value.message;}console.log(JSON.stringify({error}));`,{mount:bad,target});
       assert.equal(preparation.observation.prepared,true);
       if(name==='root-owner')assert.equal(preparation.observation.uid,0);

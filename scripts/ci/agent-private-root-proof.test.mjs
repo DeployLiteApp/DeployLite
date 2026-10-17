@@ -37,3 +37,9 @@ test('uses the same actual volume ownership guard before finally removal',()=>{
   const source=readFileSync('scripts/ci/agent-private-root-proof.mjs','utf8');
   assert.match(source,/if\(kind==='volume'\)useOwnedVolume\(value,id,token,\(\)=>command\(\[kind,'rm',id\],until\)\)/);
 });
+test('reads a nonempty owned fixture marker before bad metadata and validation-container recreation',()=>{
+  const source=readFileSync('scripts/ci/agent-private-root-proof.mjs','utf8');
+  const write=source.indexOf("await fs.writeFile(root+'/.fixture'"),read=source.indexOf("await fs.readFile(root+'/.fixture'"),mutation=source.indexOf('${setup}',write);
+  const readback=source.indexOf('assert.deepEqual(preparation.observation.marker',mutation),recreation=source.indexOf('const refusal=',mutation);
+  assert(write>=0&&read>write&&mutation>read&&readback>mutation&&recreation>readback);
+});
