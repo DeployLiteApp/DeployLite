@@ -54,7 +54,7 @@ export class DbBackupPublicationBarrier implements BackupPublicationBarrier {
             expiresAt,
             assertCurrent:()=>accepting?track(assertCurrent()):Promise.reject(unavailable()),
             adopt:<U>(operation:()=>Promise<U>)=>accepting?track((async()=>{
-              await assertCurrent();if(!accepting)throw unavailable();
+              await assertCurrent();current();if(!accepting)throw unavailable();
               const value=await operation();current();return value;
             })()):Promise.reject(unavailable())
           });
@@ -64,7 +64,7 @@ export class DbBackupPublicationBarrier implements BackupPublicationBarrier {
             await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
             current();await assertCurrent();
             let value:T;
-            try{value=await work(held);}finally{accepting=false;await Promise.all(pending);}
+            try{current();value=await work(held);}finally{accepting=false;await Promise.all(pending);}
             if(adoptionFailed)throw unavailable();
             await assertCurrent();return value;
           }finally{accepting=false;live=false;}

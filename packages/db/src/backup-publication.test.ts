@@ -23,7 +23,7 @@ function fixture(native=false){
 }
 function harness(native=false){
   const f=fixture(native),controller=new AbortController(),rows=[f.row],reservations:Record<string,unknown>[]=[],queries:{sql:string;params:unknown[];table?:unknown}[]=[];
-  let now=1000,wait=async(_point:string)=>{},fault="",reenter=false;
+  let now=1000,onClock=()=>{},wait=async(_point:string)=>{},fault="",reenter=false;
   const broken=deferred();const state={released:false,transactions:0};
   const port={
     execute:async(query:Parameters<PgDialect["sqlToQuery"]>[0])=>{queries.push(new PgDialect().sqlToQuery(query));await wait("lock");if(fault==="lock")throw new Error("lock");},
@@ -45,7 +45,12 @@ function harness(native=false){
   }}as unknown as DeployLiteDb;
   return{...f,rows,reservations,queries,controller,state,tick:(value:number)=>{now=value;},fault:(value:string)=>{fault=value;},reenter:()=>{reenter=true;},breakConnection:broken.resolve,
     hold(point:string){const entered=deferred(),release=deferred();let once=false;wait=async where=>{if(where===point&&!once){once=true;entered.resolve();await release.promise;}};return{entered:entered.promise,release:release.resolve};},
-    run:<T>(work:(held:BackupPublicationHeld)=>Promise<T>)=>new DbBackupPublicationBarrier(db,()=>now).run(f.raw,f.authority,controller.signal,work)};
+    queueBoundary(reads:number,mode:"cancel"|"expiry"){
+      let queued=false;onClock=()=>{if(!queued&&queries.filter(query=>query.table===backupRetirementReservations).length===reads){
+        queued=true;queueMicrotask(()=>{if(mode==="cancel")controller.abort();else now=6000;});
+      }};return()=>queued;
+    },
+    run:<T>(work:(held:BackupPublicationHeld)=>Promise<T>)=>new DbBackupPublicationBarrier(db,()=>{onClock();return now;}).run(f.raw,f.authority,controller.signal,work)};
 }
 it.each([false,true])("projects the authenticated %s original, preserving the existing archive algorithm",native=>{
   const h=harness(native);let scope!:ReturnType<typeof backupPublicationScope>;
@@ -150,4 +155,12 @@ it.each(["cancel","expiry"])("rejects %s while acquiring a transaction before is
   if(reason==="cancel")h.controller.abort();else h.tick(6000);
   gate.release();await expect(attempt).rejects.toThrow("Backup publication is unavailable.");
   expect(calls).toBe(0);expect(h.state.transactions).toBe(1);expect(h.queries).toEqual([]);
+});
+
+it.each([["callback","cancel"],["callback","expiry"],["adopt","cancel"],["adopt","expiry"]] as const)("refuses queued %s %s immediately before effect invocation",async(boundary,mode)=>{
+  const h=harness(),queued=h.queueBoundary(boundary==="callback"?1:2,mode);let callbacks=0,effects=0;
+  await expect(h.run(async held=>{
+    callbacks++;if(boundary==="callback")effects++;else await held.adopt(async()=>{effects++;});
+  })).rejects.toThrow("Backup publication is unavailable.");
+  expect(queued()).toBe(true);expect(effects).toBe(0);expect(callbacks).toBe(boundary==="callback"?0:1);
 });
