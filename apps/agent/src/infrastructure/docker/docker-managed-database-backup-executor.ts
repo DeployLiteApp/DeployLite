@@ -74,7 +74,9 @@ export function createManagedDatabaseBackupExecutor(supplied:Readonly<{
       }
       await verify();
       const sourceDigest=managedDatabaseBackupSourceDigest(preparation);
-      const result=await call(()=>options.archive.write({projectId:command.projectId,commandId:command.commandId,inputDigest:command.inputDigest,
+      current();
+      // Own the exposed writer promise through its finally; aborting a wait is not writer settlement.
+      const result=await options.archive.write({projectId:command.projectId,commandId:command.commandId,inputDigest:command.inputDigest,
         agentId:command.agentId,correlationId:command.context.correlationId,destinationId:command.destinationId,sourceDigest,format:source.format},
         async(write,signal)=>{
           await gate();
@@ -86,7 +88,8 @@ export function createManagedDatabaseBackupExecutor(supplied:Readonly<{
           const captured=await call(()=>redis?captureComposeVolumeBackupToSink(options.volumeSource!,source.volumeName,command.maxBytes,boundedWrite,signal,current):options.runner.runBinaryToSink(buildConsistentManagedDatabaseBackupArgv(source,deadline),signal,boundedWrite));
           if(captured.bytes!==bytes)fail();
           await verify();return captured;
-        },boundedAuthority,controller.signal));
+        },boundedAuthority,controller.signal);
+      current();
       await gate();
       const receipt=managedDatabaseBackupReceiptSchema.parse({schemaVersion:1,projectId:command.projectId,databaseId:command.databaseId,engine:command.engine,
         action:command.action,agentId:command.agentId,commandId:command.commandId,originalCommandId:original.commandId,profileId:command.profileId,
