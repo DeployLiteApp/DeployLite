@@ -482,3 +482,4 @@ export * from "./managed-database-restore-receipt-binding.js";
 export * from "./backup-retirement.js";
 
 export {composeVolumeRestoreSourceBinding, composeVolumeRestoreSourceInputDigest, prepareComposeVolumeRestoreSourceConfirmation} from "./compose-volume-restore-source.js";
+export * from "./backup-publication.js";
