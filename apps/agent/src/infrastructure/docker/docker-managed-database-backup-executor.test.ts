@@ -104,3 +104,79 @@ it("captures corroborated MongoDB only through the balanced fresh-lock command",
  expect(script).toContain("fsyncUnlock");expect(script).toContain("topologyVersion");
  expect(script).toContain('token=""; DEPLOYLITE_MONGO_BACKUP_PROCESS_ID="$ownedToken"');
 });
+
+it.each(["abort", "deadline", "success"] as const)("owns the actual published writer finally through %s before settling execute", async mode => {
+  const f = await fixture();
+  const controller = new AbortController();
+  let now = 2000, settled = false;
+  let beginCleanup!: () => void, finishCleanup!: () => void;
+  const cleanupEntered = new Promise<void>(resolve => { beginCleanup = resolve; });
+  const cleanupReleased = new Promise<void>(resolve => { finishCleanup = resolve; });
+  const write = vi.fn(async (...args: Parameters<typeof f.options.archive.write>) => {
+    try { return await f.options.archive.write(...args); }
+    finally { beginCleanup(); await cleanupReleased; }
+  });
+  vi.useFakeTimers();
+  const executor = createManagedDatabaseBackupExecutor({...f.options, clock: {now: () => now}, archive: {write}});
+  const task = executor.execute(f.command, f.authority, controller.signal);
+  const outcome = task.then(value => { settled = true; return {value}; }, error => { settled = true; return {error}; });
+  try {
+    await Promise.race([cleanupEntered, outcome.then(() => { throw new Error("Writer did not enter cleanup"); })]);
+    const entries = await readdir(f.root);
+    expect(entries).toHaveLength(1);
+    const published = join(f.root, entries[0]!, "archive.bin");
+    expect(await readFile(published)).toEqual(f.data);
+    if (mode === "abort") controller.abort();
+    if (mode === "deadline") { now = 3000; await vi.advanceTimersByTimeAsync(1000); }
+    for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+    expect(settled).toBe(false);
+    finishCleanup();
+    const result = await outcome;
+    if (mode === "success") expect(result).toMatchObject({value: {status: "created", archiveBytes: 4}});
+    else expect(result).toMatchObject({error: new Error("Database backup execution is unavailable.")});
+    expect(await readFile(published)).toEqual(f.data);
+    expect(await readdir(f.root)).toEqual(entries);
+    expect(write).toHaveBeenCalledOnce();
+    expect(f.runner.runBinaryToSink).toHaveBeenCalledOnce();
+    const reopened = await f.executor.execute(f.command, f.authority, new AbortController().signal);
+    expect(reopened).toMatchObject({status: "already-created", idempotent: true, archiveSha256: f.sha256});
+    expect(f.runner.runBinaryToSink).toHaveBeenCalledOnce();
+  } finally {
+    finishCleanup(); await outcome; vi.useRealTimers();
+  }
+});
+
+it("does not equate writer settlement with late producer drain or admit a new late archive write", async () => {
+  const f = await fixture(), controller = new AbortController();
+  let beginProducer!: () => void, releaseProducer!: () => void, finishProducer!: () => void, finishWriter!: () => void;
+  const entered = new Promise<void>(resolve => { beginProducer = resolve; });
+  const released = new Promise<void>(resolve => { releaseProducer = resolve; });
+  const producerFinished = new Promise<void>(resolve => { finishProducer = resolve; });
+  const writerFinished = new Promise<void>(resolve => { finishWriter = resolve; });
+  let drained = false, lateWriteRejected = false;
+  f.runner.runBinaryToSink.mockImplementation(async (_argv, _signal, write) => {
+    beginProducer();
+    try {
+      await released;
+      try { await write(f.data); } catch { lateWriteRejected = true; }
+      return {bytes: 4, sha256: f.sha256};
+    } finally { drained = true; finishProducer(); }
+  });
+  const archive = {write: async (...args: Parameters<typeof f.options.archive.write>) => {
+    try { return await f.options.archive.write(...args); } finally { finishWriter(); }
+  }};
+  const task = createManagedDatabaseBackupExecutor({...f.options, archive}).execute(f.command, f.authority, controller.signal);
+  const outcome = task.then(() => false, () => true);
+  try {
+    await Promise.race([entered, outcome.then(() => { throw new Error("Producer was not invoked"); })]);
+    controller.abort();
+    expect(await outcome).toBe(true);
+    await writerFinished;
+    expect(drained).toBe(false);
+    expect(await readdir(f.root)).toEqual([]);
+    releaseProducer(); await producerFinished;
+    expect(lateWriteRejected).toBe(true);
+    expect(await readdir(f.root)).toEqual([]);
+    expect(f.runner.runBinaryToSink).toHaveBeenCalledOnce();
+  } finally { releaseProducer(); await outcome; await producerFinished; }
+});
